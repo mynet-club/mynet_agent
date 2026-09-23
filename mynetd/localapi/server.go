@@ -54,6 +54,27 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/system.json", s.handleSystemJSON)
 	s.mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/api/v1/command", s.handleCommand)
+	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch) // D-10
+	if hasWebUI {
+		s.mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS()))))
+	}
+}
+
+// handleNodesSwitch D-10：首次向导最后一步——互斥切换当前节点。
+// 多节点并行是后续增量（决策 2026-09-23）。
+func (s *Server) handleNodesSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
+		return
+	}
+	var body struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
+		writeJSON(w, 400, map[string]any{"success": false, "message": "node_id required"})
+		return
+	}
+	s.dispatch(w, []string{"nodes", "switch", "--node-id", body.NodeID})
 }
 
 // Start 监听（:0 时由内核分配端口）

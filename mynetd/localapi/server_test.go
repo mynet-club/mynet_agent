@@ -113,3 +113,15 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestD10_NodesSwitchRequiresNodeID(t *testing.T) {
+	s := newTestServer(t)
+	req := httptest.NewRequest("POST", "/api/v1/nodes/switch", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:8096"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("got %d", rec.Code)
+	}
+}

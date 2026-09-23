@@ -12,6 +12,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -34,12 +35,20 @@ type Conn struct {
 
 // Registry 连接状态表 + presence（内存版；C-6 换 Redis pub/sub）
 type Registry struct {
-	mu    sync.RWMutex
-	conns map[string]*Conn
+	mu       sync.RWMutex
+	conns    map[string]*Conn
+	presence PresenceStore
 }
 
 func NewRegistry() *Registry {
-	return &Registry{conns: map[string]*Conn{}}
+	return &Registry{conns: map[string]*Conn{}, presence: NewMemoryPresence()}
+}
+
+// SetPresence 注入 Redis/内存 presence（C-6）
+func (r *Registry) SetPresence(p PresenceStore) {
+	r.mu.Lock()
+	r.presence = p
+	r.mu.Unlock()
 }
 
 // Register 登记连接；同 nodeID 踢旧连接并返回它。
@@ -73,13 +82,16 @@ func (r *Registry) IsOnline(nodeID string) bool {
 // MarkVerified C-4：back 置位「已鉴权」
 func (r *Registry) MarkVerified(nodeID string) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	c, ok := r.conns[nodeID]
-	if !ok {
-		return false
+	if ok {
+		c.Verified = true
 	}
-	c.Verified = true
-	return true
+	ps := r.presence
+	r.mu.Unlock()
+	if ok && ps != nil {
+		_ = ps.SetOnline(context.Background(), nodeID, true)
+	}
+	return ok
 }
 
 // IsVerified 只有置位的连接才收推送（C-5）
