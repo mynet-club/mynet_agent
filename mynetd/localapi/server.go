@@ -47,7 +47,7 @@ func NewServer(cfg Config) *Server {
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
-	s := &Server{cfg: cfg, tok: cfg.Token, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, tok: cfg.Token, mux: http.NewServeMux(), sessions: NewSessionTable()}
 	s.routes()
 	return s
 }
