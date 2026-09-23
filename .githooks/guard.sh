@@ -149,7 +149,7 @@ done
 [ "$c2" -eq 0 ] && ok "C2 端口无漂移"
 
 # C3 命名漂移：产物前缀应为 mynet_agent_*（不是 agent_*）
-if printf '%s\n' "$ADDED" | grep -qE 'agent_(linux|darwin|windows|openwrt|freebsd)'; then
+if printf '%s\n' "$ADDED" | grep -qE '(^|[^a-zA-Z_])agent_(linux|darwin|windows|openwrt|freebsd)'; then # GUARD-OK 自检正则（不误伤 mynet_agent_*）
   bad "C3 命名漂移（产物前缀应为 mynet_agent_*，不是 agent_*）"
 else
   ok "C3 命名无漂移"

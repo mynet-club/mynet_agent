@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/mynet-club/mynet_agent-V2/mynet/upgrade"
 	"github.com/mynet-club/mynet_agent-V2/shared"
 )
 
@@ -60,9 +61,33 @@ func cmdService(args []string) int {
 
 func cmdDriver(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "用法: mynet driver <list|install|upgrade> [name]")
+		fmt.Fprintln(os.Stderr, "用法: mynet driver <list|install|upgrade> [gnb|wireguard]")
 		return 2
 	}
-	fmt.Fprintf(os.Stderr, "mynet driver %v: 调 upgrade_service（D-9）\n", args)
-	return 1
+	svc := upgrade.NewService("https://ctl.mynet.club")
+	switch args[0] {
+	case "list":
+		list, err := svc.List()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "list: %v\n", err)
+			return 1
+		}
+		for _, a := range list {
+			fmt.Printf("%s\t%s\t%s\n", a.Component, a.Version, a.Platform)
+		}
+		return 0
+	case "install", "upgrade":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "需要 gnb|wireguard")
+			return 2
+		}
+		if err := svc.InstallDriver(upgrade.Component(args[1])); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", args[0], err)
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "未知 driver 子命令: %s\n", args[0])
+		return 2
+	}
 }
