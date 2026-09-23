@@ -55,3 +55,17 @@ func TestRedisEmptyAddrFallsBackToMemory(t *testing.T) {
 		t.Fatalf("fallback broken on=%v ver=%v", on, ver)
 	}
 }
+
+func TestRedisUnreachableFallsBackToMemory(t *testing.T) {
+	// C-6 故障降级：Ping 失败 → MemoryPresence
+	s, err := NewRedisPresence("127.0.0.1:1", "x", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_ = s.SetOnline(ctx, "n9", true)
+	on, ver, _ := s.IsOnline(ctx, "n9")
+	if !on || !ver {
+		t.Fatalf("fallback broken on=%v ver=%v", on, ver)
+	}
+}

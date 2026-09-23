@@ -1,5 +1,122 @@
 <!doctype html>
+<html lang="zh-CN">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MyNet</title>
-<!-- D-3/D-4：S8 以 Quasar 产物替换本占位；只跟 127.0.0.1:8096 说话 -->
-<p>MyNet WebUI（占位，S8 装 Quasar 产物）</p>
+<style>
+:root{--bg:#0f1419;--panel:#1a2332;--ink:#e7ecf3;--mut:#8b9bb4;--acc:#3d8bfd;--ok:#3dd68c;--bad:#f07178}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid #243044}
+header h1{margin:0;font-size:16px;font-weight:600;letter-spacing:.02em}
+nav{display:flex;gap:4px}
+nav button{background:none;border:0;color:var(--mut);padding:8px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button.on{color:var(--ink);background:#243044}
+nav button:hover{color:var(--ink)}
+main{padding:20px;max-width:960px}
+.card{background:var(--panel);border:1px solid #243044;border-radius:10px;padding:16px;margin-bottom:14px}
+.card h2{margin:0 0 10px;font-size:13px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.row{display:flex;gap:12px;flex-wrap:wrap}
+.kv{min-width:140px}.kv .k{color:var(--mut);font-size:12px}.kv .v{font-size:15px;font-variant-numeric:tabular-nums}
+.tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#243044}
+.tag.ok{color:var(--ok)}.tag.bad{color:var(--bad)}
+input,select{background:#0f1419;border:1px solid #243044;color:var(--ink);padding:8px 10px;border-radius:6px;font:inherit}
+button.primary{background:var(--acc);border:0;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
+button.primary:disabled{opacity:.5}
+pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:240px;font-size:12px}
+.muted{color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MyNet</h1>
+  <nav>
+    <button data-v="local" class="on">本机</button>
+    <button data-v="social">社区</button>
+  </nav>
+  <span class="muted" id="listen"></span>
+</header>
+<main>
+  <div id="view-local">
+    <div class="card">
+      <h2>状态</h2>
+      <div class="row" id="status-row"><span class="muted">加载中…</span></div>
+    </div>
+    <div class="card">
+      <h2>系统能力 · system.json</h2>
+      <pre id="sys">—</pre>
+    </div>
+    <div class="card">
+      <h2>指标（心跳数据源）</h2>
+      <pre id="metrics">—</pre>
+      <button class="primary" id="btn-metrics">刷新 metrics</button>
+    </div>
+    <div class="card">
+      <h2>驱动</h2>
+      <div class="row">
+        <button class="primary" data-cmd='["driver","list"]'>列驱动</button>
+        <button class="primary" data-cmd='["detector","--json"]'>重新探测</button>
+      </div>
+      <pre id="cmd-out">—</pre>
+    </div>
+  </div>
+  <div id="view-social" hidden>
+    <div class="card">
+      <h2>切换节点（互斥）</h2>
+      <div class="row">
+        <input id="node-id" placeholder="节点 ID">
+        <button class="primary" id="btn-switch">切换</button>
+      </div>
+      <pre id="switch-out">—</pre>
+    </div>
+    <div class="card">
+      <h2>平台态</h2>
+      <p class="muted">经 gateway /v1/relay；本页只跟本机 mynetd 说话，不持有 back 凭据。</p>
+    </div>
+  </div>
+</main>
+<script>
+const BASE = '';  // 同源：mynetd embed / 或 http://127.0.0.1:8096
+async function api(path, opts) {
+  const r = await fetch(BASE + path, Object.assign({ credentials: 'include' }, opts || {}));
+  return r.json();
+}
+function el(id) { return document.getElementById(id); }
+function show(id, obj) { el(id).textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  el('view-local').hidden = b.dataset.v !== 'local';
+  el('view-social').hidden = b.dataset.v !== 'social';
+});
+
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
+  const argv = JSON.parse(b.dataset.cmd);
+  show('cmd-out', await api('/api/v1/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ argv })
+  }));
+});
+
+el('btn-metrics').onclick = async () => show('metrics', await api('/api/v1/metrics'));
+el('btn-switch').onclick = async () => show('switch-out', await api('/api/v1/nodes/switch', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ node_id: el('node-id').value })
+}));
+
+(async function init() {
+  try {
+    const st = await api('/api/v1/status');
+    const d = st.data || st;
+    el('listen').textContent = d.listen || '';
+    el('status-row').innerHTML = `
+      <div class="kv"><div class="k">守护</div><div class="v">${d.daemon || 'mynetd'}</div></div>
+      <div class="kv"><div class="k">角色</div><div class="v"><span class="tag ok">${d.role || 'transport-only'}</span></div></div>
+      <div class="kv"><div class="k">监听</div><div class="v">${d.listen || ''}</div></div>`;
+  } catch (e) { el('status-row').innerHTML = '<span class="tag bad">无法连接本机 API</span>'; }
+  try { show('sys', await api('/api/v1/system.json')); } catch (e) { el('sys').textContent = 'system.json 未就绪'; }
+  try { show('metrics', await api('/api/v1/metrics')); } catch (e) {}
+})();
+</script>
+</body>
+</html>
