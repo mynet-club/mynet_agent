@@ -52,6 +52,9 @@ func Run(args []string) int {
 	cmd := args[0]
 	rest := args[1:]
 
+	if strings.HasPrefix(cmd, "refresh") {
+		return cmdRefresh(args)
+	}
 	switch strings.SplitN(cmd, "-", 2)[0] {
 	case "detector":
 		return cmdDetector(rest)
@@ -73,7 +76,9 @@ func Run(args []string) int {
 		return cmdNodes(rest)
 	case "platform":
 		return cmdPlatform(rest)
-	case "install", "uninstall", "update", "config", "monitor", "refresh":
+	case "refresh":
+		return cmdRefresh(append([]string{cmd}, rest...))
+	case "install", "uninstall", "update", "config", "monitor":
 		return cmdStub(cmd, rest)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
