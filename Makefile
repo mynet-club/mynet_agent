@@ -34,3 +34,19 @@ install-hooks:
 	@git config core.hooksPath .githooks
 	@chmod +x .githooks/*
 	@echo "✓ hooks 已安装（core.hooksPath = .githooks）"
+
+# ── R4-1 产物（命名 SSOT：mynet_agent_*）────────────────────
+.PHONY: dist
+dist:
+	@echo "▸ dist"
+	@mkdir -p dist
+	@for pair in "darwin arm64" "darwin amd64" "linux amd64" "linux arm64" "linux mipsle"; do \
+		set -- $$pair; os=$$1; arch=$$2; \
+		out=dist/mynet_agent_$${os}_$${arch}; \
+		mkdir -p $$out; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o $$out/mynet ./cmd/mynet || continue; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -tags embed -o $$out/mynetd ./cmd/mynetd || true; \
+		cp mynetd/localapi/webui/index.html $$out/webui.html 2>/dev/null || true; \
+		echo "  $$out"; \
+	done
+	@echo "✓ dist/ 就绪（mynet_agent_*）"

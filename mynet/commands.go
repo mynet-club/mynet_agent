@@ -78,7 +78,13 @@ func Run(args []string) int {
 		return cmdPlatform(rest)
 	case "refresh":
 		return cmdRefresh(append([]string{cmd}, rest...))
-	case "install", "uninstall", "update", "config", "monitor":
+	case "install":
+		return cmdInstall(rest)
+	case "uninstall":
+		return cmdUninstall(rest)
+	case "update":
+		return cmdUpdate(rest)
+	case "config", "monitor":
 		return cmdStub(cmd, rest)
 	case "help", "-h", "--help":
 		fmt.Print(usage)

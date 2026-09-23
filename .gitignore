@@ -20,3 +20,4 @@ id_ed25519*
 .DS_Store
 *.swp
 webui/*.bak
+dist/
