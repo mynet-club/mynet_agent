@@ -85,8 +85,8 @@ esac
 [ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
 
 # B2 mynetd 不得依赖系统能力（执行器架构：mynetd 纯通信）
-#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 源码；探测/写入/驱动/进程管理都在执行器
-B2PAT='(mynet/)?(detector|tools/(firewall|routing)|infrastructure|coordinator|node/|service/)|gopsutil' # GUARD-OK 自检正则
+#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 的**import 路径**（注释里提到 detector 是允许的）
+B2PAT='mynet/detector|mynet/tools|mynet/apply|mynet/metrics|mynet/service|gopsutil|shirou/gopsutil' # GUARD-OK 自检正则
 b2=0
 for f in $FILES; do
   case "$f" in
