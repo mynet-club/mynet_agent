@@ -2,9 +2,9 @@ package driver
 
 import (
 	"encoding/json"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
