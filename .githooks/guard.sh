@@ -62,7 +62,11 @@ a3=0
 for f in $FILES; do
   b=$(basename "$f")
   case "$b" in
-    .env|.env.*|*.pem|*.key|id_rsa*|id_ed25519*|*.private) bad "A3 敏感文件不得入库: $f"; a3=1 ;;
+    .env|.env.*|*.pem|*.key|id_rsa*|id_ed25519*|*.private)
+      case "$b" in
+        .env.example|.env.sample|.env.template) ;; # 无密钥模板，允许
+        *) bad "A3 敏感文件不得入库: $f"; a3=1 ;;
+      esac ;;
   esac
 done
 [ "$a3" -eq 0 ] && ok "A3 无敏感文件"
@@ -81,22 +85,31 @@ esac
 [ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
 
 # B2 mynetd 不得依赖系统能力（执行器架构：mynetd 纯通信）
-#    详见 AGENTS.md §1.2 —— 探测/写入/驱动/进程管理都在执行器
-if printf '%s\n' "$ADDED" | grep -E 'mynetd/' >/dev/null 2>&1 && \
-   printf '%s\n' "$ADDED" | grep -qE '"(mynet/)?(detector|tools/(firewall|routing)|infrastructure|coordinator|node/|service/)|gopsutil'; then
-  bad "B2 mynetd 不得依赖系统能力（执行器架构）"
-  printf '%s\n' "$ADDED" | grep -E '(detector|tools/(firewall|routing)|infrastructure|coordinator|node/|service/|gopsutil)' | head -3 | sed 's/^/      /'
-else
-  ok "B2 mynetd 未依赖系统能力"
-fi
+#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 源码；探测/写入/驱动/进程管理都在执行器
+B2PAT='(mynet/)?(detector|tools/(firewall|routing)|infrastructure|coordinator|node/|service/)|gopsutil' # GUARD-OK 自检正则
+b2=0
+for f in $FILES; do
+  case "$f" in
+    mynetd/*)
+      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$B2PAT"; then
+        bad "B2 mynetd 不得依赖系统能力（执行器架构）: $f"; b2=1
+      fi ;;
+  esac
+done
+[ "$b2" -eq 0 ] && ok "B2 mynetd 未依赖系统能力"
 
-# B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归 back）
-if printf '%s\n' "$ADDED" | grep -F 'relaypolicy' >/dev/null 2>&1 && \
-   printf '%s\n' "$ADDED" | grep -qE 'Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature'; then
-  bad "B3 relaypolicy 只做路径白名单，不得含鉴权逻辑"
-else
-  ok "B3 relaypolicy 未含鉴权"
-fi
+# B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归 back）—— 只扫 relaypolicy/
+B3PAT='Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature' # GUARD-OK 自检正则
+b3=0
+for f in $FILES; do
+  case "$f" in
+    *relaypolicy*)
+      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$B3PAT"; then
+        bad "B3 relaypolicy 只做路径白名单，不得含鉴权逻辑: $f"; b3=1
+      fi ;;
+  esac
+done
+[ "$b3" -eq 0 ] && ok "B3 relaypolicy 未含鉴权"
 
 # B4 业务对象不含驱动术语（驱动差异不下泄到业务对象）
 #    只查业务模型 Models/*.php；BundleEnvelope / VPNBundle 契约里**允许**驱动字段
@@ -105,7 +118,7 @@ b4=0
 for f in $FILES; do
   case "$f" in
     *Models/*.php)
-      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE 'AllowedIPs|node\.conf|node_conf|gnb_tun|\bwg0\b'; then
+      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE 'AllowedIPs|node\.conf|\bnode_conf\b|gnb_tun|\bwg0\b'; then
         bad "B4 业务对象不得含驱动术语（AllowedIPs/node.conf/gnb_tun/wg0）: $f"; b4=1
       fi ;;
   esac
@@ -122,13 +135,18 @@ for f in $FILES; do
 done
 [ "$c1" -eq 0 ] && ok "C1 无格式化产物文件名"
 
-# C2 端口漂移：本机 API / WebUI 端口应为 8096
-if printf '%s\n' "$ADDED" | grep -qE '127\.0\.0\.1:8720|127\.0\.0\.1:8008|localhost:8720|localhost:8008'; then
-  bad "C2 端口漂移（本机 API/WebUI 应为 8096）"
-  printf '%s\n' "$ADDED" | grep -E '8720|127\.0\.0\.1:8008' | head -3 | sed 's/^/      /'
-else
-  ok "C2 端口无漂移"
-fi
+# C2 端口漂移：本机 API / WebUI 端口应为 8096（只扫源码，不扫 docs/.githooks）
+C2PAT='127\.0\.0\.1:8720|127\.0\.0\.1:8008|localhost:8720|localhost:8008' # GUARD-OK 自检正则
+c2=0
+for f in $FILES; do
+  case "$f" in
+    docs/*|*/docs/*|.githooks/*|*/.githooks/*|*.md) continue ;;
+  esac
+  if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$C2PAT"; then
+    bad "C2 端口漂移（本机 API/WebUI 应为 8096）: $f"; c2=1
+  fi
+done
+[ "$c2" -eq 0 ] && ok "C2 端口无漂移"
 
 # C3 命名漂移：产物前缀应为 mynet_agent_*（不是 agent_*）
 if printf '%s\n' "$ADDED" | grep -qE 'agent_(linux|darwin|windows|openwrt|freebsd)'; then
