@@ -1,0 +1,293 @@
+package driver
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+)
+
+// WireGuardDriver 只读 + 生命周期。解析 `wg show`。
+type WireGuardDriver struct {
+	Interface string
+	NodeID    int64
+	ConfPath  string
+	Exec      func(name string, args ...string) ([]byte, error)
+}
+
+func NewWireGuardDriver(iface string, nodeID int64) *WireGuardDriver {
+	if iface == "" {
+		iface = "wg0"
+	}
+	return &WireGuardDriver{
+		Interface: iface,
+		NodeID:    nodeID,
+		Exec:      execCombined,
+	}
+}
+
+func (d *WireGuardDriver) GetDriverType() domain.VPNDriverType {
+	return domain.DriverTypeWireGuard
+}
+
+func (d *WireGuardDriver) IsAvailable() bool {
+	_, err := d.Exec("wg", "show", d.Interface)
+	return err == nil
+}
+
+func (d *WireGuardDriver) IsProcessAlive() bool { return d.IsAvailable() }
+
+func (d *WireGuardDriver) Capabilities() domain.DriverCaps {
+	// A-8：wg 无 Discovery / 无 Proxy
+	return domain.DriverCaps{
+		HotReload:       false,
+		Discovery:       false,
+		Proxy:           false,
+		CustomKeyUpload: true,
+	}
+}
+
+func (d *WireGuardDriver) Refresh() error {
+	_, err := d.dump()
+	return err
+}
+
+func (d *WireGuardDriver) GetAllPeers() ([]*domain.VPNPeer, error) {
+	rows, err := d.dump()
+	if err != nil {
+		return nil, err
+	}
+	var peers []*domain.VPNPeer
+	for _, r := range rows {
+		if !r.isPeer {
+			continue
+		}
+		status := "offline"
+		if r.handshake {
+			status = "online"
+		}
+		peers = append(peers, &domain.VPNPeer{
+			PeerID:           r.peerNum,
+			NodeID:           r.nodeID,
+			VirtualIP:        strings.Join(r.allowedIPs, ","),
+			ConnectionStatus: status,
+			Endpoint:         r.endpoint,
+			RxBytes:          r.rx,
+			TxBytes:          r.tx,
+			LastHandshake:    r.lastHS,
+			AllowedIPs:       strings.Join(r.allowedIPs, ","),
+		})
+	}
+	return peers, nil
+}
+
+func (d *WireGuardDriver) GetOnlinePeers() ([]*domain.VPNPeer, error) {
+	all, err := d.GetAllPeers()
+	if err != nil {
+		return nil, err
+	}
+	var up []*domain.VPNPeer
+	for _, p := range all {
+		if p.IsOnline() {
+			up = append(up, p)
+		}
+	}
+	return up, nil
+}
+
+func (d *WireGuardDriver) GetPeer(peerID int64) (*domain.VPNPeer, error) {
+	all, err := d.GetAllPeers()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range all {
+		if p.PeerID == peerID {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("peer %d not found", peerID)
+}
+
+func (d *WireGuardDriver) GetLocalPeer() (*domain.VPNPeer, error) {
+	return &domain.VPNPeer{NodeID: d.NodeID, IsLocal: true}, nil
+}
+
+func (d *WireGuardDriver) GetNetworkSummary() (*domain.VPNNetworkSummary, error) {
+	peers, err := d.GetAllPeers()
+	if err != nil {
+		return nil, err
+	}
+	on, _ := d.GetOnlinePeers()
+	var rx, tx uint64
+	for _, p := range peers {
+		rx += p.RxBytes
+		tx += p.TxBytes
+	}
+	return &domain.VPNNetworkSummary{
+		TotalPeers:     len(peers),
+		OnlinePeers:    len(on),
+		TotalRxBytes:   rx,
+		TotalTxBytes:   tx,
+		IsProcessAlive: d.IsProcessAlive(),
+		LastUpdate:     time.Now(),
+	}, nil
+}
+
+// WriteConfig 旧契约：VPNBundle → wg-quick 配置（keys.self + peers）。
+// 新链路请用 WriteIntent（BundleEnvelope.WireGuardIntent）。
+func (d *WireGuardDriver) WriteConfig(b *domain.VPNBundle) error {
+	if b == nil {
+		return fmt.Errorf("wireguard: nil bundle")
+	}
+	text := RenderWGConfigFromBundle(b)
+	if d.ConfPath == "" {
+		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+	}
+	return writeFile0600(d.ConfPath, []byte(text))
+}
+
+// WriteIntent A-5：WireGuardIntent → wg-quick 配置（intent 内已是 wg base64）。
+func (d *WireGuardDriver) WriteIntent(w *domain.WireGuardIntent) error {
+	if w == nil {
+		return fmt.Errorf("wireguard: nil intent")
+	}
+	text := RenderWGConfig(w)
+	if d.ConfPath == "" {
+		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+	}
+	return writeFile0600(d.ConfPath, []byte(text))
+}
+
+func (d *WireGuardDriver) Start() error {
+	_, err := d.Exec("wg-quick", "up", d.Interface)
+	return err
+}
+
+func (d *WireGuardDriver) Stop() error {
+	_, err := d.Exec("wg-quick", "down", d.Interface)
+	return err
+}
+
+// Reload 冷启（HotReload=false，热路径未验证）。
+func (d *WireGuardDriver) Reload() error {
+	_ = d.Stop()
+	return d.Start()
+}
+
+func (d *WireGuardDriver) Status() (*domain.DriverStatus, error) {
+	return &domain.DriverStatus{
+		Running: d.IsAvailable(),
+		NodeID:  strconv.FormatInt(d.NodeID, 10),
+	}, nil
+}
+
+// ---- dump 解析 ----
+
+type wgRow struct {
+	isPeer     bool
+	peerNum    int64
+	nodeID     int64
+	publicKey  string
+	endpoint   string
+	allowedIPs []string
+	handshake  bool
+	rx, tx     uint64
+	lastHS     time.Time
+	listenPort int
+}
+
+func (d *WireGuardDriver) dump() ([]wgRow, error) {
+	out, err := d.Exec("wg", "show", d.Interface, "dump")
+	if err != nil {
+		return nil, fmt.Errorf("wg show dump: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return parseWGDump(string(out)), nil
+}
+
+func parseWGDump(s string) []wgRow {
+	var rows []wgRow
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if i == 0 && len(f) >= 3 {
+			// wg dump 接口行: private_key, public_key, listen_port, fwmark
+			port, _ := strconv.Atoi(f[2])
+			rows = append(rows, wgRow{listenPort: port, publicKey: f[1]})
+			continue
+		}
+		if len(f) < 7 {
+			continue
+		}
+		rx, _ := strconv.ParseUint(f[5], 10, 64)
+		tx, _ := strconv.ParseUint(f[6], 10, 64)
+		var hs time.Time
+		ok := false
+		if ts, err := strconv.ParseInt(f[4], 10, 64); err == nil && ts > 0 {
+			hs = time.Unix(ts, 0)
+			ok = time.Since(hs) < 2*time.Minute
+		}
+		var ips []string
+		if f[3] != "" {
+			ips = strings.Split(f[3], ",")
+		}
+		rows = append(rows, wgRow{
+			isPeer: true, peerNum: int64(i), publicKey: f[0],
+			allowedIPs: ips, handshake: ok,
+			endpoint: f[2], rx: rx, tx: tx, lastHS: hs,
+		})
+	}
+	return rows
+}
+
+// RenderWGConfig A-5：WireGuardIntent → wg-quick 文本。
+func RenderWGConfig(w *domain.WireGuardIntent) string {
+	var b strings.Builder
+	b.WriteString("[Interface]\n")
+	b.WriteString("PrivateKey = " + w.Interface.PrivateKey + "\n")
+	if w.Interface.ListenPort > 0 {
+		fmt.Fprintf(&b, "ListenPort = %d\n", w.Interface.ListenPort)
+	}
+	for _, p := range w.Peers {
+		b.WriteString("\n[Peer]\n")
+		b.WriteString("PublicKey = " + p.PublicKey + "\n")
+		if p.PresharedKey != nil && *p.PresharedKey != "" {
+			b.WriteString("PresharedKey = " + *p.PresharedKey + "\n")
+		}
+		if p.BootstrapEndpoint != nil && *p.BootstrapEndpoint != "" {
+			b.WriteString("Endpoint = " + *p.BootstrapEndpoint + "\n")
+		}
+		if len(p.AllowedIPs) > 0 {
+			b.WriteString("AllowedIPs = " + strings.Join(p.AllowedIPs, ", ") + "\n")
+		}
+		if p.PersistentKeepaliveSecs > 0 {
+			fmt.Fprintf(&b, "PersistentKeepalive = %d\n", p.PersistentKeepaliveSecs)
+		}
+	}
+	return b.String()
+}
+
+// RenderWGConfigFromBundle 旧 VPNBundle 路径（keys.self + peers）。
+func RenderWGConfigFromBundle(b *domain.VPNBundle) string {
+	var sb strings.Builder
+	sb.WriteString("[Interface]\n")
+	sb.WriteString("PrivateKey = " + b.Keys.Self.Private + "\n")
+	if b.Node.ListenPort > 0 {
+		fmt.Fprintf(&sb, "ListenPort = %d\n", b.Node.ListenPort)
+	}
+	for _, p := range b.Peers {
+		sb.WriteString("\n[Peer]\n")
+		sb.WriteString("PublicKey = " + p.PublicKey + "\n")
+		if p.Endpoint != "" {
+			sb.WriteString("Endpoint = " + p.Endpoint + "\n")
+		}
+		if len(p.AllowedIPs) > 0 {
+			sb.WriteString("AllowedIPs = " + strings.Join(p.AllowedIPs, ", ") + "\n")
+		}
+	}
+	return sb.String()
+}
