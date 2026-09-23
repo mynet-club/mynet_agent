@@ -39,6 +39,8 @@ type Server struct {
 	Ops func(argv []string) (any, error)
 	// sessions R5-1 多节点并行会话
 	sessions *SessionTable
+	// OnResult E-4：执行结果回调（经 WS 上报）
+	OnResult func(id string, ok bool, message, source string)
 }
 
 func NewServer(cfg Config) *Server {
@@ -56,8 +58,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/system.json", s.handleSystemJSON)
 	s.mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/api/v1/command", s.handleCommand)
-	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch) // D-10 / R5-1 焦点切换
-	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)          // R5-1 并行会话
+	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult) // E-4
+	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch)     // D-10 / R5-1 焦点切换
+	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)              // R5-1 并行会话
 	if hasWebUI {
 		s.mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS()))))
 	}

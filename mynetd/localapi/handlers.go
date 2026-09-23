@@ -49,6 +49,28 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	s.dispatch(w, body.Argv)
 }
 
+// handleCommandResult E-4：Lua/mynet 执行结果回 mynetd（不再直连 back）。
+func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
+		return
+	}
+	var body struct {
+		ID      string `json:"id"`
+		OK      bool   `json:"ok"`
+		Message string `json:"message"`
+		Source  string `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeJSON(w, 400, map[string]any{"success": false, "message": "id required"})
+		return
+	}
+	if s.OnResult != nil {
+		s.OnResult(body.ID, body.OK, body.Message, body.Source)
+	}
+	writeJSON(w, 200, map[string]any{"success": true, "data": body})
+}
+
 func allowedSubcommand(cmd string) bool {
 	switch cmd {
 	case "detector", "metrics", "apply", "service", "driver",

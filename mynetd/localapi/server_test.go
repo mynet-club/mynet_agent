@@ -125,3 +125,20 @@ func TestD10_NodesSwitchRequiresNodeID(t *testing.T) {
 		t.Fatalf("got %d", rec.Code)
 	}
 }
+
+func TestE4_CommandResultFromLua(t *testing.T) {
+	s := newTestServer(t)
+	got := ""
+	s.OnResult = func(id string, ok bool, message, source string) {
+		got = id + "/" + source
+	}
+	req := httptest.NewRequest("POST", "/api/v1/command-result",
+		strings.NewReader(`{"id":"c9","ok":true,"message":"done","source":"lua"}`))
+	req.Host = "127.0.0.1:8096"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 200 || got != "c9/lua" {
+		t.Fatalf("code=%d got=%q", rec.Code, got)
+	}
+}
