@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "back_priv_hex": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "back_pub_hex": "db48257e1237976a74ad8cfedca00213408fe89ac6251f1b930245f242b5c31a",
+      "body": "{\"ok\":1}",
+      "method": "POST",
+      "name": "heartbeat",
+      "node_priv_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "path": "/api/v1/monitor/heartbeat",
+      "shared_hex": "9502af7a4b678841b839429623a09a23f6cc551836e48a52c0e4faf4b9d3b06e",
+      "signature": "8JzMnfrCaUEBikZurTQn4xOlPQiyYlB1HKTcTLaiU3M=",
+      "ts": "1700000000"
+    }
+  ],
+  "comment": "C-2 双端联测向量：Go/PHP 必须同签名"
+}

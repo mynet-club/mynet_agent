@@ -97,3 +97,24 @@ func DH(localPrivate, peerPublic []byte) ([]byte, error) {
 	}
 	return priv.ECDH(pub)
 }
+
+// x25519FromPrivateHex 由私钥 hex 还原密钥对（联测用）
+// GenerateX25519FromPrivateHex 由私钥 hex 还原密钥对
+func GenerateX25519FromPrivateHex(privateHex string) (*X25519KeyPair, error) {
+	return x25519FromPrivateHex(privateHex)
+}
+
+func x25519FromPrivateHex(privateHex string) (*X25519KeyPair, error) {
+	raw, err := hex.DecodeString(trimHex(privateHex))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) != 32 {
+		return nil, fmt.Errorf("need 32B")
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &X25519KeyPair{Private: priv.Bytes(), Public: priv.PublicKey().Bytes()}, nil
+}

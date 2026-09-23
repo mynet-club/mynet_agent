@@ -63,8 +63,17 @@ func Run(args []string) int {
 		return cmdService(rest)
 	case "driver":
 		return cmdDriver(rest)
-	case "setup", "install", "uninstall", "update", "config",
-		"status", "monitor", "check", "nodes", "platform", "refresh":
+	case "setup":
+		return cmdSetup(rest)
+	case "status":
+		return cmdStatus(rest)
+	case "check":
+		return cmdCheck(rest)
+	case "nodes":
+		return cmdNodes(rest)
+	case "platform":
+		return cmdPlatform(rest)
+	case "install", "uninstall", "update", "config", "monitor", "refresh":
 		return cmdStub(cmd, rest)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
