@@ -39,9 +39,10 @@ added_in() {
 
 # ── A 安全红线 ───────────────────────────────────────────────
 # A1 硬编码凭据：只抓「标识符 = 明文值」的确凿模式，避免撞注释/文档
+# 关键字前必须是非字母，避免 DirToken / refresh_token / "var/token" 这类误报
 # 双/单引号各查一次（BSD grep 不支持 \xNN 转义，故拆两条）
-A1D="(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]*=[[:space:]]*\"[^\"]{8,}"
-A1S="(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]*=[[:space:]]*'[^']{8,}"
+A1D="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*\"[^\"]{8,}"
+A1S="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*'[^']{8,}"
 if printf '%s\n' "$ADDED" | grep -qiE "$A1D" || printf '%s\n' "$ADDED" | grep -qiE "$A1S"; then
   bad "A1 硬编码凭据（identifier = 引号包裹的长字面量）"
   printf '%s\n' "$ADDED" | grep -iE "(password|passwd|secret|token|api[_-]?key|access[_-]?key)[^=]*=" | head -5 | sed 's/^/      /'
@@ -98,12 +99,13 @@ else
 fi
 
 # B4 业务对象不含驱动术语（驱动差异不下泄到业务对象）
-#    只查业务模型文件；driver intent（BundleEnvelope）里允许驱动字段
+#    只查业务模型 Models/*.php；BundleEnvelope / VPNBundle 契约里**允许**驱动字段
+#    （entities.go / vpn_peer.go 是 envelope schema，不是业务对象）
 b4=0
 for f in $FILES; do
   case "$f" in
-    *Models/*.php|*/domain/entities.go|*/domain/vpn_peer.go)
-      if printf '%s\n' "$ADDED" | grep -qE 'AllowedIPs|node\.conf|node_conf|gnb_tun|\bwg0\b'; then
+    *Models/*.php)
+      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE 'AllowedIPs|node\.conf|node_conf|gnb_tun|\bwg0\b'; then
         bad "B4 业务对象不得含驱动术语（AllowedIPs/node.conf/gnb_tun/wg0）: $f"; b4=1
       fi ;;
   esac
