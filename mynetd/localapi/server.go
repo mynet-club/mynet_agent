@@ -37,6 +37,8 @@ type Server struct {
 	srv *http.Server
 	// Ops 执行器命令分派（mynet <子命令>），由 mynetd 装配注入。
 	Ops func(argv []string) (any, error)
+	// sessions R5-1 多节点并行会话
+	sessions *SessionTable
 }
 
 func NewServer(cfg Config) *Server {
@@ -54,14 +56,29 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/system.json", s.handleSystemJSON)
 	s.mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/api/v1/command", s.handleCommand)
-	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch) // D-10
+	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch) // D-10 / R5-1 焦点切换
+	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)          // R5-1 并行会话
 	if hasWebUI {
 		s.mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS()))))
 	}
 }
 
-// handleNodesSwitch D-10：首次向导最后一步——互斥切换当前节点。
-// 多节点并行是后续增量（决策 2026-09-23）。
+// handleNodesList R5-1：并行会话表
+func (s *Server) handleNodesList(w http.ResponseWriter, r *http.Request) {
+	if s.sessions == nil {
+		s.sessions = NewSessionTable()
+	}
+	writeJSON(w, 200, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"focus":    s.sessions.Focused(),
+			"parallel": s.sessions.ParallelCount(),
+			"nodes":    s.sessions.List(),
+		},
+	})
+}
+
+// handleNodesSwitch D-10/R5-1：切换 UI **焦点**；并行会话不互踢。
 func (s *Server) handleNodesSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
@@ -74,7 +91,19 @@ func (s *Server) handleNodesSwitch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "node_id required"})
 		return
 	}
-	s.dispatch(w, []string{"nodes", "switch", "--node-id", body.NodeID})
+	if s.sessions == nil {
+		s.sessions = NewSessionTable()
+	}
+	s.sessions.Attach(body.NodeID, "")
+	ok := s.sessions.Focus(body.NodeID)
+	writeJSON(w, 200, map[string]any{
+		"success": ok,
+		"data": map[string]any{
+			"focus":    s.sessions.Focused(),
+			"parallel": s.sessions.ParallelCount(),
+			"switched": body.NodeID,
+		},
+	})
 }
 
 // Start 监听（:0 时由内核分配端口）

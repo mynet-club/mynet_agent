@@ -25,18 +25,18 @@ func cmdInstall(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	// 复制当前 mynet / mynetd（若同目录存在）
+	// 复制运行中的本体 + 同目录 mynetd
 	self, _ := os.Executable()
 	selfDir := filepath.Dir(self)
-	for _, name := range []string{"mynet", "mynetd"} {
-		src := filepath.Join(selfDir, name)
-		dst := filepath.Join(binDir, name)
-		if _, err := os.Stat(src); err == nil {
-			if err := copyFile(src, dst, 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "install %s: %v\n", name, err)
-				return 1
-			}
-			fmt.Println("installed", dst)
+	if err := copyFile(self, filepath.Join(binDir, "mynet"), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "install mynet: %v\n", err)
+		return 1
+	}
+	fmt.Println("installed", filepath.Join(binDir, "mynet"))
+	src := filepath.Join(selfDir, "mynetd")
+	if _, err := os.Stat(src); err == nil {
+		if err := copyFile(src, filepath.Join(binDir, "mynetd"), 0o755); err == nil {
+			fmt.Println("installed", filepath.Join(binDir, "mynetd"))
 		}
 	}
 	unit := unitPath()
