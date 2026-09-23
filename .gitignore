@@ -19,3 +19,4 @@ id_ed25519*
 # 编辑器/系统
 .DS_Store
 *.swp
+webui/*.bak
