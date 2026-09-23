@@ -1,0 +1,5 @@
+#!/bin/sh
+# pre-push：重量守护（lint + test）——「不推坏东西」的关口
+# DoD 要求「测试通过」，这里强制执行
+echo "▸ pre-push: make check"
+exec make check

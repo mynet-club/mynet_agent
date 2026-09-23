@@ -1,0 +1,21 @@
+# 构建产物
+bin/
+dist/
+vendor/
+node_modules/
+*.o
+*.a
+
+# 本地状态（含密钥，绝不入库 —— make guard A3 会拦）
+var/
+*.pem
+*.key
+*.private
+id_rsa*
+id_ed25519*
+.env
+.env.*
+
+# 编辑器/系统
+.DS_Store
+*.swp
