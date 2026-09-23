@@ -1,45 +1,21 @@
 #!/bin/sh
-# T1-6 / G3：双节点真隧道（非 dry-run）
-# 宿主 2001 + OpenWrt VM 2002，经 192.168.101.x 互联
-# 用法: sh scripts/e2e/g3_tunnel.sh [--setup|--check|--down]
-set -e
-T1=/tmp/t1-gnb
-GNB_H="${GNB_H:-/Users/arthur/Devel/WorkSpacePHP/lyt.com/mynet_gnb/src/bin}"
-VM_SSH="${VM_SSH:-openwrt-qemu}"
-VM_GNB="${VM_GNB:-/etc/mynet/driver/gnb/bin}"
+# G3：真隧道三场景（U1 三机拓扑）
+# A=192.168.0.32(10.31.0.1/10.23.0.1) B=192.168.0.16(10.31.0.2/10.23.0.2) C=VM(10.31.0.3/10.23.0.3)
+A=192.168.0.32; B=192.168.0.16; C=openwrt-qemu
 fail=0
-log() { echo "[G3] $*"; }
-ck() { if "$@" >/dev/null 2>&1; then echo "  ✓ $*"; else echo "  ✗ $*"; fail=1; fi; }
+ck() { r=$(eval "$2" 2>/dev/null); [ "$r" = "OK" ] && echo "  ✓ $1" || { echo "  ✗ $1"; fail=1; }; }
 
-check() {
-  log "1) VPN IP 互 ping"
-  ck sudo ping -c 2 -t 2 10.21.0.2
-  ck ssh "$VM_SSH" "ping -c 2 -w 2 10.21.0.1"
+echo "== 场景1 gnb =="
+ck "A→B gnb" "ssh arthur@$A 'ping -c 2 -w 2 10.31.0.2 >/dev/null && echo OK'"
+ck "B→A gnb" "ssh arthur@$B 'ping -c 2 -w 2 10.31.0.1 >/dev/null && echo OK'"
+ck "A→C gnb" "ssh arthur@$A 'ping -c 2 -w 2 10.31.0.3 >/dev/null && echo OK'"
 
-  log "2) Direct P2P"
-  out=$(ssh "$VM_SSH" "$VM_GNB/gnb_ctl -b $T1/2002/gnb.map -s 2>/dev/null | grep -c 'Direct Point' || true")
-  if [ "${out:-0}" -ge 1 ]; then echo "  ✓ Direct P2P"; else echo "  ✗ not Direct"; fail=1; fi
+echo "== 场景2 wireguard =="
+ck "A→B wg" "ssh arthur@$A 'ping -c 2 -w 2 10.23.0.2 >/dev/null && echo OK'"
+ck "B→C wg" "ssh arthur@$B 'ping -c 2 -w 2 10.23.0.3 >/dev/null && echo OK'"
+ck "C→A wg" "ssh $C 'ping -c 2 -w 2 10.23.0.1 >/dev/null && echo OK'"
 
-  log "3) 双向流量"
-  ssh "$VM_SSH" "ping -c 5 -w 5 10.21.0.1" >/tmp/g3-ping.txt 2>&1 || true
-  loss=$(grep -o '[0-9]*% packet loss' /tmp/g3-ping.txt | head -1)
-  echo "  · VM→host $loss"
+echo "== 场景3 跨驱动（C 显式桥）=="
+ck "A(gnb)→C桥→B(wg) HTTP" "ssh arthur@$A 'curl -sS -m 3 http://10.31.0.3:9080/ | grep -q hello && echo OK'"
 
-  if [ $fail -eq 0 ]; then
-    echo "G3 TUNNEL PASS（gnb 双节点 Direct）"
-  else
-    echo "G3 FAIL"; exit 1
-  fi
-}
-
-down() {
-  pkill -f "gnb -c $T1/2001" 2>/dev/null || true
-  ssh "$VM_SSH" "pkill -f 'gnb -c $T1/2002' 2>/dev/null || true"
-  log "down"
-}
-
-case "${1:-check}" in
-  --check|check) check ;;
-  --down|down) down ;;
-  *) check ;;
-esac
+if [ $fail -eq 0 ]; then echo "G3 TUNNEL PASS"; else echo "G3 FAIL"; exit 1; fi
