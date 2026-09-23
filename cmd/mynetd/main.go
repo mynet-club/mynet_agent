@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/mynetd"
+	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
+	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
 	"github.com/mynet-club/mynet_agent-V2/shared"
 )
 
@@ -53,12 +55,31 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// S3-1：心跳组装 + 命令分派（WS 接入 transport 后接上）
+	// S3-1：心跳组装 + 命令分派 + WS 长连接
 	hb := &heartbeatLoop{ops: execMynet}
 	if *once {
 		hb.beat()
 	} else {
 		go hb.run(ctx)
+	}
+
+	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
+	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
+		nodeID := os.Getenv("MYNET_NODE_ID")
+		cli, err := transport.New(transport.Config{
+			Gateways: strings.Split(gw, ","),
+			NodeID:   nodeID,
+		}, transport.Handlers{
+			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
+				return commands.Run(execMynetStd, req, nodeID)
+			},
+		}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "transport: %v\n", err)
+		} else {
+			cli.SetDialer(transport.WebSocketDialer)
+			go func() { _ = cli.Run(ctx) }()
+		}
 	}
 
 	<-ctx.Done()
@@ -138,4 +159,16 @@ func (h *heartbeatLoop) beat() {
 	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
 		fmt.Fprintln(os.Stderr, "system.json 缺失，建议运行 mynet detector")
 	}
+}
+
+// execMynetStd 适配 commands.Executor 签名
+func execMynetStd(argv []string) (string, string, error) {
+	out, err := execMynet(argv)
+	if err != nil {
+		return "", "", err
+	}
+	m, _ := out.(map[string]any)
+	stdout, _ := m["stdout"].(string)
+	stderr, _ := m["stderr"].(string)
+	return stdout, stderr, nil
 }

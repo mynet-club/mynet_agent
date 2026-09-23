@@ -66,7 +66,8 @@ func New(cfg Config, h Handlers, logf func(string, ...any)) (*Client, error) {
 	if cfg.HandshakeTimeout == 0 {
 		cfg = mergeDefaults(cfg)
 	}
-	return &Client{cfg: cfg, handlers: h, logf: logf}, nil
+	cl := &Client{cfg: cfg, handlers: h, logf: logf, dialer: WebSocketDialer}
+	return cl, nil
 }
 
 func mergeDefaults(cfg Config) Config {
