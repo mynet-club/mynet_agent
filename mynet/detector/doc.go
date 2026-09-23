@@ -14,3 +14,10 @@
 //
 // 写入能力不在此包——归 mynet apply（F-2，唯一写入者）。
 package detector
+
+// # 平台覆盖（F-4）
+//
+//   - linux：system/routing/firewall/service 全套
+//   - darwin：routing_darwin.go（ifconfig/netstat）
+//   - windows：routing_windows.go（route print/netstat）
+//   - openwrt：复用 linux 实现（uci/fw3 细节在 firewall_linux 的 OpenWrt 分支）

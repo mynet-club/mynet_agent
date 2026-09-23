@@ -120,10 +120,15 @@ func (f *DetectorFactory) registerPlatformSpecificDetectors() {
 
 	// 注册路由检测器（darwin 有真实实现，见 routing_darwin.go）
 	f.RegisterRoutingDetector(platform, func(systemDetector SystemDetector) RoutingDetector {
-		if runtime.GOOS == "darwin" {
+		switch runtime.GOOS {
+		case "darwin":
 			return &DarwinRoutingDetector{}
+		case "windows":
+			return &WindowsRoutingDetector{}
+		default:
+			// openwrt 走 linux 实现（同内核族）；其它平台 stub
+			return &StubRoutingDetector{}
 		}
-		return &StubRoutingDetector{}
 	})
 
 	// 注册防火墙检测器
