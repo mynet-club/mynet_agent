@@ -1,10 +1,14 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/shared"
 )
@@ -69,9 +73,29 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 }
 
 func defaultExecMynet(argv []string) (any, error) {
-	// 调用同一二进制的 mynet 子命令由 daemon 装配；这里留接口。
-	// 直接 exec 外部 mynet：
-	return map[string]any{"queued": argv, "note": "Ops 未注入"}, nil
+	// 执行器：桌面 exec mynet <子命令>；OpenWrt 装配时换 lua
+	bin := os.Getenv("MYNET_BIN")
+	if bin == "" {
+		bin = "mynet"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, argv...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	out := map[string]any{
+		"argv":   argv,
+		"stdout": stdout.String(),
+		"stderr": stderr.String(),
+		"bin":    bin,
+	}
+	if err != nil {
+		out["error"] = err.Error()
+		return out, err
+	}
+	return out, nil
 }
 
 func systemJSONPath() string {
