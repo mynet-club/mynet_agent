@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 )
 
 // commandPullTimeout 一次 command_queued 处理（拉取 + 执行 + 回报）的总超时。
@@ -212,7 +212,7 @@ func newEventDispatcher(
 	return &eventDispatcher{
 		exec:   exec,
 		nodeID: nodeID,
-		logf:   func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) },
+		logf:   func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) },
 		pull:   pull,
 		report: report,
 	}

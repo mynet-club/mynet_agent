@@ -22,6 +22,7 @@ import (
 	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
@@ -34,6 +35,15 @@ func main() {
 	)
 	flag.Parse()
 
+	// 日志装配必须在任何日志输出之前 —— 否则前几条会走默认 handler，
+	// 于是同一次运行里混着两种格式，日志系统解析会断在那几行上。
+	// 默认 info + text + stderr；MYNET_LOG_FORMAT=json 切成结构化（V4-4）。
+	if err := logger.InitFromEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "logger: %v\n", err)
+		os.Exit(2)
+	}
+	defer logger.Close()
+
 	// 守护进程最需要「装的是哪个版本」——升级排查、心跳上报版本、远程排障都靠它。
 	if *version {
 		fmt.Printf("mynetd %s\n", utils.AppVersion)
@@ -42,17 +52,17 @@ func main() {
 
 	// D-8：去掉强制 root。系统能力在 mynet，由用户按需 sudo。
 	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "提示: mynetd 无需 root；需要写路由/防火墙时请 sudo mynet apply …")
+		logger.Info("mynetd 无需 root；需要写路由/防火墙时请 sudo mynet apply")
 	}
 
 	api := localapi.NewServer(localapi.Config{Listen: *listen})
 	api.Ops = execMynet
 
 	if err := api.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "localapi 启动失败: %v\n", err)
+		logger.Error("localapi 启动失败", "err", err)
 		os.Exit(1)
 	}
-	fmt.Printf("mynetd localapi → http://%s/\n", api.Addr())
+	logger.Info("localapi 已启动", "addr", api.Addr())
 
 	if *console {
 		// D-12：平台态经 gateway /v1/relay；无 WS、无驱动密钥
@@ -87,7 +97,7 @@ func main() {
 		confPath := mynetConfPath()
 		id, idErr := loadNodeIdentity(confPath)
 		if idErr != nil {
-			fmt.Fprintf(os.Stderr, "transport: 节点面未就绪，命令拉取与结果上报都不可用（%v）\n", idErr)
+			logger.Warn("节点面未就绪，命令拉取与结果上报都不可用", "err", idErr)
 		} else {
 			if nodeID == "" {
 				nodeID = id.nodeID
@@ -97,7 +107,7 @@ func main() {
 			}
 			// 节点面 HTTP 走 gateway 的 /v1/relay（back 对节点不可达）
 			if c, err := newBackClient(gateways[0], id); err != nil {
-				fmt.Fprintf(os.Stderr, "transport: 节点面 HTTP 客户端不可用（%v）\n", err)
+				logger.Warn("节点面 HTTP 客户端不可用", "err", err)
 			} else {
 				bc = c
 				pull = func(ctx context.Context) ([]pendingCommand, error) {
@@ -111,7 +121,7 @@ func main() {
 				// relay 白名单本来就含 /api/v1/monitor，不需要给 gateway 加新面。
 				hb.setReporter(id.nodeID, c.reportHeartbeat)
 			}
-			fmt.Fprintf(os.Stderr, "transport: 节点面签名就绪（node_id=%s, conf=%s）\n", id.nodeID, confPath)
+			logger.Info("节点面签名就绪", "node_id", id.nodeID, "conf", confPath)
 		}
 
 		// report 需要 cli.Send，而 cli 的 Handlers 又需要 dispatcher.Handle——
@@ -144,9 +154,9 @@ func main() {
 			},
 			OnEvent:  dispatcher.Handle,
 			OnResult: onResult,
-		}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
+		}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "transport: %v\n", err)
+			logger.Error("transport 启动失败", "err", err)
 		} else {
 			cli.SetDialer(transport.WebSocketDialer)
 			go func() { _ = cli.Run(ctx) }()
@@ -259,12 +269,12 @@ func (h *heartbeatLoop) run(ctx context.Context) {
 func (h *heartbeatLoop) beat(ctx context.Context) {
 	stdout, stderr, err := h.ops([]string{"metrics", "--json"})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "heartbeat metrics: %v (%s)\n", err, strings.TrimSpace(stderr))
+		logger.Error("heartbeat 采集失败", "err", err, "stderr", strings.TrimSpace(stderr))
 		return
 	}
 	// 本机态也保证 system.json 可用
 	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
-		fmt.Fprintln(os.Stderr, "system.json 缺失，建议运行 mynet detector")
+		logger.Warn("system.json 缺失，建议运行 mynet detector")
 	}
 
 	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在
@@ -275,19 +285,23 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		return // 纯本机模式（未配 MYNET_GATEWAYS，或节点面密钥未就绪）
 	}
 	if strings.TrimSpace(stdout) == "" {
-		fmt.Fprintln(os.Stderr, "heartbeat: metrics 无输出，跳过本次上报")
+		logger.Warn("heartbeat metrics 无输出，跳过本次上报", "node_id", nodeID)
 		return
 	}
 	sendBody, signBody, err := heartbeatBodies(nodeID, stdout)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "heartbeat: 组装失败: %v\n", err)
+		logger.Error("heartbeat 组装失败", "node_id", nodeID, "err", err)
 		return
 	}
 	if err := report(ctx, sendBody, signBody); err != nil {
 		// 上报失败**不该**让循环退出（下一拍再试），但必须说出来 ——
 		// 静默失败会让「节点显示在线却没有数据」这种状态查很久。
-		fmt.Fprintf(os.Stderr, "heartbeat: 上报失败: %v\n", err)
+		logger.Error("heartbeat 上报失败", "node_id", nodeID, "err", err)
+		return
 	}
+	// 成功走 Debug：30s 一次，Info 会把日志刷满，而「没消息」本身就是好消息。
+	// 排查时 MYNET_LOG_LEVEL=debug 就能看到每一拍。
+	logger.Debug("heartbeat 已上报", "node_id", nodeID, "bytes", len(sendBody))
 }
 
 // execMynetStd 适配 commands.Executor 签名

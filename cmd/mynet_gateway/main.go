@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/gateway"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
@@ -40,6 +41,15 @@ func main() {
 	)
 	flag.Parse()
 
+	// 日志装配（V4-4）：默认 info + text + stderr；MYNET_LOG_FORMAT=json 切结构化。
+	// systemd 单元用 EnvironmentFile 注入（deploy/systemd/mynet_gateway.service）。
+	// 必须在任何日志输出之前 —— 否则同一次运行里会混两种格式。
+	if err := logger.InitFromEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "logger: %v\n", err)
+		os.Exit(2)
+	}
+	defer logger.Close()
+
 	if *version {
 		fmt.Printf("mynet_gateway %s\n", utils.AppVersion)
 		return
@@ -49,7 +59,7 @@ func main() {
 	defer stop()
 
 	if err := run(ctx, *listen, *upstream, *internalToken); err != nil {
-		fmt.Fprintf(os.Stderr, "mynet_gateway: %v\n", err)
+		logger.Error("gateway 异常退出", "err", err)
 		os.Exit(1)
 	}
 }
@@ -62,7 +72,7 @@ func run(ctx context.Context, listen, upstream, internalToken string) error {
 
 	srv := gateway.NewServer(upstream, internalToken)
 	srv.SetLogger(func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		logger.Info(fmt.Sprintf(format, args...))
 	})
 
 	httpSrv := &http.Server{
@@ -85,8 +95,8 @@ func run(ctx context.Context, listen, upstream, internalToken string) error {
 		close(errCh)
 	}()
 
-	fmt.Printf("mynet_gateway → http://%s/ (upstream=%s conns=%d)\n",
-		listen, displayUpstream(upstream), srv.Registry().Count())
+	logger.Info("gateway 已启动",
+		"listen", listen, "upstream", displayUpstream(upstream), "conns", srv.Registry().Count())
 
 	select {
 	case err := <-errCh:
@@ -97,14 +107,14 @@ func run(ctx context.Context, listen, upstream, internalToken string) error {
 	case <-ctx.Done():
 	}
 
-	fmt.Fprintln(os.Stderr, "mynet_gateway: 收到退出信号，开始优雅关闭…")
+	logger.Info("收到退出信号，开始优雅关闭")
 	shutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutCtx); err != nil {
 		_ = httpSrv.Close()
 		return fmt.Errorf("优雅关闭超时，已强制关闭: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "mynet_gateway: 已关闭（退出时连接数 %d）\n", srv.Registry().Count())
+	logger.Info("已关闭", "conns_at_exit", srv.Registry().Count())
 	return nil
 }
 
