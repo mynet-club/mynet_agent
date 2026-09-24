@@ -3,9 +3,15 @@ package utils
 // 目录与权限常量。VPN 类型字符串以 shared/domain 为唯一来源。
 const (
 	AppName        = "mynet"
-	AppVersion     = "dev" // 构建时由 -ldflags 覆盖 Version
 	AppDescription = "MyNet VPN Node Management Client"
 )
+
+// AppVersion 构建时由 -ldflags -X 注入（见 Makefile 的 GO_LDFLAGS）。
+//
+// ⚠️ 必须是 **var**，不能是 const：`-X` 只能覆盖变量，对常量无效且**不报错**
+// —— 放在上面那个 const 块里时，ldflags 静默失效，产物版本恒输出 "dev"。
+// 原注释写着「构建时由 -ldflags 覆盖」但它是 const，所以从未生效过。
+var AppVersion = "dev"
 
 // Configuration constants
 const (

@@ -21,6 +21,7 @@ import (
 	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
 func main() {
@@ -28,8 +29,15 @@ func main() {
 		listen  = flag.String("listen", mynetd.DefaultLocalAPI, "本机 API 监听")
 		console = flag.Bool("console", false, "console 模式：无 WS、无节点身份（D-12）")
 		once    = flag.Bool("once", false, "只探测一次心跳就退出（调试）")
+		version = flag.Bool("version", false, "打印版本并退出")
 	)
 	flag.Parse()
+
+	// 守护进程最需要「装的是哪个版本」——升级排查、心跳上报版本、远程排障都靠它。
+	if *version {
+		fmt.Printf("mynetd %s\n", utils.AppVersion)
+		return
+	}
 
 	// D-8：去掉强制 root。系统能力在 mynet，由用户按需 sudo。
 	if os.Geteuid() != 0 {
