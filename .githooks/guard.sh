@@ -7,6 +7,15 @@
 #   - 显式豁免：把 `GUARD-OK <原因>` 写在**违规那一行**，本行即豁免
 #   - 每次豁免记入 .git/guard-exempt.log，便于审计
 #
+# 检查范围（两种语义，**必须在输出里说清是哪一种**）：
+#   - 有暂存内容 → 查暂存区。这是 pre-commit 的语义：拦住即将入库的东西。
+#   - 无暂存内容 → 查工作区（未暂存修改 + 未跟踪且未被 ignore 的文件）。
+#     这是 `make guard` / `make check` 的语义。
+#     ⚠️ 这一支此前是 `exit 0`（打印「无暂存文件」就算通过），于是脏工作区
+#     一条红线都不查 —— 九个仓的 guard 环节全线空转，包括 494→521 行的
+#     logger 重写。教训同 AGENTS.md §2.6：**「没东西可查」型门禁等于没有门禁**，
+#     它把「没跑」伪装成「通过」。真要跳过，也必须打印明确的跳过标记。
+#
 # 规则来源：AGENTS.md §2.6 · §3 安全红线 · §1 硬约束
 # ─────────────────────────────────────────────────────────────
 set -e
@@ -19,23 +28,58 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$ROOT"
 EXEMPT_LOG="$ROOT/.git/guard-exempt.log"
 
-FILES=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
-[ -z "$FILES" ] && { echo "  (无暂存文件)"; exit 0; }
+# ── 确定检查范围 ─────────────────────────────────────────────
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+if [ -n "$STAGED" ]; then
+  MODE=staged
+  FILES=$STAGED
+else
+  MODE=worktree
+  # 工作区 vs 索引（索引此时等于 HEAD）+ 未跟踪但未被 ignore 的文件
+  FILES=$( { git diff --name-only --diff-filter=ACMR 2>/dev/null || true
+             git ls-files --others --exclude-standard 2>/dev/null || true
+           } | sort -u )
+fi
 
-# 新增行；剔除掉带 GUARD-OK 的行（显式豁免），并记审计日志
-ADDED=$(git diff --cached -U0 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true)
+if [ -z "$FILES" ]; then
+  echo "  (无可检文件：无暂存、无修改、无未跟踪 —— 本次未检查任何红线)"
+  exit 0
+fi
+
+NFILES=$(printf '%s\n' "$FILES" | grep -c . || true)
+if [ "$MODE" = staged ]; then
+  echo "  · 范围：暂存区（${NFILES} 个文件）"
+else
+  echo "  · 范围：工作区（${NFILES} 个文件；索引为空，按 make guard 语义查未提交内容）"
+fi
+
+# 某个文件的新增行。未跟踪文件没有 diff 可比，用 --no-index 对 /dev/null 取全文。
+added_in_file() {
+  _f=$1
+  if [ "$MODE" = staged ]; then
+    git diff --cached -U0 -- "$_f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true
+  elif git ls-files --error-unmatch "$_f" >/dev/null 2>&1; then
+    git diff -U0 -- "$_f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true
+  else
+    git diff --no-index -U0 -- /dev/null "$_f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' || true
+  fi
+}
+
+# 全量新增行（用于 A1/A2/C3 这类不分文件的红线）
+ADDED=""
+for f in $FILES; do
+  ADDED="$ADDED
+$(added_in_file "$f")"
+done
+
+# 剔除带 GUARD-OK 的行（显式豁免），并记审计日志
 EXEMPTED=$(printf '%s\n' "$ADDED" | grep 'GUARD-OK' || true)
 ADDED=$(printf '%s\n' "$ADDED" | grep -v 'GUARD-OK' || true)
 if [ -n "$EXEMPTED" ]; then
   mkdir -p "$(dirname "$EXEMPT_LOG")"
   printf '%s | %s\n' "$(date -u +%FT%TZ)" "$EXEMPTED" >> "$EXEMPT_LOG"
-  echo "  ⚠ 已豁免 $(printf '%s\n' "$EXEMPTED" | wc -l | tr -d ' ') 行（GUARD-OK），见 .git/guard-exempt.log"
+  echo "  ⚠ 已豁免 $(printf '%s\n' "$EXEMPTED" | grep -c . | tr -d ' ') 行（GUARD-OK），见 .git/guard-exempt.log"
 fi
-
-# 只看某个子树下的新增行（用于结构红线）
-added_in() {
-  printf '%s\n' "$ADDED" | grep -F "$1" || true
-}
 
 # ── A 安全红线 ───────────────────────────────────────────────
 # A1 硬编码凭据：只抓「标识符 = 明文值」的确凿模式，避免撞注释/文档
@@ -92,7 +136,7 @@ b2=0
 for f in $FILES; do
   case "$f" in
     mynetd/*)
-      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$B2PAT"; then
+      if added_in_file "$f" | grep -qE "$B2PAT"; then
         bad "B2 mynetd 不得依赖系统能力（执行器架构）: $f"; b2=1
       fi ;;
   esac
@@ -105,7 +149,7 @@ b3=0
 for f in $FILES; do
   case "$f" in
     *relaypolicy*)
-      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$B3PAT"; then
+      if added_in_file "$f" | grep -qE "$B3PAT"; then
         bad "B3 relaypolicy 只做路径白名单，不得含鉴权逻辑: $f"; b3=1
       fi ;;
   esac
@@ -119,7 +163,7 @@ b4=0
 for f in $FILES; do
   case "$f" in
     *Models/*.php)
-      if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE 'AllowedIPs|node\.conf|\bnode_conf\b|gnb_tun|\bwg0\b'; then
+      if added_in_file "$f" | grep -qE 'AllowedIPs|node\.conf|\bnode_conf\b|gnb_tun|\bwg0\b'; then
         bad "B4 业务对象不得含驱动术语（AllowedIPs/node.conf/gnb_tun/wg0）: $f"; b4=1
       fi ;;
   esac
@@ -143,7 +187,7 @@ for f in $FILES; do
   case "$f" in
     docs/*|*/docs/*|.githooks/*|*/.githooks/*|*.md) continue ;;
   esac
-  if git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++' | grep -qE "$C2PAT"; then
+  if added_in_file "$f" | grep -qE "$C2PAT"; then
     bad "C2 端口漂移（本机 API/WebUI 应为 8096）: $f"; c2=1
   fi
 done
