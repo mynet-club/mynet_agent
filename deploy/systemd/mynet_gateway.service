@@ -48,9 +48,13 @@ RestartSec=5
 # 老连接还活着」，看起来像网络问题。这里显式抬高。
 LimitNOFILE=65536
 
-# 非 root。gateway 不需要任何特权：不写路由、不碰驱动、不读私钥
-User=mynet
-Group=mynet
+# 非 root。gateway 不需要任何特权：不写路由、不碰驱动、不读私钥。
+# ⚠️ 用 www-data 而不是专用的 mynet 用户：生产/staging 主机上**没有 mynet 这个用户**
+# （实测 `id mynet` 不存在），照原样写 User=mynet 的话 systemd 直接起不来。
+# 用户 2026-09-25 裁定就用 www-data。代价是与 php-fpm 同用户、隔离性略弱 ——
+# gateway 不读私钥不写盘，风险可接受；若日后要更强隔离，先 useradd mynet 再改回来。
+User=www-data
+Group=www-data
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
