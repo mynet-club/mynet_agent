@@ -41,7 +41,8 @@ added_in() {
 # A1 硬编码凭据：只抓「标识符 = 明文值」的确凿模式，避免撞注释/文档
 # 关键字前必须是非字母，避免 DirToken / refresh_token / "var/token" 这类误报
 # 双/单引号各查一次（BSD grep 不支持 \xNN 转义，故拆两条）
-A1D="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*\"[^\"]{8,}"
+# A1 双引号版：引号内**以 $ 开头**的一律不算（那是变量引用或命令替换，不是字面量）。
+A1D="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*\"[^$\"][^\"]{7,}\""
 A1S="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*'[^']{8,}"
 if printf '%s\n' "$ADDED" | grep -qiE "$A1D" || printf '%s\n' "$ADDED" | grep -qiE "$A1S"; then
   bad "A1 硬编码凭据（identifier = 引号包裹的长字面量）"
