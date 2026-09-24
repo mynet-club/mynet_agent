@@ -24,7 +24,9 @@ func cmdUpdate(args []string) int {
 	var best *upgrade.Artifact
 	for i := range all {
 		if all[i].Component == upgrade.ComponentMynet {
-			if best == nil || all[i].Version > best.Version {
+			// 版本比较必须按语义而非字典序：字典序下 "0.10.0" < "0.9.0"，
+			// 会把更旧的版本当成「最新」——症状是升级后版本号变小，且不报错。
+			if best == nil || upgrade.CompareVersions(all[i].Version, best.Version) > 0 {
 				best = &all[i]
 			}
 		}
