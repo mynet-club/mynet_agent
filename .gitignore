@@ -5,11 +5,10 @@ vendor/
 node_modules/
 *.o
 *.a
-# 根目录裸二进制：`go build ./cmd/xxx` 不带 -o 时会落在这里
-/mynet
-/mynetd
-/mynet_gateway
-/mynet-updater
+# ⚠️ 不要在这里加 /mynet、/mynetd 之类的裸二进制模式：gitignore 无尾斜杠的模式
+# **既匹配文件也匹配目录**，会把同名的源码目录（mynet/、mynetd/）下的新文件
+# 一并静默忽略——`git add` 不报错，文件就是进不了版本库。
+# 游离二进制的正解是别往仓库根构建（用 -o 指到 /tmp 或 bin/）。
 
 # 本地状态（含密钥，绝不入库 —— make guard A3 会拦）
 var/
