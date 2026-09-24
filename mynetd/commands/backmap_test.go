@@ -218,6 +218,98 @@ func planSwitchOps(t *testing.T) map[string]bool {
 	return out
 }
 
+// Plan() 产出的每个 `refresh-<域>` 都必须是执行器**真的认识**的域。
+//
+// 为什么要有这条：OpNodeRefresh 曾映射到 `refresh-nodes`，而执行器的 refresh 域
+// 只有 routes|address|config|keys（mynet/cmd_refresh.go 的 switch）——
+// 于是「配置包变更 → 刷新节点配置」这条链**始终以退出码 2 收尾**，
+// 报的是「未知 refresh 域: nodes」。它没被任何测试发现，因为：
+//
+//	· TestEveryBackCommandMapsToKnownOp 只验「能展开成 argv」，不验 argv 有效
+//	· 执行器与命令表在两个包里，各自的测试都绿
+//
+// 这是典型的**跨包契约漂移**：两边都对，合起来是错的。守护只能跨着写。
+func TestPlanRefreshDomainsExistInExecutor(t *testing.T) {
+	supported := executorRefreshDomains(t)
+
+	checked := 0
+	for _, op := range knownOps {
+		// 把可能影响分支的参数都填上，好让每个 op 走到它真正的 argv
+		argv, ok := Plan(Request{
+			ID:   "t",
+			Op:   op,
+			Args: map[string]string{"node_id": "7", "vpn_type": "wireguard", "name": "mynetd"},
+		}, "node-1")
+		if !ok || len(argv) == 0 {
+			continue
+		}
+		if !strings.HasPrefix(argv[0], "refresh-") {
+			continue
+		}
+		checked++
+		domain := strings.TrimPrefix(argv[0], "refresh-")
+		if !supported[domain] {
+			t.Errorf("op %q → argv %q，但执行器不支持 refresh 域 %q（支持的是 %v）"+
+				" —— 这条命令跑起来只会得到「未知 refresh 域」退出码 2",
+				op, argv[0], domain, keysOf(supported))
+		}
+	}
+	if checked == 0 {
+		t.Fatal("一个 refresh-* argv 都没检查到 —— 解析或遍历逻辑失效，本守护形同虚设")
+	}
+}
+
+// executorRefreshDomains 用 go/ast 从执行器源码里取出 switch what 的全部 case 字面量。
+// 读源码而不是抄一份清单：抄的那份会随执行器演进而过期，正是本测试要防的事。
+func executorRefreshDomains(t *testing.T) map[string]bool {
+	t.Helper()
+
+	const path = "../../mynet/cmd_refresh.go"
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("解析 %s: %v", path, err)
+	}
+
+	out := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		sw, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		// 只认 `switch what`（refresh 域的分派），别的 switch 与本守护无关
+		id, ok := sw.Tag.(*ast.Ident)
+		if !ok || id.Name != "what" {
+			return true
+		}
+		for _, c := range sw.Body.List {
+			cc, ok := c.(*ast.CaseClause)
+			if !ok {
+				continue
+			}
+			for _, expr := range cc.List {
+				if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					out[strings.Trim(lit.Value, `"`)] = true
+				}
+			}
+		}
+		return true
+	})
+
+	if len(out) == 0 {
+		t.Fatalf("没从 %s 解析出任何 refresh 域 —— 执行器改了分派写法？同步更新本守护", path)
+	}
+	return out
+}
+
+func keysOf(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // BackCommands() 必须与「常规规则 + 别名表」自洽，供文档与守护使用。
 func TestBackCommandsIsCompleteAndSorted(t *testing.T) {
 	got := BackCommands()

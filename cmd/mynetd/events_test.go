@@ -120,14 +120,18 @@ func TestEventRouteChangedRunsRefreshRoutes(t *testing.T) {
 func TestEventBundleChangedRunsRefreshNodes(t *testing.T) {
 	ex := &recordingExec{}
 	d, _ := newTestDispatcher(ex.run)
+	// bundle_changed 现在是**先拉后刷**（V1-10①）：refresh-config 读的
+	// var/bundle.json 由 mynetd 从 back 拉下来，不先拉就只能读到旧配置或根本没有。
+	// 未装配拉取链时的行为由 TestBundleChangedWithoutSyncerLogsWhatIsMissing 单独钉住。
+	d.setBundleSyncer(func(context.Context) (string, error) { return "updated", nil })
 
 	d.Handle("bundle_changed", map[string]string{"generation": "42"})
 
 	if !ex.waitCalls(t, 1) {
 		t.Fatal("bundle_changed 未触发执行")
 	}
-	if got := ex.snapshot()[0]; !strings.Contains(got, "refresh-nodes") {
-		t.Errorf("argv = %q, 应含 refresh-nodes", got)
+	if got := ex.snapshot()[0]; !strings.Contains(got, "refresh-config") {
+		t.Errorf("argv = %q, 应含 refresh-config（执行器没有 refresh-nodes 这个域）", got)
 	}
 }
 

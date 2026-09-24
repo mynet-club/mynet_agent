@@ -144,6 +144,30 @@ func main() {
 
 		dispatcher := newEventDispatcher(nodeID, execMynetStd, pull, report)
 
+		// bundle 拉取（V1-10①）：mynetd 负责**拉并落盘**，执行器 mynet 只负责读。
+		// 两边路径口径都是 shared.VarDir()，见 bundle.go 的注释。
+		if bc != nil {
+			store := newBundleStore()
+			client := bc
+			dispatcher.setBundleSyncer(func(ctx context.Context) (string, error) {
+				return store.Sync(ctx, client.fetchBundle)
+			})
+			// 启动即拉一次。否则新装节点要等 back 广播 bundle_changed 才有配置，
+			// 在那之前跑任何 refresh-* 都是「读 bundle 失败: no such file」。
+			// 放 goroutine：拉取失败不该拖住 daemon 启动（back 暂时不可达是常态）。
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), bundleSyncTimeout)
+				defer cancel()
+				status, err := store.Sync(ctx, client.fetchBundle)
+				if err != nil {
+					logger.Warn("启动拉取 bundle 失败（bundle_changed 事件与下次启动会重试）",
+						"err", err, "path", store.path)
+					return
+				}
+				logger.Info("启动拉取 bundle 完成", "status", status, "path", store.path)
+			}()
+		}
+
 		var err error
 		cli, err = transport.New(transport.Config{
 			Gateways: gateways,

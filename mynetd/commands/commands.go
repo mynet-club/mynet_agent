@@ -77,7 +77,15 @@ func Plan(req Request, nodeID string) ([]string, bool) {
 		}
 		return argv, true
 	case OpNodeRefresh, OpNodeUpdate:
-		argv := []string{"refresh-nodes", "--auto"}
+		// ⚠️ 是 refresh-**config**，不是 refresh-nodes。执行器的 refresh 域只有
+		// routes|address|config|keys（mynet/cmd_refresh.go:43-55），此前这里写的
+		// "refresh-nodes" 从来不存在 → 一律「未知 refresh 域: nodes」退出码 2。
+		// 而 bundle_changed 恰恰映射到本 Op，于是「配置包变更 → 刷新节点配置」
+		// 这条链**始终以失败收尾**，且失败信息看起来像执行器坏了而不是映射错了。
+		// 语义依据：spec/unified-platform-architecture.md:741 —— node.refresh 的
+		// 职责就是写 node.conf（驱动原生节点配置），即 refresh-config 做的事。
+		// 守护见 backmap_test.go 的 TestPlanRefreshDomainsExistInExecutor。
+		argv := []string{"refresh-config", "--auto"}
 		if nid != "" {
 			argv = append(argv, "--node-id", nid)
 		}

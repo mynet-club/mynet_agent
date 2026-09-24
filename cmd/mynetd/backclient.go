@@ -82,29 +82,46 @@ func (c *backClient) do(ctx context.Context, method, backPath string, body []byt
 //
 // 其余端点两者相同，走 do 即可。
 func (c *backClient) doSigned(ctx context.Context, method, backPath string, sendBody, signBody []byte) (int, []byte, error) {
+	code, _, raw, err := c.doSignedFull(ctx, method, backPath, sendBody, signBody, nil)
+	return code, raw, err
+}
+
+// doSignedFull 与 doSigned 相同，但可带额外请求头、并把响应头一并返回。
+//
+// 只有 bundle 拉取需要这两样：请求要带 `If-None-Match`（省掉重复下发），
+// 响应要读 `ETag`（存下来供下次条件请求）。其余端点走 doSigned 即可。
+func (c *backClient) doSignedFull(
+	ctx context.Context,
+	method, backPath string,
+	sendBody, signBody []byte,
+	extraHeaders map[string]string,
+) (int, http.Header, []byte, error) {
 	ts, sig := c.id.signer.SignRequest(method, backPath, string(signBody))
 
 	target := c.relayBase + "?path=" + url.QueryEscape(backPath)
 	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(sendBody))
 	if err != nil {
-		return 0, nil, fmt.Errorf("构造请求: %w", err)
+		return 0, nil, nil, fmt.Errorf("构造请求: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Node-Id", c.id.nodeID)
 	req.Header.Set("X-Timestamp", ts)
 	req.Header.Set("X-Node-Signature", sig)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("请求 %s %s: %w", method, backPath, err)
+		return 0, nil, nil, fmt.Errorf("请求 %s %s: %w", method, backPath, err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("读响应: %w", err)
+		return resp.StatusCode, resp.Header, nil, fmt.Errorf("读响应: %w", err)
 	}
-	return resp.StatusCode, raw, nil
+	return resp.StatusCode, resp.Header, raw, nil
 }
 
 // reportHeartbeat 上报一次心跳（V4-2）。
@@ -167,6 +184,34 @@ func (c *backClient) pullPendingCommands(ctx context.Context) (*pendingCommandsR
 		return nil, fmt.Errorf("back 报告失败: %s", out.Error)
 	}
 	return &out, nil
+}
+
+// bundlePath 是 back 下发 BundleEnvelope 的端点（R8 线格式，schema v2）。
+//
+// ⚠️ 路径必须带前导斜杠，且要与 back 的 signedPath() 完全一致 ——
+// 差一个斜杠就全 401，而症状是「鉴权失败」不是「路径写错」（见本文件顶部注释）。
+const bundlePath = "/api/v1/monitor/node/bundle"
+
+// fetchBundle 拉取本节点的配置包。
+//
+// 契约对齐 mynet_back 的 NodeMonitorController::getNodeBundle：
+//   - 头 X-Node-Id / X-Node-Signature，与其它节点面端点同一套签名
+//   - 可选 If-None-Match: "<etag>"，命中则 **304 且无响应体**
+//   - 200 时响应头带 ETag，体是 Envelope JSON
+//   - back 在无已发布修订时会自动发布一版，所以首拉不会落空
+//
+// 返回的 code 交给调用方分支（200 / 304 / 其它），这里不擅自把 304 当错误 ——
+// 「没变化」是正常结果，不是失败。
+func (c *backClient) fetchBundle(ctx context.Context, ifNoneMatch string) (code int, etag string, body []byte, err error) {
+	var extra map[string]string
+	if ifNoneMatch != "" {
+		extra = map[string]string{"If-None-Match": ifNoneMatch}
+	}
+	code, hdr, raw, err := c.doSignedFull(ctx, http.MethodGet, bundlePath, nil, nil, extra)
+	if err != nil {
+		return 0, "", nil, err
+	}
+	return code, hdr.Get("ETag"), raw, nil
 }
 
 func truncateBytes(b []byte, n int) string {
