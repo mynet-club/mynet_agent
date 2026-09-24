@@ -84,10 +84,23 @@ expect() {
   fi
 }
 
+# expect2xx <说明> —— 创建类端点返 201 是正确语义（back 的密钥生成就是 201），
+# 只认 200 会把成功判成失败。第一版就这么误判过一次。
+expect2xx() {
+  case "$CODE" in
+    2??) ok "$1（HTTP ${CODE}）" ;;
+    *)   bad "$1：期望 2xx，实到 $CODE"
+         printf '      %s\n' "$(printf '%s' "$BODY" | head -c 300)"
+         die "$1" ;;
+  esac
+}
+
 SUF=$(date +%s)
-UA="z2o-a-${SUF}@example.com"
-UB="z2o-b-${SUF}@example.com"
-PW="Z2o!${SUF}xY"
+# 可用 Z2O_EMAIL_A/B + Z2O_PASSWORD 固定用户身份：租户 seeding 只能在服务器侧做
+# （没有创建租户的 API），所以「注册 → 去服务器 seed → 重跑」这条路必须能复用同一批用户。
+UA="${Z2O_EMAIL_A:-z2o-a-${SUF}@example.com}"
+UB="${Z2O_EMAIL_B:-z2o-b-${SUF}@example.com}"
+PW="${Z2O_PASSWORD:-Z2o!${SUF}xY}"
 
 # ════════════════════════════════════════════════════════════
 phase "Phase 0 · 环境自检（这一步不过，后面都不用跑）"
@@ -137,16 +150,43 @@ fi
 # ════════════════════════════════════════════════════════════
 phase "Phase 1 · 用户面：注册 → 登录（cookie/token 会话，无密钥）"
 # ════════════════════════════════════════════════════════════
+# 限流等待：auth 端点有 throttle，可重入的验收脚本跑几轮就会撞 429。
+# 撞了就等一会儿再试（有界，不无限等）—— 429 不是「失败」，是「稍后」。
+wait_if_limited() { # <最多等几轮>
+  _n=0
+  while [ "$CODE" = 429 ] && [ "$_n" -lt "${1:-4}" ]; do
+    _n=$((_n+1))
+    printf '      429 限流，等 20s 后重试（%s/%s）\n' "$_n" "${1:-4}" >&2
+    sleep 20
+    return 1
+  done
+  return 0
+}
+
 reg_login() { # <name> <email> → 打印 token
-  req POST "$API/api/v1/auth/register" "" \
-    "{\"name\":\"$1\",\"email\":\"$2\",\"password\":\"$PW\",\"password_confirmation\":\"$PW\"}"
+  _try=0
+  while :; do
+    req POST "$API/api/v1/auth/register" "" \
+      "{\"name\":\"$1\",\"email\":\"$2\",\"password\":\"$PW\",\"password_confirmation\":\"$PW\"}"
+    wait_if_limited 4 && break
+    _try=$((_try+1)); [ "$_try" -ge 4 ] && break
+  done
   case "$CODE" in
     200|201) : ;;
-    422)     printf '      注册被拒（%s）—— 若提示 email 已存在，换个 SUF 重跑\n' "$(jsonget message)" >&2; return 1 ;;
+    # 429 等过几轮仍在 → 明确报出来，别当成普通失败
+    429)     printf '      注册持续 429（限流未解除）—— 等几分钟再跑，或换出口 IP\n' >&2; return 1 ;;
+    # 422 通常是「email 已存在」—— 重跑同一批用户时的正常情况，落到登录即可。
+    # 不区分会让脚本无法重入，而租户 seeding 恰恰要求重入。
+    422)     printf '      注册返回 422（%s）—— 按「用户已存在」处理，转登录\n' "$(jsonget message)" >&2 ;;
     *)       printf '      注册失败 HTTP %s: %s\n' "$CODE" "$(printf '%s' "$BODY" | head -c 200)" >&2; return 1 ;;
   esac
-  req POST "$API/api/v1/auth/login" "" "{\"email\":\"$2\",\"password\":\"$PW\"}"
-  [ "$CODE" = 200 ] || { printf '      登录失败 HTTP %s\n' "$CODE" >&2; return 1; }
+  _try=0
+  while :; do
+    req POST "$API/api/v1/auth/login" "" "{\"email\":\"$2\",\"password\":\"$PW\"}"
+    wait_if_limited 4 && break
+    _try=$((_try+1)); [ "$_try" -ge 4 ] && break
+  done
+  [ "$CODE" = 200 ] || { printf '      登录失败 HTTP %s: %s\n' "$CODE" "$(printf '%s' "$BODY" | head -c 120)" >&2; return 1; }
   # token 字段名两种都试：auth_token（旧）/ token（框架）
   _t=$(jsonget auth_token); [ -n "$_t" ] || _t=$(jsonget token)
   [ -n "$_t" ] || _t=$(jsonget data.auth_token); [ -n "$_t" ] || _t=$(jsonget data.token)
@@ -196,7 +236,9 @@ if [ "$NEED_SEED" = 1 ]; then
           ["is_active" => 1, "role" => "end_user", "created_at" => now(), "updated_at" => now()]);
         echo "bound {\$u->user_id}\\n";
       }'
-  然后重跑本脚本（用户已注册，注册那步会 422 —— 用同样的 STAGE_SEED_ONLY=1 或直接改 SUF）。
+  然后带同一批用户重跑（注册那步会 422，脚本按「已存在」转登录，可重入）：
+    Z2O_EMAIL_A='"$UA"' Z2O_EMAIL_B='"$UB"' Z2O_PASSWORD='<上面的口令>' \
+      STAGE_API=… STAGE_GW=… sh scripts/e2e/zero_to_one.sh
 EOF
   die "需要服务器侧 seeding 才能继续"
 fi
@@ -219,7 +261,7 @@ ok "两个节点已建（A=$NA B=${NB}）"
 # 密钥：这一步产出的 algorithm 字段是 CPI-37 的现场 ——
 # 标错会让节点面全 401，且症状是「鉴权失败」而不是「algorithm 标错了」
 req POST "$API/api/v1/nodes/$NA/keys" "$TA" '{}' "X-Tenant-ID: $TENANT"
-expect "A 节点密钥已生成" 200
+expect2xx "A 节点密钥已生成"
 KEYALG=$(jsonget data.key_type); [ -n "$KEYALG" ] || KEYALG=$(jsonget key_type)
 printf '  ℹ A 的密钥类型回显：%s\n' "${KEYALG:-<未回显>}"
 # 私钥不得出现在响应里（AGENTS.md §3 红线 / P0-4）
@@ -228,24 +270,36 @@ case "$BODY" in
   *) ok "密钥响应不含 private_key（P0-4 收口有效）" ;;
 esac
 req POST "$API/api/v1/nodes/$NB/keys" "$TB" '{}' "X-Tenant-ID: $TENANT"
-expect "B 节点密钥已生成" 200
+expect2xx "B 节点密钥已生成"
 
 # ════════════════════════════════════════════════════════════
 phase "Phase 3 · 社区链接：加好友 → 接受"
 # ════════════════════════════════════════════════════════════
 req POST "$API/api/v1/social/search-users" "$TA" "{\"query\":\"$UB\"}" "X-Tenant-ID: $TENANT"
-expect "搜到用户 B" 200
+expect2xx "搜到用户 B"
 UIDB=$(jsonget data.0.user_id); [ -n "$UIDB" ] || UIDB=$(jsonget data.0.id)
 [ -n "$UIDB" ] || die "搜索结果里取不到 B 的 user_id；body=$(printf '%s' "$BODY" | head -c 200)"
 ok "B 的 user_id=$UIDB"
 
 req POST "$API/api/v1/social/friend-request" "$TA" \
   "{\"target_id\":$UIDB,\"message\":\"z2o\"}" "X-Tenant-ID: $TENANT"
-case "$CODE" in 200|201) ok "好友申请已发出" ;; *) bad "好友申请失败 HTTP $CODE"; die "好友申请" ;; esac
+case "$CODE" in
+  200|201) ok "好友申请已发出" ;;
+  # 409 = 已经是好友 / 申请已存在。这是**正确的业务语义**（CPI-32 把业务拒绝从 500
+  # 改成 409/422，这里正好在真环境验到了）。重跑时必须当「已完成」继续，否则脚本不可重入。
+  409)     ok "好友关系已存在（HTTP 409 —— 业务拒绝返 409 而非 500，CPI-32 的修复在真环境生效）" ;;
+  *)       bad "好友申请失败 HTTP ${CODE}：$(printf '%s' "$BODY" | head -c 160)"; die "好友申请" ;;
+esac
 
 req GET "$API/api/v1/social/data" "$TB" "" "X-Tenant-ID: $TENANT"
 expect "B 能看到待处理申请" 200
-RID=$(jsonget data.friend_requests.0.request_id); [ -n "$RID" ] || RID=$(jsonget data.friend_requests.0.id)
+# 实测响应形状是 data.pending_requests[]（不是 friend_requests）—— 逐个候选试，
+# 别把「我猜的字段名」当成契约。取不到就把 body 打出来，让人看见真实形状。
+RID=""
+for _p in data.pending_requests.0.request_id data.pending_requests.0.id \
+          data.friend_requests.0.request_id data.friend_requests.0.id; do
+  RID=$(jsonget "$_p"); [ -n "$RID" ] && break
+done
 [ -n "$RID" ] || die "取不到 request_id；body=$(printf '%s' "$BODY" | head -c 250)"
 req POST "$API/api/v1/social/friend-request/accept" "$TB" \
   "{\"request_id\":$RID}" "X-Tenant-ID: $TENANT"
@@ -259,9 +313,10 @@ req POST "$API/api/v1/route/send-request" "$TA" \
   "X-Tenant-ID: $TENANT"
 case "$CODE" in
   200|201) ok "连接申请已发出" ;;
-  409|422) bad "连接申请被业务规则拒（HTTP ${CODE}）：$(jsonget message)"
-           printf '      注：业务拒绝返 500 是 CPI-32，返 409/422 才是修好的形态\n'; die "连接申请" ;;
-  *) bad "连接申请失败 HTTP $CODE"; die "连接申请" ;;
+  # 重跑时「该连接已建立/已申请」是 409，属正确业务语义（CPI-32 的成果），继续往下走
+  409)     ok "连接申请已存在（HTTP 409 —— 业务拒绝返 409 而非 500，CPI-32 生效）" ;;
+  422)     bad "连接申请被校验拒（HTTP 422）：$(jsonget message)"; die "连接申请" ;;
+  *) bad "连接申请失败 HTTP ${CODE}"; die "连接申请" ;;
 esac
 
 req GET "$API/api/v1/route/requests" "$TB" "" "X-Tenant-ID: $TENANT"
