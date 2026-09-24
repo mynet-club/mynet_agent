@@ -42,15 +42,16 @@ type Service struct {
 }
 
 func NewService(indexURL string) *Service {
-	return &Service{
-		IndexURL: indexURL,
-		Fetch: func(url string) ([]Artifact, error) {
-			return nil, fmt.Errorf("upgrade: Fetch 未注入（接 ctl apps 索引）")
-		},
-		Install: func(a Artifact) error {
-			return fmt.Errorf("upgrade: Install 未注入: %s", a.Component)
-		},
+	s := &Service{IndexURL: indexURL}
+	s.Fetch = func(url string) ([]Artifact, error) {
+		c, err := newIndexClient(url, nil)
+		if err != nil {
+			return nil, err
+		}
+		return c.fetchAll()
 	}
+	s.Install = defaultInstall
+	return s
 }
 
 // List 列出可装/可升驱动
@@ -67,7 +68,8 @@ func (s *Service) List() ([]Artifact, error) {
 	}
 	sort.Slice(drivers, func(i, j int) bool {
 		if drivers[i].Component == drivers[j].Component {
-			return drivers[i].Version > drivers[j].Version
+			// 同组件按版本降序：必须用语义比较，字典序会把 0.10.0 排在 0.9.0 之后。
+			return CompareVersions(drivers[i].Version, drivers[j].Version) > 0
 		}
 		return drivers[i].Component < drivers[j].Component
 	})
