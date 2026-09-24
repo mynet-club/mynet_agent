@@ -36,6 +36,12 @@ install-hooks:
 	@echo "✓ hooks 已安装（core.hooksPath = .githooks）"
 
 # ── R4-1 产物（命名 SSOT：mynet_agent_*）────────────────────
+#
+# 三个二进制：mynet（执行器）· mynetd（纯通信层，-tags embed 内嵌 WebUI）·
+# mynet_gateway（边缘网关，V1-1 起才有可执行体）。
+#
+# 构建失败必须**炸出来**，不要 `|| true` / `|| continue` 吞掉：
+# 静默失败会让 dist/ 看着齐全、实际缺件，正是「纸面达成」的典型形态（AGENTS.md §7.1 D1）。
 .PHONY: dist
 dist:
 	@echo "▸ dist"
@@ -44,9 +50,10 @@ dist:
 		set -- $$pair; os=$$1; arch=$$2; \
 		out=dist/mynet_agent_$${os}_$${arch}; \
 		mkdir -p $$out; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o $$out/mynet ./cmd/mynet || continue; \
-		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -tags embed -o $$out/mynetd ./cmd/mynetd || true; \
-		cp mynetd/localapi/webui/index.html $$out/webui.html 2>/dev/null || true; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o $$out/mynet ./cmd/mynet || exit 1; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -tags embed -o $$out/mynetd ./cmd/mynetd || exit 1; \
+		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -o $$out/mynet_gateway ./cmd/mynet_gateway || exit 1; \
+		cp mynetd/localapi/webui/index.html $$out/webui.html; \
 		echo "  $$out"; \
 	done
-	@echo "✓ dist/ 就绪（mynet_agent_*）"
+	@echo "✓ dist/ 就绪（mynet_agent_*：mynet + mynetd + mynet_gateway + webui.html）"

@@ -5,6 +5,11 @@ vendor/
 node_modules/
 *.o
 *.a
+# 根目录裸二进制：`go build ./cmd/xxx` 不带 -o 时会落在这里
+/mynet
+/mynetd
+/mynet_gateway
+/mynet-updater
 
 # 本地状态（含密钥，绝不入库 —— make guard A3 会拦）
 var/
