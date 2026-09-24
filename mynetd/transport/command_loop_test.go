@@ -46,7 +46,7 @@ func TestHandleFrameThenRun(t *testing.T) {
 	}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := c.HandleFrame(ctx, []byte(`{"id":"c1","op":"gnb.refresh.route","args":{"node_id":"1"}}`)); err != nil {
+	if _, err := c.HandleFrame(ctx, []byte(`{"id":"c1","op":"gnb.refresh.route","args":{"node_id":"1"}}`)); err != nil {
 		t.Fatal(err)
 	}
 	if !got.OK || !strings.Contains(got.Stdout, "refresh-routes") {
