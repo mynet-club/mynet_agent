@@ -70,10 +70,22 @@ func newBackClient(gatewayWS string, id *nodeIdentity) (*backClient, error) {
 
 // do 发一个签名请求到 back（经 gateway relay）。返回状态码与响应体。
 func (c *backClient) do(ctx context.Context, method, backPath string, body []byte) (int, []byte, error) {
-	ts, sig := c.id.signer.SignRequest(method, backPath, string(body))
+	return c.doSigned(ctx, method, backPath, body, body)
+}
+
+// doSigned 与 do 相同，但**签名体与发送体可以不同**。
+//
+// 只有心跳需要这个：back 的 `NodeHeartbeatAuthMiddleware` 在验签前会把
+// `node_monitor` 置 nil 再用 PHP 重编码（`spec/node-keying.md` §4.3 —— 它体量大
+// 且不参与签名）。所以签的是不含它的那份、发的是完整的那份。
+// 拿完整体去签，两端 sha256(body) 永远不等，症状是清一色 401。
+//
+// 其余端点两者相同，走 do 即可。
+func (c *backClient) doSigned(ctx context.Context, method, backPath string, sendBody, signBody []byte) (int, []byte, error) {
+	ts, sig := c.id.signer.SignRequest(method, backPath, string(signBody))
 
 	target := c.relayBase + "?path=" + url.QueryEscape(backPath)
-	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(sendBody))
 	if err != nil {
 		return 0, nil, fmt.Errorf("构造请求: %w", err)
 	}
@@ -93,6 +105,23 @@ func (c *backClient) do(ctx context.Context, method, backPath string, body []byt
 		return resp.StatusCode, nil, fmt.Errorf("读响应: %w", err)
 	}
 	return resp.StatusCode, raw, nil
+}
+
+// reportHeartbeat 上报一次心跳（V4-2）。
+//
+// sendBody 是完整请求体，signBody 是去掉 node_monitor 的那份 —— 两者的区别
+// 见 doSigned 的注释。这里不自己拼 JSON，组装在 heartbeat.go。
+func (c *backClient) reportHeartbeat(ctx context.Context, sendBody, signBody []byte) error {
+	code, raw, err := c.doSigned(ctx, http.MethodPost, "/api/v1/monitor/heartbeat", sendBody, signBody)
+	if err != nil {
+		return err
+	}
+	// 201 也接受：back 现在返 200，但「创建一条心跳记录」语义上是 201，
+	// 哪天改了不该让节点侧集体报错。
+	if code != http.StatusOK && code != http.StatusCreated {
+		return fmt.Errorf("心跳上报返回 %d: %s", code, truncateBytes(raw, 300))
+	}
+	return nil
 }
 
 // pendingCommand 是 back `GET /api/v1/monitor/commands` 返回的单条命令。

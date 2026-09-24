@@ -26,10 +26,17 @@ func probeWireGuard() []VPNDriverMetrics {
 	d := driver.NewWireGuardDriver(iface, 0)
 	peers, err := d.GetAllPeers()
 	if err != nil {
-		// 接口在但读不到 peer（例如非 root 时 `wg show <iface> dump` 会
-		// Permission denied，本机实测就是这样）。这是**降级**不是错误：
-		// 宁可少报，也不要让 `mynet metrics` 因为权限问题整体失败。
-		return nil
+		// 接口在、但读不到 peer（非 root 时 `wg show <iface> dump` 会
+		// Permission denied，本机实测就是这样）。
+		//
+		// ⚠️ 这种情况下**仍然要报「接口存在」**，不能返回 nil：back 的
+		// `isVpnInterfaceDown()` 把「心跳里没有 vpn_interfaces 段」直接判成
+		// 「网络不可用」（NodeHeartbeatController.php:421-432），于是走
+		// markNodeOffline 分支、连 node_monitor 都不处理。
+		// 也就是说「读不到 peer 数」会被上报成「节点掉线」——
+		// 少报一个数字只是数据不全，误报离线是**状态错误**，后者严重得多
+		// （运维会看到一片节点离线，而它们其实好好的）。
+		return []VPNDriverMetrics{{Driver: "wireguard", Interface: iface, Up: true}}
 	}
 	return []VPNDriverMetrics{projectPeers("wireguard", iface, peers)}
 }
@@ -78,6 +85,8 @@ func projectPeers(drv, iface string, peers []*domain.VPNPeer) VPNDriverMetrics {
 		if p.IsOnline() {
 			m.PeersUp++
 		}
+		m.RxBytes += p.RxBytes
+		m.TxBytes += p.TxBytes
 		for _, a := range []string{p.VirtualIP, p.VirtualIP6} {
 			if a != "" && !seen[a] {
 				seen[a] = true

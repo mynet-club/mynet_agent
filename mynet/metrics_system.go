@@ -20,6 +20,8 @@ func collectSystemMetrics(m *Metrics) {
 	m.Hostname, _ = os.Hostname()
 	// InterfaceUp 跨平台，用标准库数，不必去解析 ip / ifconfig 的文本输出
 	m.System.InterfaceUp = countUpInterfaces()
+	// 磁盘同理跨平台（df 在 linux/darwin 都有，且 -P 的输出格式一致）
+	m.System.DiskUsedPercent = diskUsedPercent("/")
 	switch runtime.GOOS {
 	case "linux":
 		collectLinuxSystemMetrics(m)
@@ -292,6 +294,35 @@ func leadingUint(s string) uint64 {
 	}
 	v, _ := strconv.ParseUint(s[:j], 10, 64)
 	return v
+}
+
+// diskUsedPercent 用 `df -P -k <path>` 取已用百分比。
+//
+// 为什么用 `-P`：POSIX 格式**保证一行一个挂载点**。不加它时，设备名过长会被
+// 折行（macOS 上很常见），按行解析就会读到半截。
+// 为什么不用 syscall.Statfs：字段类型在 linux（int64）与 darwin（uint32）之间
+// 不一致，要么上 build tag 要么上 x/sys；一条 df 换掉这些复杂度是划算的。
+// Windows 没有 df → 返回 0（back 的验证只要求 numeric，0 能过；
+// 真要在 Windows 上采磁盘得另走 GetDiskFreeSpaceEx）。
+func diskUsedPercent(path string) float64 {
+	out, err := exec.Command("df", "-P", "-k", path).Output()
+	if err != nil {
+		return 0
+	}
+	lines := splitLines(string(out))
+	if len(lines) < 2 {
+		return 0
+	}
+	// 表头: Filesystem 1024-blocks Used Available Capacity Mounted on
+	f := strings.Fields(lines[1])
+	if len(f) < 5 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(f[4], "%"), 64)
+	if err != nil {
+		return 0
+	}
+	return round2(v)
 }
 
 func splitLines(s string) []string {

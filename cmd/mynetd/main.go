@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,13 +64,12 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// S3-1：心跳组装 + 命令分派 + WS 长连接
-	hb := &heartbeatLoop{ops: execMynet}
-	if *once {
-		hb.beat()
-	} else {
-		go hb.run(ctx)
-	}
+	// S3-1：心跳组装 + 命令分派 + WS 长连接。
+	// ops 用 execMynetStd（直接给 stdout 字符串），省掉在 beat 里再拆 map。
+	// ⚠️ 这里只**创建**不启动 —— 启动放在下面节点面客户端装配完之后，
+	// 否则 `--once`（专门用来调试上报的模式）会在 reporter 还没绑上时就跑完，
+	// 表现为「采了但没上报」，而这恰恰是最难查的一种静默失败。
+	hb := &heartbeatLoop{ops: execMynetStd}
 
 	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
 	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
@@ -107,6 +107,9 @@ func main() {
 					}
 					return resp.Commands, nil
 				}
+				// V4-2：心跳走**同一条**节点面通路（签名 + gateway /v1/relay）。
+				// relay 白名单本来就含 /api/v1/monitor，不需要给 gateway 加新面。
+				hb.setReporter(id.nodeID, c.reportHeartbeat)
 			}
 			fmt.Fprintf(os.Stderr, "transport: 节点面签名就绪（node_id=%s, conf=%s）\n", id.nodeID, confPath)
 		}
@@ -149,6 +152,19 @@ func main() {
 			go func() { _ = cli.Run(ctx) }()
 		}
 	}
+
+	// 启动心跳。放在节点面客户端装配**之后**（理由见上面 hb 创建处）：
+	// reporter 绑好了再跑，`--once` 才能真的验到上报。
+	if *once {
+		hb.beat(ctx)
+		// --once 的语义是「只探测一次心跳就退出」（见上面 flag 的说明）。
+		// 此前它 beat 完仍会掉到 <-ctx.Done() 常驻不退，与说明不符 ——
+		// 做全链路验证时只能 sleep + kill，脚本里没法当一次性探针用。
+		// return 会触发 defer cancel()，WS 与 localapi 随之收尾。
+		_ = api.Close()
+		return
+	}
+	go hb.run(ctx)
 
 	<-ctx.Done()
 	_ = api.Close()
@@ -196,36 +212,81 @@ func mynetBin() string {
 	return "mynet"
 }
 
-// heartbeatLoop 组装心跳数据（metrics --json）并准备上报。
-// WS 上报在 transport 接入后挂接；当前先把组装跑通。
+// heartbeatLoop 组装心跳（`mynet metrics --json`）并上报 back。
+//
+// ⚠️ 采集在**执行器**里（mynet 二进制），这里只 exec + 组装 + 发送 ——
+// AGENTS.md §1.2：mynetd 是纯通信层，不含探测解析。
 type heartbeatLoop struct {
-	ops func(argv []string) (any, error)
+	ops func(argv []string) (string, string, error)
+
+	// reporter 与 nodeID 是**后绑**的：hb 在 main 里先创建（纯本机模式也要跑，
+	// 保证 system.json 可用），而节点面客户端要等 MYNET_GATEWAYS 与密钥都就绪
+	// 才有。用 mutex 保护 —— 绑的时候 goroutine 可能已经在跑，
+	// 裸字段就是数据竞争（go test -race 会直接报）。
+	mu       sync.Mutex
+	nodeID   string
+	reporter func(ctx context.Context, sendBody, signBody []byte) error
+}
+
+// setReporter 绑上上报通道。未绑时 beat 只采集不上报（纯本机模式）。
+func (h *heartbeatLoop) setReporter(nodeID string, f func(context.Context, []byte, []byte) error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.nodeID = nodeID
+	h.reporter = f
+}
+
+func (h *heartbeatLoop) getReporter() (string, func(context.Context, []byte, []byte) error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.nodeID, h.reporter
 }
 
 func (h *heartbeatLoop) run(ctx context.Context) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	h.beat()
+	h.beat(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			h.beat()
+			h.beat(ctx)
 		}
 	}
 }
 
-func (h *heartbeatLoop) beat() {
-	out, err := h.ops([]string{"metrics", "--json"})
+func (h *heartbeatLoop) beat(ctx context.Context) {
+	stdout, stderr, err := h.ops([]string{"metrics", "--json"})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "heartbeat metrics: %v\n", err)
+		fmt.Fprintf(os.Stderr, "heartbeat metrics: %v (%s)\n", err, strings.TrimSpace(stderr))
 		return
 	}
-	_ = out
 	// 本机态也保证 system.json 可用
 	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
 		fmt.Fprintln(os.Stderr, "system.json 缺失，建议运行 mynet detector")
+	}
+
+	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在
+	// mynetd 里只对应 WS 上一个 `{"t":"ping"}`，back 的 monitor/heartbeat
+	// 从来没收到过真指标。
+	nodeID, report := h.getReporter()
+	if report == nil {
+		return // 纯本机模式（未配 MYNET_GATEWAYS，或节点面密钥未就绪）
+	}
+	if strings.TrimSpace(stdout) == "" {
+		fmt.Fprintln(os.Stderr, "heartbeat: metrics 无输出，跳过本次上报")
+		return
+	}
+	sendBody, signBody, err := heartbeatBodies(nodeID, stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "heartbeat: 组装失败: %v\n", err)
+		return
+	}
+	if err := report(ctx, sendBody, signBody); err != nil {
+		// 上报失败**不该**让循环退出（下一拍再试），但必须说出来 ——
+		// 静默失败会让「节点显示在线却没有数据」这种状态查很久。
+		fmt.Fprintf(os.Stderr, "heartbeat: 上报失败: %v\n", err)
 	}
 }
 
