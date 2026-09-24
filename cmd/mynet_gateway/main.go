@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -74,6 +76,36 @@ func run(ctx context.Context, listen, upstream, internalToken string) error {
 	srv.SetLogger(func(format string, args ...any) {
 		logger.Info(fmt.Sprintf(format, args...))
 	})
+
+	// presence 接线（V4-5）。配了 Redis 地址就用 Redis（跨实例同步 online/
+	// 并广播事件帧），没配就保持 Registry 默认的内存实现（单实例）。
+	//
+	// 降级由 NewRedisPresence 自己负责：addr 为空或 Ping 失败**直接返回内存
+	// 实现**，不返回 error —— 所以这里拿不到 err 不是「没配 Redis 就不管了」，
+	// 而是「已经退化到内存了」。生产侧要跨实例就必须给 addr，
+	// 见 deploy/gateway.env.example。
+	var presence gateway.PresenceStore
+	if addr := strings.TrimSpace(os.Getenv("MYNET_GATEWAY_REDIS_ADDR")); addr != "" {
+		db, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("MYNET_GATEWAY_REDIS_DB")))
+		ps, err := gateway.NewRedisPresence(addr, os.Getenv("MYNET_GATEWAY_REDIS_PASSWORD"), db)
+		if err != nil {
+			// 当前实现不走这里，保留分支以防将来变严格（宁可告警也别静默）
+			logger.Warn("presence 初始化失败，退回内存实现", "err", err, "addr", addr)
+		} else if _, ok := ps.(*gateway.MemoryPresence); ok {
+			logger.Warn("配置了 Redis 地址但连不上，presence 已退回内存（跨实例失效）", "addr", addr)
+		} else {
+			presence = ps
+			srv.Registry().SetPresence(ps)
+			logger.Info("presence 已接 Redis", "addr", addr)
+		}
+	} else {
+		logger.Info("未配 MYNET_GATEWAY_REDIS_ADDR，presence 用内存实现（仅单实例可用）")
+	}
+	defer func() {
+		if presence != nil {
+			_ = presence.Close()
+		}
+	}()
 
 	httpSrv := &http.Server{
 		Addr:              listen,

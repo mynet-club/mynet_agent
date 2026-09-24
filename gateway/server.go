@@ -39,17 +39,24 @@ type Conn struct {
 	done chan struct{}
 	// cancel 取消该连接的读循环 ctx。构造时注入、之后只读，故无需加锁。
 	// 没有它，被踢的旧连接会永久阻塞在 conn.Read 上 —— goroutine 泄漏。
-	cancel    context.CancelFunc
-	closeOnce sync.Once
+	cancel context.CancelFunc
+	// watchCancel 取消该连接的 presence 订阅（跨实例事件的收货口）。
+	// 不挂在 cancel 上是因为 cancel 归调用方（WS handler），而订阅是 Registry
+	// 自己起的；两者要一起在 Close 时收掉。
+	watchCancel context.CancelFunc
+	closeOnce   sync.Once
 }
 
-// Close 幂等地结束该连接：停 writeLoop（done）+ 取消读循环（cancel）。
+// Close 幂等地结束该连接：停 writeLoop（done）+ 取消读循环（cancel）+ 退订（watch）。
 // 踢旧连接、写失败、读结束都走这里。
 func (c *Conn) Close() {
 	c.closeOnce.Do(func() {
 		close(c.done)
 		if c.cancel != nil {
 			c.cancel()
+		}
+		if c.watchCancel != nil {
+			c.watchCancel()
 		}
 	})
 }
@@ -96,17 +103,79 @@ func (r *Registry) RegisterCtx(nodeID string, cancel context.CancelFunc) (evicte
 	r.mu.Lock()
 	old := r.conns[nodeID]
 	r.conns[nodeID] = c
+	ps := r.presence
 	r.mu.Unlock()
 	if old != nil {
 		old.Close()
 	}
+	if ps != nil {
+		// 连上就上报 online（verified 尚未置位，等 back 的 C-4）。
+		// 原实现只在 MarkVerified 里 SetOnline —— 断开时也没人 SetOffline，
+		// 于是 Redis 里会残留「这个节点还在线」的状态，直到被同 ID 节点重连覆盖。
+		_ = ps.SetOnline(context.Background(), nodeID, false)
+	}
+	// 订阅跨实例事件：节点连在**本实例**，而 back 可能通知到**别的**实例
+	// —— 那个实例发现本地无连接，经 Redis PUBLISH 把帧丢过来，由这里收货。
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	c.watchCancel = watchCancel
+	r.watchNode(watchCtx, c)
 	return old, c
+}
+
+// watchNode 消费该连接的 presence 订阅帧，并投递给本地连接。
+//
+// 只投给**本地**：跨实例的广播是「谁有连接谁发」，所以不会重复推送；
+// 也不会自己发给自己（Notify 在本地有连接时直接投递、根本不 Publish）。
+func (r *Registry) watchNode(ctx context.Context, target *Conn) {
+	r.mu.RLock()
+	ps := r.presence
+	r.mu.RUnlock()
+	if ps == nil {
+		return
+	}
+	ch, err := ps.Subscribe(ctx, target.NodeID)
+	if err != nil {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case frame, ok := <-ch:
+				if !ok {
+					return
+				}
+				// 确认目标连接仍是它（可能已被新连接顶替）
+				r.mu.RLock()
+				cur := r.conns[target.NodeID]
+				r.mu.RUnlock()
+				if cur != target {
+					return
+				}
+				if !target.Verified {
+					continue // C-5：未置位不推
+				}
+				select {
+				case target.send <- frame:
+				default:
+					// 队列满丢弃：与 Notify 的 errSendFull 同语义
+				}
+			}
+		}
+	}()
 }
 
 func (r *Registry) Unregister(nodeID string) {
 	r.mu.Lock()
 	delete(r.conns, nodeID)
+	ps := r.presence
 	r.mu.Unlock()
+	if ps != nil {
+		// 断开要落 offline，否则 Redis 里这个节点会一直显示在线
+		// （原实现只在 MarkVerified 里 SetOnline，断开时没人管）
+		_ = ps.SetOffline(context.Background(), nodeID)
+	}
 }
 
 // UnregisterIf 仅当该 nodeID 仍指向 c 时才摘除。
@@ -115,12 +184,17 @@ func (r *Registry) Unregister(nodeID string) {
 // 无条件 Unregister 会把刚登记的新连接误摘掉，表现为「节点明明连着却显示离线」。
 func (r *Registry) UnregisterIf(nodeID string, c *Conn) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if cur, ok := r.conns[nodeID]; ok && cur == c {
-		delete(r.conns, nodeID)
-		return true
+	if cur, ok := r.conns[nodeID]; !ok || cur != c {
+		r.mu.Unlock()
+		return false
 	}
-	return false
+	delete(r.conns, nodeID)
+	ps := r.presence
+	r.mu.Unlock()
+	if ps != nil {
+		_ = ps.SetOffline(context.Background(), nodeID)
+	}
+	return true
 }
 
 func (r *Registry) Get(nodeID string) (*Conn, bool) {
@@ -164,25 +238,44 @@ func (r *Registry) Count() int {
 	return len(r.conns)
 }
 
-// Notify 只推给**已置位**的连接（C-5）
-func (r *Registry) Notify(nodeID, event string, data map[string]string) error {
+// Notify 推事件给节点（back → gateway → 节点，C-5 只推已置位的连接）。
+//
+// 多实例（V4-5）：
+//  1. 节点连在**本实例** → 直接投递，结束（也避免了自己 Publish 自己收的重复）
+//  2. 节点连在**别的实例**（本地无连接，但 presence 显示在线且已置位）
+//     → 经 presence.Publish 把**帧原文**广播过去，对方的 watchNode 收货并投递
+//  3. 确实离线 → errNotOnline（这是唯一该回 404 的情形）
+//
+// 原实现只查本地 conns，所以节点连 A 时 back 通知 B 一律 404 ——
+// 判据里那句「现在必 404」就是这么来的。
+func (r *Registry) Notify(ctx context.Context, nodeID, event string, data map[string]string) error {
+	payload, _ := json.Marshal(map[string]any{"event": event, "data": data})
+
 	r.mu.RLock()
 	c, ok := r.conns[nodeID]
-	verified := ok && c.Verified
+	ps := r.presence
 	r.mu.RUnlock()
-	if !ok {
-		return errNotOnline
+
+	if ok {
+		if !c.Verified {
+			return errNotVerified
+		}
+		select {
+		case c.send <- payload:
+			return nil
+		default:
+			return errSendFull
+		}
 	}
-	if !verified {
-		return errNotVerified
+
+	// 本地没有 → 看看是不是连在别的实例上
+	if ps != nil {
+		online, verified, err := ps.IsOnline(ctx, nodeID)
+		if err == nil && online && verified {
+			return ps.Publish(ctx, nodeID, payload)
+		}
 	}
-	payload, _ := json.Marshal(map[string]any{"event": event, "data": data})
-	select {
-	case c.send <- payload:
-		return nil
-	default:
-		return errSendFull
-	}
+	return errNotOnline
 }
 
 type simpleErr string
@@ -316,7 +409,7 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "node_id required"})
 		return
 	}
-	if err := s.reg.Notify(req.NodeID, req.Event, req.Data); err != nil {
+	if err := s.reg.Notify(r.Context(), req.NodeID, req.Event, req.Data); err != nil {
 		code := 404
 		if err == errNotVerified {
 			code = 403

@@ -9,11 +9,19 @@
 #        `-internal-token`**；只有非回环才强制要（空口令下 `/v1/notify` 完全不校验，
 #        任何人都能往节点推事件）
 #
-# ⚠️ **presence 尚未接 Redis**：`gateway/presence_redis.go` 写好了，
-#    但 `cmd/mynet_gateway/main.go` 里没有任何调用点（`NewRedisPresence` 目前只有
-#    测试在用），所以进程跑的是内存 presence —— **单实例可用，多实例会各看各的**。
-#    多实例（gw1/gw2）要等 V4-5/V4-6 把 presence 真接上；在那之前不需要给本单元配
-#    Redis，配了也不会被使用。别把「redis 由主机提供」当成已经成立的前提。
+# ── presence（V4-5 已接 Redis）─────────────────────────────────
+# 配了 MYNET_GATEWAY_REDIS_ADDR 就用 Redis：跨实例同步 online/verified 状态，
+# 并把事件帧广播给连在别的实例上的节点（节点连 A、back 打到 B，靠它才推得过去）。
+#
+# 不配（或配了但连不上）→ 退回**内存 presence**：单实例完全可用；
+# 双实例下 back 打到没连着该节点的那台会 404，日志里大量 "node not online"。
+# 配置走 EnvironmentFile，见 deploy/gateway.env.example 的 presence 段。
+#
+# ⚠️ 当前 H4b 尚未裁定 gw1/gw2，单实例部署可以**不配**。但双实例时
+#    「Redis 可达」是硬前提 —— 而连不上不会报错，只会静默降级到内存，
+#    于是呈现出「进程活着、跨实例不工作」这种最难查的状态。
+#    所以生产上一旦开 gw1/gw2，先确认本单元的 Redis 配置真生效
+#    （启动日志里应有 `presence 已接 Redis`，若见 `退回内存` 就是没生效）。
 
 [Unit]
 Description=MyNet gateway (node-face WS + /v1/relay)

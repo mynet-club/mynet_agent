@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -98,13 +97,13 @@ func (p *redisPresence) IsOnline(ctx context.Context, nodeID string) (bool, bool
 	return m["online"] == "1", m["verified"] == "1", nil
 }
 
-func (p *redisPresence) Subscribe(ctx context.Context, nodeID string) (<-chan struct{}, error) {
-	// 本机事件仍走内存订阅；跨实例事件经 PUBLISH
+func (p *redisPresence) Subscribe(ctx context.Context, nodeID string) (<-chan []byte, error) {
+	// 本机事件走内存订阅；跨实例事件经 PUBLISH。两边合并到同一个 out。
 	local, err := p.fallback.Subscribe(ctx, nodeID)
 	if !p.enabled {
 		return local, err
 	}
-	out := make(chan struct{}, 1)
+	out := make(chan []byte, 1)
 	go func() {
 		defer close(out)
 		sub := p.rdb.Subscribe(ctx, eventsChannelPref+nodeID)
@@ -118,35 +117,40 @@ func (p *redisPresence) Subscribe(ctx context.Context, nodeID string) (<-chan st
 				if !ok {
 					return
 				}
-				select {
-				case out <- struct{}{}:
-				default:
-				}
-				_ = msg
-			case _, ok := <-local:
+				// msg.Payload 是发布方写的**帧原文**。原实现这里是 `_ = msg`
+				// —— 只发一个空 struct 出去，接线后拿到也还原不出 event/data。
+				sendByte(out, []byte(msg.Payload))
+			case frame, ok := <-local:
 				if !ok {
 					return
 				}
-				select {
-				case out <- struct{}{}:
-				default:
-				}
+				sendByte(out, frame)
 			}
 		}
 	}()
 	return out, nil
 }
 
-func (p *redisPresence) Publish(ctx context.Context, nodeID string) error {
-	_ = p.fallback.Publish(ctx, nodeID)
+func (p *redisPresence) Publish(ctx context.Context, nodeID string, frame []byte) error {
+	_ = p.fallback.Publish(ctx, nodeID, frame)
 	if !p.enabled {
 		return nil
 	}
-	payload, _ := json.Marshal(map[string]any{"event": "queued", "gw": p.self})
-	if err := p.rdb.Publish(ctx, eventsChannelPref+nodeID, payload).Err(); err != nil {
+	// 发**帧原文**，不是硬编码的 {"event":"queued"} —— 接收方要靠它还原
+	// 要推给节点的完整内容。
+	if err := p.rdb.Publish(ctx, eventsChannelPref+nodeID, frame).Err(); err != nil {
 		p.enabled = false
 	}
 	return nil
+}
+
+// sendByte 非阻塞投递：缓冲满即丢。
+// back 的 notify 有幂等重试语义，丢了会重发；阻塞则会卡住整条 notify 路径。
+func sendByte(ch chan []byte, b []byte) {
+	select {
+	case ch <- b:
+	default:
+	}
 }
 
 func (p *redisPresence) Close() error {

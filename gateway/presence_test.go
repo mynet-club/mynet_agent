@@ -34,9 +34,18 @@ func TestMemoryPresencePubSub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = p.Publish(ctx, "n1")
+	// 发**帧原文**。这是接口改动的核心（V4-5）：跨实例要能还原 event/data，
+	// 只发空 struct 的话，接收方收到信号也拼不出要推给节点的东西
+	// —— 原 Publish 还把 payload 硬编码成 {"event":"queued"}，实属半成品。
+	frame := []byte(`{"event":"command_queued","data":{"command_id":"9007199254740993"}}`)
+	if err := p.Publish(ctx, "n1", frame); err != nil {
+		t.Fatal(err)
+	}
 	select {
-	case <-ch:
+	case got := <-ch:
+		if string(got) != string(frame) {
+			t.Fatalf("收到的帧与发布的不一致:\n  发布: %s\n  收到: %s", frame, got)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("no event")
 	}
