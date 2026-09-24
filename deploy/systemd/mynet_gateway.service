@@ -35,6 +35,11 @@ TimeoutStopSec=20
 Restart=on-failure
 RestartSec=5
 
+# gateway 是 WS 服务器：每个节点连接占若干 fd，而 systemd 的默认 LimitNOFILE
+# 在不少发行版上是 1024 —— 几百个节点就能把 fd 用光，症状是「新节点连不上、
+# 老连接还活着」，看起来像网络问题。这里显式抬高。
+LimitNOFILE=65536
+
 # 非 root。gateway 不需要任何特权：不写路由、不碰驱动、不读私钥
 User=mynet
 Group=mynet
