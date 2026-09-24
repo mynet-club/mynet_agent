@@ -121,7 +121,7 @@ if [ "$GATEWAY" = "1" ]; then
   GW_RC=0
   wait "$GW_PID" || GW_RC=$?
   if [ "$GW_RC" -ne 0 ]; then
-    log "✗ gateway 收到 SIGTERM 后退出码 $GW_RC（期望 0）"
+    log "✗ gateway 收到 SIGTERM 后退出码 ${GW_RC}（期望 0）"
     cat "$GW_LOG"
     exit 1
   fi
