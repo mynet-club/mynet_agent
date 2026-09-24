@@ -1,0 +1,48 @@
+# V3-3：mynet_gateway 常驻单元（生产主机 10.182.236.180）
+#
+# 为什么绑回环而不是 0.0.0.0：
+#   `gw.mynet.club` 由**主机 nginx** 反代到 `127.0.0.1:8710`
+#   （`mynet_back/deploy/nginx.conf:165,183`）。绑回环有两个直接好处：
+#     1. 不把 8710 暴露到公网 —— gateway **自身不鉴权**（C-3：纯透传 + 连接状态表），
+#        敞开等于把节点面入口送给任何人
+#     2. 按 `cmd/mynet_gateway/main.go:113` 的 fail-fast 规则，**回环监听不需要
+#        `-internal-token`**；只有非回环才强制要（空口令下 `/v1/notify` 完全不校验，
+#        任何人都能往节点推事件）
+#
+# ⚠️ **presence 尚未接 Redis**：`gateway/presence_redis.go` 写好了，
+#    但 `cmd/mynet_gateway/main.go` 里没有任何调用点（`NewRedisPresence` 目前只有
+#    测试在用），所以进程跑的是内存 presence —— **单实例可用，多实例会各看各的**。
+#    多实例（gw1/gw2）要等 V4-5/V4-6 把 presence 真接上；在那之前不需要给本单元配
+#    Redis，配了也不会被使用。别把「redis 由主机提供」当成已经成立的前提。
+
+[Unit]
+Description=MyNet gateway (node-face WS + /v1/relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 配置（back 内网地址等）走环境文件，不进 unit —— 部署值随环境变，unit 保持通用。
+# `-` 前缀：文件不存在也不报错（gateway 在 upstream 为空时仍能起，只是 relay 无处可转）
+EnvironmentFile=-/etc/mynet/gateway.env
+ExecStart=/opt/mynet/bin/mynet_gateway -listen 127.0.0.1:8710
+
+# 收到 SIGTERM 后优雅关闭：main.go 给在途请求 15s（shutdownTimeout），
+# 这里留 20s 余量再 SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=5
+
+# 非 root。gateway 不需要任何特权：不写路由、不碰驱动、不读私钥
+User=mynet
+Group=mynet
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# 它不写盘（连接表在内存），因此**不**给 ReadWritePaths
+
+[Install]
+WantedBy=multi-user.target
