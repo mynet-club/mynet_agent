@@ -65,14 +65,74 @@ func main() {
 
 	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
 	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
+		gateways := strings.Split(gw, ",")
 		nodeID := os.Getenv("MYNET_NODE_ID")
-		cli, err := transport.New(transport.Config{
-			Gateways: strings.Split(gw, ","),
+
+		// 节点面身份（C-2）：命令结果要签名后才能上报 back，
+		// 拉取待执行命令也要签名。读不到 mynet.conf 时**明确告警**而不是静默降级——
+		// 否则症状是「命令下发了但节点毫无反应」，比直接报错难查得多。
+		var (
+			onResult func(context.Context, commands.Result) ([]byte, error)
+			pull     func(context.Context) ([]pendingCommand, error)
+			bc       *backClient
+		)
+		confPath := mynetConfPath()
+		id, idErr := loadNodeIdentity(confPath)
+		if idErr != nil {
+			fmt.Fprintf(os.Stderr, "transport: 节点面未就绪，命令拉取与结果上报都不可用（%v）\n", idErr)
+		} else {
+			if nodeID == "" {
+				nodeID = id.nodeID
+			}
+			onResult = func(_ context.Context, res commands.Result) ([]byte, error) {
+				return id.encodeResult(res)
+			}
+			// 节点面 HTTP 走 gateway 的 /v1/relay（back 对节点不可达）
+			if c, err := newBackClient(gateways[0], id); err != nil {
+				fmt.Fprintf(os.Stderr, "transport: 节点面 HTTP 客户端不可用（%v）\n", err)
+			} else {
+				bc = c
+				pull = func(ctx context.Context) ([]pendingCommand, error) {
+					resp, err := bc.pullPendingCommands(ctx)
+					if err != nil {
+						return nil, err
+					}
+					return resp.Commands, nil
+				}
+			}
+			fmt.Fprintf(os.Stderr, "transport: 节点面签名就绪（node_id=%s, conf=%s）\n", id.nodeID, confPath)
+		}
+
+		// report 需要 cli.Send，而 cli 的 Handlers 又需要 dispatcher.Handle——
+		// 用后绑闭包解开这个环：闭包只在事件真正到达时才求值，那时 cli 已就绪。
+		var cli *transport.Client
+		var report func(context.Context, commands.Result) error
+		if id != nil {
+			nodeIdent := id
+			report = func(_ context.Context, res commands.Result) error {
+				frame, err := nodeIdent.encodeResult(res)
+				if err != nil {
+					return err
+				}
+				if cli == nil {
+					return fmt.Errorf("transport 尚未装配，无法上行结果")
+				}
+				return cli.Send(frame)
+			}
+		}
+
+		dispatcher := newEventDispatcher(nodeID, execMynetStd, pull, report)
+
+		var err error
+		cli, err = transport.New(transport.Config{
+			Gateways: gateways,
 			NodeID:   nodeID,
 		}, transport.Handlers{
 			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
 				return commands.Run(execMynetStd, req, nodeID)
 			},
+			OnEvent:  dispatcher.Handle,
+			OnResult: onResult,
 		}, func(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...) })
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "transport: %v\n", err)
