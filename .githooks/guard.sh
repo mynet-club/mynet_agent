@@ -86,11 +86,19 @@ fi
 # 关键字前必须是非字母，避免 DirToken / refresh_token / "var/token" 这类误报
 # 双/单引号各查一次（BSD grep 不支持 \xNN 转义，故拆两条）
 # A1 双引号版：引号内**以 $ 开头**的一律不算（那是变量引用或命令替换，不是字面量）。
-A1D="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*\"[^$\"][^\"]{7,}\""
-A1S="[^[:alpha:]](password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*'[^']{8,}"
+# 关键字表含裸 `pass`：mynet_ctl/scripts/deploy/db-setup.sh 曾有
+# `LOCAL_DB_PASS="…"` 明文口令，而 password|passwd|pwd 三个都匹配不到它 —— 真漏报。
+# 加进来实测零误报（pass=0 / PASS_COUNT=3 / BYPASS="enabled" / COMPASS="north" 均不命中，
+# 因为要求关键字前是**非字母**、且值必须是够长的引号字面量）。
+A1D="[^[:alpha:]](password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*\"[^$\"][^\"]{7,}\""
+A1S="[^[:alpha:]](password|passwd|pwd|pass|secret|token|api[_-]?key|access[_-]?key)[^=]{0,24}=[[:space:]]*'[^']{8,}"
 if printf '%s\n' "$ADDED" | grep -qiE "$A1D" || printf '%s\n' "$ADDED" | grep -qiE "$A1S"; then
   bad "A1 硬编码凭据（identifier = 引号包裹的长字面量）"
-  printf '%s\n' "$ADDED" | grep -iE "(password|passwd|secret|token|api[_-]?key|access[_-]?key)[^=]*=" | head -5 | sed 's/^/      /'
+  # ⚠️ 诊断必须用**与判定相同的严格正则**。此前这里用的是一条松得多的
+  # `(password|…)[^=]*=`，于是打印出来的是 guard.sh 自己的正则定义行
+  # （它们含 "password…=" 字样），真正违规的那一行反被淹掉 —— 指错方向的
+  # 诊断比没有诊断更糟，它会把人送去查守护本身。
+  printf '%s\n' "$ADDED" | grep -iE "$A1D|$A1S" | head -5 | sed 's/^/      /'
 else
   ok "A1 无硬编码凭据"
 fi
