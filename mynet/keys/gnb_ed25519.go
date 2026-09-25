@@ -28,13 +28,35 @@ type GNBKeyPair struct {
 	PublicKey []byte
 }
 
-// ToHex converts the key pair to hexadecimal strings as GNB expects
+// ToHex 返回 GNB **落盘格式**的 hex：私钥 128 字符、公钥 64 字符。
+//
+// ⚠️ 私钥必须是 `clamp(SHA512(seed)[0:32]) || SHA512(seed)[32:64]` ——
+// 前 32 字节是 clamp 过的标量，后 32 字节是 nonce 派生源。
+// 权威依据是 GNB 自己的生成代码 mynet_gnb/src/libs/ed25519/keypair.c:8-12：
+//
+//	sha512(seed, 32, private_key);
+//	private_key[0] &= 248;      ← clamp 是**就地**作用在要写盘的缓冲区上
+//	private_key[31] &= 63;
+//	private_key[31] |= 64;
+//
+// 而 gnb_keys.c:74 读盘后 `gnb_hex2bin(...)` **原样使用、不再 clamp**
+// （全仓的 clamp 只出现在 keypair.c 与 key_exchange.c 两处）。
+// 实测印证：gnb_crypto 产出的 .private 满足 byte[0]&7==0、byte[31]&0xC0==0x40。
+//
+// 此前这里直接编码 kp.PrivateKey（= **未 clamp** 的原始 SHA512(seed)），
+// 注释还写着「as GNB expects」—— 那个说法是错的。之所以一直没暴露：
+// ToHex 在生产代码里零调用者（只有测试用），而 Go 侧签名走
+// scalarFromGNBPrivate()，它会显式再 clamp 一次，对两种输入都自洽。
+// 一旦接到 mynet.conf → var/gnb/security/<id>.private，gnb 拿到的就是错的标量
+// → 算出错的公钥 → 与对端 ed25519/<uuid>.public 对不上 → 认证失败。
 func (kp *GNBKeyPair) ToHex() (privateHex, publicHex string) {
-	// GNB stores the full 64-byte private key as 128-character hex
-	privateHex = hex.EncodeToString(kp.PrivateKey)
-	// Public key is 32 bytes -> 64 character hex
-	publicHex = hex.EncodeToString(kp.PublicKey)
-	return
+	onDisk := make([]byte, 64)
+	copy(onDisk[:32], kp.ProcessedPrivateKey) // clamp 过的标量
+	if len(kp.PrivateKey) == 64 {
+		copy(onDisk[32:], kp.PrivateKey[32:64]) // SHA512(seed) 的后半 = nonce 派生源
+	}
+
+	return hex.EncodeToString(onDisk), hex.EncodeToString(kp.PublicKey)
 }
 
 // GenerateGNBKeyPair generates a new GNB-compatible ed25519 key pair
@@ -206,26 +228,6 @@ func ParseGNBFormat(privateHex, publicHex string) ([]byte, []byte, error) {
 	}
 
 	return privateKey, publicKey, nil
-}
-
-// ToGNBFormat converts binary keys to GNB hex format
-func ToGNBFormat(privateKey, publicKey []byte) (string, string) {
-	var privateHex string
-
-	if len(privateKey) == 32 {
-		// If only 32 bytes provided, assume it's the processed key and extend to 64
-		fullPrivate := make([]byte, 64)
-		copy(fullPrivate[:32], privateKey)
-		// Second 32 bytes derived from the first 32
-		h := sha512.Sum512(privateKey)
-		copy(fullPrivate[32:], h[32:])
-		privateHex = hex.EncodeToString(fullPrivate)
-	} else {
-		privateHex = hex.EncodeToString(privateKey)
-	}
-
-	publicHex := hex.EncodeToString(publicKey)
-	return privateHex, publicHex
 }
 
 // ConvertStandardToGNB converts standard ed25519 to GNB format
