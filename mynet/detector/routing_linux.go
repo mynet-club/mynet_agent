@@ -3,7 +3,6 @@ package detector
 import (
 	"fmt"
 	"net"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -61,14 +60,14 @@ func (d *LinuxRoutingDetector) IsSupported() bool {
 // detectInterfaces 检测网络接口
 func (d *LinuxRoutingDetector) detectInterfaces(info *RoutingInfo) error {
 	// 使用 ip 命令获取接口信息
-	if output, err := exec.Command("ip", "addr", "show").Output(); err == nil {
+	if output, err := sysExec("ip", "addr", "show").Output(); err == nil {
 		interfaces := d.parseIPAddrOutput(string(output))
 		info.Interfaces = interfaces
 		return nil
 	}
 
 	// 回退到 ifconfig
-	if output, err := exec.Command("ifconfig").Output(); err == nil {
+	if output, err := sysExec("ifconfig").Output(); err == nil {
 		interfaces := d.parseIfconfigOutput(string(output))
 		info.Interfaces = interfaces
 		return nil
@@ -260,14 +259,14 @@ func (d *LinuxRoutingDetector) guessInterfaceType(name string) string {
 // detectRoutes 检测路由表
 func (d *LinuxRoutingDetector) detectRoutes(info *RoutingInfo) error {
 	// 使用 ip route 命令
-	if output, err := exec.Command("ip", "route", "show").Output(); err == nil {
+	if output, err := sysExec("ip", "route", "show").Output(); err == nil {
 		routes := d.parseIPRouteOutput(string(output))
 		info.Routes = routes
 		return nil
 	}
 
 	// 回退到 route 命令
-	if output, err := exec.Command("route", "-n").Output(); err == nil {
+	if output, err := sysExec("route", "-n").Output(); err == nil {
 		routes := d.parseRouteOutput(string(output))
 		info.Routes = routes
 		return nil

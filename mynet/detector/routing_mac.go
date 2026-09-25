@@ -3,7 +3,6 @@
 package detector
 
 import (
-	"os/exec"
 	"runtime"
 	"strings"
 )
@@ -38,7 +37,7 @@ func (d *DarwinRoutingDetector) GetCacheKey() string { return "routing:darwin" }
 func (d *DarwinRoutingDetector) IsSupported() bool   { return runtime.GOOS == "darwin" }
 
 func darwinDefaultGateway(info *RoutingInfo) error {
-	out, err := exec.Command("route", "-n", "get", "default").Output()
+	out, err := sysExec("route", "-n", "get", "default").Output()
 	if err != nil {
 		return err
 	}
@@ -57,7 +56,7 @@ func darwinDefaultGateway(info *RoutingInfo) error {
 }
 
 func darwinRouteTable(info *RoutingInfo) error {
-	out, err := exec.Command("netstat", "-rn", "-f", "inet").Output()
+	out, err := sysExec("netstat", "-rn", "-f", "inet").Output()
 	if err != nil {
 		return err
 	}
@@ -81,7 +80,7 @@ func darwinRouteTable(info *RoutingInfo) error {
 }
 
 func darwinInterfaces(info *RoutingInfo) error {
-	out, err := exec.Command("ifconfig", "-a").Output()
+	out, err := sysExec("ifconfig", "-a").Output()
 	if err != nil {
 		return err
 	}

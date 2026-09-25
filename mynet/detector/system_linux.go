@@ -25,7 +25,11 @@ func safeExecCommand(name string, args ...string) (output []byte, err error) {
 		}
 	}()
 
-	// 直接执行命令
+	// 先解析成绝对路径 —— exec.Command 的查找用的是**父进程** PATH，
+	// 下面设 cmd.Env 救不了查找（见 syscmd.go 的注释）
+	if p := lookPathSys(name); p != "" {
+		name = p
+	}
 	cmd := exec.Command(name, args...)
 	// 设置完整的 PATH
 	if cmd.Env == nil {
