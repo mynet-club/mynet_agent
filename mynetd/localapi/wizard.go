@@ -33,6 +33,9 @@ func (s *Server) registerWizardRoutes() {
 	s.mux.HandleFunc("/api/v1/wizard/login", s.handleWizardLogin)
 	s.mux.HandleFunc("/api/v1/wizard/logout", s.handleWizardLogout)
 	s.mux.HandleFunc("/api/v1/wizard/state", s.handleWizardState)
+	// P1 状态机：六态 + 一言之 + 按钮面。与 wizard/state 分开是刻意的 ——
+	// wizard/state 回答「向导走到哪」，node-status 回答「这台机器的节点能不能用」。
+	s.mux.HandleFunc("/api/v1/node-status", s.handleNodeStatus)
 }
 
 // handleWizardLogin 口令走 stdin，绝不进 argv。

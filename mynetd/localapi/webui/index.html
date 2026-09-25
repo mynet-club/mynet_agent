@@ -20,6 +20,17 @@ main{padding:20px;max-width:960px}
 .kv{min-width:140px}.kv .k{color:var(--mut);font-size:12px}.kv .v{font-size:15px;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#243044}
 .tag.ok{color:var(--ok)}.tag.bad{color:var(--bad)}
+/* ① 状态横幅 —— 一言之 + 主按钮。颜色即状态，不靠文字猜 */
+.banner{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:10px;border:1px solid #243044;background:var(--panel);margin-bottom:14px}
+.banner .dot{width:12px;height:12px;border-radius:99px;flex:none;background:var(--mut)}
+.banner .one{flex:1;font-size:15px;font-weight:500}
+.banner .detail{display:block;font-size:12px;font-weight:400;color:var(--mut);margin-top:2px}
+.banner .acts{display:flex;gap:8px;flex:none}
+.banner.s-RUNNING{border-color:#1d4d35;background:#12261c}.banner.s-RUNNING .dot{background:var(--ok)}
+.banner.s-DEGRADED{border-color:#6b5420;background:#2a2210}.banner.s-DEGRADED .dot{background:#e6b84d}
+.banner.s-FAILED{border-color:#6b2a30;background:#2a1216}.banner.s-FAILED .dot{background:var(--bad)}
+.banner.s-UNINSTALLED{border-color:#3a4558}.banner.s-UNINSTALLED .dot{background:#6b7a90}
+.banner.s-INSTALLED,.banner.s-CONFIGURED{border-color:#2a3f66}.banner.s-INSTALLED .dot,.banner.s-CONFIGURED .dot{background:var(--acc)}
 input,select{background:#0f1419;border:1px solid #243044;color:var(--ink);padding:8px 10px;border-radius:6px;font:inherit}
 button.primary{background:var(--acc);border:0;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
 button.primary:disabled{opacity:.5}
@@ -38,6 +49,13 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
   <span class="muted" id="listen"></span>
 </header>
 <main>
+  <!-- ① 状态横幅：一言之 + 主按钮。状态由 /api/v1/node-status 算定，前端只渲染 -->
+  <div class="banner" id="node-banner">
+    <span class="dot"></span>
+    <div class="one"><span id="node-one">读取状态…</span><span class="detail" id="node-detail"></span></div>
+    <div class="acts" id="node-acts"></div>
+  </div>
+
   <div id="view-wizard">
     <div class="card">
       <h2>首次运行向导</h2>
@@ -232,6 +250,8 @@ async function wizStart(cmd) {
     body: JSON.stringify({ argv: ['service', 'status', 'gnb'] })
   });
   el('wiz-out').textContent += '\n\n── 隧道状态 ──\n' + ((st.data && st.data.stdout) || JSON.stringify(st, null, 2));
+  // 顶部横幅跟着刷新 —— 「命令输出」和「状态」是两件事，都要更新
+  if (typeof loadNodeStatus === 'function') loadNodeStatus();
 }
 document.querySelectorAll('[data-wiz="start"]').forEach(b =>
   b.onclick = () => wizStart(['service', 'start', 'gnb']));
@@ -266,6 +286,77 @@ document.querySelectorAll('[data-wiz="logout"]').forEach(b =>
     }
   } catch (e) { wizShow(1); }
 })();
+
+// ── ① 状态横幅：六态 + 一言之 + 按钮面 ───────────────────
+// 状态由 Go 侧 /api/v1/node-status 一次算定，这里**只渲染**。
+// 按钮的可点与否完全跟 Actions 表走，前端不再自己判状态 ——
+// 否则 UI 判据会和 CLI 漂移，又出现「按钮亮着点下去不行」。
+const ACT_CMD = {
+  install:   null,                     // P3 接 mynet install
+  configure: () => { wizShow(1); return null; },  // 回向导
+  start:     ['service', 'start', 'gnb'],
+  restart:   ['service', 'reload', 'gnb'],
+  stop:      ['service', 'stop', 'gnb'],
+  'fix-routes': ['apply', '--auto'],
+  uninstall: null,
+  retry:     ['service', 'start', 'gnb']
+};
+
+async function loadNodeStatus() {
+  let st;
+  try {
+    const r = await api('/api/v1/node-status');
+    st = r.data;
+  } catch (e) {
+    el('node-one').textContent = '状态读取失败';
+    return;
+  }
+  if (!st) return;
+
+  const banner = el('node-banner');
+  banner.className = 'banner s-' + st.state;
+  el('node-one').textContent = st.one_line || st.state;
+  el('node-detail').textContent = st.detail || '';
+
+  // 主按钮 + 一个次按钮（如有）
+  const acts = el('node-acts');
+  acts.innerHTML = '';
+  const mkBtn = (id, primary) => {
+    const label = (st.labels && st.labels[id]) || id;
+    const enabled = st.actions && st.actions[id];
+    const b = document.createElement('button');
+    b.className = primary ? 'primary' : '';
+    b.textContent = label;
+    b.disabled = !enabled;
+    b.onclick = async () => {
+      const cmd = ACT_CMD[id];
+      if (!cmd) { el('wiz-out').textContent = '该动作尚未接入（' + id + '）'; return; }
+      if (typeof cmd === 'function') { cmd(); return; }
+      b.disabled = true;
+      await wizStart(cmd);
+      await loadNodeStatus();
+    };
+    acts.appendChild(b);
+    return b;
+  };
+  if (st.primary_action) mkBtn(st.primary_action, true);
+  for (const id of ['stop', 'fix-routes', 'retry', 'configure', 'install', 'uninstall']) {
+    if (id === st.primary_action) continue;
+    if (st.actions && st.actions[id]) mkBtn(id, false);
+  }
+
+  // 向导区内的按钮也按 Actions 禁用 —— 同一套判据
+  const map = { 'data-wiz="start"': 'start', 'data-wiz="restart"': 'restart' };
+  for (const sel in map) {
+    const id = map[sel];
+    document.querySelectorAll('[' + sel + ']').forEach(b => {
+      b.disabled = !(st.actions && st.actions[id]);
+    });
+  }
+}
+loadNodeStatus();
+// 状态变化（起停后）就地刷新；30s 轮询兜底「人从别处 kill 了 gnb」
+setInterval(loadNodeStatus, 30000);
 
 document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
   const argv = JSON.parse(b.dataset.cmd);

@@ -1,0 +1,427 @@
+package localapi
+
+import (
+	"encoding/json"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+// 本机节点状态机（P1）—— 判据全部来自**磁盘产物 + 进程 + 内核**，
+// 不靠内存计数器（CPI-68：落盘结果比命令退出码可信）。
+//
+// 状态一经算定，前端只渲染：横幅一言之、主按钮、按钮禁用表，
+// 都由这里给出。前端不许自己拼状态机 —— 那会和 CLI 判据漂移。
+
+// NodeState 本机节点生命周期状态。
+type NodeState string
+
+const (
+	StateUninstalled NodeState = "UNINSTALLED"
+	StateInstalled   NodeState = "INSTALLED"
+	StateConfigured  NodeState = "CONFIGURED"
+	StateRunning     NodeState = "RUNNING"
+	StateDegraded    NodeState = "DEGRADED"
+	StateFailed      NodeState = "FAILED"
+)
+
+// NodeStatus 状态机输出。one_line 是「状态一言之」；actions 是按钮面。
+type NodeStatus struct {
+	State   NodeState `json:"state"`
+	OneLine string    `json:"one_line"`
+	// PrimaryAction 主按钮动作 id；空表示无（不应发生）。
+	PrimaryAction string `json:"primary_action"`
+	// Actions 全部动作的可用性。键是动作 id，值是是否可点。
+	// 前端按这张表禁用/启用，不要自己再判一遍状态。
+	Actions map[string]bool `json:"actions"`
+	// 按钮文案（前端直接用，保证「一言之」与按钮用词一致）
+	Labels map[string]string `json:"labels"`
+	// 明细区（P1 只给关键项，P2 再补对端/路由全表）
+	Home        string `json:"home"`
+	GnbBin      string `json:"gnb_bin"`
+	Installed   bool   `json:"installed"`
+	Configured  bool   `json:"configured"`
+	ProcessUp   bool   `json:"process_up"`
+	ProcessPID  int    `json:"process_pid,omitempty"`
+	TunIface    string `json:"tun_iface,omitempty"`
+	OverlayIP   string `json:"overlay_ip,omitempty"`
+	TunUp       bool   `json:"tun_up"`
+	RoutesOK    bool   `json:"routes_ok"`
+	NodeID      string `json:"node_id,omitempty"`
+	PeersTotal  int    `json:"peers_total"`
+	PeersRouted int    `json:"peers_routed"`
+	// Detail 一言之外的补充说明（可空），比如「缺 2 条路由」
+	Detail string `json:"detail,omitempty"`
+}
+
+// 动作 id —— 前后端共用的契约
+const (
+	ActInstall   = "install"
+	ActConfigure = "configure"
+	ActStart     = "start"
+	ActRestart   = "restart"
+	ActStop      = "stop"
+	ActFixRoutes = "fix-routes"
+	ActUninstall = "uninstall"
+	ActRetry     = "retry"
+)
+
+// statusProbe 探测面。默认实现读真环境；测试注入替身。
+type statusProbe struct {
+	home string
+	// gnbPath gnb 可执行文件；空表示未安装
+	gnbPath string
+	// pidAlive 真实 pid 是否存活
+	pidAlive func(pid int) bool
+	// routeExists 查一条 OS 路由是否已装（目的地 CIDR 或 IP）
+	routeExists func(dest string) bool
+	// findIface 找挂了某 IP 的接口名
+	findIface func(ip string) string
+}
+
+// ComputeNodeStatus 算一次本机节点状态。
+func ComputeNodeStatus() NodeStatus {
+	return computeNodeStatus(defaultProbe())
+}
+
+func defaultProbe() statusProbe {
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = "."
+	}
+	return statusProbe{
+		home:     home,
+		gnbPath:  lookGnb(),
+		pidAlive: pidAlive,
+		routeExists: func(dest string) bool {
+			return osRouteExists(dest)
+		},
+		findIface: ifaceWithAddr,
+	}
+}
+
+func lookGnb() string {
+	if p, err := exec.LookPath("gnb"); err == nil {
+		return p
+	}
+	for _, dir := range []string{"/usr/local/bin", "/usr/bin", "/opt/mynet/bin"} {
+		p := filepath.Join(dir, "gnb")
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	// signal 0 只做存在性检查，不发信号
+	return syscall.Kill(pid, 0) == nil
+}
+
+// ifaceWithAddr 找挂了该 IPv4 的接口名（darwin 的 utunN / linux 的 gnb_tun）。
+func ifaceWithAddr(ip string) string {
+	want := net.ParseIP(ip)
+	if want == nil {
+		return ""
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipnet.IP.Equal(want) {
+				return iface.Name
+			}
+		}
+	}
+	return ""
+}
+
+// osRouteExists 查系统路由表里有没有这个目的地。
+// darwin 用 `route -n get`，linux 用 `ip route show` —— 两者的退出码都可靠。
+//
+// ⚠️ 必须用 lookPathAny 解析出绝对路径再 exec：daemon 的 PATH 往往没有
+// /sbin，而 route/ifconfig 就在那儿。症状是「终端里查得到、node-status 说缺失」
+// —— 与 apply 曾经的 `exec: "route": not found` 同一坑。
+func osRouteExists(dest string) bool {
+	// 裸 IP 当 host 查；带前缀的当整条查
+	if _, _, err := net.ParseCIDR(dest); err == nil {
+		host := dest
+		if ip, _, err := net.ParseCIDR(dest); err == nil {
+			host = ip.String()
+		}
+		// linux: ip route show <cidr> 有输出即存在
+		if ipBin := lookPathAny("ip"); ipBin != "" {
+			out, err := exec.Command(ipBin, "route", "show", dest).Output()
+			if err == nil {
+				return len(strings.TrimSpace(string(out))) > 0
+			}
+		}
+		return darwinRouteGet(host)
+	}
+	return darwinRouteGet(dest)
+}
+
+func darwinRouteGet(host string) bool {
+	bin := lookPathAny("route")
+	if bin == "" {
+		return false
+	}
+	out, err := exec.Command(bin, "-n", "get", host).Output()
+	if err != nil {
+		return false
+	}
+	s := string(out)
+	// route get 对「走默认网关」的目标也 exit 0，要看 destination 是不是 host 本身
+	return strings.Contains(s, host) && !strings.Contains(s, "destination: default")
+}
+
+// lookPathAny 先走 PATH，失败后扫系统目录。
+// mynetd 起来时 PATH 常是残的（/sbin 不在里面），而 route/ifconfig 在 /sbin。
+func lookPathAny(name string) string {
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	for _, dir := range []string{"/sbin", "/usr/sbin", "/usr/bin", "/bin"} {
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+func computeNodeStatus(p statusProbe) NodeStatus {
+	home := p.home
+	conf := filepath.Join(home, "conf")
+	gnbConf := filepath.Join(home, "var", "gnb")
+	bundlePath := filepath.Join(home, "var", "bundle.json")
+
+	st := NodeStatus{
+		Home: home,
+		Actions: map[string]bool{
+			ActInstall: false, ActConfigure: false, ActStart: false,
+			ActRestart: false, ActStop: false, ActFixRoutes: false,
+			ActUninstall: false, ActRetry: false,
+		},
+		Labels: map[string]string{
+			ActInstall:   "安装",
+			ActConfigure: "去配置",
+			ActStart:     "启动隧道",
+			ActRestart:   "重启隧道",
+			ActStop:      "停止",
+			ActFixRoutes: "修复路由",
+			ActUninstall: "卸载",
+			ActRetry:     "重试启动",
+		},
+	}
+
+	// ── ① 装没装 ─────────────────────────────────────────
+	st.GnbBin = p.gnbPath
+	st.Installed = p.gnbPath != ""
+	if !st.Installed {
+		st.State = StateUninstalled
+		st.OneLine = "未安装 gnb 驱动"
+		st.Detail = "隧道驱动不在 PATH，也没有安装足迹"
+		st.Actions[ActInstall] = true
+		st.Actions[ActConfigure] = true // 可以先配置再装
+		st.PrimaryAction = ActInstall
+		return st
+	}
+
+	// ── ② 配没配 ─────────────────────────────────────────
+	myConf := filepath.Join(conf, "mynet.conf")
+	nodeConf := filepath.Join(gnbConf, "node.conf")
+	st.Configured = fileNonEmpty(myConf) && fileNonEmpty(nodeConf)
+	if kv := readKV(myConf); kv != nil {
+		st.NodeID = kv["NODE_ID"]
+		if kv["OVERLAY_IP"] != "" {
+			st.OverlayIP = kv["OVERLAY_IP"]
+		}
+	}
+	// overlay IP 优先取 bundle 的 network.addresses（mynet.conf 不一定带）
+	peers := loadPeerRoutes(bundlePath)
+	if st.OverlayIP == "" && len(peers) > 0 {
+		// 本机地址在 bundle 的 addresses 里
+		st.OverlayIP = peers[0].SelfIP
+	}
+	st.PeersTotal = len(peers)
+
+	if !st.Configured {
+		st.State = StateInstalled
+		st.OneLine = "已安装，尚未配置节点"
+		st.Detail = "缺 conf/mynet.conf 或 var/gnb/node.conf"
+		st.Actions[ActConfigure] = true
+		st.Actions[ActUninstall] = true
+		st.PrimaryAction = ActConfigure
+		return st
+	}
+
+	// ── ③ 起没起 ─────────────────────────────────────────
+	pid := readGnbPID(filepath.Join(gnbConf, "gnb.pid"))
+	st.ProcessPID = pid
+	st.ProcessUp = pid > 0 && p.pidAlive(pid)
+
+	// tun：按 overlay IP 反查真实接口（darwin 是 utunN，配置里写的是 gnb_tun）
+	if st.OverlayIP != "" {
+		st.TunIface = p.findIface(st.OverlayIP)
+		st.TunUp = st.TunIface != ""
+	}
+
+	// 路由：每个对端 /32 都要在系统路由表里
+	routed := 0
+	var missing []string
+	for _, r := range peers {
+		if r.PeerIP == "" {
+			continue
+		}
+		if p.routeExists(r.PeerIP+"/32") || p.routeExists(r.PeerIP) {
+			routed++
+		} else {
+			missing = append(missing, r.PeerIP)
+		}
+	}
+	st.PeersRouted = routed
+	st.RoutesOK = st.PeersTotal > 0 && routed == st.PeersTotal
+
+	// ── ④ 判状态 ─────────────────────────────────────────
+	switch {
+	case !st.ProcessUp:
+		// 配好了但没在跑。pid 文件在而进程没了 = 上次没干净退出
+		if pid > 0 {
+			st.State = StateFailed
+			st.OneLine = "启动失败：gnb 已退出"
+			st.Detail = "pid 文件还在但进程不在（查 var/gnb/node.conf 与 security/ 密钥）"
+			st.Actions[ActRetry] = true
+			st.Actions[ActStart] = true
+			st.Actions[ActConfigure] = true
+			st.Actions[ActUninstall] = true
+			st.PrimaryAction = ActRetry
+		} else {
+			st.State = StateConfigured
+			st.OneLine = "已配置 " + orDash(st.OverlayIP) + "，隧道未启动"
+			st.Detail = "不启动的话节点只是「配好了」，还没在跑"
+			st.Actions[ActStart] = true
+			st.Actions[ActConfigure] = true
+			st.Actions[ActUninstall] = true
+			st.PrimaryAction = ActStart
+		}
+		return st
+
+	case !st.TunUp:
+		st.State = StateDegraded
+		st.OneLine = "进程在，但隧道接口没有 " + orDash(st.OverlayIP)
+		st.Detail = "gnb 活着，却找不到挂了 overlay IP 的接口 —— 配置或密钥有问题"
+		st.Actions[ActRestart] = true
+		st.Actions[ActStop] = true
+		st.Actions[ActFixRoutes] = true
+		st.Actions[ActConfigure] = true
+		st.PrimaryAction = ActRestart
+		return st
+
+	case st.PeersTotal > 0 && !st.RoutesOK:
+		st.State = StateDegraded
+		st.OneLine = "进程在，但到 " + strings.Join(missing, "、") + " 的路由缺失"
+		st.Detail = "接口在、IP 在，但内核路由没装上 —— ping 会 100% 丢包"
+		st.Actions[ActFixRoutes] = true
+		st.Actions[ActRestart] = true
+		st.Actions[ActStop] = true
+		st.PrimaryAction = ActFixRoutes
+		return st
+	}
+
+	st.State = StateRunning
+	st.OneLine = "运行中 · " + orDash(st.TunIface) + " · " + orDash(st.OverlayIP) +
+		" · 对端 " + strconv.Itoa(st.PeersRouted) + "/" + strconv.Itoa(st.PeersTotal) + " 在线"
+	st.Actions[ActRestart] = true
+	st.Actions[ActStop] = true
+	st.Actions[ActConfigure] = true
+	st.Actions[ActUninstall] = true
+	st.PrimaryAction = ActRestart
+	return st
+}
+
+// peerRoute 一对「本机 IP + 对端 IP」，用于路由存在性检查。
+type peerRoute struct {
+	SelfIP string
+	PeerIP string
+}
+
+// loadPeerRoutes 从 bundle.json 读本机地址与对端 /32 列表。
+func loadPeerRoutes(bundlePath string) []peerRoute {
+	b, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return nil
+	}
+	var env struct {
+		Network struct {
+			Addresses []string `json:"addresses"`
+			Routes    []struct {
+				Prefix string `json:"prefix"`
+				Dev    string `json:"dev"`
+			} `json:"routes"`
+		} `json:"network"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return nil
+	}
+	self := ""
+	if len(env.Network.Addresses) > 0 {
+		self = strings.Split(env.Network.Addresses[0], "/")[0]
+	}
+	var out []peerRoute
+	for _, r := range env.Network.Routes {
+		ip := strings.Split(r.Prefix, "/")[0]
+		if ip == "" || ip == self {
+			continue
+		}
+		out = append(out, peerRoute{SelfIP: self, PeerIP: ip})
+	}
+	// 至少把本机地址带回去，供 OverlayIP 用
+	if len(out) == 0 && self != "" {
+		out = append(out, peerRoute{SelfIP: self})
+	}
+	return out
+}
+
+func readGnbPID(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
+// handleNodeStatus GET /api/v1/node-status —— 状态机出口。
+func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request) {
+	st := ComputeNodeStatus()
+	writeJSON(w, 200, map[string]any{"success": true, "data": st})
+}
