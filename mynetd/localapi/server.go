@@ -65,6 +65,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult) // E-4
 	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch)     // D-10 / R5-1 焦点切换
 	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)              // R5-1 并行会话
+	s.mux.HandleFunc("/api/v1/relay", s.handleRelay)                  // GUI→mynetd→gateway→back 平台面
 	// 向导端点是 **API 不是 UI**，不随 embed 构建标签开合：
 	// 没有内嵌 webui 的构建（D-11 的 OpenWrt 形态）照样要能被 LuCI/脚本调用。
 	s.registerWizardRoutes()

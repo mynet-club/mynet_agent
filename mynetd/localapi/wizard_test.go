@@ -214,8 +214,8 @@ func TestWebUIHasNoDuplicateIDs(t *testing.T) {
 			t.Errorf("id=%q 出现 %d 次 —— 重复 id 让 getElementById 只绑到第一份，其余按钮是死的", id, n)
 		}
 	}
-	// 启动/退出必须用 data-wiz 绑定（3、4 两步各一份），且 JS 里要 querySelectorAll
-	for _, want := range []string{`data-wiz="start"`, `data-wiz="restart"`, `data-wiz="logout"`, `querySelectorAll('[data-wiz="start"]')`} {
+	// 启动/退出必须用 data-wiz 绑定（3、4 两步各一份），且 JS 里统一 querySelectorAll
+	for _, want := range []string{`data-wiz="start"`, `data-wiz="restart"`, `data-wiz="logout"`, `querySelectorAll('[data-wiz]')`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("webui 缺 %s", want)
 		}
@@ -229,5 +229,42 @@ func mustMkdirWrite(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// relay 两跳：GUI→mynetd→gateway。路径白名单在**本机这一跳也要查**，
+// 不能假设上游一定挡得住。
+func TestRelayRejectsPathOutsideWhitelist(t *testing.T) {
+	s := NewServer(Config{Token: "t"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/api/v1/relay?path=/api/v1/admin/secret", nil)
+	req.Host = "127.0.0.1:8096"
+	s.withSecurity(http.HandlerFunc(s.handleRelay)).ServeHTTP(rec, req)
+	if rec.Code != 403 {
+		t.Fatalf("code=%d want 403（白名单外必须拒）body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRelayRequiresPath(t *testing.T) {
+	s := NewServer(Config{Token: "t"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/api/v1/relay", nil)
+	req.Host = "127.0.0.1:8096"
+	s.withSecurity(http.HandlerFunc(s.handleRelay)).ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("code=%d want 400", rec.Code)
+	}
+}
+
+// 未配 MYNET_GATEWAYS 时要明确 502，而不是悄悄空转。
+func TestRelayWithoutGatewayIs502(t *testing.T) {
+	os.Unsetenv("MYNET_GATEWAYS")
+	s := NewServer(Config{Token: "t"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/api/v1/relay?path=/api/v1/nodes", nil)
+	req.Host = "127.0.0.1:8096"
+	s.withSecurity(http.HandlerFunc(s.handleRelay)).ServeHTTP(rec, req)
+	if rec.Code != 502 {
+		t.Fatalf("code=%d want 502 body=%s", rec.Code, rec.Body.String())
 	}
 }

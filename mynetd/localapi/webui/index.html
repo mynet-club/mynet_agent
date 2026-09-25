@@ -5,227 +5,406 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MyNet</title>
 <style>
-:root{--bg:#0f1419;--panel:#1a2332;--ink:#e7ecf3;--mut:#8b9bb4;--acc:#3d8bfd;--ok:#3dd68c;--bad:#f07178}
-*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
-header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid #243044}
+:root{--bg:#0f1419;--panel:#1a2332;--ink:#e7ecf3;--mut:#8b9bb4;--acc:#3d8bfd;--ok:#3dd68c;--bad:#f07178;--warn:#e6b84d;--line:#243044}
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
 header h1{margin:0;font-size:16px;font-weight:600;letter-spacing:.02em}
-nav{display:flex;gap:4px}
+nav{display:flex;gap:4px;flex:1}
 nav button{background:none;border:0;color:var(--mut);padding:8px 12px;border-radius:6px;cursor:pointer;font:inherit}
 nav button.on{color:var(--ink);background:#243044}
 nav button:hover{color:var(--ink)}
-main{padding:20px;max-width:960px}
-.card{background:var(--panel);border:1px solid #243044;border-radius:10px;padding:16px;margin-bottom:14px}
+main{padding:20px;max-width:1080px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
 .card h2{margin:0 0 10px;font-size:13px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.06em}
-.row{display:flex;gap:12px;flex-wrap:wrap}
-.kv{min-width:140px}.kv .k{color:var(--mut);font-size:12px}.kv .v{font-size:15px;font-variant-numeric:tabular-nums}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.kv{min-width:130px}.kv .k{color:var(--mut);font-size:12px}.kv .v{font-size:15px;font-variant-numeric:tabular-nums}
 .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:#243044}
-.tag.ok{color:var(--ok)}.tag.bad{color:var(--bad)}
-/* ① 状态横幅 —— 一言之 + 主按钮。颜色即状态，不靠文字猜 */
-.banner{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:10px;border:1px solid #243044;background:var(--panel);margin-bottom:14px}
+.tag.ok{color:var(--ok)}.tag.bad{color:var(--bad)}.tag.warn{color:var(--warn)}
+input,select{background:#0f1419;border:1px solid var(--line);color:var(--ink);padding:8px 10px;border-radius:6px;font:inherit}
+button{font:inherit;cursor:pointer}
+button.primary{background:var(--acc);border:0;color:#fff;padding:8px 14px;border-radius:6px}
+button.ghost{background:none;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:6px}
+button.danger{background:none;border:1px solid var(--bad);color:var(--bad);padding:8px 14px;border-radius:6px}
+button:disabled{opacity:.45;cursor:not-allowed}
+pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:280px;font-size:12px;margin:0}
+.muted{color:var(--mut)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.banner{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:10px;border:1px solid var(--line);background:var(--panel);margin-bottom:14px}
 .banner .dot{width:12px;height:12px;border-radius:99px;flex:none;background:var(--mut)}
 .banner .one{flex:1;font-size:15px;font-weight:500}
 .banner .detail{display:block;font-size:12px;font-weight:400;color:var(--mut);margin-top:2px}
 .banner .acts{display:flex;gap:8px;flex:none}
 .banner.s-RUNNING{border-color:#1d4d35;background:#12261c}.banner.s-RUNNING .dot{background:var(--ok)}
-.banner.s-DEGRADED{border-color:#6b5420;background:#2a2210}.banner.s-DEGRADED .dot{background:#e6b84d}
+.banner.s-DEGRADED{border-color:#6b5420;background:#2a2210}.banner.s-DEGRADED .dot{background:var(--warn)}
 .banner.s-FAILED{border-color:#6b2a30;background:#2a1216}.banner.s-FAILED .dot{background:var(--bad)}
 .banner.s-UNINSTALLED{border-color:#3a4558}.banner.s-UNINSTALLED .dot{background:#6b7a90}
 .banner.s-INSTALLED,.banner.s-CONFIGURED{border-color:#2a3f66}.banner.s-INSTALLED .dot,.banner.s-CONFIGURED .dot{background:var(--acc)}
-input,select{background:#0f1419;border:1px solid #243044;color:var(--ink);padding:8px 10px;border-radius:6px;font:inherit}
-button.primary{background:var(--acc);border:0;color:#fff;padding:8px 14px;border-radius:6px;cursor:pointer;font:inherit}
-button.primary:disabled{opacity:.5}
-pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:240px;font-size:12px}
-.muted{color:var(--mut)}
+table.grid{width:100%;border-collapse:collapse}
+table.grid th{text-align:left;color:var(--mut);font-size:12px;font-weight:500;padding:8px;border-bottom:1px solid var(--line)}
+table.grid td{padding:8px;border-top:1px solid var(--line);font-size:13px}
+.step-dots{display:flex;gap:8px;margin-bottom:12px}
+.step-dots .s{padding:4px 10px;border-radius:99px;font-size:12px;background:#243044;color:var(--mut)}
+.step-dots .s.on{background:var(--acc);color:#fff}
+.step-dots .s.done{background:#1d4d35;color:var(--ok)}
+details summary{cursor:pointer;color:var(--mut);font-size:12px;user-select:none}
+.bar{height:6px;background:#243044;border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--acc)}
+.hidden{display:none!important}
 </style>
 </head>
 <body>
 <header>
   <h1>MyNet</h1>
-  <nav>
-    <button data-v="wizard" class="on">向导</button>
+  <nav id="nav">
+    <button data-v="panel" class="on">面板</button>
+    <button data-v="wizard">向导</button>
     <button data-v="local">本机</button>
-    <button data-v="social">社区</button>
+    <button data-v="platform">平台</button>
   </nav>
-  <span class="muted" id="listen"></span>
+  <span class="muted mono" id="listen"></span>
 </header>
 <main>
-  <!-- ① 状态横幅：一言之 + 主按钮。状态由 /api/v1/node-status 算定，前端只渲染 -->
+  <!-- ① 状态横幅：一言之 + 主按钮，六态色点 -->
   <div class="banner" id="node-banner">
     <span class="dot"></span>
     <div class="one"><span id="node-one">读取状态…</span><span class="detail" id="node-detail"></span></div>
     <div class="acts" id="node-acts"></div>
   </div>
 
-  <!-- ② 节点身份 + ④ 运行 + ⑤ 对端与路由：状态明细，与横幅同源 -->
-  <div class="card" id="zone-identity">
-    <h2>节点身份</h2>
-    <div class="row" id="id-row"><span class="muted">—</span></div>
-  </div>
-  <div class="card" id="zone-run">
-    <h2>运行</h2>
-    <div class="row" id="run-row"><span class="muted">—</span></div>
-    <div class="row" id="run-acts" style="margin-top:10px"></div>
-  </div>
-  <div class="card" id="zone-peers">
-    <h2>对端与路由</h2>
-    <table class="table" id="peers-table" style="width:100%;border-collapse:collapse">
-      <thead><tr style="text-align:left;color:var(--mut);font-size:12px">
-        <th style="padding:6px 8px">角色</th><th style="padding:6px 8px">NODE_ID</th>
-        <th style="padding:6px 8px">overlay</th><th style="padding:6px 8px">链路</th>
-        <th style="padding:6px 8px">延迟</th><th style="padding:6px 8px">OS 路由</th>
-      </tr></thead>
-      <tbody id="peers-body"><tr><td colspan="6" class="muted" style="padding:8px">—</td></tr></tbody>
-    </table>
-    <details style="margin-top:10px">
-      <summary class="muted" style="cursor:pointer">route.conf（本机在前 · 节点一律 /32）</summary>
-      <pre id="route-conf" style="margin-top:8px">—</pre>
-    </details>
+  <!-- ══════════ 面板 ══════════ -->
+  <div id="view-panel">
+    <div class="card">
+      <h2>节点身份</h2>
+      <div class="row" id="id-row"><span class="muted">—</span></div>
+    </div>
+    <div class="card">
+      <h2>运行</h2>
+      <div class="row" id="run-row"><span class="muted">—</span></div>
+      <div class="row" id="run-acts" style="margin-top:12px"></div>
+    </div>
+    <div class="card">
+      <h2>对端与路由</h2>
+      <table class="grid">
+        <thead><tr>
+          <th>角色</th><th>NODE_ID</th><th>overlay</th><th>链路</th><th>延迟</th><th>OS 路由</th>
+        </tr></thead>
+        <tbody id="peers-body"><tr><td colspan="6" class="muted">—</td></tr></tbody>
+      </table>
+      <details style="margin-top:12px">
+        <summary>route.conf（本机在前 · 节点一律 /32）</summary>
+        <pre id="route-conf" style="margin-top:8px">—</pre>
+      </details>
+    </div>
   </div>
 
-  <div id="view-wizard">
+  <!-- ══════════ 向导 ══════════ -->
+  <div id="view-wizard" class="hidden">
     <div class="card">
       <h2>首次运行向导</h2>
-      <div class="row" id="wiz-steps" style="margin-bottom:12px"></div>
-      <p class="muted">登录 → 选节点 → 下载配置。口令只经本机管道交给
-        <code>mynet auth login --password-stdin</code>，<b>不会进命令行参数</b>；
-        口令与令牌都不进浏览器，只存在本机 <code>conf/credential.json</code>（0600）。</p>
+      <div class="step-dots" id="wiz-steps"></div>
+      <p class="muted">登录 → 选节点 → 下载配置 → 启动隧道。口令只经本机管道交给
+        <code>mynet auth login --password-stdin</code>，<b>不进命令行参数</b>；
+        口令与令牌都不进浏览器。</p>
 
-      <!-- 步骤 1：登录 -->
       <div id="wiz-step-1">
         <div class="row" style="margin-top:12px">
           <input id="wiz-api" placeholder="API 地址 https://api.mynet.club" style="min-width:280px">
           <input id="wiz-email" placeholder="邮箱">
-          <input id="wiz-pass" type="password" placeholder="口令" autocomplete="off"> <!-- GUARD-OK 这是密码输入框的 HTML 属性，不是硬编码凭据 -->
+          <input id="wiz-pass" type="password" placeholder="口令" autocomplete="off"> <!-- GUARD-OK HTML 密码框属性，非硬编码凭据 -->
           <button class="primary" id="wiz-login">登录</button>
         </div>
       </div>
 
-      <!-- 步骤 2：选节点 -->
-      <div id="wiz-step-2" hidden>
+      <div id="wiz-step-2" class="hidden">
         <div class="row" style="margin-top:12px">
           <select id="wiz-node" style="min-width:320px"><option>加载中…</option></select>
-          <input id="wiz-endpoint" placeholder="endpoint host:port（可选，无 index 时用于直连）">
+          <input id="wiz-endpoint" placeholder="endpoint host:port（可选）">
           <button class="primary" id="wiz-claim">选它，写入本机</button>
         </div>
-        <p class="muted">这一步会：在<b>本机</b>生成节点密钥 → 上传<b>公钥</b>到 back →
-          写 <code>conf/mynet.conf</code> → 下载配置到 <code>var/bundle.json</code>。
-          私钥不上传、不出本机。</p>
+        <p class="muted">本机生成密钥 → 上传<b>公钥</b> → 写 <code>conf/mynet.conf</code> → 下载配置。私钥不出本机。</p>
       </div>
 
-      <!-- 步骤 3：下载配置（claim 完成）-->
-      <div id="wiz-step-3" hidden>
+      <div id="wiz-step-3" class="hidden">
         <div class="row" style="margin-top:12px">
-          <!-- 启动/退出在 3、4 两步各有一份，用 class 绑定而不是 id ——
-               重复 id 时 getElementById 只拿到第一份，第 4 步的按钮是死的 -->
           <button class="primary" data-wiz="start">启动隧道</button>
-          <button data-wiz="logout">退出登录</button>
+          <button class="ghost" data-wiz="logout">退出登录</button>
         </div>
-        <p class="muted">配置已就位。下一步<strong>把隧道拉起来</strong> ——
-          不启动的话节点只是"配好了"，还没在跑。</p>
+        <p class="muted">配置已就位。下一步<strong>把隧道拉起来</strong> —— 不启动只是「配好了」。</p>
       </div>
 
-      <!-- 步骤 4：启动隧道 -->
-      <div id="wiz-step-4" hidden>
+      <div id="wiz-step-4" class="hidden">
         <div class="row" style="margin-top:12px">
           <button class="primary" data-wiz="start">启动隧道</button>
-          <button data-wiz="restart">重启隧道</button>
-          <button id="wiz-finish">完成，去看本机状态</button>
-          <button data-wiz="logout">退出登录</button>
+          <button class="ghost" data-wiz="restart">重启隧道</button>
+          <button class="ghost" id="wiz-finish">完成，去看面板</button>
+          <button class="danger" data-wiz="logout">退出登录</button>
         </div>
-        <p class="muted">隧道要建 tun 设备，需要<strong>特权</strong>（节点部署下 mynetd
-          以 root 跑；本机调试请用 <code>sudo</code> 启 mynetd）。
-          装成开机自启：<code>mynet install --gateways wss://…</code></p>
+        <p class="muted">隧道要建 tun，需特权（节点部署下 mynetd 以 root 跑）。装成开机自启：<code>mynet install --gateways wss://…</code></p>
       </div>
 
       <pre id="wiz-out" style="margin-top:12px">—</pre>
     </div>
   </div>
-  <div id="view-local" hidden>
-    <div class="card">
-      <h2>状态</h2>
-      <div class="row" id="status-row"><span class="muted">加载中…</span></div>
-    </div>
+
+  <!-- ══════════ 本机 ══════════ -->
+  <div id="view-local" class="hidden">
     <div class="card">
       <h2>系统能力 · system.json</h2>
-      <pre id="sys">—</pre>
+      <div class="row" id="sys-caps" style="margin-bottom:10px"><span class="muted">—</span></div>
+      <details>
+        <summary>完整 system.json</summary>
+        <pre id="sys" style="margin-top:8px">—</pre>
+      </details>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" id="btn-sys">重新探测</button>
+      </div>
     </div>
     <div class="card">
       <h2>指标（心跳数据源）</h2>
-      <pre id="metrics">—</pre>
-      <button class="primary" id="btn-metrics">刷新 metrics</button>
+      <div class="row" id="metrics-row"><span class="muted">—</span></div>
+      <details style="margin-top:10px">
+        <summary>完整 metrics</summary>
+        <pre id="metrics" style="margin-top:8px">—</pre>
+      </details>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btn-metrics">刷新 metrics</button>
+      </div>
     </div>
     <div class="card">
-      <h2>驱动</h2>
-      <div class="row">
-        <button class="primary" data-cmd='["driver","list"]'>列驱动</button>
-        <button class="primary" data-cmd='["detector","--json"]'>重新探测</button>
+      <h2>驱动与服务</h2>
+      <div class="row" id="driver-row"><span class="muted">—</span></div>
+      <div class="row" style="margin-top:12px">
+        <button class="ghost" data-cmd='["driver","list"]'>列驱动</button>
+        <button class="ghost" data-cmd='["detector","--json"]'>重新探测</button>
+        <button class="ghost" data-cmd='["service","status","gnb"]'>服务状态</button>
+        <button class="danger" id="btn-uninstall">卸载</button>
       </div>
+    </div>
+    <div class="card">
+      <h2>诊断 / 日志</h2>
+      <div class="row">
+        <button class="primary" id="btn-diag">跑一遍自检</button>
+        <button class="ghost" id="btn-logs">刷新日志</button>
+      </div>
+      <pre id="diag-out" style="margin-top:12px">—</pre>
+    </div>
+    <div class="card">
+      <h2>命令输出</h2>
       <pre id="cmd-out">—</pre>
     </div>
   </div>
-  <div id="view-social" hidden>
+
+  <!-- ══════════ 平台（relay） ══════════ -->
+  <div id="view-platform" class="hidden">
     <div class="card">
-      <h2>切换节点（互斥）</h2>
+      <h2>平台中继 · gateway → back</h2>
+      <p class="muted">经 <code>GET /api/v1/relay?path=/api/v1/nodes</code> 出去：
+        浏览器只谈本机，mynetd 转 gateway，gateway 转 back。鉴权头原样透传，鉴权归 back。</p>
       <div class="row">
-        <input id="node-id" placeholder="节点 ID">
-        <button class="primary" id="btn-switch">切换</button>
+        <button class="primary" id="btn-plat-nodes">拉节点列表</button>
+        <button class="ghost" id="btn-plat-routes">拉路由授权</button>
+        <button class="ghost" id="btn-plat-me">当前用户</button>
+        <span class="muted mono" id="plat-gw"></span>
       </div>
-      <pre id="switch-out">—</pre>
     </div>
     <div class="card">
-      <h2>平台态</h2>
-      <p class="muted">经 gateway /v1/relay；本页只跟本机 mynetd 说话，不持有 back 凭据。</p>
+      <h2>节点</h2>
+      <table class="grid">
+        <thead><tr><th>NODE_ID</th><th>名称</th><th>overlay</th><th>endpoint</th><th>状态</th></tr></thead>
+        <tbody id="plat-nodes-body"><tr><td colspan="5" class="muted">点「拉节点列表」</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>路由授权</h2>
+      <table class="grid">
+        <thead><tr><th>ID</th><th>源节点</th><th>目标节点</th><th>网段</th><th>状态</th></tr></thead>
+        <tbody id="plat-routes-body"><tr><td colspan="5" class="muted">点「拉路由授权」</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>原始响应</h2>
+      <pre id="plat-out">—</pre>
     </div>
   </div>
 </main>
 <script>
-const BASE = '';  // 同源：mynetd embed / 或 http://127.0.0.1:8096
-async function api(path, opts) {
-  const r = await fetch(BASE + path, Object.assign({ credentials: 'include' }, opts || {}));
-  return r.json();
+const BASE = '';
+function el(id){ return document.getElementById(id); }
+function show(id, obj){ el(id).textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+function kv(k,v){ return `<div class="kv"><div class="k">${k}</div><div class="v">${v||'—'}</div></div>`; }
+function fmtB(n){ return n ? (n>1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB') : '—'; }
+function fmtDur(sec){
+  if(!sec) return '—';
+  if(sec<60) return sec+'s';
+  if(sec<3600) return Math.floor(sec/60)+'m';
+  if(sec<86400) return Math.floor(sec/3600)+'h'+Math.floor((sec%3600)/60)+'m';
+  return Math.floor(sec/86400)+'d'+Math.floor((sec%86400)/3600)+'h';
 }
-function el(id) { return document.getElementById(id); }
-function show(id, obj) { el(id).textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+async function api(path, opts){
+  const r = await fetch(BASE+path, Object.assign({credentials:'include'}, opts||{}));
+  const text = await r.text();
+  try { return JSON.parse(text); } catch { return {success:false, raw:text, status:r.status}; }
+}
+async function apiJSON(path, method, body, headers){
+  return api(path, {
+    method: method||'GET',
+    headers: Object.assign({'Content-Type':'application/json'}, headers||{}),
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
 
-document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  for (const v of ['wizard', 'local', 'social']) {
-    const n = el('view-' + v);
-    if (n) n.hidden = b.dataset.v !== v;
+// ── 导航 ──────────────────────────────────────────────
+document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('on', x===b));
+  for (const v of ['panel','wizard','local','platform']) {
+    el('view-'+v).classList.toggle('hidden', b.dataset.v !== v);
   }
 });
 
-// ── 首次运行向导：登录 → 选节点 → 下载配置 ─────────────────
-// 步骤由 /api/v1/wizard/state 决定（看磁盘产物），不靠页面里的计数器 ——
-// 重开浏览器、重启 mynetd 都要一致（CPI-68 的教训：落盘结果比命令退出码可信）。
-function wizShow(step) {
-  for (let i = 1; i <= 4; i++) el('wiz-step-' + i).hidden = (i !== step);
-  el('wiz-steps').innerHTML = ['1 登录', '2 选节点', '3 下载配置', '4 启动隧道'].map((s, i) =>
-    `<span class="tag ${i + 1 === step ? 'ok' : ''}">${s}</span>`).join(' ');
-}
-
-el('wiz-login').onclick = async () => {
-  el('wiz-out').textContent = '登录中…';
-  const r = await api('/api/v1/wizard/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      api_base_url: el('wiz-api').value.trim(),
-      email: el('wiz-email').value.trim(),
-      password: el('wiz-pass').value
-    })
-  });
-  el('wiz-pass').value = '';           // 不留口令在 DOM 里
-  show('wiz-out', r);
-  if (r.success) { el('wiz-email').value = ''; await wizLoadNodes(); wizShow(2); }
+// ── 动作命令表 ────────────────────────────────────────
+const ACT_CMD = {
+  install: 'install',
+  configure: () => { document.querySelector('#nav button[data-v="wizard"]').click(); return null; },
+  start: ['service','start','gnb'],
+  restart: ['service','reload','gnb'],
+  stop: ['service','stop','gnb'],
+  'fix-routes': ['apply','--auto'],
+  uninstall: 'uninstall',
+  retry: ['service','start','gnb']
 };
 
-async function wizLoadNodes() {
-  const r = await api('/api/v1/command', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ argv: ['node', 'list'] })
+async function runCmd(argv){
+  return apiJSON('/api/v1/command', 'POST', {argv});
+}
+
+async function doInstallOrUninstall(kind){
+  let argv;
+  if (kind === 'install') {
+    const gw = prompt('gateway 入口（wss://…）：', 'wss://stage-gw.mynet.club');
+    if (!gw) return;
+    argv = ['install','--gateways',gw.trim()];
+  } else {
+    if (!confirm('卸载会停服务并删除二进制。\n节点身份与密钥保留在 home 下。')) return;
+    argv = ['uninstall'];
+  }
+  el('wiz-out').textContent = '执行 '+kind+' …';
+  const r = await runCmd(argv);
+  show('wiz-out', r);
+  await loadNodeStatus();
+}
+
+async function lifecycle(cmd, btn){
+  if (btn) btn.disabled = true;
+  const isStart = cmd[0]==='service' && (cmd[1]==='start'||cmd[1]==='reload');
+  const steps = isStart ? [cmd, ['apply','--auto']] : [cmd];
+  const all = [];
+  for (const argv of steps) all.push(await runCmd(argv));
+  show('cmd-out', all.length===1 ? all[0] : all);
+  if (btn) btn.disabled = false;
+  await loadNodeStatus();
+}
+
+// ── ① 状态横幅 + 面板 ─────────────────────────────────
+async function loadNodeStatus(){
+  let st;
+  try { st = (await api('/api/v1/node-status')).data; } catch { el('node-one').textContent='状态读取失败'; return; }
+  if (!st) return;
+
+  const banner = el('node-banner');
+  banner.className = 'banner s-'+st.state;
+  el('node-one').textContent = st.one_line || st.state;
+  el('node-detail').textContent = st.detail || '';
+
+  const acts = el('node-acts');
+  acts.innerHTML = '';
+  const mk = (id, primary) => {
+    const label = (st.labels&&st.labels[id]) || id;
+    const b = document.createElement('button');
+    b.className = primary ? 'primary' : 'ghost';
+    b.textContent = label;
+    b.disabled = !(st.actions&&st.actions[id]);
+    b.onclick = async () => {
+      const cmd = ACT_CMD[id];
+      if (cmd==='install' || cmd==='uninstall') return doInstallOrUninstall(cmd);
+      if (!cmd) return;
+      if (typeof cmd === 'function') return cmd();
+      await lifecycle(cmd, b);
+    };
+    acts.appendChild(b);
+    return b;
+  };
+  if (st.primary_action) mk(st.primary_action, true);
+  for (const id of ['stop','fix-routes','retry','configure','install','uninstall']) {
+    if (id !== st.primary_action && st.actions && st.actions[id]) mk(id, false);
+  }
+
+  // 面板：身份
+  el('id-row').innerHTML =
+    kv('NODE_ID', st.node_id) + kv('overlay', st.overlay_ip) + kv('接口', st.tun_iface) +
+    kv('MTU', st.mtu) + kv('gnb', st.gnb_bin ? '已安装' : '未安装') + kv('home', st.home);
+
+  // 面板：运行
+  el('run-row').innerHTML =
+    kv('进程', st.process_up ? `pid ${st.process_pid} · ${fmtDur(st.uptime_sec)}` : '未运行') +
+    kv('tun', st.tun_up ? `${st.tun_iface} · ${st.overlay_ip}` : '无') +
+    kv('RX', fmtB(st.rx_bytes)) + kv('TX', fmtB(st.tx_bytes)) +
+    kv('对端在线', `${st.peers_routed}/${st.peers_total}`);
+
+  const ra = el('run-acts');
+  ra.innerHTML = '';
+  for (const id of ['start','restart','stop','fix-routes','retry']) {
+    if (!(st.actions && st.actions[id])) continue;
+    const b = document.createElement('button');
+    b.className = id===st.primary_action ? 'primary' : 'ghost';
+    b.textContent = (st.labels&&st.labels[id])||id;
+    b.onclick = () => lifecycle(ACT_CMD[id], b);
+    ra.appendChild(b);
+  }
+
+  // 面板：对端表
+  const linkTag = (l) => {
+    if (l==='direct') return '<span class="tag ok">Direct</span>';
+    if (l==='relay')  return '<span class="tag warn">Relay</span>';
+    if (l==='local')  return '<span class="tag">本机</span>';
+    if (l==='offline')return '<span class="tag bad">离线</span>';
+    return '<span class="tag">未知</span>';
+  };
+  const tb = el('peers-body');
+  if (!st.peers || !st.peers.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="muted">无对端</td></tr>';
+  } else {
+    tb.innerHTML = st.peers.map(p => {
+      const routed = p.routed ? '<span class="tag ok">✓</span>' : '<span class="tag bad">✗ 缺</span>';
+      return `<tr>
+        <td>${p.is_self?'本机':'对端'}</td>
+        <td class="mono">${p.node_id||'—'}</td>
+        <td class="mono">${p.overlay||'—'}</td>
+        <td>${linkTag(p.link)}</td>
+        <td>${p.latency_ms ? p.latency_ms+'ms' : '—'}</td>
+        <td>${routed}</td>
+      </tr>`;
+    }).join('');
+  }
+  el('route-conf').textContent = st.route_conf_text || '（无 route.conf）';
+
+  // 向导按钮同源禁用
+  document.querySelectorAll('[data-wiz]').forEach(b => {
+    const id = b.dataset.wiz === 'start' ? 'start' : b.dataset.wiz === 'restart' ? 'restart' : null;
+    if (id) b.disabled = !(st.actions && st.actions[id]);
   });
+}
+
+// ── 向导 ──────────────────────────────────────────────
+function wizShow(step){
+  for (let i=1;i<=4;i++) el('wiz-step-'+i).classList.toggle('hidden', i!==step);
+  const names = ['1 登录','2 选节点','3 下载配置','4 启动隧道'];
+  el('wiz-steps').innerHTML = names.map((s,i) =>
+    `<span class="s ${i+1===step?'on':(i+1<step?'done':'')}">${s}</span>`).join('');
+}
+async function wizLoadNodes(){
+  const r = await runCmd(['node','list']);
   const out = (r.data && r.data.stdout) || '';
-  // node list 的输出是表格：NODE_ID NAME VPN OVERLAY_IP STATUS
   const opts = ['<option value="">— 选择节点 —</option>'];
   out.split('\n').slice(1).forEach(ln => {
     const m = ln.match(/^\s*(\d+)\s+(\S+)/);
@@ -233,279 +412,181 @@ async function wizLoadNodes() {
   });
   el('wiz-node').innerHTML = opts.join('');
 }
-
+el('wiz-login').onclick = async () => {
+  el('wiz-out').textContent = '登录中…';
+  const r = await apiJSON('/api/v1/wizard/login','POST',{
+    api_base_url: el('wiz-api').value.trim(),
+    email: el('wiz-email').value.trim(),
+    password: el('wiz-pass').value
+  });
+  el('wiz-pass').value = '';
+  show('wiz-out', r);
+  if (r.success) { el('wiz-email').value=''; await wizLoadNodes(); wizShow(2); }
+};
 el('wiz-claim').onclick = async () => {
   const id = el('wiz-node').value;
   if (!id) { el('wiz-out').textContent = '请先选择节点'; return; }
   el('wiz-out').textContent = '正在写入本机…';
-  const argv = ['node', 'claim', id, '--vpn-type', 'gnb'];
+  const argv = ['node','claim',id,'--vpn-type','gnb'];
   const ep = el('wiz-endpoint').value.trim();
   if (ep) argv.push('--endpoint', ep);
-  const r = await api('/api/v1/command', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ argv })
-  });
+  const r = await runCmd(argv);
   show('wiz-out', r);
-  if (r.success) wizShow(3);   // 第 3 步 = 配置就位，再点「启动隧道」
+  if (r.success) wizShow(3);
+  await loadNodeStatus();
 };
-
-// 启动隧道：走既有 /api/v1/command 白名单（service 子命令已在白名单里）
-async function wizStart(cmd) {
-  el('wiz-out').textContent = '执行中…';
-  // ⚠️ 起隧道是**两件事**，不是一件：
-  //   ① service start/reload gnb —— 起驱动、建 tun 接口
-  //   ② apply --auto            —— 装内核路由
-  // 只做 ① 的后果：接口在、IP 在，但到对端的路由还走默认网关 → ping 100% 丢包。
-  // 实测撞过（本机 utun4 有 10.0.0.15，而 `route get 10.0.0.16` 仍指 en0）。
-  // 顺序不能反：装路由要求接口已存在。
-  // reload 也必须装路由：darwin 上 gnb 重开后可能是**另一个 utunN**，
-  // 旧路由还指着已经消失的接口。
-  const isLifecycle = cmd[0] === 'service' && (cmd[1] === 'start' || cmd[1] === 'reload');
-  const steps = isLifecycle ? [cmd, ['apply', '--auto']] : [cmd];
-  const all = [];
-  for (const argv of steps) {
-    all.push(await api('/api/v1/command', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ argv })
-    }));
-  }
-  show('wiz-out', all.length === 1 ? all[0] : all);
-  // 同时把状态拉出来给人看 —— 只看退出码不够（CPI-68 的教训）
-  const st = await api('/api/v1/command', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ argv: ['service', 'status', 'gnb'] })
-  });
-  el('wiz-out').textContent += '\n\n── 隧道状态 ──\n' + ((st.data && st.data.stdout) || JSON.stringify(st, null, 2));
-  // 顶部横幅跟着刷新 —— 「命令输出」和「状态」是两件事，都要更新
-  if (typeof loadNodeStatus === 'function') loadNodeStatus();
-}
-document.querySelectorAll('[data-wiz="start"]').forEach(b =>
-  b.onclick = () => wizStart(['service', 'start', 'gnb']));
-document.querySelectorAll('[data-wiz="restart"]').forEach(b =>
-  b.onclick = () => wizStart(['service', 'reload', 'gnb']));
-
-el('wiz-finish').onclick = () => {
-  document.querySelector('nav button[data-v="local"]').click();
-};
-document.querySelectorAll('[data-wiz="logout"]').forEach(b =>
-  b.onclick = async () => {
-    show('wiz-out', await api('/api/v1/wizard/logout', { method: 'POST' }));
+document.querySelectorAll('[data-wiz]').forEach(b => {
+  const k = b.dataset.wiz;
+  if (k==='start') b.onclick = () => lifecycle(['service','start','gnb'], b);
+  if (k==='restart') b.onclick = () => lifecycle(['service','reload','gnb'], b);
+  if (k==='logout') b.onclick = async () => {
+    show('wiz-out', await apiJSON('/api/v1/wizard/logout','POST'));
     wizShow(1);
-  });
+    await loadNodeStatus();
+  };
+});
+el('wiz-finish').onclick = () => document.querySelector('#nav button[data-v="panel"]').click();
 
-(async function wizInit() {
+(async function wizInit(){
   try {
-    const r = await api('/api/v1/wizard/state');
-    const s = r.data || {};
-    if (s.node_configured && s.bundle_downloaded) {
-      el('wiz-out').textContent = '已配置：' + JSON.stringify(s, null, 2);
-      // 配好了不等于跑起来了 —— 直接把人送到「启动」那一步，
-      // 不要让他以为向导已经结束（那正是「没让 gnb 跑起来」的观感来源）
-      wizShow(4);
-    } else if (s.logged_in) {
-      el('wiz-out').textContent = '已登录 ' + (s.user_email || '') + '，请选择节点';
-      await wizLoadNodes();
-      wizShow(2);
-    } else {
-      if (s.api_base_url) el('wiz-api').value = s.api_base_url;
-      wizShow(1);
-    }
-  } catch (e) { wizShow(1); }
+    const s = (await api('/api/v1/wizard/state')).data || {};
+    if (s.node_configured && s.bundle_downloaded) wizShow(4);
+    else if (s.logged_in) { await wizLoadNodes(); wizShow(2); }
+    else { if (s.api_base_url) el('wiz-api').value = s.api_base_url; wizShow(1); }
+  } catch { wizShow(1); }
 })();
 
-// ── ① 状态横幅：六态 + 一言之 + 按钮面 ───────────────────
-// 状态由 Go 侧 /api/v1/node-status 一次算定，这里**只渲染**。
-// 按钮的可点与否完全跟 Actions 表走，前端不再自己判状态 ——
-// 否则 UI 判据会和 CLI 漂移，又出现「按钮亮着点下去不行」。
-const ACT_CMD = {
-  install:   'install',                  // 见下方 doInstall —— 需要 gateway
-  configure: () => { wizShow(1); return null; },  // 回向导
-  start:     ['service', 'start', 'gnb'],
-  restart:   ['service', 'reload', 'gnb'],
-  stop:      ['service', 'stop', 'gnb'],
-  'fix-routes': ['apply', '--auto'],
-  uninstall: 'uninstall',
-  retry:     ['service', 'start', 'gnb']
+// ── 本机 ──────────────────────────────────────────────
+async function loadLocal(){
+  // system.json
+  const sys = await api('/api/v1/system.json');
+  const sd = sys.data || sys;
+  show('sys', sd);
+  const caps = sd.capabilities || {};
+  el('sys-caps').innerHTML = Object.keys(caps).map(k =>
+    `<span class="tag ${caps[k]?'ok':'bad'}">${k} ${caps[k]?'✓':'✗'}</span>`).join(' ');
+
+  // metrics
+  const m = await api('/api/v1/metrics');
+  const md = m.data || m;
+  show('metrics', md);
+  const vpn = md.vpn || md;
+  el('metrics-row').innerHTML =
+    kv('peers', (vpn.peers ?? '—') + (vpn.peers_up!=null ? ' / '+vpn.peers_up+' up' : '')) +
+    kv('rx', fmtB(vpn.rx_bytes||md.rx_bytes)) +
+    kv('tx', fmtB(vpn.tx_bytes||md.tx_bytes)) +
+    kv('load', md.system && md.system.load1 != null ? md.system.load1 : '—');
+
+  // 驱动行：从 node-status 的 gnb_bin 推断 + 常用命令
+  const st = (await api('/api/v1/node-status')).data || {};
+  el('driver-row').innerHTML =
+    kv('gnb', st.gnb_bin || '未安装') +
+    kv('配置', st.configured ? '已配置' : '未配置') +
+    kv('服务', st.process_up ? '运行中' : '未运行');
+}
+el('btn-metrics').onclick = loadLocal;
+el('btn-sys').onclick = async () => {
+  show('cmd-out', await runCmd(['detector','--force']));
+  await loadLocal();
 };
-
-// 安装/卸载要 root 且参数特殊（gateway），单独走一条，
-// 不塞进 wizStart 的通用 command 路径 —— 后者假定 argv 是 mynet 子命令。
-async function doInstallOrUninstall(kind) {
-  let argv;
-  if (kind === 'install') {
-    const gw = prompt('gateway 入口（wss://…）：', 'wss://stage-gw.mynet.club');
-    if (!gw) return;
-    argv = ['install', '--gateways', gw.trim()];
-  } else {
-    if (!confirm('卸载会停服务并删除二进制。\n节点身份与密钥保留在 home 下，不会丢。')) return;
-    argv = ['uninstall'];
-  }
-  el('wiz-out').textContent = '执行 ' + kind + ' …（需要 root，若失败请看输出）';
-  const r = await api('/api/v1/command', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ argv })
-  });
-  show('wiz-out', r);
-  await loadNodeStatus();
-}
-
-async function loadNodeStatus() {
-  let st;
-  try {
-    const r = await api('/api/v1/node-status');
-    st = r.data;
-  } catch (e) {
-    el('node-one').textContent = '状态读取失败';
-    return;
-  }
-  if (!st) return;
-
-  const banner = el('node-banner');
-  banner.className = 'banner s-' + st.state;
-  el('node-one').textContent = st.one_line || st.state;
-  el('node-detail').textContent = st.detail || '';
-
-  // 主按钮 + 一个次按钮（如有）
-  const acts = el('node-acts');
-  acts.innerHTML = '';
-  const mkBtn = (id, primary) => {
-    const label = (st.labels && st.labels[id]) || id;
-    const enabled = st.actions && st.actions[id];
-    const b = document.createElement('button');
-    b.className = primary ? 'primary' : '';
-    b.textContent = label;
-    b.disabled = !enabled;
-    b.onclick = async () => {
-      const cmd = ACT_CMD[id];
-      if (cmd === 'install' || cmd === 'uninstall') {
-        await doInstallOrUninstall(cmd);
-        return;
-      }
-      if (!cmd) { el('wiz-out').textContent = '该动作尚未接入（' + id + '）'; return; }
-      if (typeof cmd === 'function') { cmd(); return; }
-      b.disabled = true;
-      await wizStart(cmd);
-      await loadNodeStatus();
-    };
-    acts.appendChild(b);
-    return b;
+el('btn-diag').onclick = async () => {
+  el('diag-out').textContent = '自检中…';
+  const parts = [];
+  parts.push(await runCmd(['service','status','gnb']));
+  parts.push(await runCmd(['apply','--dry-run','--auto']));
+  const st = await api('/api/v1/node-status');
+  parts.push({node_status: st.data});
+  show('diag-out', parts);
+};
+el('btn-logs').onclick = async () => {
+  show('diag-out', await runCmd(['status']));
+};
+el('btn-uninstall').onclick = () => doInstallOrUninstall('uninstall');
+document.querySelectorAll('#view-local [data-cmd]').forEach(b => {
+  b.onclick = async () => {
+    const argv = JSON.parse(b.dataset.cmd);
+    show('cmd-out', await runCmd(argv));
+    await loadLocal();
   };
-  if (st.primary_action) mkBtn(st.primary_action, true);
-  for (const id of ['stop', 'fix-routes', 'retry', 'configure', 'install', 'uninstall']) {
-    if (id === st.primary_action) continue;
-    if (st.actions && st.actions[id]) mkBtn(id, false);
-  }
-
-  // 向导区内的按钮也按 Actions 禁用 —— 同一套判据
-  const map = { 'data-wiz="start"': 'start', 'data-wiz="restart"': 'restart' };
-  for (const sel in map) {
-    const id = map[sel];
-    document.querySelectorAll('[' + sel + ']').forEach(b => {
-      b.disabled = !(st.actions && st.actions[id]);
-    });
-  }
-
-  // ── ② 节点身份 ─────────────────────────────────────
-  const kv = (k, v) => `<div class="kv"><div class="k">${k}</div><div class="v">${v || '—'}</div></div>`;
-  el('id-row').innerHTML =
-    kv('NODE_ID', st.node_id) +
-    kv('overlay', st.overlay_ip) +
-    kv('接口', st.tun_iface) +
-    kv('MTU', st.mtu) +
-    kv('gnb', st.gnb_bin ? '已安装' : '未安装');
-
-  // ── ④ 运行 ─────────────────────────────────────────
-  const up = st.uptime_sec ? fmtDur(st.uptime_sec) : '—';
-  const fmtB = n => n ? (n > 1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB') : '—';
-  el('run-row').innerHTML =
-    kv('进程', st.process_up ? `pid ${st.process_pid} · 已运行 ${up}` : '未运行') +
-    kv('tun', st.tun_up ? `${st.tun_iface} · ${st.overlay_ip}` : '无') +
-    kv('RX', fmtB(st.rx_bytes)) + kv('TX', fmtB(st.tx_bytes)) +
-    kv('对端在线', `${st.peers_routed}/${st.peers_total}`);
-  // 运行区的按钮也走同一套 Actions
-  const runActs = el('run-acts');
-  runActs.innerHTML = '';
-  for (const id of ['start', 'restart', 'stop', 'fix-routes', 'retry']) {
-    if (!(st.actions && st.actions[id])) continue;
-    const b = document.createElement('button');
-    b.className = id === st.primary_action ? 'primary' : '';
-    b.textContent = (st.labels && st.labels[id]) || id;
-    b.onclick = async () => {
-      const cmd = ACT_CMD[id];
-      if (!cmd) return;
-      b.disabled = true;
-      await wizStart(cmd);
-      await loadNodeStatus();
-    };
-    runActs.appendChild(b);
-  }
-
-  // ── ⑤ 对端表 ───────────────────────────────────────
-  const linkLabel = (l) => {
-    if (l === 'direct') return '<span class="tag ok">Direct</span>';
-    if (l === 'relay')  return '<span class="tag ok">Relay</span>';
-    if (l === 'local')  return '<span class="tag">本机</span>';
-    if (l === 'offline') return '<span class="tag bad">离线</span>';
-    return '<span class="tag">未知</span>';
-  };
-  const tb = el('peers-body');
-  if (!st.peers || !st.peers.length) {
-    tb.innerHTML = '<tr><td colspan="6" class="muted" style="padding:8px">无对端（bundle 里没有路由）</td></tr>';
-  } else {
-    tb.innerHTML = st.peers.map(p => {
-      const routed = p.routed
-        ? '<span class="tag ok">✓</span>'
-        : '<span class="tag bad">✗ 缺</span>';
-      const lat = p.latency_ms ? p.latency_ms + 'ms' : '—';
-      return `<tr style="border-top:1px solid #243044">
-        <td style="padding:6px 8px">${p.is_self ? '本机' : '对端'}</td>
-        <td style="padding:6px 8px"><code>${p.node_id || '—'}</code></td>
-        <td style="padding:6px 8px"><code>${p.overlay || '—'}</code></td>
-        <td style="padding:6px 8px">${linkLabel(p.link)}</td>
-        <td style="padding:6px 8px">${lat}</td>
-        <td style="padding:6px 8px">${routed}</td>
-      </tr>`;
-    }).join('');
-  }
-  el('route-conf').textContent = st.route_conf_text || '（无 route.conf）';
-}
-
-function fmtDur(sec) {
-  if (sec < 60) return sec + 's';
-  if (sec < 3600) return Math.floor(sec/60) + 'm';
-  if (sec < 86400) return Math.floor(sec/3600) + 'h' + (sec%3600)/60 + 'm';
-  return Math.floor(sec/86400) + 'd' + Math.floor((sec%86400)/3600) + 'h';
-}
-loadNodeStatus();
-// 状态变化（起停后）就地刷新；30s 轮询兜底「人从别处 kill 了 gnb」
-setInterval(loadNodeStatus, 30000);
-
-document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
-  const argv = JSON.parse(b.dataset.cmd);
-  show('cmd-out', await api('/api/v1/command', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ argv })
-  }));
 });
 
-el('btn-metrics').onclick = async () => show('metrics', await api('/api/v1/metrics'));
-el('btn-switch').onclick = async () => show('switch-out', await api('/api/v1/nodes/switch', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ node_id: el('node-id').value })
-}));
+// ── 平台（relay） ─────────────────────────────────────
+async function relay(path, method, body, headers){
+  const qs = '/api/v1/relay?path=' + encodeURIComponent(path);
+  if (method && method !== 'GET') {
+    return api(qs, {
+      method,
+      headers: Object.assign({'Content-Type':'application/json'}, headers||{}),
+      body: body ? JSON.stringify(body) : undefined
+    });
+  }
+  return api(qs);
+}
 
-(async function init() {
+// 会话 token 在 credential.json 里，浏览器**不该**持有。
+// 平台面这里先用 cookie/免鉴权的探测；真正的登录态由向导在本机建立。
+// 拉列表时若 back 要鉴权，会返回 401 —— 如实显示，不伪造。
+el('btn-plat-nodes').onclick = async () => {
+  el('plat-out').textContent = '拉取中…';
+  const r = await relay('/api/v1/nodes');
+  show('plat-out', r);
+  const list = (r.data && (r.data.data || r.data)) || r.data || [];
+  const rows = Array.isArray(list) ? list : (list.data || []);
+  const body = el('plat-nodes-body');
+  if (!Array.isArray(rows) || !rows.length) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${r.message || '无数据（可能需要登录态）'}</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.slice(0, 50).map(n => `<tr>
+    <td class="mono">${n.node_id ?? n.id ?? '—'}</td>
+    <td>${n.node_name ?? n.name ?? '—'}</td>
+    <td class="mono">${n.virtual_ip ?? n.node_ip ?? '—'}</td>
+    <td class="mono">${n.endpoint ?? n.server_host ?? '—'}</td>
+    <td>${n.status ?? n.node_status ?? '—'}</td>
+  </tr>`).join('');
+};
+el('btn-plat-routes').onclick = async () => {
+  el('plat-out').textContent = '拉取中…';
+  const r = await relay('/api/v1/routes');
+  show('plat-out', r);
+  const list = (r.data && (r.data.data || r.data)) || r.data || [];
+  const rows = Array.isArray(list) ? list : (list.data || []);
+  const body = el('plat-routes-body');
+  if (!Array.isArray(rows) || !rows.length) {
+    body.innerHTML = `<tr><td colspan="5" class="muted">${r.message || '无数据'}</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.slice(0, 50).map(x => `<tr>
+    <td class="mono">${x.route_id ?? x.id ?? '—'}</td>
+    <td class="mono">${x.node_id ?? x.source_node_id ?? '—'}</td>
+    <td class="mono">${x.target_node_id ?? '—'}</td>
+    <td class="mono">${x.target_network ?? x.prefix ?? '—'}</td>
+    <td>${x.status ?? '—'}</td>
+  </tr>`).join('');
+};
+el('btn-plat-me').onclick = async () => {
+  el('plat-out').textContent = '拉取中…';
+  show('plat-out', await relay('/api/v1/auth/me'));
+};
+
+// ── 通用 data-cmd（向导外） ───────────────────────────
+document.querySelectorAll('[data-cmd]').forEach(b => {
+  if (b.closest('#view-local')) return; // 已单独绑定
+  b.onclick = async () => {
+    show('cmd-out', await runCmd(JSON.parse(b.dataset.cmd)));
+  };
+});
+
+// ── 启动 ──────────────────────────────────────────────
+(async function init(){
   try {
-    const st = await api('/api/v1/status');
-    const d = st.data || st;
-    el('listen').textContent = d.listen || '';
-    el('status-row').innerHTML = `
-      <div class="kv"><div class="k">守护</div><div class="v">${d.daemon || 'mynetd'}</div></div>
-      <div class="kv"><div class="k">角色</div><div class="v"><span class="tag ok">${d.role || 'transport-only'}</span></div></div>
-      <div class="kv"><div class="k">监听</div><div class="v">${d.listen || ''}</div></div>`;
-  } catch (e) { el('status-row').innerHTML = '<span class="tag bad">无法连接本机 API</span>'; }
-  try { show('sys', await api('/api/v1/system.json')); } catch (e) { el('sys').textContent = 'system.json 未就绪'; }
-  try { show('metrics', await api('/api/v1/metrics')); } catch (e) {}
+    const t = await fetch('/api/v1/status');
+    const j = await t.json();
+    el('listen').textContent = (j.data && j.data.listen) || location.host;
+  } catch {}
+  await loadNodeStatus();
+  await loadLocal();
+  setInterval(loadNodeStatus, 30000);
 })();
 </script>
 </body>
