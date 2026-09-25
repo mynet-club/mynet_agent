@@ -31,13 +31,57 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
 <header>
   <h1>MyNet</h1>
   <nav>
-    <button data-v="local" class="on">本机</button>
+    <button data-v="wizard" class="on">向导</button>
+    <button data-v="local">本机</button>
     <button data-v="social">社区</button>
   </nav>
   <span class="muted" id="listen"></span>
 </header>
 <main>
-  <div id="view-local">
+  <div id="view-wizard">
+    <div class="card">
+      <h2>首次运行向导</h2>
+      <div class="row" id="wiz-steps" style="margin-bottom:12px"></div>
+      <p class="muted">登录 → 选节点 → 下载配置。口令只经本机管道交给
+        <code>mynet auth login --password-stdin</code>，<b>不会进命令行参数</b>；
+        口令与令牌都不进浏览器，只存在本机 <code>conf/credential.json</code>（0600）。</p>
+
+      <!-- 步骤 1：登录 -->
+      <div id="wiz-step-1">
+        <div class="row" style="margin-top:12px">
+          <input id="wiz-api" placeholder="API 地址 https://api.mynet.club" style="min-width:280px">
+          <input id="wiz-email" placeholder="邮箱">
+          <input id="wiz-pass" type="password" placeholder="口令" autocomplete="off"> <!-- GUARD-OK 这是密码输入框的 HTML 属性，不是硬编码凭据 -->
+          <button class="primary" id="wiz-login">登录</button>
+        </div>
+      </div>
+
+      <!-- 步骤 2：选节点 -->
+      <div id="wiz-step-2" hidden>
+        <div class="row" style="margin-top:12px">
+          <select id="wiz-node" style="min-width:320px"><option>加载中…</option></select>
+          <input id="wiz-endpoint" placeholder="endpoint host:port（可选，无 index 时用于直连）">
+          <button class="primary" id="wiz-claim">选它，写入本机</button>
+        </div>
+        <p class="muted">这一步会：在<b>本机</b>生成节点密钥 → 上传<b>公钥</b>到 back →
+          写 <code>conf/mynet.conf</code> → 下载配置到 <code>var/bundle.json</code>。
+          私钥不上传、不出本机。</p>
+      </div>
+
+      <!-- 步骤 3：完成 -->
+      <div id="wiz-step-3" hidden>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="wiz-finish">完成，去看本机状态</button>
+          <button id="wiz-logout">退出登录</button>
+        </div>
+        <p class="muted">下一步可选：<code>mynet install</code> 把节点装成系统服务
+          （重启自动恢复），或 <code>mynet service start gnb</code> 直接拉起隧道。</p>
+      </div>
+
+      <pre id="wiz-out" style="margin-top:12px">—</pre>
+    </div>
+  </div>
+  <div id="view-local" hidden>
     <div class="card">
       <h2>状态</h2>
       <div class="row" id="status-row"><span class="muted">加载中…</span></div>
@@ -86,9 +130,91 @@ function show(id, obj) { el(id).textContent = typeof obj === 'string' ? obj : JS
 
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  el('view-local').hidden = b.dataset.v !== 'local';
-  el('view-social').hidden = b.dataset.v !== 'social';
+  for (const v of ['wizard', 'local', 'social']) {
+    const n = el('view-' + v);
+    if (n) n.hidden = b.dataset.v !== v;
+  }
 });
+
+// ── 首次运行向导：登录 → 选节点 → 下载配置 ─────────────────
+// 步骤由 /api/v1/wizard/state 决定（看磁盘产物），不靠页面里的计数器 ——
+// 重开浏览器、重启 mynetd 都要一致（CPI-68 的教训：落盘结果比命令退出码可信）。
+function wizShow(step) {
+  for (let i = 1; i <= 3; i++) el('wiz-step-' + i).hidden = (i !== step);
+  el('wiz-steps').innerHTML = ['1 登录', '2 选节点', '3 下载配置'].map((s, i) =>
+    `<span class="tag ${i + 1 === step ? 'ok' : ''}">${s}</span>`).join(' ');
+}
+
+el('wiz-login').onclick = async () => {
+  el('wiz-out').textContent = '登录中…';
+  const r = await api('/api/v1/wizard/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      api_base_url: el('wiz-api').value.trim(),
+      email: el('wiz-email').value.trim(),
+      password: el('wiz-pass').value
+    })
+  });
+  el('wiz-pass').value = '';           // 不留口令在 DOM 里
+  show('wiz-out', r);
+  if (r.success) { el('wiz-email').value = ''; await wizLoadNodes(); wizShow(2); }
+};
+
+async function wizLoadNodes() {
+  const r = await api('/api/v1/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ argv: ['node', 'list'] })
+  });
+  const out = (r.data && r.data.stdout) || '';
+  // node list 的输出是表格：NODE_ID NAME VPN OVERLAY_IP STATUS
+  const opts = ['<option value="">— 选择节点 —</option>'];
+  out.split('\n').slice(1).forEach(ln => {
+    const m = ln.match(/^\s*(\d+)\s+(\S+)/);
+    if (m) opts.push(`<option value="${m[1]}">${m[1]}　${m[2]}</option>`);
+  });
+  el('wiz-node').innerHTML = opts.join('');
+}
+
+el('wiz-claim').onclick = async () => {
+  const id = el('wiz-node').value;
+  if (!id) { el('wiz-out').textContent = '请先选择节点'; return; }
+  el('wiz-out').textContent = '正在写入本机…';
+  const argv = ['node', 'claim', id, '--vpn-type', 'gnb'];
+  const ep = el('wiz-endpoint').value.trim();
+  if (ep) argv.push('--endpoint', ep);
+  const r = await api('/api/v1/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ argv })
+  });
+  show('wiz-out', r);
+  if (r.success) wizShow(3);
+};
+
+el('wiz-finish').onclick = () => {
+  document.querySelector('nav button[data-v="local"]').click();
+};
+el('wiz-logout').onclick = async () => {
+  show('wiz-out', await api('/api/v1/wizard/logout', { method: 'POST' }));
+  wizShow(1);
+};
+
+(async function wizInit() {
+  try {
+    const r = await api('/api/v1/wizard/state');
+    const s = r.data || {};
+    if (s.node_configured && s.bundle_downloaded) {
+      el('wiz-out').textContent = '已配置：' + JSON.stringify(s, null, 2);
+      wizShow(3);
+    } else if (s.logged_in) {
+      el('wiz-out').textContent = '已登录 ' + (s.user_email || '') + '，请选择节点';
+      await wizLoadNodes();
+      wizShow(2);
+    } else {
+      if (s.api_base_url) el('wiz-api').value = s.api_base_url;
+      wizShow(1);
+    }
+  } catch (e) { wizShow(1); }
+})();
 
 document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = async () => {
   const argv = JSON.parse(b.dataset.cmd);

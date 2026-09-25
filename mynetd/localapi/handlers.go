@@ -71,11 +71,19 @@ func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"success": true, "data": body})
 }
 
+// allowedSubcommand 只允许 mynet 子命令面，不允许任意路径。
+//
+// ⚠️ `auth`/`tenants`/`node` 是 2026-09-25 为「首次运行向导」加的
+// （向导三步：登录 → 选节点 → 下载配置）。它们**不含秘密**：
+// 口令不走 argv（会进 `ps`），而走专用的 /api/v1/wizard/login 用 stdin 喂
+// `mynet auth login --password-stdin`。所以子命令名本身可以白名单放行。
 func allowedSubcommand(cmd string) bool {
 	switch cmd {
 	case "detector", "metrics", "apply", "service", "driver",
 		"setup", "install", "uninstall", "update", "config",
-		"status", "monitor", "check", "nodes", "platform":
+		"status", "monitor", "check", "nodes", "platform",
+		// 向导用到的账号态/节点归属原语
+		"auth", "tenants", "node":
 		return true
 	}
 	return false
@@ -90,6 +98,14 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
 		return
+	}
+	// 统一脱敏：/api/v1/command 的输出与向导端点一样直接进浏览器
+	// （webui 的 cmd-out 就是个 <pre>）。之前只在 wizard 端点脱敏，
+	// 于是走这条的 `auth status` 之类照样能把 token 前缀吐到 UI 上。
+	// 规则见 redactSecrets：PAT 形状无条件遮，长 hex 只在带 secret 关键字时遮，
+	// **公钥不误杀**（它是给人核对的）。
+	if m, ok := out.(map[string]any); ok {
+		out = sanitizeWizardOut(m)
 	}
 	writeJSON(w, 200, map[string]any{"success": true, "data": out})
 }

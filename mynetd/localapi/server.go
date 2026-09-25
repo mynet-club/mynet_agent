@@ -37,6 +37,10 @@ type Server struct {
 	srv *http.Server
 	// Ops 执行器命令分派（mynet <子命令>），由 mynetd 装配注入。
 	Ops func(argv []string) (any, error)
+	// ExecStdin 向导登录专用：能喂 stdin 的执行器。口令不走 argv ——
+	// argv 会进 `ps`，任何本机进程都看得见。与 Ops 同为可注入，
+	// 为的是让「口令不进 argv」这条安全性质**可测**，而不是靠肉眼看代码确认。
+	ExecStdin func(argv []string, stdin string) (map[string]any, error)
 	// sessions R5-1 多节点并行会话
 	sessions *SessionTable
 	// OnResult E-4：执行结果回调（经 WS 上报）
@@ -61,6 +65,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult) // E-4
 	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch)     // D-10 / R5-1 焦点切换
 	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)              // R5-1 并行会话
+	// 向导端点是 **API 不是 UI**，不随 embed 构建标签开合：
+	// 没有内嵌 webui 的构建（D-11 的 OpenWrt 形态）照样要能被 LuCI/脚本调用。
+	s.registerWizardRoutes()
 	if hasWebUI {
 		s.mux.Handle("/ui/", http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS()))))
 	}
