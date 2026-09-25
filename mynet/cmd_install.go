@@ -108,6 +108,14 @@ func cmdInstall(args []string) int {
 		return 1
 	}
 
+	// 0) 先停服务再覆盖二进制。不先停的话 mynetd 正在被占用 →
+	// `open …: text file busy`，而 install 已经复制完了 mynet、
+	// 失败在 mynetd 上 —— 留下一个**装了一半**的状态（实测踩过）。
+	// 单元可能本来就不存在（首次安装），失败不致命，故只告警。
+	if out, err := runSystemctl("stop", "mynetd", "mynet_gnb"); err != nil {
+		fmt.Fprintf(os.Stderr, "  systemctl stop（首次安装可忽略）: %v %s\n", err, strings.TrimSpace(string(out)))
+	}
+
 	// 1) 二进制
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
