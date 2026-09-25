@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // cmdAuth — 账号态（登录/状态/登出）。
@@ -128,6 +129,10 @@ func authLogin(args []string) int {
 			} `json:"user"`
 			TenantID  interface{} `json:"tenant_id"`
 			AuthToken string      `json:"auth_token"`
+			// back 侧建成真会话后才有这三项（mynet_back f60cf1c）
+			RefreshToken       string `json:"refresh_token"`
+			AuthTokenExpiresIn int    `json:"auth_token_expires_in"`
+			RefreshExpiresIn   int    `json:"refresh_token_expires_in"`
 		} `json:"data"`
 		Message string `json:"message"`
 	}
@@ -141,13 +146,25 @@ func authLogin(args []string) int {
 	}
 
 	cred := &Credential{
-		UserID:     anyToStr(env.Data.User.UserID),
-		UserEmail:  env.Data.User.Email,
-		Token:      env.Data.AuthToken,
-		MachineID:  machineID(),
-		APIBaseURL: api,
-		TenantID:   anyToStr(env.Data.TenantID),
-		CreatedAt:  nowISO(),
+		UserID:    anyToStr(env.Data.User.UserID),
+		UserEmail: env.Data.User.Email,
+		Token:     env.Data.AuthToken,
+		// ⚠️ 这三个字段第一版**漏了**，而「几分钟内跑完一条命令」看不出来
+		//（30 分钟 access token 够用）。真到「上周 login、今天 nodes」时，
+		// 自动续期会拿空 refresh_token 去续 → 死路。验证产物里读出来
+		// `refresh_token = <0 字符>` 才发现。
+		RefreshToken:     env.Data.RefreshToken,
+		AuthExpiresAt:    expiryFrom(env.Data.AuthTokenExpiresIn),
+		RefreshExpiresAt: expiryFrom(env.Data.RefreshExpiresIn),
+		MachineID:        machineID(),
+		APIBaseURL:       api,
+		TenantID:         anyToStr(env.Data.TenantID),
+		CreatedAt:        nowISO(),
+	}
+	// （写这段时又把 PHP 的 `$cred` 与 `''` 带进了 Go —— 本仓今天第二次。
+	//  可见「跨语言写代码」时语法残留是系统性的，靠编译器兜比靠仔细强。）
+	if cred.RefreshToken == "" {
+		fmt.Fprintln(os.Stderr, "⚠️ 登录响应里没有 refresh_token —— 会话无法续期，过期后只能重登")
 	}
 	if tenant != "" {
 		cred.TenantID = tenant
@@ -198,12 +215,35 @@ func authStatus() int {
 }
 
 func authLogout() int {
+	cred := LoadCredential()
+	// ⚠️ 必须先吊销**服务端**会话。只删本地文件的话，那条会话还活着、
+	// refresh token 还能继续换出新凭证 —— 那不叫登出，只是忘了。
+	if cred != nil && cred.RefreshToken != "" {
+		c := newBackClient(cred.APIBaseURL, cred.Token)
+		if _, code, err := c.doJSON("POST", "/api/v1/auth/revoke-session", map[string]string{
+			"refresh_token": cred.RefreshToken,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ 服务端会话吊销失败（HTTP %d）: %v\n", code, err)
+			fmt.Fprintln(os.Stderr, "  本地凭证仍会删除；如需彻底请稍后重试")
+		} else {
+			fmt.Println("服务端会话已吊销")
+		}
+	}
 	if err := RemoveCredential(); err != nil {
 		fmt.Fprintln(os.Stderr, "删除凭证失败:", err)
 		return 1
 	}
 	fmt.Println("已登出（节点身份 mynet.conf 不受影响 —— 那是节点的，不是账号的）")
 	return 0
+}
+
+// expiryFrom 把「多少秒后过期」换成 RFC3339 时刻；0/负值返回空（表示不过期或未知）。
+func expiryFrom(seconds int) string {
+	if seconds <= 0 {
+		return ""
+	}
+
+	return time.Now().Add(time.Duration(seconds) * time.Second).Format(time.RFC3339)
 }
 
 func authUsage(msg string) int {

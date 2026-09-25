@@ -32,18 +32,33 @@ func cmdTenants(args []string) int {
 	cred := requireCred()
 	c := newBackClientFor(cred)
 
-	var raw map[string]any
-	if err := c.getEnveloped("/api/v1/user/tenants/", &raw); err != nil {
-		fmt.Fprintln(os.Stderr, "取租户失败:", err)
+	// ⚠️ 这个端点的 data 是**数组**（[{tenant_id,name},…]），
+	// 不能走 getEnveloped(…, &map) —— 那会 "cannot unmarshal array into map"。
+	// 实测踩过：别的端点 data 是对象，这里不是。
+	raw, code, err := c.doJSON("GET", "/api/v1/user/tenants/", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "取租户失败（HTTP %d）: %v\n", code, err)
 		return 1
 	}
-
-	// 响应形状：data 直接是数组或 {data:[...]}，两种都吃得下
-	list, _ := raw["data"].([]any)
-	if list == nil {
-		if nested, ok := raw["data"].(map[string]any); ok {
-			list, _ = nested["data"].([]any)
+	var env struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || !env.Success {
+		fmt.Fprintln(os.Stderr, "取租户失败: 响应异常")
+		return 1
+	}
+	var list []any
+	// data 可能是裸数组，也可能包在 {data:[…]} 里 —— 两种都吃得下
+	if err := json.Unmarshal(env.Data, &list); err != nil {
+		var nested struct {
+			Data []any `json:"data"`
 		}
+		if err2 := json.Unmarshal(env.Data, &nested); err2 != nil {
+			fmt.Fprintf(os.Stderr, "解析租户列表失败: %v\n", err)
+			return 1
+		}
+		list = nested.Data
 	}
 	if len(list) == 0 {
 		fmt.Println("(没有可用租户)")
