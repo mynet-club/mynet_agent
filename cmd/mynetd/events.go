@@ -111,6 +111,10 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 		if name == "bundle_changed" && !d.pullBundle(name) {
 			return
 		}
+		if name == "bundle_changed" {
+			d.runBundleLifecycle()
+			return
+		}
 		res := commands.Run(d.exec, commands.Request{Op: op}, d.nodeID)
 		if res.OK {
 			d.logf("event: %s → %s 执行成功", name, op)
@@ -118,6 +122,44 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 		}
 		d.logf("event: %s → %s 执行失败: %s%s", name, op, res.Error, stderrSuffix(res.Stderr))
 	})
+}
+
+// runBundleLifecycle bundle 变更后的完整落地链。
+//
+// ⚠️ 此前 bundle_changed 只跑 refresh-config —— 也就是**只写配置文件**：
+// 不重启驱动（gnb 的 HotReload 是 false，见 driver/gnb.go 的 Capabilities，
+// 配置改了必须重启才生效），也不装内核路由。于是平台改了下发内容，
+// 节点侧「收到了、写盘了、但完全没生效」，而这正是最难发现的一类故障
+// （Phase 6 的 CPI-62 就是这个形态：隧道建好了、路由没装，ping 全丢）。
+//
+// 顺序**不能调换**：
+//  1. refresh-config —— 写出驱动原生配置（node.conf/route.conf/address.conf/密钥）
+//  2. service start  —— 起驱动、建 tun 接口。已在跑时 Start() 自己会短路
+//  3. apply --auto   —— 装内核路由。必须排在 2 之后：`ip route … dev gnb_tun`
+//     要求接口已存在，否则直接失败
+//
+// 每步都单独报结果，不因为前一步成功就假定后面也成功。
+func (d *eventDispatcher) runBundleLifecycle() {
+	steps := []struct {
+		label string
+		op    string
+	}{
+		{"刷新驱动配置", commands.OpNodeRefresh},
+		{"起驱动", commands.OpServiceStart},
+		{"装内核路由", commands.OpRouteUpdate},
+	}
+	for _, s := range steps {
+		req := commands.Request{Op: s.op}
+		// service start 不带 name：执行器会从 bundle 的 driver 字段取，
+		// 守护进程不该硬编码驱动类型
+		res := commands.Run(d.exec, req, d.nodeID)
+		if res.OK {
+			d.logf("event: bundle_changed → %s（%s）成功", s.label, s.op)
+			continue
+		}
+		d.logf("event: bundle_changed → %s（%s）失败: %s%s",
+			s.label, s.op, res.Error, stderrSuffix(res.Stderr))
+	}
 }
 
 // runCommandPull 收到 command_queued 后回 back 拉命令、执行、回报结果。

@@ -1,7 +1,10 @@
 // mynetd — 纯通信层常驻进程。
 //
-// D-8：console 模式**不**强制 root（旧实现 os.Geteuid()!=0 即 Fatal）。
-// 需要写路由/防火墙的动作全在执行器 `mynet`，由调用方自行提权。
+// root 要求**分模式**（用户 2026-09-25 裁定：节点模式要管 tun，root 是必须的）：
+//   - console 模式（-console）：D-8/D-12，无 WS、无节点身份、不碰驱动 → **不需要 root**
+//   - 节点模式（配了 MYNET_GATEWAYS）：要起 gnb（建 tun）、写内核路由、读 gnb.map
+//     → **需要 root**。生产走 deploy/systemd/mynetd.service。
+//     非 root 时不 fail-fast（理由见下面那段警告的注释），但会高声警告。
 package main
 
 import (
@@ -50,9 +53,34 @@ func main() {
 		return
 	}
 
-	// D-8：去掉强制 root。系统能力在 mynet，由用户按需 sudo。
+	// root 要求是**分模式**的，此前这条提示是模式盲的（对谁都说「无需 root」），
+	// 于是节点模式下三件必须特权的事全部静默失败 —— Phase 6 实测撞过：
+	//
+	//   · console 模式（-console，D-8/D-12）：无 WS、无节点身份、不碰驱动，
+	//     确实**不需要 root**。
+	//   · 节点模式（配了 MYNET_GATEWAYS）：要 ① 起 gnb（建 tun 需 CAP_NET_ADMIN）
+	//     ② apply 写内核路由 ③ 读 gnb.map 拿 peer/流量 —— 而 gnb 以 root 跑、
+	//     把 map 建成 0600 root:root，非 root 读到 `open ctl block error`
+	//     且 gnb_ctl **仍然 exit 0**（CPI-58/CPI-63）。
+	//
+	// 不做 fail-fast：mynetd 的核心职责（WS + 拉 bundle + 心跳）确实不需要 root，
+	// 整体拒启会打断合法的半特权部署，也会打断守护 V1-10 的 scripts/e2e/bundle_pull.sh
+	// （它就是非 root 跑常驻 mynetd）。改为**高声警告 + 每个特权操作各自报明确的权限错**，
+	// 生产部署走 deploy/systemd/mynetd.service（root）。
 	if os.Geteuid() != 0 {
-		logger.Info("mynetd 无需 root；需要写路由/防火墙时请 sudo mynet apply")
+		if *console {
+			logger.Info("console 模式非 root 运行（D-8/D-12：无 WS、无节点身份、不碰驱动）")
+		} else if os.Getenv("MYNET_GATEWAYS") != "" {
+			logger.Warn("节点模式下以非 root 运行 —— 隧道生命周期将无法自动管理",
+				"后果1", "起不了 gnb（建 tun 需特权）：service start 会失败",
+				"后果2", "写不了内核路由：apply 会失败，流量走默认路由不进隧道",
+				"后果3", "读不到 gnb.map（0600 root:root）：心跳里 connected_peers/rx/tx 恒 0",
+				"处置", "生产用 deploy/systemd/mynetd.service（root）；"+
+					"手工跑则 sudo -E，或按 CPI-63 的三个备选方案之一处理")
+		} else {
+			// 未配 gateways 的纯本机模式：只有 localapi，不碰隧道，不该拿隧道的话术吓人
+			logger.Info("非 root 运行（未配 MYNET_GATEWAYS，纯本机模式：只有 localapi，不管理隧道）")
+		}
 	}
 
 	api := localapi.NewServer(localapi.Config{Listen: *listen})

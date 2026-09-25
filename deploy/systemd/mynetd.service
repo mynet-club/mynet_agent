@@ -1,0 +1,63 @@
+# mynetd 节点常驻单元（节点模式 = 配了 MYNET_GATEWAYS）
+#
+# ── 为什么必须 root（用户 2026-09-25 裁定）──────────────────────
+# 节点模式下 mynetd 要做三件必须特权的事，Phase 6 全部实测撞过：
+#   1. 起 gnb —— gnb 建 tun 设备需要 CAP_NET_ADMIN
+#   2. apply 写内核路由 —— `ip route replace … dev gnb_tun` 需要 CAP_NET_ADMIN
+#   3. 读 gnb.map 拿 peer 数与流量 —— gnb 以 root 跑并把 map 建成
+#      **0600 root:root**，非 root 读到 `open ctl block error`，
+#      而 gnb_ctl **仍然 exit 0**（CPI-58），于是症状是
+#      「进程活着、隧道通着、心跳里 connected_peers/rx/tx 恒 0」（CPI-63）
+#
+# 三件事失败时都**不报错**，只会静默降级 —— 这正是最难查的一类故障。
+# 所以生产部署一律 root。
+#
+# ⚠️ 与 gateway 单元（mynet_gateway.service）的区别：那个是 User=www-data
+#    + NoNewPrivileges + ProtectSystem=strict，因为 gateway 不写路由、不碰驱动、
+#    不读私钥。**不要把它那套硬化抄到这里** —— ProtectSystem=strict 会让
+#    mynetd 写不了 $MYNET_HOME，ProtectHome=true 会让它读不到节点私钥。
+#
+# ── console 模式不要用这个单元 ─────────────────────────────────
+# `-console`（D-8/D-12）无 WS、无节点身份、不碰驱动，**非 root 可跑**，
+# 是桌面/GUI 场景。本单元是节点模式专用。
+#
+# ── 配置走 EnvironmentFile，不进 unit ───────────────────────────
+# 部署值随环境变（MYNET_HOME 路径、gateway 地址），unit 保持通用。
+# 见同目录 mynetd.env.example。
+
+[Unit]
+Description=MyNet node daemon (bundle sync + heartbeat + tunnel lifecycle)
+# network-online 是硬依赖：起来就要连 gateway 拉 bundle，网络没就绪会白跑一轮重试
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/mynet/mynetd.env
+ExecStart=/opt/mynet/bin/mynetd -listen 127.0.0.1:8711
+
+# 收到 SIGTERM 后优雅退出：main.go 的 defer cancel() 会收尾 WS 与 localapi。
+# ⚠️ mynetd 退出**不会**停 gnb —— 隧道由 gnb 自己 daemon 化持有（node.conf 的
+# `daemon on`，见 driver/gnb.go 的 Start 注释）。这是有意的：重启 mynetd
+# 不该断网。要停隧道得显式 `mynet service stop`。
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=5
+
+# gnb 建 tun 与写路由都靠 mynetd 派生的子进程， CapabilityBoundingSet 收窄会
+# 把它们一起掐掉，所以这里**不**做能力裁剪。
+# LimitNOFILE 抬高：gnb 的 multi-socket 会为每个对端地址开 socket，
+# 对端多了默认 1024 不够，症状是「新对端连不上、老连接还活着」。
+LimitNOFILE=65536
+
+# root，且**不能**加 ProtectSystem/ProtectHome/PrivateTmp：
+#   · ProtectSystem=strict → 写不了 $MYNET_HOME/var（bundle、gnb 配置、日志）
+#   · ProtectHome=true     → 读不到放在 /home 下的 mynet.conf（含节点私钥）
+#   · PrivateTmp=true      → 与手工调试时看到的 /tmp 不是同一个，排查会 mislead
+# 节点 agent 的信任边界本来就是「这台机器」，它持有节点私钥、要改内核路由，
+# 沙箱化收益有限而代价是把上面三处静默弄坏。
+
+[Install]
+WantedBy=multi-user.target

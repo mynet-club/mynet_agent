@@ -132,7 +132,15 @@ func sharedVarDir() string {
 }
 
 func refreshRoutes(env *domain.BundleEnvelope) int {
-	// L6：NetworkIntent.Routes → apply 计划
+	return printPlan(planFromBundle(env))
+}
+
+// planFromBundle L6：NetworkIntent.Routes → apply 计划。
+//
+// refresh-routes（打印计划给人看/存盘）与 apply --auto（直接执行）共用这一份，
+// 否则两条路径的翻译规则迟早漂移 —— 而漂移的症状是「打印的计划」和
+// 「真执行的」不是同一件事，极难发现。
+func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
 	var plan ApplyPlan
 	for _, r := range env.Network.Routes {
 		plan.Routes = append(plan.Routes, RouteOp{
@@ -143,7 +151,8 @@ func refreshRoutes(env *domain.BundleEnvelope) int {
 			Metric:      r.Metric,
 		})
 	}
-	return printPlan(plan)
+
+	return plan
 }
 
 func refreshAddress(env *domain.BundleEnvelope) int {

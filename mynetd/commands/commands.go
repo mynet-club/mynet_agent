@@ -74,6 +74,11 @@ func Plan(req Request, nodeID string) ([]string, bool) {
 		argv := []string{"apply"}
 		if p := req.Args["plan"]; p != "" {
 			argv = append(argv, p)
+		} else {
+			// 没给 plan 就从 bundle 现生成（`mynet apply --auto`）。
+			// 守护进程走这条路：bundle_changed 之后要「刷配置 → 起驱动 → 装路由」
+			// 一条龙，中间不该出现临时 plan 文件。
+			argv = append(argv, "--auto")
 		}
 		return argv, true
 	case OpNodeRefresh, OpNodeUpdate:
@@ -96,14 +101,29 @@ func Plan(req Request, nodeID string) ([]string, bool) {
 	case OpMetrics:
 		return []string{"metrics", "--json"}, true
 	case OpServiceStart:
-		return []string{"service", "start", req.Args["name"]}, true
+		return serviceArgv("start", req.Args["name"]), true
 	case OpServiceStop:
-		return []string{"service", "stop", req.Args["name"]}, true
+		return serviceArgv("stop", req.Args["name"]), true
 	case OpServiceReload:
-		return []string{"service", "reload", req.Args["name"]}, true
+		return serviceArgv("reload", req.Args["name"]), true
 	default:
 		return nil, false
 	}
+}
+
+// serviceArgv 拼 `mynet service <action> [name]`。
+//
+// ⚠️ name 为空时**必须整个省略**，不能拼一个空串：执行器的 cmdService 用
+// `len(args) >= 2` 判断「有没有显式给驱动名」，给了空串会被当成
+// 「指定了一个叫 "" 的驱动」→ 报「未知驱动: 」，而不是走
+// 「从 bundle 的 driver 字段取」那条路。守护进程正是靠省略来让它自动取。
+func serviceArgv(action, name string) []string {
+	argv := []string{"service", action}
+	if name != "" {
+		argv = append(argv, name)
+	}
+
+	return argv
 }
 
 // Run 翻译并执行一条指令。

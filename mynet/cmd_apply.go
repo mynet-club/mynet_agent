@@ -15,14 +15,25 @@ import (
 // cmdApply — F-2/F-3/F-5：唯一写入者。
 //
 // 读 system.json 决定 exec 什么工具，对 gnb0 与 wg0 一视同仁（不感知驱动）。
-// 用法: mynet apply [--dry-run] <plan.json>
+//
+// 用法:
+//
+//	mynet apply [--dry-run] <plan.json>   # 执行一份已生成的计划
+//	mynet apply [--dry-run] --auto        # 直接从 $MYNET_HOME/var/bundle.json 生成并执行
+//
+// --auto 是给守护进程用的：mynetd 收到 bundle_changed 后要「刷配置 → 起驱动 →
+// 装路由」一条龙，中间不该出现一个临时 plan 文件（多一个落盘点就多一处
+// 「打印的计划」与「真执行的」可能不一致的地方）。两条路径共用 planFromBundle()。
 func cmdApply(args []string) int {
 	dry := false
+	auto := false
 	planPath := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run":
 			dry = true
+		case "--auto":
+			auto = true
 		case "--out", "--plan":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "缺少参数值")
@@ -34,15 +45,33 @@ func cmdApply(args []string) int {
 			planPath = args[i]
 		}
 	}
-	if planPath == "" {
-		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] <plan.json>")
-		return 2
-	}
 
 	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读 system.json 失败（先跑 mynet detector）: %v\n", err)
 		return 1
+	}
+
+	if auto {
+		env, err := loadBundleEnvelope()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "apply --auto: 读 bundle 失败（先让 mynetd 拉一版）: %v\n", err)
+			return 1
+		}
+		plan := planFromBundle(env)
+		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 {
+			// 不是错误：没有对端时本来就没有路由要装。但要**说出来**，
+			// 否则「apply 成功」和「apply 什么都没做」在日志里长得一样。
+			fmt.Println("apply --auto: bundle 里没有要应用的路由/防火墙/接口（无对端？）")
+			return 0
+		}
+
+		return executeApply(snap, &plan, dry)
+	}
+
+	if planPath == "" {
+		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] <plan.json> | --auto")
+		return 2
 	}
 
 	plan, err := readApplyPlan(planPath)
@@ -74,11 +103,29 @@ func cmdApply(args []string) int {
 // /etc/wireguard/<iface>.conf（wireguard.go:146,158,164）—— 路径对不上。
 // gnb 那条链已通；wg 这条要等 install 阶段落地，此处不假装它能用。
 func cmdService(args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|status> <gnb|wireguard>")
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|status> [gnb|wireguard]")
 		return 2
 	}
-	action, name := args[0], args[1]
+	action := args[0]
+	name := ""
+	if len(args) >= 2 {
+		name = args[1]
+	} else {
+		// 驱动名可省略：从 bundle 的 driver 字段取。守护进程走这条路 ——
+		// 它不该硬编码驱动类型，否则 gnb 节点与 wg 节点要跑两套逻辑。
+		env, err := loadBundleEnvelope()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "mynet service: 未指定驱动且读 bundle 失败: %v\n", err)
+			return 1
+		}
+		name = string(env.Driver)
+		if name == "" {
+			fmt.Fprintln(os.Stderr, "mynet service: bundle 里没有 driver 字段，请显式指定 gnb|wireguard")
+			return 1
+		}
+		fmt.Printf("未指定驱动，按 bundle 取 %s\n", name)
+	}
 
 	var typ domain.VPNDriverType
 	switch name {
