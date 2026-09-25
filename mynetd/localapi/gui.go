@@ -41,13 +41,19 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SPA 用 history 路由：非文件请求一律回 index.html
-	fs := http.FileServer(http.Dir(root))
+	//
+	// ⚠️ 必须把 URL.Path 改写成剥掉 /gui 之后的路径再交给 FileServer ——
+	// 直接 fs.ServeHTTP(w, r) 会去找 <root>/gui/assets/…，而产物在
+	// <root>/assets/…。症状是 index.html 200、JS/CSS 全 404（实测）。
 	clean := filepath.Clean(p)
 	if clean == "/" || !fileExists(filepath.Join(root, clean)) {
 		http.ServeFile(w, r, filepath.Join(root, "index.html"))
 		return
 	}
-	fs.ServeHTTP(w, r)
+	fs := http.FileServer(http.Dir(root))
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = clean
+	fs.ServeHTTP(w, r2)
 }
 
 // guiRoot 找 SPA 产物目录。优先 MYNET_GUI_DIR，再看 <MYNET_HOME>/gui，

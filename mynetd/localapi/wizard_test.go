@@ -268,3 +268,44 @@ func TestRelayWithoutGatewayIs502(t *testing.T) {
 		t.Fatalf("code=%d want 502 body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// /gui/ 的静态资源：URL 带 /gui 前缀，但磁盘上没有 gui/ 这一层。
+// 不剥前缀就会去找 <root>/gui/assets/… —— index.html 200、JS/CSS 全 404。
+func TestGUIAssetsStripPrefix(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>idx</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "assets", "app.js"), []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.Setenv("MYNET_GUI_DIR", dir)
+	defer os.Unsetenv("MYNET_GUI_DIR")
+
+	s := NewServer(Config{Token: "t"})
+	h := s.withSecurity(http.HandlerFunc(s.handleGUI))
+
+	// index
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/gui/", nil)
+	req.Host = "127.0.0.1:8096"
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "idx") {
+		t.Fatalf("index code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 资源：路径含 /gui/，磁盘上是 assets/app.js
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest("GET", "http://127.0.0.1:8096/gui/assets/app.js", nil)
+	req.Host = "127.0.0.1:8096"
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("asset code=%d（应剥掉 /gui 前缀命中 assets/app.js）", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "console.log") {
+		t.Fatalf("asset body=%s", rec.Body.String())
+	}
+}
