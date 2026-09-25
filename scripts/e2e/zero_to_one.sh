@@ -284,27 +284,36 @@ ok "B 的 user_id=$UIDB"
 
 req POST "$API/api/v1/social/friend-request" "$TA" \
   "{\"target_id\":$UIDB,\"message\":\"z2o\"}" "X-Tenant-ID: $TENANT"
+ALREADY_FRIENDS=0
 case "$CODE" in
   200|201) ok "好友申请已发出" ;;
   # 409 = 已经是好友 / 申请已存在。这是**正确的业务语义**（CPI-32 把业务拒绝从 500
   # 改成 409/422，这里正好在真环境验到了）。重跑时必须当「已完成」继续，否则脚本不可重入。
-  409)     ok "好友关系已存在（HTTP 409 —— 业务拒绝返 409 而非 500，CPI-32 的修复在真环境生效）" ;;
+  409)     ok "好友关系已存在（HTTP 409 —— 业务拒绝返 409 而非 500，CPI-32 的修复在真环境生效）"
+           ALREADY_FRIENDS=1 ;;
   *)       bad "好友申请失败 HTTP ${CODE}：$(printf '%s' "$BODY" | head -c 160)"; die "好友申请" ;;
 esac
 
-req GET "$API/api/v1/social/data" "$TB" "" "X-Tenant-ID: $TENANT"
-expect "B 能看到待处理申请" 200
-# 实测响应形状是 data.pending_requests[]（不是 friend_requests）—— 逐个候选试，
-# 别把「我猜的字段名」当成契约。取不到就把 body 打出来，让人看见真实形状。
-RID=""
-for _p in data.pending_requests.0.request_id data.pending_requests.0.id \
-          data.friend_requests.0.request_id data.friend_requests.0.id; do
-  RID=$(jsonget "$_p"); [ -n "$RID" ] && break
-done
-[ -n "$RID" ] || die "取不到 request_id；body=$(printf '%s' "$BODY" | head -c 250)"
-req POST "$API/api/v1/social/friend-request/accept" "$TB" \
-  "{\"request_id\":$RID}" "X-Tenant-ID: $TENANT"
-case "$CODE" in 200|201) ok "B 已接受，好友关系建立（request_id=${RID}）" ;; *) bad "接受失败 HTTP $CODE"; die "接受好友" ;; esac
+# ⚠️ 已是好友时必须**跳过**「列出待处理申请 → 接受」这半段。
+# 此前只把发申请那一步做成了可重入（409→继续），后半段仍硬要求 pending 里有一条，
+# 于是重跑时必然停在「取不到 request_id」—— 脚本自称可重入，实际只重入了一半。
+if [ "$ALREADY_FRIENDS" = 1 ]; then
+  ok "已是好友，跳过「接受申请」（重跑时的正常路径）"
+else
+  req GET "$API/api/v1/social/data" "$TB" "" "X-Tenant-ID: $TENANT"
+  expect "B 能看到待处理申请" 200
+  # 实测响应形状是 data.pending_requests[]（不是 friend_requests）—— 逐个候选试，
+  # 别把「我猜的字段名」当成契约。取不到就把 body 打出来，让人看见真实形状。
+  RID=""
+  for _p in data.pending_requests.0.request_id data.pending_requests.0.id \
+            data.friend_requests.0.request_id data.friend_requests.0.id; do
+    RID=$(jsonget "$_p"); [ -n "$RID" ] && break
+  done
+  [ -n "$RID" ] || die "取不到 request_id；body=$(printf '%s' "$BODY" | head -c 250)"
+  req POST "$API/api/v1/social/friend-request/accept" "$TB" \
+    "{\"request_id\":$RID}" "X-Tenant-ID: $TENANT"
+  case "$CODE" in 200|201) ok "B 已接受，好友关系建立（request_id=${RID}）" ;; *) bad "接受失败 HTTP $CODE"; die "接受好友" ;; esac
+fi
 
 # ════════════════════════════════════════════════════════════
 phase "Phase 4 · 连接授权 → bundle 下发"
@@ -320,8 +329,49 @@ case "$CODE" in
   *) bad "连接申请失败 HTTP ${CODE}"; die "连接申请" ;;
 esac
 
+# ⚠️ 这里以前只写 `expect "B 能列到连接申请" 200` —— **那是假的绿**。
+# 该端点曾是 TODO 桩：无条件返回 200 + `{"pending":[],"sent":[]}`（CPI-60）。
+# 只断言状态码的话，桩照样"通过"。现在断言**内容**：pending 里必须有这条申请，
+# 且它的 id 要能直接喂给下一步的 accept-request（GUI 批准按钮走的就是这条路）。
 req GET "$API/api/v1/route/requests" "$TB" "" "X-Tenant-ID: $TENANT"
 expect "B 能列到连接申请" 200
+RID=$(jsonget data.pending.0.request_id)
+[ -n "$RID" ] || RID=$(jsonget data.pending.0.id)
+[ -n "$RID" ] || {
+  bad "B 的 pending 列表是空的 —— 申请没进列表（端点可能又是桩，或过滤条件不对）"
+  printf '      body=%s\n' "$(printf '%s' "$BODY" | head -c 250)"
+  die "连接申请列表"
+}
+ok "B 的 pending 列表里有这条申请（id=${RID}）"
+# 列表里的 id 必须与 send-request 返回的一致，否则 GUI 拿它去批准会打到别的记录上
+REQID=$(jsonget data.pending.0.id)
+[ -z "$REQID" ] || [ "$REQID" = "$RID" ] || { bad "列表里的 id 与取值字段不一致"; die "id 一致性"; }
+
+# 批准 —— 此前本脚本**从没调过** accept-request，所以库里两条旧申请至今还是
+# pending。不批准就不会有 routes 行，bundle 里也就没有对端公钥与路由（CPI-62 的上游）。
+req POST "$API/api/v1/route/accept-request/$RID" "$TB" '{}' "X-Tenant-ID: $TENANT"
+case "$CODE" in
+  200|201) ok "B 已批准连接申请（request_id=${RID}）" ;;
+  # 重跑时「已批准过」是业务拒绝，按 CPI-32 应为 409/422，当作已完成继续
+  409|422) ok "连接申请此前已批准（HTTP ${CODE}，业务拒绝不是 500 —— CPI-32 生效）" ;;
+  *) bad "批准失败 HTTP ${CODE}：$(printf '%s' "$BODY" | head -c 200)"; die "批准连接申请" ;;
+esac
+
+# 批准后**这一条**应从 pending 消失（getUserRouteRequests 两类都只查 status='pending'）。
+# ⚠️ 不要断言「pending 整个为空」：staging 上可能还有别的遗留申请
+# （实测就有一条 9-24 旧跑留下的 id=4692523863060566 至今 pending），
+# 断言全局状态会让验收依赖别人的历史数据 —— 只认自己刚批准的那个 id。
+req GET "$API/api/v1/route/requests" "$TB" "" "X-Tenant-ID: $TENANT"
+expect "批准后重新拉列表" 200
+# 直接找那个 16 位 request_id 就够了（够唯一），不用拼 "id": 前缀 ——
+# jsonget 走的是 python json.dumps，默认分隔符是 ": "（冒号后**有空格**），
+# 拼成 "id":$RID 永远匹配不上，会把「还在列表里」误报成「已消失」。
+if printf '%s' "$(jsonget data.pending)" | grep -q "$RID"; then
+  bad "批准后 pending 里仍有 id=${RID} —— status 没更新或查询没过滤"
+  die "批准后列表未更新"
+else
+  ok "批准后 id=${RID} 已从 pending 消失（已处理的申请不会一直挂着）"
+fi
 
 # ════════════════════════════════════════════════════════════
 phase "Phase 5 · 节点面：签名请求必须过（CPI-37 的现形点）"
@@ -336,7 +386,8 @@ else
 fi
 
 printf '\n════════ 0→1 验收：%s 通过 / %s 失败 ════════\n' "$pass" "$fail"
-printf '已验到：环境自检 · 注册登录 · 租户上下文 · 建节点 · 密钥（含私钥不出口）· 好友 · 连接申请\n'
+printf '已验到：环境自检 · 注册登录 · 租户上下文 · 建节点 · 密钥（含私钥不出口）· 好友 · 连接申请 · **批准** · 批准后列表更新\n'
 printf '未验（需节点机）：节点面签名（CPI-37）· bundle 真下发 · 两节点真互通 · 心跳落库\n'
+printf '  ↑ 那几项由 scripts/e2e/phase6_tunnel.sh 覆盖（真节点机，38 项断言）\n'
 [ "$fail" -eq 0 ] || exit 1
 exit 0
