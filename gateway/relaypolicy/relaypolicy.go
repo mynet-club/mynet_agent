@@ -6,18 +6,34 @@ package relaypolicy
 
 import "strings"
 
-// AllowedPathPrefixes 允许中继的 back 路径前缀（含节点自身通道）
+// AllowedPathPrefixes 允许中继的 back 路径前缀（含节点自身通道 + mynet_gui 面）。
+//
+// ⚠️ 改白名单必须**同时**看 deniedFragments（IsAllowedWith 先 deny 后 allow）。
+//
+// 起初只有 C-8 会话 5 条；mynet_gui 收进本机 webui 后，控制台要调
+// nodes/routes/services/social/ippools/tenants/user 等一大片 —— 不放开
+// 就是一串 403「path 不在中继白名单内」（实测）。这里按**业务前缀**放开，
+// 不是按单条路径枚举：back 自己还有鉴权与租户隔离，gateway 只挡路径。
 var AllowedPathPrefixes = []string{
-	// C-8 会话 5 条
-	"/api/v1/auth/login",
-	"/api/v1/auth/refresh",
-	"/api/v1/auth/logout",
-	"/api/v1/auth/verify",
-	"/api/v1/auth/me",
+	// 会话与账号（C-8 原 5 条 + gui 的注册/改密/找回）
+	"/api/v1/auth/",
+	// 节点面
 	"/api/v1/nodes",
 	"/api/v1/routes",
+	"/api/v1/route/",
 	"/api/v1/monitor",
 	"/api/v1/heartbeat",
+	// gui 控制台：IP 池 / 服务 / 社交 / 租户 / 用户
+	"/api/v1/ippools",
+	"/api/v1/ip-pools",
+	"/api/v1/services",
+	"/api/v1/social",
+	"/api/v1/tenants",
+	"/api/v1/user",
+	"/api/v1/users",
+	"/api/v1/dashboard",
+	"/api/v1/config",
+	"/api/v1/system",
 }
 
 // deniedFragments 即便前缀命中也必须拒绝。

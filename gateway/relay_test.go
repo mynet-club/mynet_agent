@@ -157,8 +157,8 @@ func TestRelayDeniesNonWhitelistedPath(t *testing.T) {
 	for _, bad := range []string{
 		"/api/v1/auth/admin/settings", // deniedFragments: /auth/admin
 		"/admin/dashboard",            // deniedFragments: /admin
-		"/api/v1/tenants",             // 不在 AllowedPathPrefixes
-		"/api/v2/nodes",
+		"/api/v1/secret",              // 不在 AllowedPathPrefixes
+		"/api/v2/nodes",               // 版本不对，不在白名单
 	} {
 		resp, err := http.Get(relayURL(ts.URL, bad))
 		if err != nil {
