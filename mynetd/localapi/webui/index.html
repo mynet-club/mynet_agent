@@ -71,8 +71,10 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
       <!-- 步骤 3：下载配置（claim 完成）-->
       <div id="wiz-step-3" hidden>
         <div class="row" style="margin-top:12px">
-          <button class="primary" id="wiz-start">启动隧道</button>
-          <button id="wiz-logout">退出登录</button>
+          <!-- 启动/退出在 3、4 两步各有一份，用 class 绑定而不是 id ——
+               重复 id 时 getElementById 只拿到第一份，第 4 步的按钮是死的 -->
+          <button class="primary" data-wiz="start">启动隧道</button>
+          <button data-wiz="logout">退出登录</button>
         </div>
         <p class="muted">配置已就位。下一步<strong>把隧道拉起来</strong> ——
           不启动的话节点只是"配好了"，还没在跑。</p>
@@ -81,10 +83,10 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
       <!-- 步骤 4：启动隧道 -->
       <div id="wiz-step-4" hidden>
         <div class="row" style="margin-top:12px">
-          <button class="primary" id="wiz-start">启动隧道</button>
-          <button id="wiz-restart">重启隧道</button>
+          <button class="primary" data-wiz="start">启动隧道</button>
+          <button data-wiz="restart">重启隧道</button>
           <button id="wiz-finish">完成，去看本机状态</button>
-          <button id="wiz-logout">退出登录</button>
+          <button data-wiz="logout">退出登录</button>
         </div>
         <p class="muted">隧道要建 tun 设备，需要<strong>特权</strong>（节点部署下 mynetd
           以 root 跑；本机调试请用 <code>sudo</code> 启 mynetd）。
@@ -207,14 +209,15 @@ el('wiz-claim').onclick = async () => {
 async function wizStart(cmd) {
   el('wiz-out').textContent = '执行中…';
   // ⚠️ 起隧道是**两件事**，不是一件：
-  //   ① service start gnb —— 起驱动、建 tun 接口
-  //   ② apply --auto      —— 装内核路由
+  //   ① service start/reload gnb —— 起驱动、建 tun 接口
+  //   ② apply --auto            —— 装内核路由
   // 只做 ① 的后果：接口在、IP 在，但到对端的路由还走默认网关 → ping 100% 丢包。
   // 实测撞过（本机 utun4 有 10.0.0.15，而 `route get 10.0.0.16` 仍指 en0）。
-  // 顺序不能反：`ip route … dev <if>` 要求接口已存在。
-  const steps = cmd[0] === 'service' && cmd[1] === 'start'
-    ? [cmd, ['apply', '--auto']]
-    : [cmd];
+  // 顺序不能反：装路由要求接口已存在。
+  // reload 也必须装路由：darwin 上 gnb 重开后可能是**另一个 utunN**，
+  // 旧路由还指着已经消失的接口。
+  const isLifecycle = cmd[0] === 'service' && (cmd[1] === 'start' || cmd[1] === 'reload');
+  const steps = isLifecycle ? [cmd, ['apply', '--auto']] : [cmd];
   const all = [];
   for (const argv of steps) {
     all.push(await api('/api/v1/command', {
@@ -230,16 +233,19 @@ async function wizStart(cmd) {
   });
   el('wiz-out').textContent += '\n\n── 隧道状态 ──\n' + ((st.data && st.data.stdout) || JSON.stringify(st, null, 2));
 }
-el('wiz-start').onclick = () => wizStart(['service', 'start', 'gnb']);
-el('wiz-restart').onclick = () => wizStart(['service', 'reload', 'gnb']);
+document.querySelectorAll('[data-wiz="start"]').forEach(b =>
+  b.onclick = () => wizStart(['service', 'start', 'gnb']));
+document.querySelectorAll('[data-wiz="restart"]').forEach(b =>
+  b.onclick = () => wizStart(['service', 'reload', 'gnb']));
 
 el('wiz-finish').onclick = () => {
   document.querySelector('nav button[data-v="local"]').click();
 };
-el('wiz-logout').onclick = async () => {
-  show('wiz-out', await api('/api/v1/wizard/logout', { method: 'POST' }));
-  wizShow(1);
-};
+document.querySelectorAll('[data-wiz="logout"]').forEach(b =>
+  b.onclick = async () => {
+    show('wiz-out', await api('/api/v1/wizard/logout', { method: 'POST' }));
+    wizShow(1);
+  });
 
 (async function wizInit() {
   try {

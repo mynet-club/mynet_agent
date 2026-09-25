@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -192,6 +193,32 @@ func TestRedactSecretsSparesPublicKeyMasksTokens(t *testing.T) {
 	plain := "已登录 z2o-a@mynet.club user_id=6258330675511267"
 	if out := redactLine(plain); out != plain {
 		t.Fatalf("普通文字不该被改：%s", out)
+	}
+}
+
+// webui 的 id 必须唯一。此前「启动隧道」在步骤 3、4 各有一份 id="wiz-start"，
+// getElementById 只绑到第一份（步骤 3 那个）—— 用户落到步骤 4（已有配置、
+// 重开页面）时，看得见的按钮是**死的**，点了没反应，观感就是「向导没把
+// gnb 跑起来」。用 class/data-* 绑定后，这条钉住不再回潮。
+func TestWebUIHasNoDuplicateIDs(t *testing.T) {
+	raw, err := os.ReadFile("webui/index.html")
+	if err != nil {
+		t.Skip("webui 不在本包目录（构建布局变了）")
+	}
+	counts := map[string]int{}
+	for _, m := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(string(raw), -1) {
+		counts[m[1]]++
+	}
+	for id, n := range counts {
+		if n > 1 {
+			t.Errorf("id=%q 出现 %d 次 —— 重复 id 让 getElementById 只绑到第一份，其余按钮是死的", id, n)
+		}
+	}
+	// 启动/退出必须用 data-wiz 绑定（3、4 两步各一份），且 JS 里要 querySelectorAll
+	for _, want := range []string{`data-wiz="start"`, `data-wiz="restart"`, `data-wiz="logout"`, `querySelectorAll('[data-wiz="start"]')`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("webui 缺 %s", want)
+		}
 	}
 }
 

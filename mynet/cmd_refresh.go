@@ -151,6 +151,9 @@ func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
 			Metric:      r.Metric,
 		})
 	}
+	// Device 是逻辑名（gnb_tun）；darwin 的 gnb 实际拿到 utunN。
+	// 把本机 overlay 地址带上，执行期才能反查真实接口（见 resolveDevice）。
+	plan.LocalAddresses = append(plan.LocalAddresses, env.Network.Addresses...)
 
 	return plan
 }
