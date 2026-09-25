@@ -43,11 +43,12 @@ CODE=""; BODY=""
 # req METHOD URL [token] [json-body] [extra-header]
 req() {
   _m=$1; _u=$2; _tok=${3:-}; _body=${4:-}; _hdr=${5:-}
-  # ⚠️ -4：我们的 deploy/nginx.conf **缺 `listen [::]:443`**（线上生产那份有），
-  # 于是走 IPv6 时请求会被别的 server block 兜走 —— 实测 stage-api 的静态标记文件
-  # 经 IPv6 取回的是另一个站的 HTML 404 页。这是配置缺陷（已记 CPI-49），
-  # 这里显式走 IPv4 绕过，**不是**把问题藏起来：修好 nginx 后应去掉这个 -4 再验一遍。
-  _args="-sS -4 -m 30 -o /tmp/z2o_body -w %{http_code} -X $_m"
+  # 曾经这里带 `-4`：我们的 deploy/nginx.conf 缺 `listen [::]:443`（CPI-49），
+  # 走 IPv6 时请求会被别的 server block 兜走。
+  # ✅ 2026-09-25 已修并复验：IPv6 解析到 2406:da18:…（AWS 新加坡），
+  #    打真 API 端点 POST /api/v1/auth/login 返回 200 且与 IPv4 内容一致，
+  #    所以这个绕过按当初写下的承诺去掉了（「修好 nginx 后应去掉这个 -4 再验一遍」）。
+  _args="-sS -m 30 -o /tmp/z2o_body -w %{http_code} -X $_m"
   # shellcheck disable=SC2086
   set -- $_args "$_u"
   [ -n "$_tok" ]  && set -- "$@" -H "Authorization: Bearer $_tok"
