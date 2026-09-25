@@ -334,3 +334,57 @@ func TestNodeStatusPeerRowUnrouted(t *testing.T) {
 		t.Fatal("路由缺失时对端行 Routed 必须为 false")
 	}
 }
+
+// 链路态来自 gnb_ctl，不是瞎猜。gnb_ctl 不可用时必须留 unknown。
+func TestNodeStatusPeerLinkFromGnbCtl(t *testing.T) {
+	f := newFixture(t)
+	f.write("conf/mynet.conf", "NODE_ID=1001\n")
+	f.write("var/gnb/node.conf", "x\n")
+	f.write("var/gnb/gnb.pid", "4242\n")
+	f.write("var/bundle.json", `{"network":{
+		"addresses":["10.0.0.1/32"],
+		"routes":[{"prefix":"10.0.0.2/32","dev":"gnb_tun"}]
+	},"gnb":{"nodes":[{"node_id":"1002","tun_address":"10.0.0.2/32"}]}}`)
+	p := f.probe()
+	p.gnbPath = "/usr/bin/gnb"
+	p.pidAlive = func(int) bool { return true }
+	p.findIface = func(string) string { return "utun4" }
+	p.routeExists = func(string) bool { return true }
+	p.gnbPeerLinks = func(string) map[int64]PeerLinkInfo {
+		return map[int64]PeerLinkInfo{
+			1001: {Link: "local", Overlay: "10.0.0.1"},
+			1002: {Link: "direct", Overlay: "10.0.0.2", LatencyMs: 7},
+		}
+	}
+	st := computeNodeStatus(p)
+	if len(st.Peers) < 2 {
+		t.Fatalf("peers=%d", len(st.Peers))
+	}
+	if st.Peers[1].Link != "direct" {
+		t.Fatalf("对端链路应是 direct，got %q", st.Peers[1].Link)
+	}
+	if st.Peers[1].LatencyMs != 7 {
+		t.Fatalf("latency=%d want 7", st.Peers[1].LatencyMs)
+	}
+}
+
+func TestNodeStatusPeerLinkUnknownWhenNoCtl(t *testing.T) {
+	f := newFixture(t)
+	f.write("conf/mynet.conf", "NODE_ID=1001\n")
+	f.write("var/gnb/node.conf", "x\n")
+	f.write("var/gnb/gnb.pid", "4242\n")
+	f.write("var/bundle.json", `{"network":{
+		"addresses":["10.0.0.1/32"],
+		"routes":[{"prefix":"10.0.0.2/32","dev":"gnb_tun"}]
+	}}`)
+	p := f.probe()
+	p.gnbPath = "/usr/bin/gnb"
+	p.pidAlive = func(int) bool { return true }
+	p.findIface = func(string) string { return "utun4" }
+	p.routeExists = func(string) bool { return true }
+	p.gnbPeerLinks = func(string) map[int64]PeerLinkInfo { return nil }
+	st := computeNodeStatus(p)
+	if st.Peers[1].Link != "unknown" {
+		t.Fatalf("gnb_ctl 不可用时必须 unknown，不能编，got %q", st.Peers[1].Link)
+	}
+}

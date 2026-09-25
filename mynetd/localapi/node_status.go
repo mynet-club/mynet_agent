@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
 )
 
 // 本机节点状态机（P1）—— 判据全部来自**磁盘产物 + 进程 + 内核**，
@@ -111,6 +113,9 @@ type statusProbe struct {
 	routeExists func(dest string) bool
 	// findIface 找挂了某 IP 的接口名
 	findIface func(ip string) string
+	// gnbPeerLinks 读 gnb_ctl 的对端链路态；不可用时返回 nil
+	// （前端显示 unknown，不猜）。key = nodeID。
+	gnbPeerLinks func(confDir string) map[int64]PeerLinkInfo
 }
 
 // ComputeNodeStatus 算一次本机节点状态。
@@ -133,7 +138,29 @@ func defaultProbe() statusProbe {
 		findIface:     ifaceWithAddr,
 		ifaceStats:    ifaceStats,
 		procUptimeSec: procUptimeSec,
+		gnbPeerLinks:  gnbPeerLinksOf,
 	}
+}
+
+// PeerLinkInfo 本地网界面的对端链路态（脱敏后的最小子集）。
+type PeerLinkInfo struct {
+	Link      string
+	Overlay   string
+	LatencyMs float64
+}
+
+// gnbPeerLinksOf 委托 driver 包读 gnb_ctl。失败返回 nil ——
+// 链路态拿不到就是拿不到，不编。
+func gnbPeerLinksOf(confDir string) map[int64]PeerLinkInfo {
+	raw := driver.GnbPeerLinks(confDir)
+	if raw == nil {
+		return nil
+	}
+	m := make(map[int64]PeerLinkInfo, len(raw))
+	for id, p := range raw {
+		m[id] = PeerLinkInfo{Link: p.Link, Overlay: p.Overlay, LatencyMs: p.LatencyMs}
+	}
+	return m
 }
 
 // ifaceStats 读接口计数器。Linux 走 sysfs，darwin 解析 ifconfig。
@@ -450,6 +477,11 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	// ⑤ 对端表 + 路由：每个对端 /32 都要在系统路由表里
 	routed := 0
 	var missing []string
+	// 链路态来自 gnb_ctl；拿不到就留 unknown，不编
+	var links map[int64]PeerLinkInfo
+	if p.gnbPeerLinks != nil {
+		links = p.gnbPeerLinks(gnbConf)
+	}
 	// 本机行在最前（与 route.conf 约定同形：第一条 = 本机）
 	st.Peers = append(st.Peers, PeerRow{
 		NodeID:  st.NodeID,
@@ -468,12 +500,31 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 		} else {
 			missing = append(missing, r.PeerIP)
 		}
-		st.Peers = append(st.Peers, PeerRow{
+		row := PeerRow{
 			NodeID:  r.NodeID,
 			Overlay: r.PeerIP,
 			Routed:  ok,
 			Link:    "unknown", // gnb_ctl 不可用时如实说未知，别猜
-		})
+		}
+		if links != nil {
+			if pid, err := strconv.ParseInt(r.NodeID, 10, 64); err == nil {
+				if l, ok := links[pid]; ok {
+					row.Link = l.Link
+					row.LatencyMs = int(l.LatencyMs)
+				}
+			}
+			if row.Link == "unknown" {
+				// node_id 缺失/对不上时按 overlay 兜底
+				for _, l := range links {
+					if l.Overlay == r.PeerIP && l.Link != "" {
+						row.Link = l.Link
+						row.LatencyMs = int(l.LatencyMs)
+						break
+					}
+				}
+			}
+		}
+		st.Peers = append(st.Peers, row)
 	}
 	st.PeersRouted = routed
 	st.RoutesOK = st.PeersTotal > 0 && routed == st.PeersTotal

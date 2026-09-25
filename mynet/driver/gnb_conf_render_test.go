@@ -749,3 +749,29 @@ func TestGnbParseStatusFromRealCtlOutput(t *testing.T) {
 		t.Fatalf("in/out 字节数解析错: rx=%d tx=%d", remote.RxBytes, remote.TxBytes)
 	}
 }
+
+// 链路态映射两个坑一起钉住：
+//  1. markDirect 写的是 "online"，不是 "Direct" —— 只匹配 "Direct" 会把直连判成 offline
+//  2. "InDirect" 包含子串 "Direct" —— 反序会把中继判成直连
+func TestGnbPeerLinkMapping(t *testing.T) {
+	cases := []struct {
+		status string
+		local  bool
+		want   string
+	}{
+		{"online", false, "direct"},
+		{"relay", false, "relay"},
+		{"offline", false, "offline"},
+		{"InDirect", false, "relay"},
+		{"Direct Point to Point", false, "direct"},
+		{"Local node", true, "local"},
+	}
+	for _, c := range cases {
+		// 直接打 GnbPeerLinks 的映射逻辑：喂 parseGNBStatus 的产物
+		p := &domain.VPNPeer{ConnectionStatus: c.status, IsLocal: c.local}
+		got := linkFromStatus(p)
+		if got != c.want {
+			t.Fatalf("status=%q local=%v got %q want %q", c.status, c.local, got, c.want)
+		}
+	}
+}

@@ -887,3 +887,71 @@ func RenderGNBNodeConfFromBundle(b *domain.VPNBundle) string {
 
 	return sb.String()
 }
+
+// PeerLink 对端链路态（gnb_ctl -s）。
+// Link 取值：direct / relay / local / offline / unknown
+type PeerLink struct {
+	NodeID    int64
+	Overlay   string
+	Link      string
+	LatencyMs float64
+}
+
+// GnbPeerLinks 读 gnb_ctl 的对端链路表。key = nodeID。
+//
+// 供 localapi 的 node-status 用 —— UI 的「链路」列不能瞎猜，
+// gnb_ctl 不可用时如实空表，前端显示 unknown。
+//
+// 判据复用 parseGNBStatus（格式对齐 gnb_ctl_dump.c）：
+//   - `Local node`   → local
+//   - `Direct`       → direct
+//   - `InDirect`     → relay
+//   - 其它/无 PONG   → offline
+func GnbPeerLinks(confDir string) map[int64]PeerLink {
+	d := NewGNBDriver(0)
+	d.ConfDir = confDir
+	// ctl 块是 gnb.map（不是 ctl），缺 -b 会打印 usage 却 exit 0
+	out, err := d.Exec("gnb_ctl", "-b", confDir+"/gnb.map", "-c", "-s")
+	if err != nil {
+		return nil
+	}
+	if !strings.Contains(string(out), "node_num[") {
+		return nil
+	}
+	peers := parseGNBStatus(string(out))
+	if len(peers) == 0 {
+		return nil
+	}
+	m := make(map[int64]PeerLink, len(peers))
+	for _, p := range peers {
+		link := linkFromStatus(p)
+		m[p.NodeID] = PeerLink{
+			NodeID:    p.NodeID,
+			Overlay:   p.VirtualIP,
+			Link:      link,
+			LatencyMs: p.LatencyMs,
+		}
+	}
+	return m
+}
+
+// linkFromStatus 把 VPNPeer 的 ConnectionStatus 映射成 UI 用的链路词。
+//
+// ⚠️ 两个坑（实测都踩过）：
+//  1. markDirect 写的是 "online" 不是 "Direct" —— 只匹配 "Direct" 会把直连判成 offline
+//  2. "InDirect" 包含子串 "Direct" —— 反序会把中继判成直连
+func linkFromStatus(p *domain.VPNPeer) string {
+	switch {
+	case p.IsLocal, strings.Contains(p.ConnectionStatus, "Local"):
+		return "local"
+	case p.ConnectionStatus == "online",
+		strings.Contains(p.ConnectionStatus, "Direct") && !strings.Contains(p.ConnectionStatus, "InDirect"):
+		return "direct"
+	case p.ConnectionStatus == "relay",
+		strings.Contains(p.ConnectionStatus, "InDirect"),
+		strings.Contains(p.ConnectionStatus, "Indirect"):
+		return "relay"
+	default:
+		return "offline"
+	}
+}

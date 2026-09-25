@@ -72,9 +72,9 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
       <thead><tr style="text-align:left;color:var(--mut);font-size:12px">
         <th style="padding:6px 8px">角色</th><th style="padding:6px 8px">NODE_ID</th>
         <th style="padding:6px 8px">overlay</th><th style="padding:6px 8px">链路</th>
-        <th style="padding:6px 8px">OS 路由</th>
+        <th style="padding:6px 8px">延迟</th><th style="padding:6px 8px">OS 路由</th>
       </tr></thead>
-      <tbody id="peers-body"><tr><td colspan="5" class="muted" style="padding:8px">—</td></tr></tbody>
+      <tbody id="peers-body"><tr><td colspan="6" class="muted" style="padding:8px">—</td></tr></tbody>
     </table>
     <details style="margin-top:10px">
       <summary class="muted" style="cursor:pointer">route.conf（本机在前 · 节点一律 /32）</summary>
@@ -441,19 +441,28 @@ async function loadNodeStatus() {
   }
 
   // ── ⑤ 对端表 ───────────────────────────────────────
+  const linkLabel = (l) => {
+    if (l === 'direct') return '<span class="tag ok">Direct</span>';
+    if (l === 'relay')  return '<span class="tag ok">Relay</span>';
+    if (l === 'local')  return '<span class="tag">本机</span>';
+    if (l === 'offline') return '<span class="tag bad">离线</span>';
+    return '<span class="tag">未知</span>';
+  };
   const tb = el('peers-body');
   if (!st.peers || !st.peers.length) {
-    tb.innerHTML = '<tr><td colspan="5" class="muted" style="padding:8px">无对端（bundle 里没有路由）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="6" class="muted" style="padding:8px">无对端（bundle 里没有路由）</td></tr>';
   } else {
     tb.innerHTML = st.peers.map(p => {
       const routed = p.routed
         ? '<span class="tag ok">✓</span>'
         : '<span class="tag bad">✗ 缺</span>';
+      const lat = p.latency_ms ? p.latency_ms + 'ms' : '—';
       return `<tr style="border-top:1px solid #243044">
         <td style="padding:6px 8px">${p.is_self ? '本机' : '对端'}</td>
         <td style="padding:6px 8px"><code>${p.node_id || '—'}</code></td>
         <td style="padding:6px 8px"><code>${p.overlay || '—'}</code></td>
-        <td style="padding:6px 8px">${p.link || '—'}</td>
+        <td style="padding:6px 8px">${linkLabel(p.link)}</td>
+        <td style="padding:6px 8px">${lat}</td>
         <td style="padding:6px 8px">${routed}</td>
       </tr>`;
     }).join('');
