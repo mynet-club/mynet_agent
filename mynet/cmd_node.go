@@ -1,0 +1,345 @@
+package mynet
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// cmdTenants / cmdNode —— 首次运行向导的第 2、3 步（账号态操作）。
+//
+//	mynet tenants
+//	mynet node list
+//	mynet node claim <node-id> [--vpn-type gnb|wireguard] [--endpoint host:port] [--back-pub HEX]
+//
+// ⚠️ 与「TUI 向导」的区别：**交互在本机 web 页面与 OpenWrt 的 LuCI 页面上**，
+// 这里只提供 UI 与脚本可调用的**非交互原语**（用户 2026-09-25 裁定）。
+// 所以参数一律走 flag、结果走 stdout，不做问答式引导；跑在脚本里不打断。
+//
+// claim 做的是「选节点 → 生成本机密钥 → 上传公钥 → 下载配置」一条龙，
+// 对应向导第三步。它的关键约束：
+//
+//	· 私钥**只在本机生成**，绝不向 back 索取（back 侧 P0-4 收口，
+//	  bundle 里 private_key 恒为空）
+//	· 上传的只有公钥（back 的 validateCustomGnbKey 允许只给 public）
+//	· 下载配置走**用户凭证**的 GET /nodes/{id}/bundle
+//	  （NodeConfigController::getBundle，api.php:108 注释明说
+//	   「供 ctl 安装包等用户凭证场景」）—— 这一步解鸡生蛋：
+//	  节点签名通道（/monitor/node/bundle）需要先有 mynet.conf，而 mynet.conf
+//	  正是 claim 要写的。所以**向导阶段用用户 token，运行期用节点签名**。
+func cmdTenants(args []string) int {
+	cred := requireCred()
+	c := newBackClientFor(cred)
+
+	var raw map[string]any
+	if err := c.getEnveloped("/api/v1/user/tenants/", &raw); err != nil {
+		fmt.Fprintln(os.Stderr, "取租户失败:", err)
+		return 1
+	}
+
+	// 响应形状：data 直接是数组或 {data:[...]}，两种都吃得下
+	list, _ := raw["data"].([]any)
+	if list == nil {
+		if nested, ok := raw["data"].(map[string]any); ok {
+			list, _ = nested["data"].([]any)
+		}
+	}
+	if len(list) == 0 {
+		fmt.Println("(没有可用租户)")
+		return 0
+	}
+
+	for _, it := range list {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		fmt.Printf("%s\t%s\n", anyToStr(m["tenant_id"]), firstStr(m, "name", "tenant_name"))
+	}
+
+	return 0
+}
+
+func cmdNode(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet node <list|claim>")
+		fmt.Fprintln(os.Stderr, "  list")
+		fmt.Fprintln(os.Stderr, "  claim <node-id> [--vpn-type gnb|wireguard] [--endpoint host:port] [--back-pub HEX]")
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		return nodeList()
+	case "claim":
+		return nodeClaim(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "未知 node 子命令: %s\n", args[0])
+		return 2
+	}
+}
+
+// nodeList 列出当前用户的节点。
+// 与 `mynet nodes` 同一件事，这里放两个入口是为了让向导的语义顺序
+// （tenants → node list → node claim）在命令面上也成立。
+func nodeList() int {
+	cred := requireCred()
+	c := newBackClientFor(cred)
+
+	var raw map[string]any
+	if err := c.getEnveloped("/api/v1/nodes", &raw); err != nil {
+		fmt.Fprintln(os.Stderr, "取节点失败:", err)
+		return 1
+	}
+
+	// 实测形状：data.nodes.data[]（分页信封里再套一层）
+	var rows []any
+	if n, ok := raw["nodes"].(map[string]any); ok {
+		rows, _ = n["data"].([]any)
+	}
+	if rows == nil {
+		rows, _ = raw["data"].([]any)
+	}
+	if len(rows) == 0 {
+		fmt.Println("(没有节点 —— 先到 back 上创建)")
+		return 0
+	}
+
+	fmt.Printf("%-20s %-22s %-10s %-16s %s\n", "NODE_ID", "NAME", "VPN", "OVERLAY_IP", "STATUS")
+	for _, it := range rows {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		fmt.Printf("%-20s %-22s %-10s %-16s %s\n",
+			anyToStr(m["node_id"]),
+			truncate(fmt.Sprintf("%v", m["node_name"]), 22),
+			truncate(fmt.Sprintf("%v", joinIfSlice(m["vpn_type"])), 10),
+			long2ip(m["node_ip"]),
+			firstStr(m, "status", "node_status"),
+		)
+	}
+
+	return 0
+}
+
+func nodeClaim(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet node claim <node-id> [--vpn-type gnb|wireguard] [--endpoint host:port] [--back-pub HEX]")
+		return 2
+	}
+	nodeID := args[0]
+	vpnType := "gnb"
+	endpoint := ""
+	backPub := ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--vpn-type":
+			if i+1 >= len(args) {
+				return claimUsage("--vpn-type 需要 gnb|wireguard")
+			}
+			i++
+			vpnType = args[i]
+		case "--endpoint":
+			if i+1 >= len(args) {
+				return claimUsage("--endpoint 需要 host:port")
+			}
+			i++
+			endpoint = args[i]
+		case "--back-pub":
+			if i+1 >= len(args) {
+				return claimUsage("--back-pub 需要 hex")
+			}
+			i++
+			backPub = args[i]
+		default:
+			return claimUsage("未知参数 " + args[i])
+		}
+	}
+
+	cred := requireCred()
+	c := newBackClientFor(cred)
+
+	// 1) back 的节点面公钥（写 mynet.conf 的 BACK_PUB_HEX）。
+	//    公开端点，向导/装机都靠它；取不到时才允许 --back-pub 显式给。
+	if backPub == "" {
+		pub, err := fetchBackFacePub(cred.APIBaseURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "取 back 节点面公钥失败: %v\n", err)
+			fmt.Fprintln(os.Stderr, "  用 --back-pub <hex> 显式指定（运维可从服务器上的 back_face_pub 读）")
+			return 1
+		}
+		backPub = pub
+		fmt.Println("back 节点面公钥:", backPub)
+	}
+
+	// 2) 本机生成密钥 + 写 mynet.conf（复用 cmdSetup 的逻辑）
+	//    私钥只在本机产生，绝不向 back 索取
+	if rc := cmdSetup([]string{
+		"--vpn-type", vpnType,
+		"--node-id", nodeID,
+		"--back-pub", backPub,
+	}); rc != 0 {
+		return rc
+	}
+
+	// 3) 上传**公钥**（私钥不上传 —— back 的 validateCustomGnbKey 允许只给 public）
+	pub, err := readNodeConfField("NODE_PUB_HEX")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "读 NODE_PUB_HEX 失败:", err)
+		return 1
+	}
+	keyType := gnbKeyType(vpnType)
+	upBody := map[string]string{
+		"custom_public_key": pub,
+		"key_type":          keyType,
+	}
+	if _, code, err := c.doJSON("PUT", "/api/v1/nodes/"+nodeID+"/keys", upBody); err != nil {
+		fmt.Fprintf(os.Stderr, "上传公钥失败（HTTP %d）: %v\n", code, err)
+		return 1
+	}
+	fmt.Printf("公钥已上传到 back（key_type=%s）\n", keyType)
+
+	// 4) 设 endpoint（没有 index 时的最小可用发现方式，见
+	//    BundleEnvelopePublisher 的 static_nodes 注释）
+	if endpoint != "" {
+		if _, code, err := c.doJSON("PUT", "/api/v1/nodes/"+nodeID, map[string]string{
+			"server_host": endpoint,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "设置 endpoint 失败（HTTP %d）: %v\n", code, err)
+			return 1
+		}
+		fmt.Println("endpoint 已设置:", endpoint)
+	}
+
+	// 5) 下载配置 —— **用户凭证**走 GET /nodes/{id}/bundle。
+	//    这一步解鸡生蛋：节点签名通道需要先有 mynet.conf，而它正是上一步写的。
+	//    拿到的 envelope 落到 var/bundle.json，与 mynetd 拉的是同一个文件，
+	//    之后 refresh-config 就能渲染出 gnb 原生配置。
+	if rc := downloadBundle(c, nodeID); rc != 0 {
+		return rc
+	}
+
+	fmt.Println("\nclaim 完成。下一步：")
+	fmt.Printf("  sudo %s service start gnb      # 或 mynet install 装成服务\n", os.Args[0])
+	return 0
+}
+
+// downloadBundle 用用户 token 拉 bundle 并落盘 var/bundle.json。
+func downloadBundle(c *backClient, nodeID string) int {
+	raw, code, err := c.doJSON("GET", "/api/v1/nodes/"+nodeID+"/bundle", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "下载配置失败（HTTP %d）: %v\n", code, err)
+		return 1
+	}
+
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	envelope := raw
+	if err := json.Unmarshal(raw, &env); err == nil && len(env.Data) > 0 {
+		envelope = env.Data
+	}
+
+	// 与 mynetd 的 bundleStore 同一落点：var/bundle.json
+	path := varDir() + "/bundle.json"
+	if err := os.MkdirAll(varDir(), 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := os.WriteFile(path, envelope, 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "写 bundle.json 失败:", err)
+		return 1
+	}
+	fmt.Printf("配置已下载: %s（%d 字节）\n", path, len(envelope))
+
+	return 0
+}
+
+func claimUsage(msg string) int {
+	fmt.Fprintln(os.Stderr, "用法: mynet node claim <node-id> [--vpn-type gnb|wireguard] [--endpoint host:port] [--back-pub HEX]")
+	if msg != "" {
+		fmt.Fprintln(os.Stderr, "     ", msg)
+	}
+	return 2
+}
+
+// requireCred 没登录就明确退出 —— 不静默降级、不猜。
+func requireCred() *Credential {
+	cred := LoadCredential()
+	if cred == nil {
+		fmt.Fprintln(os.Stderr, "未登录。先跑:")
+		fmt.Fprintln(os.Stderr, "  mynet auth login --api https://… --email you@example.com --password-stdin")
+		os.Exit(1)
+	}
+
+	return cred
+}
+
+// readNodeConfField 从 mynet.conf 读一个字段（KEY=VALUE）。
+func readNodeConfField(key string) (string, error) {
+	kv, err := readNodeConf()
+	if err != nil {
+		return "", err
+	}
+	v := kv[key]
+	if v == "" {
+		return "", fmt.Errorf("mynet.conf 缺 %s", key)
+	}
+
+	return v, nil
+}
+
+// joinIfSlice vpn_type 在 back 侧是 string[]（A-7），打印时合起来。
+func joinIfSlice(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, x := range t {
+			parts = append(parts, fmt.Sprintf("%v", x))
+		}
+
+		return strings.Join(parts, ",")
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+// firstStr 取 map 里第一个非空的字段值（back 的同一概念在不同端点叫法不一：
+// name/tenant_name、status/node_status）。注意 **Go 没有 PHP 的 ??** ——
+// 我第一版就写成了 `m["name"] ?? m["tenant_name"]`，编译不过。
+func firstStr(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", v)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+
+	return ""
+}
+
+// long2ip back 的 node_ip 是 ip2long 的整数，人要看点分。
+func long2ip(v any) string {
+	n := int64(0)
+	switch t := v.(type) {
+	case float64:
+		n = int64(t)
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			return s // 已是点分就不动
+		}
+	default:
+		return ""
+	}
+	if n == 0 {
+		return "-"
+	}
+
+	return fmt.Sprintf("%d.%d.%d.%d", (n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+}

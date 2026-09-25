@@ -1,0 +1,233 @@
+package mynet
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+// cmdAuth — 账号态（登录/状态/登出）。
+//
+//	mynet auth login --api URL --email E [--password-stdin | --password P]
+//	mynet auth status
+//	mynet auth logout
+//
+// ⚠️ 这是「首次运行向导：登录 → 选节点 → 下载配置」的**第一步**，
+// 但它刻意是**非交互**的：交互在本机 web 页面与 OpenWrt 的 LuCI 页面上做，
+// 命令行只提供 UI 与脚本可调用的原语（用户 2026-09-25 裁定：
+// 「交互实现在本机的 web 页面…OpenWrt 实现落地 luci 页面，千万不敢搞到 tui 里。
+//
+//	然后 mynet 命令行配合落地」）。所以这里**不做**问答式向导 ——
+//
+// 密码从 --password-stdin 读，跑在脚本里不打断；TUI 那套是另一个东西，不碰。
+//
+// 凭证存 $MYNET_HOME/conf/credential.json（0600），与 OpenWrt 侧
+// LuCI 包的 /etc/mynet/conf/credential.json **同一路径同一字段**，
+// 两端读写同一个文件，可以互相接管。
+func cmdAuth(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet auth <login|status|logout> [参数]")
+		fmt.Fprintln(os.Stderr, "  login  --api URL --email E [--password-stdin | --password P] [--tenant ID]")
+		fmt.Fprintln(os.Stderr, "  status")
+		fmt.Fprintln(os.Stderr, "  logout")
+		return 2
+	}
+	switch args[0] {
+	case "login":
+		return authLogin(args[1:])
+	case "status":
+		return authStatus()
+	case "logout":
+		return authLogout()
+	default:
+		fmt.Fprintf(os.Stderr, "未知 auth 子命令: %s\n", args[0])
+		return 2
+	}
+}
+
+func authLogin(args []string) int {
+	api, email, password, tenant := "", "", "", ""
+	fromStdin := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--api":
+			if i+1 >= len(args) {
+				return authUsage("--api 需要 URL")
+			}
+			i++
+			api = strings.TrimRight(args[i], "/")
+		case "--email":
+			if i+1 >= len(args) {
+				return authUsage("--email 需要值")
+			}
+			i++
+			email = args[i]
+		case "--password":
+			if i+1 >= len(args) {
+				return authUsage("--password 需要值")
+			}
+			i++
+			password = args[i]
+		case "--password-stdin":
+			fromStdin = true
+		case "--tenant":
+			if i+1 >= len(args) {
+				return authUsage("--tenant 需要值")
+			}
+			i++
+			tenant = args[i]
+		default:
+			return authUsage("未知参数 " + args[i])
+		}
+	}
+	if api == "" {
+		// 没给就用已有凭证里记的，或配置里的 —— 免得每次都要敲一遍域名
+		if c := LoadCredential(); c != nil && c.APIBaseURL != "" {
+			api = c.APIBaseURL
+		}
+	}
+	if api == "" || email == "" {
+		return authUsage("需要 --api 与 --email")
+	}
+	if password == "" && fromStdin {
+		sc := bufio.NewScanner(os.Stdin)
+		if sc.Scan() {
+			password = strings.TrimRight(sc.Text(), "\r\n")
+		}
+		if err := sc.Err(); err != nil {
+			fmt.Fprintln(os.Stderr, "读 stdin 失败:", err)
+			return 1
+		}
+	}
+	if password == "" {
+		// 不做交互式 ReadPassword：那正是我们刻意避免的「CLI 里的向导」。
+		// 脚本用 --password-stdin，人手敲时也能用；真要交互去 web 页面。
+		return authUsage("需要密码：--password-stdin（推荐，脚本可用）或 --password P")
+	}
+
+	c := newBackClient(api, "")
+	raw, code, err := c.doJSON("POST", "/api/v1/auth/login", map[string]string{
+		"email":    email,
+		"password": password,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "登录失败（HTTP %d）: %v\n", code, err)
+		return 1
+	}
+
+	// 响应形状：{success, data:{user:{user_id,name,email}, tenant_id, auth_token}}
+	var env struct {
+		Success bool `json:"success"`
+		Data    struct {
+			User struct {
+				UserID interface{} `json:"user_id"`
+				Name   string      `json:"name"`
+				Email  string      `json:"email"`
+			} `json:"user"`
+			TenantID  interface{} `json:"tenant_id"`
+			AuthToken string      `json:"auth_token"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		fmt.Fprintf(os.Stderr, "解析登录响应失败: %v\n", err)
+		return 1
+	}
+	if !env.Success || env.Data.AuthToken == "" {
+		fmt.Fprintf(os.Stderr, "登录未成功: %s\n", env.Message)
+		return 1
+	}
+
+	cred := &Credential{
+		UserID:     anyToStr(env.Data.User.UserID),
+		UserEmail:  env.Data.User.Email,
+		Token:      env.Data.AuthToken,
+		MachineID:  machineID(),
+		APIBaseURL: api,
+		TenantID:   anyToStr(env.Data.TenantID),
+		CreatedAt:  nowISO(),
+	}
+	if tenant != "" {
+		cred.TenantID = tenant
+	}
+	if err := SaveCredential(cred); err != nil {
+		fmt.Fprintf(os.Stderr, "保存凭证失败: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("已登录 %s（user_id=%s tenant_id=%s）\n", cred.UserEmail, cred.UserID, cred.TenantID)
+	fmt.Printf("凭证: %s (0600)\n", credentialPath())
+
+	// 顺手取一次 back 公钥并告诉用户 —— 向导下一步要往 mynet.conf 里写它。
+	// 取不到不致命（可由运维手工给），但要明说。
+	pub, err := fetchBackFacePub(api)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ 取 back 节点面公钥失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "   后续 mynet node claim 需要它；或用 --back-pub 显式给\n")
+	} else {
+		fmt.Printf("back 节点面公钥: %s\n", pub)
+	}
+
+	return 0
+}
+
+func authStatus() int {
+	c := LoadCredential()
+	if c == nil {
+		fmt.Println("未登录（无 credential.json 或 token 为空）")
+		fmt.Println("  登录: mynet auth login --api https://… --email you@example.com --password-stdin")
+		return 1
+	}
+	fmt.Printf("已登录 %s (user_id=%s tenant_id=%s)\n", c.UserEmail, c.UserID, c.TenantID)
+	fmt.Printf("  api      %s\n", c.APIBaseURL)
+	fmt.Printf("  token    %s…（%d 字符）\n", truncate(c.Token, 12), len(c.Token))
+	fmt.Printf("  文件     %s\n", credentialPath())
+
+	// 顺手探一次 back 公钥，让「向导前置是否就绪」一眼可见
+	if c.APIBaseURL != "" {
+		if pub, err := fetchBackFacePub(c.APIBaseURL); err != nil {
+			fmt.Printf("  back 公钥  ⚠️ 取不到: %v\n", err)
+		} else {
+			fmt.Printf("  back 公钥  %s\n", pub)
+		}
+	}
+
+	return 0
+}
+
+func authLogout() int {
+	if err := RemoveCredential(); err != nil {
+		fmt.Fprintln(os.Stderr, "删除凭证失败:", err)
+		return 1
+	}
+	fmt.Println("已登出（节点身份 mynet.conf 不受影响 —— 那是节点的，不是账号的）")
+	return 0
+}
+
+func authUsage(msg string) int {
+	fmt.Fprintln(os.Stderr, "用法: mynet auth login --api URL --email E [--password-stdin | --password P] [--tenant ID]")
+	if msg != "" {
+		fmt.Fprintln(os.Stderr, "     ", msg)
+	}
+	return 2
+}
+
+// fetchBackFacePub 取 back 的**节点面公钥**（公开端点，见 mynet_back 的
+// GET /api/v1/system/back-face-key）。没有它就没法往 mynet.conf 写 BACK_PUB_HEX。
+func fetchBackFacePub(apiBase string) (string, error) {
+	c := newBackClient(apiBase, "")
+	var data struct {
+		PublicKeyHex string `json:"public_key_hex"`
+		Algorithm    string `json:"algorithm"`
+	}
+	if err := c.getEnveloped("/api/v1/system/back-face-key", &data); err != nil {
+		return "", err
+	}
+	if data.PublicKeyHex == "" {
+		return "", fmt.Errorf("响应里没有 public_key_hex")
+	}
+
+	return data.PublicKeyHex, nil
+}

@@ -193,19 +193,10 @@ func cmdCheck(_ []string) int {
 	return fail
 }
 
-func cmdNodes(_ []string) int {
-	fmt.Println("nodes: 本地列表依赖 back relay（平台态）；本机仅显示驱动 peer")
-	if ms := probeWireGuard(); len(ms) > 0 {
-		for _, x := range ms {
-			fmt.Printf("  wireguard up=%v peers=%d\n", x.Up, x.Peers)
-		}
-	}
-	if ms := probeGNB(); len(ms) > 0 {
-		for _, x := range ms {
-			fmt.Printf("  gnb up=%v peers=%d\n", x.Up, x.Peers)
-		}
-	}
-	return 0
+// cmdNodes 历史上是占位（只打印「本地列表依赖 back relay」）。
+// 现在真去 back 取列表 —— 与 `mynet node list` 同一份实现，不留两份。
+func cmdNodes(rest []string) int {
+	return nodeList()
 }
 
 func cmdPlatform(_ []string) int {
