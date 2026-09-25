@@ -656,38 +656,152 @@ func onOff(v bool) string {
 // 只认 `/` 或 `|`；随后 sscanf 三段（uuid / ip / netmask），`3 != num` 就 continue。
 // 掩码是**点分十进制**（后面直接 inet_pton(AF_INET, …)），不是 CIDR 前缀长度。
 //
-// ⚠️ 必须包含**本机自己**那一行：gnb 是靠 route.conf 里 uuid == 本机 的那条
-// 来设自己的 tun 地址的（:938-946 的 `0 != p[3] && 0 == node->tun_addr4.s_addr` 分支）。
-// 旧 U1 mesh 那份真跑通的配置第一行就是 `3001|10.31.0.1|255.255.255.0`（3001 是自己）。
-// bundle 的 gnb.routes 只含对端，本机地址在 gnb.nodes 里 —— 所以这里以 nodes 为主源。
+// ── 行的两种语义（gnb_conf_file.c:936-958，按 IP **末段** 分派）──
+//
+//	末段 ≠ 0 且该节点尚未设 tun IP → 主机行：设 tun 地址（每节点恰好一行）
+//	末段 = 0，或该节点已有 tun IP  → 网段行：入 subnet ring（同节点可多行）
+//
+// 所以**不能按 nodeID 去重**：同一个 nodeid 完全可以是
+//
+//	1001|10.0.0.1|255.255.255.255   ← 主机行：节点自己的 tun
+//	1001|192.168.0.0|255.255.255.0  ← 网段行：挂在它后面的 LAN
+//
+// 旧实现在这里用 seen[nodeID] 一节点只出一行，网段行被吞。
+//
+// ── 顺序约定（用户 2026-09-25）──
+//
+//	第一条 = 本机（g.Identity.NodeID），随后是对端主机行，最后是网段行按 nodeid 归组。
+//	本机 nodeid 缺失时 gnb 直接 exit(1)（gnb_conf_file.c:1075-1078），
+//	所以本机那条**必须**出现，置顶是为了人眼第一眼看到「我是谁」。
+//
+// ── 为什么节点一律 /32 ──
+//
+// 系统路由（apply）按 /32 精确装到「第一个节点的 gnb tun」上；
+// 一台机跑 gnb1+gnb2 时，/32 保证互不淹没。网段行只用于节点**额外公告**的
+// 身后子网，overlay 自身绝不用网段行。
 func RenderGNBRouteConf(g *domain.GnbIntent) string {
-	var b strings.Builder
-	seen := make(map[string]bool, len(g.Nodes)+len(g.Routes))
+	// 主机行：每节点至多一条（gnb 只认第一条设 tun IP）
+	hostOf := make(map[string]hostLine, len(g.Nodes)+1)
+	var hostOrder []string
+	// 网段行：同节点可多条，键是 nodeID+网络地址，避免重复
+	type netKey struct{ nodeID, ip, mask string }
+	netSeen := make(map[netKey]bool)
+	var nets []hostLine
 
-	emit := func(nodeID, cidr string) {
-		if nodeID == "" || cidr == "" || seen[nodeID] {
+	addHost := func(nodeID, cidr string) {
+		if nodeID == "" || cidr == "" {
+			return
+		}
+		if _, ok := hostOf[nodeID]; ok {
 			return
 		}
 		ip, mask, ok := splitCIDR(cidr)
 		if !ok {
 			return
 		}
-		seen[nodeID] = true
-		fmt.Fprintf(&b, "%s|%s|%s\n", nodeID, ip, mask)
+		// gnb 用「IP 末段 ≠ 0」判主机行（gnb_conf_file.c:936-938 的 p[3]）。
+		// 末段 = 0 的地址当主机行会被 gnb 当网段吃掉，tun 拿不到 IP。
+		if !isRouteConfHostIP(ip) {
+			return
+		}
+		hostOf[nodeID] = hostLine{nodeID: nodeID, ip: ip, mask: mask}
+		hostOrder = append(hostOrder, nodeID)
 	}
 
-	// g.Nodes 含本机与对端（publisher 两边都放），是 route.conf 的主源。
-	// g.Routes 只含对端 —— projector 明确跳过自环（NetworkSemanticsProjector:113-115），
-	// 所以本机那条不可能从 Routes 来，只能靠 Nodes。
-	for _, n := range g.Nodes {
-		emit(n.NodeID, n.TunAddress)
+	addNet := func(nodeID, cidr string) {
+		if nodeID == "" || cidr == "" {
+			return
+		}
+		ip, mask, ok := splitCIDRNetwork(cidr)
+		if !ok {
+			return
+		}
+		// 网段行必须末段 = 0，否则 gnb 会把它当主机行候选
+		if isRouteConfHostIP(ip) {
+			return
+		}
+		k := netKey{nodeID, ip, mask}
+		if netSeen[k] {
+			return
+		}
+		netSeen[k] = true
+		nets = append(nets, hostLine{nodeID: nodeID, ip: ip, mask: mask})
 	}
-	// gnb.routes 里可能有 nodes 没覆盖到的前缀（例如对端公告的整个网段）
+
+	// ① Nodes.TunAddress —— 主机行主源（本机与对端都在这里）
+	for _, n := range g.Nodes {
+		addHost(n.NodeID, n.TunAddress)
+	}
+	// ② Routes：/32 归主机槽（节点尚无主机行时补上），其余归网段槽。
+	//    projector 跳过自环，所以本机那条不可能从 Routes 来。
 	for _, r := range g.Routes {
-		emit(r.NodeID, r.Prefix)
+		if isHostPrefix(r.Prefix) {
+			addHost(r.NodeID, r.Prefix)
+		} else {
+			addNet(r.NodeID, r.Prefix)
+		}
+	}
+
+	var b strings.Builder
+	// ③ 本机置顶
+	local := g.Identity.NodeID
+	if h, ok := hostOf[local]; ok {
+		fmt.Fprintf(&b, "%s|%s|%s\n", h.nodeID, h.ip, h.mask)
+	}
+	// ④ 其余主机行（保持 Nodes 原序）
+	for _, id := range hostOrder {
+		if id == local {
+			continue
+		}
+		h := hostOf[id]
+		fmt.Fprintf(&b, "%s|%s|%s\n", h.nodeID, h.ip, h.mask)
+	}
+	// ⑤ 网段行（同节点的相邻输出，便于人眼分组）
+	for _, n := range nets {
+		fmt.Fprintf(&b, "%s|%s|%s\n", n.nodeID, n.ip, n.mask)
 	}
 
 	return b.String()
+}
+
+type hostLine struct{ nodeID, ip, mask string }
+
+// isRouteConfHostIP 末段 ≠ 0 才是主机行（gnb_conf_file.c:936-938：`0 != p[3]`）。
+func isRouteConfHostIP(ip string) bool {
+	v := net.ParseIP(ip).To4()
+	if v == nil {
+		return false
+	}
+	return v[3] != 0
+}
+
+// isHostPrefix /32 或裸 IP 视为主机前缀。
+func isHostPrefix(cidr string) bool {
+	if _, ipnet, err := net.ParseCIDR(strings.TrimSpace(cidr)); err == nil {
+		ones, bits := ipnet.Mask.Size()
+		return ones == bits
+	}
+	return net.ParseIP(strings.TrimSpace(cidr)) != nil
+}
+
+// splitCIDRNetwork 取**网络地址**（IP & 掩码），网段行要用 192.168.0.0 而不是 192.168.0.5。
+func splitCIDRNetwork(cidr string) (string, string, bool) {
+	ip, ipnet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil {
+		return "", "", false
+	}
+	if ip.To4() == nil {
+		return "", "", false
+	}
+	net4 := ipnet.IP.To4()
+	if net4 == nil {
+		return "", "", false
+	}
+	mask := net.IP(ipnet.Mask).To4()
+	if mask == nil {
+		return "", "", false
+	}
+	return net4.String(), mask.String(), true
 }
 
 // splitCIDR "10.0.0.16/32" → ("10.0.0.16", "255.255.255.255", true)。

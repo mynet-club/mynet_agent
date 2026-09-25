@@ -114,6 +114,86 @@ func TestGnbRouteConf24BecomesDottedMask(t *testing.T) {
 	}
 }
 
+// 本机那条必须在第一条 —— 约定（用户 2026-09-25），也是排错时的「我是谁」。
+func TestGnbRouteConfLocalFirst(t *testing.T) {
+	g := realIntent()
+	// 故意把对端排在前面，模拟 publisher 迭代序变化
+	g.Nodes = []domain.GnbNode{
+		{NodeID: "1005272783125838", TunAddress: "10.0.0.16/32"},
+		{NodeID: "2132596500330640", TunAddress: "10.0.0.10/32"},
+	}
+	lines := strings.Split(strings.TrimSpace(RenderGNBRouteConf(g)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("行数不足:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.HasPrefix(lines[0], "2132596500330640|") {
+		t.Fatalf("第一条必须是本机，got %q", lines[0])
+	}
+}
+
+// 同一 nodeid 的主机行与网段行**都要出**。旧实现 seen[nodeID] 把网段行吞了 ——
+// 形态取自用户给的例子：节点 tun 一条 /32 + 身后 LAN 一条 /24。
+func TestGnbRouteConfKeepsNetworkLineBesideHostLine(t *testing.T) {
+	g := realIntent()
+	g.Nodes = []domain.GnbNode{
+		{NodeID: "1001", TunAddress: "10.0.0.1/32"},
+	}
+	g.Routes = []domain.GnbRoute{
+		{NodeID: "1001", Prefix: "192.168.0.0/24"}, // 挂在 1001 身后的 LAN
+	}
+	g.Identity.NodeID = "1001"
+	text := RenderGNBRouteConf(g)
+	want := []string{
+		"1001|10.0.0.1|255.255.255.255",
+		"1001|192.168.0.0|255.255.255.0",
+	}
+	for _, w := range want {
+		if !strings.Contains(text, w) {
+			t.Fatalf("缺 %q —— 同 nodeid 的主机行/网段行必须分槽，不能按 nodeID 去重:\n%s", w, text)
+		}
+	}
+}
+
+// N 个对端 = N+1 行主机行（本机 + 每对端一条 /32）。
+// 与「系统路由全 /32、不被 /24 淹没」的编址约定对齐。
+func TestGnbRouteConfOneHostPerNode(t *testing.T) {
+	g := realIntent()
+	g.Nodes = []domain.GnbNode{
+		{NodeID: "2132596500330640", TunAddress: "10.0.0.10/32"},
+		{NodeID: "1005272783125838", TunAddress: "10.0.0.16/32"},
+		{NodeID: "3001", TunAddress: "10.0.0.17/32"},
+	}
+	// 对端 /32 在 Routes 里再出现一次（publisher 常见双写）—— 不该多出一行
+	g.Routes = []domain.GnbRoute{
+		{NodeID: "1005272783125838", Prefix: "10.0.0.16/32"},
+		{NodeID: "3001", Prefix: "10.0.0.17/32"},
+	}
+	text := RenderGNBRouteConf(g)
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("应为 3 行（本机+2 对端），实际 %d:\n%s", len(lines), text)
+	}
+	if strings.Count(text, "1005272783125838|10.0.0.16|") != 1 {
+		t.Fatalf("对端主机行重复:\n%s", text)
+	}
+}
+
+// 网段行必须写**网络地址**（192.168.0.0 而不是 192.168.0.5）——
+// 否则末段 ≠ 0，gnb 会把它当主机行候选，抢走该节点的 tun 槽。
+func TestGnbRouteConfNetworkLineUsesNetworkAddr(t *testing.T) {
+	g := realIntent()
+	g.Nodes = []domain.GnbNode{{NodeID: "1001", TunAddress: "10.0.0.1/32"}}
+	g.Routes = []domain.GnbRoute{{NodeID: "1001", Prefix: "192.168.0.5/24"}}
+	g.Identity.NodeID = "1001"
+	text := RenderGNBRouteConf(g)
+	if !strings.Contains(text, "1001|192.168.0.0|255.255.255.0") {
+		t.Fatalf("网段行应是网络地址 192.168.0.0:\n%s", text)
+	}
+	if strings.Contains(text, "192.168.0.5") {
+		t.Fatalf("网段行不得写主机地址:\n%s", text)
+	}
+}
+
 func TestGnbAddressConfFormat(t *testing.T) {
 	g := realIntent()
 	g.Discovery.IndexServers = []string{"101.32.178.3:9001"}
