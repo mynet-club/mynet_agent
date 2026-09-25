@@ -25,7 +25,15 @@ type GNBDriver struct {
 	// 否则「起不来」那条用例要真等满 5s。零值表示用默认。
 	StartProbes     int
 	StartProbeDelay time.Duration
+	// ServiceUnit gnb 的 systemd 单元名。非空且该单元已 load 时，
+	// Start/Stop/IsProcessAlive 一律委托 systemctl —— 理由见 systemdManages 的注释：
+	// `gnb --systemd` 不写 pid 文件，不委托就会 spawn 出**第二个 gnb**。
+	// 置空表示「不用 systemd，直接 spawn」（容器内 / macOS / 手工调试）。
+	ServiceUnit string
 }
+
+// DefaultGNBServiceUnit deploy/systemd/mynet_gnb.service 装出来的单元名。
+const DefaultGNBServiceUnit = "mynet_gnb.service"
 
 // Start 后确认存活的默认预算：25 × 200ms = 5s。
 const (
@@ -41,6 +49,7 @@ func NewGNBDriver(nodeID int64) *GNBDriver {
 		Spawn:           spawnDetached,
 		StartProbes:     defaultStartProbes,
 		StartProbeDelay: defaultStartProbeDelay,
+		ServiceUnit:     DefaultGNBServiceUnit,
 	}
 }
 
@@ -92,12 +101,17 @@ func (d *GNBDriver) IsAvailable() bool {
 	return err == nil
 }
 
-// IsProcessAlive 按自己的 pid 文件判活。
+// IsProcessAlive 判活。systemd 托管时问 systemctl，否则按自己的 pid 文件 + `kill -0`。
 //
 // ⚠️ 此前是 `pgrep -f gnb_es` —— gnb_es 是上游的 endpoint scanner 工具，
 // **不是**主守护进程（主进程是 gnb）。用它会得到两种错：本机跑着 gnb 却报 not alive，
 // 以及别的节点上恰好有 gnb_es 时误报 alive。
 func (d *GNBDriver) IsProcessAlive() bool {
+	if d.systemdManages() {
+		out, err := d.Exec("systemctl", "is-active", d.ServiceUnit)
+
+		return err == nil && strings.TrimSpace(string(out)) == "active"
+	}
 	pid, err := d.readPidFile()
 	if err != nil {
 		return false
@@ -306,17 +320,62 @@ func (d *GNBDriver) writeGnbKeys(g *domain.GnbIntent) error {
 // gnb_daemon.c:36-48），所以这里的 Exec 不会阻塞；子进程随后写 <conf>/gnb.pid
 // （gnb.c:401）。被 systemd 用 `gnb --systemd` 拉起时该键被忽略、保持前台受监管
 // （gnb_argv.c:439-440 + gnb_conf_file.c:458），正是 E-2 那个模型。
+// systemdManages 报告 gnb 是否已由 systemd 单元托管。
+//
+// ⚠️ 这一步**必须判**，不是优化：`gnb --systemd` 会忽略 node.conf 的 `pid-file` 键
+// （gnb_conf_file.c:349 的条件带 `&& 0 == conf->systemd_daemon`；同理 :336 的
+// ctl-block）。于是 systemd 托管时**根本没有 pid 文件** → readPidFile() 失败 →
+// IsProcessAlive() 恒 false → Start() 会 spawn **第二个 gnb**，两个进程抢同一个
+// tun 与 UDP 端口，症状是隧道时通时断、且看日志两边都"正常"。
+//
+// 判据用 `systemctl show -p LoadState --value <unit>` == "loaded"：
+// 单元不存在时它是 "not-found"，与「单元存在但没在跑」（inactive）区分得开。
+// `systemctl is-active` 区分不了这两种（都输出 inactive/unknown + 非零退出码）。
+//
+// 委托给 systemctl 正是 D-7 对 `mynet service` 的原始定义
+// （「进程生命周期（委托 procd/systemd/launchd）」）；直接 spawn 只是
+// 没有服务管理器时的退路（手工调试、容器内、macOS）。
+func (d *GNBDriver) systemdManages() bool {
+	if d.ServiceUnit == "" {
+		return false
+	}
+	out, err := d.Exec("systemctl", "show", "-p", "LoadState", "--value", d.ServiceUnit)
+	if err != nil {
+		return false
+	}
+
+	return strings.TrimSpace(string(out)) == "loaded"
+}
+
 func (d *GNBDriver) Start() error {
 	if d.IsProcessAlive() {
 		return nil
 	}
+	if d.systemdManages() {
+		_, err := d.Exec("systemctl", "start", d.ServiceUnit)
+		if err != nil {
+			return fmt.Errorf("systemctl start %s: %w", d.ServiceUnit, err)
+		}
+
+		return d.waitAlive()
+	}
 	if err := d.Spawn("gnb", "-c", d.ConfDir); err != nil {
 		return fmt.Errorf("gnb 启动失败: %w", err)
 	}
-	// ⚠️ Spawn 返回 nil **不代表起来了**。`daemon on` 时父进程在 fork 后立刻
-	// exit(0)（gnb_daemon.c:40-42），真正读配置、建 tun 的是子进程 ——
-	// 子进程失败时 gnb 是 `exit(0)` 而不是非零码（gnb_keys.c:66,72,78 等），
-	// 错误根本传不回父进程。所以必须回头确认真的活着。
+
+	return d.waitAlive()
+}
+
+// waitAlive 确认进程真的起来了。
+//
+// ⚠️ 「Spawn/systemctl 返回 0」都不代表起来了：
+//   - 自我 daemon 化时父进程 fork 后立刻 exit(0)（gnb_daemon.c:40-42），
+//     真正读配置建 tun 的是子进程，而子进程失败时 gnb 是 exit(0) 不是非零码
+//     （gnb_keys.c:66,72,78 等），错误传不回父进程
+//   - systemctl start 对 Type=simple 也是「fork 成功即返回」
+//
+// 所以必须回头探测。
+func (d *GNBDriver) waitAlive() error {
 	probes, delay := d.StartProbes, d.StartProbeDelay
 	if probes <= 0 {
 		probes = defaultStartProbes
@@ -331,17 +390,28 @@ func (d *GNBDriver) Start() error {
 		time.Sleep(delay)
 	}
 
-	return fmt.Errorf("gnb 启动后 %s 内没有活进程；配置有误时 gnb 子进程会直接退出且"+
-		"错误报不回来，请检查 %s 下的 node.conf/route.conf/address.conf 与 security/ 密钥",
-		time.Duration(probes)*delay, d.ConfDir)
+	return fmt.Errorf("gnb 启动后 %s 内没有活进程；配置有误时 gnb 会直接退出且"+
+		"错误报不回来，请检查 %s 下的 node.conf/route.conf/address.conf 与 security/ 密钥"+
+		"（systemd 托管时另可看 journalctl -u %s）",
+		time.Duration(probes)*delay, d.ConfDir, d.ServiceUnit)
 }
 
-// Stop 按 pid 文件停，不按名字（AGENTS.md §3：多实例可同名并存，禁 pkill/killall）。
+// Stop 停隧道。systemd 托管时交给 systemctl —— 否则会与单元的 `Restart=always` 打架：
+// 你 kill 掉它立刻又被拉起来，看起来像「停不掉」。
+// 非托管时按 pid 文件发 SIGTERM，**不按名字**（AGENTS.md §3：多实例可同名并存，
+// 禁 pkill/killall）。
 //
 // ⚠️ 此前是 `gnb_ctl -k`，而 gnb_ctl 的 getopt 串是 "b:n:csa:o46h"
 // （gnb_ctl.c:102），long_options 里也没有 k —— **这个 flag 根本不存在**。
 // gnb 装了 SIGTERM handler（gnb.c:395），发 SIGTERM 即可优雅退出。
 func (d *GNBDriver) Stop() error {
+	if d.systemdManages() {
+		if _, err := d.Exec("systemctl", "stop", d.ServiceUnit); err != nil {
+			return fmt.Errorf("systemctl stop %s: %w", d.ServiceUnit, err)
+		}
+
+		return nil
+	}
 	pid, err := d.readPidFile()
 	if err != nil {
 		return err

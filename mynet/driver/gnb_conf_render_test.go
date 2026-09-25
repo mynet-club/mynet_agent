@@ -392,6 +392,7 @@ func TestGnbStopUsesPidFileNotGnbCtlK(t *testing.T) {
 func TestGnbStopFailsCleanlyWithoutPidFile(t *testing.T) {
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.ServiceUnit = "" // 这条测的是「无服务管理器」的退路，委托路径见下面两条
 	var calls []string
 	recordingExec(d, &calls)
 	if err := d.Stop(); err == nil {
@@ -399,6 +400,132 @@ func TestGnbStopFailsCleanlyWithoutPidFile(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Fatalf("没拿到 pid 就不该 exec 任何东西，实际: %v", calls)
+	}
+}
+
+// fakeSystemd 造一个「systemctl 可用」的假环境：指定单元是否已 load、是否 active。
+func fakeSystemd(d *GNBDriver, calls *[]string, loaded, active bool) {
+	d.Exec = func(name string, args ...string) ([]byte, error) {
+		*calls = append(*calls, strings.Join(append([]string{name}, args...), " "))
+		if name != "systemctl" {
+			return nil, nil
+		}
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "show -p LoadState"):
+			if loaded {
+				return []byte("loaded\n"), nil
+			}
+			return []byte("not-found\n"), nil
+		case strings.Contains(joined, "is-active"):
+			if active {
+				return []byte("active\n"), nil
+			}
+			return []byte("inactive\n"), nil
+		}
+		return nil, nil
+	}
+}
+
+// TestGnbDelegatesToSystemdWhenUnitLoaded 钉住 CPI-64 的核心：
+// systemd 托管时，Start/Stop/status 必须走 systemctl，**不能**自己 spawn 或 kill。
+//
+// 为什么这条是硬要求：`gnb --systemd` 会忽略 node.conf 的 pid-file 键
+// （gnb_conf_file.c:349 的条件带 `&& 0 == conf->systemd_daemon`），
+// 于是没有 pid 文件 → readPidFile 失败 → IsProcessAlive 恒 false →
+// Start() 会 spawn **第二个 gnb**，两个进程抢同一个 tun 与 UDP 端口，
+// 症状是隧道时通时断、而两边日志都"正常"。
+func TestGnbDelegatesToSystemdWhenUnitLoaded(t *testing.T) {
+	d := NewGNBDriver(3001)
+	d.ConfDir = t.TempDir()
+	var calls []string
+	fakeSystemd(d, &calls, true /*loaded*/, true /*active*/)
+
+	if !d.IsProcessAlive() {
+		t.Fatal("单元 active 时应判为活着")
+	}
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, "systemctl stop "+DefaultGNBServiceUnit) {
+		t.Fatalf("Stop 应委托 systemctl:\n%s", joined)
+	}
+	// 已在跑 → Start 短路，既不该 systemctl start 也不该 spawn gnb
+	if strings.Contains(joined, "systemctl start") {
+		t.Fatalf("已 active 时 Start 不该再 systemctl start:\n%s", joined)
+	}
+	if strings.Contains(joined, "gnb -c") {
+		t.Fatalf("systemd 托管时绝不该自己 spawn gnb（会起重复实例）:\n%s", joined)
+	}
+	if strings.Contains(joined, "kill ") {
+		t.Fatalf("systemd 托管时不该自己 kill（会与 Restart=always 打架）:\n%s", joined)
+	}
+}
+
+func TestGnbStartsUnitWhenLoadedButInactive(t *testing.T) {
+	d := NewGNBDriver(3001)
+	d.ConfDir = t.TempDir()
+	d.StartProbes, d.StartProbeDelay = 2, time.Millisecond
+	var calls []string
+	// loaded 但**一开始 inactive**；systemctl start 之后转为 active
+	active := false
+	d.Exec = func(name string, args ...string) ([]byte, error) {
+		joinedArgs := strings.Join(args, " ")
+		calls = append(calls, name+" "+joinedArgs)
+		if name != "systemctl" {
+			return nil, nil
+		}
+		switch {
+		case strings.Contains(joinedArgs, "show -p LoadState"):
+			return []byte("loaded\n"), nil
+		case strings.Contains(joinedArgs, "is-active"):
+			if active {
+				return []byte("active\n"), nil
+			}
+			return []byte("inactive\n"), nil
+		case strings.Contains(joinedArgs, "start "):
+			active = true
+			return nil, nil
+		}
+		return nil, nil
+	}
+
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, "systemctl start "+DefaultGNBServiceUnit) {
+		t.Fatalf("单元存在但未跑时应 systemctl start，而不是 spawn:\n%s", joined)
+	}
+	if strings.Contains(joined, "gnb -c") {
+		t.Fatalf("不该 spawn:\n%s", joined)
+	}
+}
+
+// TestGnbFallsBackToSpawnWithoutSystemd 反向钉住：单元不存在（not-found）时
+// 必须走直接 spawn 那条路 —— 否则容器内 / macOS / 手工调试就起不来了。
+func TestGnbFallsBackToSpawnWithoutSystemd(t *testing.T) {
+	dir := t.TempDir()
+	d := NewGNBDriver(3001)
+	d.ConfDir = dir
+	var calls []string
+	fakeSystemd(d, &calls, false /*not-found*/, false)
+	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
+
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, "gnb -c "+dir) {
+		t.Fatalf("没有 systemd 单元时应直接 spawn gnb:\n%s", joined)
+	}
+	if strings.Contains(joined, "systemctl start") || strings.Contains(joined, "systemctl stop") {
+		t.Fatalf("单元 not-found 时不该动 systemctl:\n%s", joined)
 	}
 }
 

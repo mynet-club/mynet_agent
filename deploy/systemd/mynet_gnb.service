@@ -1,0 +1,65 @@
+# gnb 隧道常驻单元（节点侧数据面）
+#
+# ── 为什么必须有这个单元（Phase 6 实测踩到的）─────────────────
+# 用 `sudo mynet service start gnb` 从 **SSH 会话**里拉起 gnb，进程活不过会话：
+# 实测 journal 里 `gnb_tun: Link DOWN` 与 `session-1605.scope: Deactivated
+# successfully` 是**同一秒**（2026-09-25 13:35:09），之后每连一次 SSH 就
+# UP 一次、断开就 DOWN 一次（13:35 DOWN → 13:36 UP → 13:37 DOWN）。
+#
+# 原因是 `setsid nohup` 只改了 ppid，而 **systemd 按 cgroup 而非 ppid 追踪进程**：
+# gnb 即便双 fork 成了 ppid=1 的守护进程，仍然留在 `session-N.scope` 的 cgroup 里，
+# 会话结束时 systemd 把整个 cgroup 一起回收。
+# 也就是说 node.conf 里的 `daemon on` **不足以**让它脱离会话。
+#
+# 结论：Phase 6 那次「38 通过 / 0 失败」的绿是**会话依赖的** —— 人一断开隧道就没了。
+# 要真站住，必须由 systemd（或 OpenWrt 的 procd）持有。
+#
+# ── 为什么用 --systemd 而不是让它自我 daemon 化 ─────────────────
+# 带 `--systemd` 时 gnb 会：
+#   · 忽略 node.conf 的 `daemon on`，保持**前台**（gnb_argv.c:439-440 →
+#     gnb_conf_file.c:458 的 `&& 0 == conf->systemd_daemon`，以及 gnb_argv.c:741-742）
+#   · 忽略 `pid-file` / `ctl-block` 两个键（gnb_conf_file.c:336,349）
+# 前台正是 systemd `Type=simple` 想要的：进程死了 systemd 立刻知道，能 Restart。
+# 若让它自我 daemon 化，父进程 exit(0) 后 systemd 会认为服务已退出。
+#
+# ⚠️ 同一份 node.conf 两种模式都能用 —— 这就是当初把 `daemon on` 而不是
+# `daemon off` 写进渲染器的原因（见 mynet_agent/mynet/driver/gnb.go 的 Start 注释）：
+# 手工 `mynet service start gnb` 时自我 daemon 化，被 systemd 拉起时保持前台。
+#
+# ── 与 mynetd.service 的分工 ──────────────────────────────────
+# mynetd 负责「拉 bundle → 渲染配置 → 装路由 → 心跳」，本单元负责「让隧道一直活着」。
+# ⚠️ 两者都会碰 gnb，**顺序有依赖**：本单元 After= 了 mynetd 是不必要的
+# （gnb 只需要配置目录存在），但首次部署时要先让 mynetd 跑出
+# $MYNET_HOME/var/gnb/ 再启本单元，否则 gnb 因缺 node.conf 直接退出。
+
+[Unit]
+Description=MyNet gnb tunnel (data plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# MYNET_HOME 由环境文件提供；ExecStart 里用 ${MYNET_HOME} 展开
+# （systemd 支持 EnvironmentFile 里的变量展开，但**第一个 token 必须是绝对路径**，
+#  所以 gnb 的位置不能写成变量）
+EnvironmentFile=-/etc/mynet/mynetd.env
+ExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/var/gnb
+
+# 数据面不能有单点：gnb 挂了必须自动拉起，否则节点「进程都在、网络没了」
+Restart=always
+RestartSec=3
+# 反复崩溃时别无限快速重启打满日志，但仍要保持最终会重试
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+KillSignal=SIGTERM
+# gnb 装了 SIGTERM handler（gnb.c:395），会清理 tun 后退出
+TimeoutStopSec=15
+
+# 建 tun 需要 CAP_NET_ADMIN；以 root 跑最简单，与 mynetd 一致。
+# 同样**不加** ProtectSystem/ProtectHome —— 它要读写 $MYNET_HOME/var/gnb
+# （gnb.map / gnb.pid / node_cache.dump 都在那儿），而 MYNET_HOME 可能在 /home 下。
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

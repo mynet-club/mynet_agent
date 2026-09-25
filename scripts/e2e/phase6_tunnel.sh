@@ -39,7 +39,7 @@ A_IP="${P6_IP_A:-}"
 B_IP="${P6_IP_B:-}"
 A_USER="${P6_USER:-arthur}"
 B_USER="${P6_USER:-arthur}"
-HOME_DIR="${P6_HOME:-mynet-stage}"
+MH="${P6_HOME:-/opt/mynet}"   # MYNET_HOME，绝对路径（systemd 安装后的默认位置）
 GW="${P6_GW:-wss://stage-gw.mynet.club/v1/node/connect}"
 API="${P6_API:-https://stage-api.mynet.club}"
 
@@ -55,81 +55,122 @@ command -v ssh >/dev/null 2>&1 || die "缺 ssh"
 
 # 在节点机上跑一段脚本。用 base64 传，避免多层引号与全角标点吃掉变量名
 # （本项目踩过的坑：`$VAR` 后紧跟全角标点时 shell 会把 UTF-8 字节并入变量名）。
-on() { # <user@host> <script>
+#
+# ⚠️ 动态值（MYNET_HOME / gateway / 对端 IP）一律用**环境变量**送进去，
+# 不在生成期做字符串展开。原因就是下面 node_script 的那条注释。
+on() { # <user@host> <script> [peer-ip]
   _b64=$(printf '%s' "$2" | base64)
-  ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "export LC_ALL=C; echo $_b64 | base64 -d | sh" 2>&1
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" \
+    "export LC_ALL=C P6_MH='$MH' P6_GW='$GW' P6_PEER='${3:-}'; echo $_b64 | base64 -d | sh" 2>&1 |
+    grep -v 'cannot change locale'
 }
 
-node_script() { # 生成节点侧要跑的脚本；$1 = 对端 IP
-  cat <<NODE
+node_script() { # 生成节点侧要跑的脚本（无参；动态值由 on() 用环境变量送进去）
+  # ⚠️⚠️ 这里必须是**引号 heredoc**（<<'NODE'），一个字符都不能在生成期展开。
+  #
+  # 之前用的是非引号 <<NODE，于是脚本里所有 `$`、`$( )`、以及**注释里的 markdown
+  # 反引号**都会在「生成脚本」这一步就被我的工作站 shell 执行掉。实测：注释里
+  # 写了一句「退回手工 `mynetd -once`」，生成时它真的在工作站上跑了 mynetd，
+  # 报 `command substitution: syntax error near unexpected token '<'`，
+  # 而生成出来的脚本因为反引号被吃掉变成**未闭合**，整个文件 EOF 报错。
+  # 更早几版能跑通纯属运气 —— 被误执行的内容恰好无害。
+  #
+  # 结论：往远端送脚本时，「生成」与「执行」必须分离；生成期不做任何展开，
+  # 参数走环境变量。这条比脚本本身值钱。
+  cat <<'NODE'
 set -u
-H="\$HOME/$HOME_DIR"
-export MYNET_HOME="\$H"
-export MYNET_GATEWAYS="$GW"
-export MYNET_BIN="\$H/bin/mynet"
-export PATH="\$HOME/.local/bin:/usr/bin:/bin"
+H="$P6_MH"
+G="$H/var/gnb"
+PEER="$P6_PEER"
+SU="sudo -n env MYNET_HOME=$H MYNET_BIN=$H/bin/mynet PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-echo "STEP version=\$(\$H/bin/mynet version 2>&1)"
+echo "STEP version=$($H/bin/mynet version 2>&1)"
 
-# 1) 拉 bundle（-once 现在会等启动拉取结束才退出，见 cmd/mynetd/main.go）
-rm -f "\$H/var/bundle.json" "\$H/var/bundle.etag"
-timeout 60 "\$H/bin/mynetd" -listen 127.0.0.1:18811 -once > /tmp/p6-pull.log 2>&1
-echo "STEP pull_rc=\$?"
-[ -f "\$H/var/bundle.json" ] && echo "STEP bundle_bytes=\$(wc -c < "\$H/var/bundle.json")" || echo "STEP bundle_bytes=0"
-python3 - <<'PY'
-import json,os
-p=os.path.expanduser("~/")+"$HOME_DIR/var/bundle.json"
-try: d=json.load(open(p))
-except Exception as e: print("STEP bundle_parse_fail=%s"%e); raise SystemExit
-g=d.get("gnb") or {}
-print("STEP gen=%s"%d.get("generation"))
-print("STEP addresses=%s"%json.dumps((d.get("network") or {}).get("addresses")))
-print("STEP osroutes=%s"%json.dumps((d.get("network") or {}).get("routes")))
-print("STEP peer_pubs=%d"%len((g.get("identity") or {}).get("peer_public_keys") or {}))
-print("STEP static_nodes=%d"%len((g.get("discovery") or {}).get("static_nodes") or []))
+# 1) 拉 bundle。优先用 systemd 单元（生产形态）：restart 会连带跑一遍**启动生命周期**
+#    （refresh-config → service start → apply --auto），正是要验的东西。
+#    单元不存在时退回手工 mynetd -once（-once 现在会等启动拉取结束才退出，
+#    见 cmd/mynetd/main.go 的 bundlePullDone）。
+#    一律走 sudo：装成服务后 $H/var 是 root 属主，普通用户写不进去。
+if systemctl show -p LoadState --value mynetd.service 2>/dev/null | grep -qx loaded; then
+  echo "STEP via=systemd"
+  sudo -n rm -f "$H/var/bundle.json" "$H/var/bundle.etag"
+  sudo -n systemctl restart mynetd
+  i=0; until [ -f "$H/var/bundle.json" ] || [ "$i" -ge 40 ]; do sleep 0.5; i=$((i+1)); done
+  echo "STEP pull_rc=0"
+else
+  echo "STEP via=manual-once"
+  sudo -n rm -f "$H/var/bundle.json" "$H/var/bundle.etag"
+  timeout 60 $SU MYNET_GATEWAYS="$P6_GW" "$H/bin/mynetd" -listen 127.0.0.1:18811 -once > /tmp/p6-pull.log 2>&1
+  echo "STEP pull_rc=$?"
+fi
+if [ -f "$H/var/bundle.json" ]; then
+  echo "STEP bundle_bytes=$(wc -c < "$H/var/bundle.json")"
+else
+  echo "STEP bundle_bytes=0"
+fi
+P6_BUNDLE="$H/var/bundle.json" python3 - <<'PY'
+import json, os
+p = os.environ["P6_BUNDLE"]
+try:
+    d = json.load(open(p))
+except Exception as e:
+    print("STEP bundle_parse_fail=%s" % e); raise SystemExit
+g = d.get("gnb") or {}
+net = d.get("network") or {}
+print("STEP gen=%s" % d.get("generation"))
+print("STEP addresses=%s" % json.dumps(net.get("addresses")))
+print("STEP osroutes=%s" % json.dumps(net.get("routes")))
+print("STEP peer_pubs=%d" % len((g.get("identity") or {}).get("peer_public_keys") or {}))
+print("STEP static_nodes=%d" % len((g.get("discovery") or {}).get("static_nodes") or []))
 PY
 
-# 2) 渲染 gnb 原生配置
-"\$H/bin/mynet" refresh-config --auto > /tmp/p6-refresh.log 2>&1
-echo "STEP refresh_rc=\$?"
-G="\$H/var/gnb"
-for f in node_conf:node.conf route_conf:route.conf address_conf:address.conf; do
-  k=\${f%%:*}; n=\${f#*:}
-  [ -f "\$G/\$n" ] && echo "STEP has_\$k=1" || echo "STEP has_\$k=0"
+# 2) 渲染 gnb 原生配置（sudo：要写 $H/var/gnb 与其下密钥）
+$SU "$H/bin/mynet" refresh-config --auto > /tmp/p6-refresh.log 2>&1
+echo "STEP refresh_rc=$?"
+for pat in node_conf:node.conf route_conf:route.conf address_conf:address.conf; do
+  k=${pat%%:*}; n=${pat#*:}
+  if sudo -n test -f "$G/$n"; then echo "STEP has_$k=1"; else echo "STEP has_$k=0"; fi
 done
-echo "STEP nodeid_line=\$(grep -c '^nodeid ' "\$G/node.conf" 2>/dev/null)"
-echo "STEP bad_node_key=\$(grep -c '^node ' "\$G/node.conf" 2>/dev/null)"
-echo "STEP route_lines=\$(grep -c '|' "\$G/route.conf" 2>/dev/null)"
-echo "STEP route_bad_sep=\$(grep -c ' ' "\$G/route.conf" 2>/dev/null)"
-echo "STEP addr_fields=\$(head -1 "\$G/address.conf" 2>/dev/null | awk -F'|' '{print NF}')"
+echo "STEP nodeid_line=$(sudo -n grep -c '^nodeid ' "$G/node.conf" 2>/dev/null)"
+echo "STEP bad_node_key=$(sudo -n grep -c '^node ' "$G/node.conf" 2>/dev/null)"
+echo "STEP route_bad_sep=$(sudo -n grep -c ' ' "$G/route.conf" 2>/dev/null)"
+echo "STEP addr_fields=$(sudo -n head -1 "$G/address.conf" 2>/dev/null | awk -F'|' '{print NF}')"
+
 # 密钥文件必须**恰好** 128 / 64 字节且无换行：gnb 用裸 read() 且要求读满，
-# 读不满就 exit(0)（gnb_keys.c:68-73, 84-89, 108-112）
-for f in "\$G"/security/*.private; do [ -f "\$f" ] && echo "STEP priv_bytes=\$(wc -c < "\$f" | tr -d ' ')"; done
-for f in "\$G"/security/*.public;  do [ -f "\$f" ] && echo "STEP pub_bytes=\$(wc -c < "\$f" | tr -d ' ')";  done
-for f in "\$G"/ed25519/*.public;   do [ -f "\$f" ] && echo "STEP peerpub_bytes=\$(wc -c < "\$f" | tr -d ' ')"; done
+# 读不满就 exit(0)（gnb_keys.c:68-73, 84-89, 108-112）。
+# 用 sudo find 拿文件名（root 才穿得过 700 的 security/）+ sudo wc -c FILE
+# （用参数而非 `<` 重定向：重定向由外层 shell 以普通用户身份做会 EACCES，
+#  且 dash 不在重定向里展开通配符）。
+for pat in 'security:*.private:priv_bytes' 'security:*.public:pub_bytes' 'ed25519:*.public:peerpub_bytes'; do
+  d=${pat%%:*}; rest=${pat#*:}; g2=${rest%%:*}; k=${rest##*:}
+  f=$(sudo -n find "$G/$d" -maxdepth 1 -name "$g2" -type f 2>/dev/null | head -1)
+  if [ -n "$f" ]; then n=$(sudo -n wc -c "$f" 2>/dev/null | awk '{print $1}'); else n=0; fi
+  echo "STEP $k=${n:-0}"
+done
 
-# 3) 起 gnb（要 root 建 tun）
-timeout 60 sudo -n env MYNET_HOME="\$H" PATH="\$HOME/.local/bin:/usr/bin:/bin" \
-  "\$H/bin/mynet" service start gnb > /tmp/p6-start.log 2>&1
-echo "STEP start_rc=\$?"
+# 3) 起驱动。systemd 托管时 mynet service 会**委托 systemctl**
+#    （见 driver/gnb.go 的 systemdManages：gnb --systemd 不写 pid 文件，
+#     不委托就会 spawn 出第二个 gnb 抢同一个 tun 与 UDP 端口）
+timeout 60 $SU "$H/bin/mynet" service start gnb > /tmp/p6-start.log 2>&1
+echo "STEP start_rc=$?"
 sed 's/^/STEP start_msg=/' /tmp/p6-start.log
-timeout 30 sudo -n env MYNET_HOME="\$H" PATH="\$HOME/.local/bin:/usr/bin:/bin" \
-  "\$H/bin/mynet" service status gnb 2>&1 | sed 's/^/STEP status=/'
+timeout 30 $SU "$H/bin/mynet" service status gnb 2>&1 | sed 's/^/STEP status=/'
+# 正则刻意不用括号分组，减少一层解析器边界情况
+echo "STEP gnb_procs=$(ps -eo args | grep -c '^/usr/local/bin/gnb ')"
 
-# 4) 装 OS 路由（gnb 自己不写内核路由表）
-"\$H/bin/mynet" detector > /dev/null 2>&1
-"\$H/bin/mynet" refresh-routes --auto > /tmp/p6-plan.json 2>&1
-timeout 60 sudo -n env MYNET_HOME="\$H" PATH="\$HOME/.local/bin:/usr/bin:/bin" \
-  "\$H/bin/mynet" apply /tmp/p6-plan.json > /tmp/p6-apply.log 2>&1
-echo "STEP apply_rc=\$?"
-echo "STEP route_to_peer=\$(ip route get $1 2>/dev/null | head -1)"
+# 4) 装 OS 路由（gnb 自己不写内核路由表；tun 重建后路由会丢，必须重装）
+$SU "$H/bin/mynet" detector > /dev/null 2>&1
+timeout 60 $SU "$H/bin/mynet" apply --auto > /tmp/p6-apply.log 2>&1
+echo "STEP apply_rc=$?"
+sed 's/^/STEP apply_msg=/' /tmp/p6-apply.log
+echo "STEP route_to_peer=$(ip route get "$PEER" 2>/dev/null | head -1)"
 NODE
 }
 
 # ── 逐节点跑装配 ─────────────────────────────────────────────
 run_node() { # <label> <user@host> <peer-ip>
   phase "节点 $1（$2）装配"
-  _out=$(on "$2" "$(node_script "$3")")
+  _out=$(on "$2" "$(node_script)" "$3")
   printf '%s\n' "$_out" | grep '^STEP ' | sed 's/^STEP /    /'
   _g() { printf '%s\n' "$_out" | sed -n "s/^STEP $1=//p" | head -1; }
 
@@ -162,6 +203,13 @@ run_node() { # <label> <user@host> <peer-ip>
 
   case "$(_g status)" in *running=true*) ok "$1: gnb 守护进程在跑（$(_g status)）" ;;
     *) bad "$1: gnb 没在跑（$(_g status)）" ;; esac
+  # ⚠️ 必须恰好 1 个。`gnb --systemd` 会忽略 node.conf 的 pid-file 键
+  # （gnb_conf_file.c:349 带 `&& 0 == conf->systemd_daemon`），于是没有 pid 文件 →
+  # IsProcessAlive 恒 false → Start() 会 spawn **第二个 gnb**，两个进程抢同一个
+  # tun 与 UDP 端口，症状是隧道时通时断而两边日志都"正常"。
+  # mynet service 现在会委托 systemctl（driver/gnb.go 的 systemdManages），这条钉住它。
+  [ "$(_g gnb_procs)" = 1 ] && ok "$1: gnb 恰好 1 个实例（没有与 systemd 起重复进程）" \
+    || bad "$1: gnb 实例数=$(_g gnb_procs)，必须是 1（>1 说明 service 没委托 systemctl）"
   case "$(_g route_to_peer)" in *gnb_tun*) ok "$1: 到对端的路由走 gnb_tun" ;;
     *) bad "$1: 到对端的路由不走 gnb_tun（$(_g route_to_peer)）" ;; esac
   return 0
@@ -178,7 +226,7 @@ counters() { # <user@host>
   # LC_ALL=C 要传进 sudo 的 env：sudo 起的 bash 会吐
   # `cannot change locale (en_US.UTF-8)` 到 stderr，被 on() 的 2>&1 收进来
   # 就会污染这里的输出（实测把 B 的计数值前面粘了一行警告）。
-  on "$1" 'sudo -n env LC_ALL=C PATH="$HOME/.local/bin:/usr/bin:/bin" gnb_ctl -b $HOME/'"$HOME_DIR"'/var/gnb/gnb.map -c -s 2>/dev/null | awk "/^in /{i=\$2} /^out /{o=\$2} END{print i\"/\"o}"' | tail -1
+  on "$1" 'sudo -n env LC_ALL=C PATH=/usr/local/bin:/usr/bin:/bin gnb_ctl -b '"$MH"'/var/gnb/gnb.map -c -s 2>/dev/null | awk "/^in /{i=\$2} /^out /{o=\$2} END{print i\"/\"o}"' | tail -1
 }
 BEFORE_A=$(counters "$A_USER@$A_HOST"); BEFORE_B=$(counters "$B_USER@$B_HOST")
 printf '    ping 前计数器 A=%s B=%s\n' "$BEFORE_A" "$BEFORE_B"
@@ -219,7 +267,7 @@ printf '    ping 后计数器 A=%s B=%s\n' "$AFTER_A" "$AFTER_B"
 for spec in "A:$A_USER@$A_HOST" "B:$B_USER@$B_HOST"; do
   _l=${spec%%:*}; _h=${spec#*:}
   # 同上：只取最后一行并剔除非数字，避免 sudo 的 setlocale 警告把计数值污染成非数字
-  _s=$(on "$_h" 'sudo -n env LC_ALL=C PATH="$HOME/.local/bin:/usr/bin:/bin" gnb_ctl -b $HOME/'"$HOME_DIR"'/var/gnb/gnb.map -c -s 2>/dev/null | grep -cE "Direct Point to Point"' | tail -1 | tr -dc '0-9')
+  _s=$(on "$_h" 'sudo -n env LC_ALL=C PATH=/usr/local/bin:/usr/bin:/bin gnb_ctl -b '"$MH"'/var/gnb/gnb.map -c -s 2>/dev/null | grep -cE "Direct Point to Point"' | tail -1 | tr -dc '0-9')
   [ "${_s:-0}" -ge 1 ] 2>/dev/null && ok "$_l: gnb_ctl 报 Direct Point to Point（PONG 位置位，直连非中继）" \
     || bad "$_l: 没有 Direct Point to Point（可能是中继或没通）"
 done

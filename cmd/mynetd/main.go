@@ -199,6 +199,18 @@ func main() {
 					return
 				}
 				logger.Info("启动拉取 bundle 完成", "status", status, "path", store.path)
+				// 启动时也要走一遍完整生命周期，不能只在 bundle_changed 时走。
+				//
+				// 实测（Phase 6 装成 systemd 服务后）：重启后 gnb 由它自己的单元拉起、
+				// tun 接口也在，但 **/32 主机路由丢了** —— tun 重建时内核不会自动
+				// 恢复此前 `ip route replace` 加进去的路由。症状与 CPI-62 同形：
+				// 接口在、隧道在、ping 100% 丢包。
+				//
+				// `-once` 时跳过：那是验收用的一次性探针（只验「拉取 + 心跳」），
+				// 让它顺手起隧道/改内核路由会污染被测机器的状态。
+				if !*once {
+					dispatcher.runBundleLifecycle()
+				}
 			}()
 		}
 
