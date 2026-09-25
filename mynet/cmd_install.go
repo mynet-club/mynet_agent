@@ -85,26 +85,34 @@ func cmdInstall(args []string) int {
 	binDir := filepath.Join(prefix, "bin")
 	envPath := "/etc/mynet/mynetd.env"
 	unitDir := "/etc/systemd/system"
-	for _, u := range SystemdUnitNames {
-		fmt.Printf("  写 %s/%s\n", unitDir, unitFileName(u))
+	if runtime.GOOS == "darwin" {
+		envPath = filepath.Join(prefix, "etc", "mynetd.env") // 仅作文档，launchd 用 EnvironmentVariables
+		unitDir = launchdPlistDir
+		fmt.Printf("  写 %s/%s.plist\n", unitDir, LabelMynetd)
+		fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
+	} else {
+		for _, u := range SystemdUnitNames {
+			fmt.Printf("  写 %s/%s\n", unitDir, unitFileName(u))
+		}
 	}
 	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
 		envPath, home, gateways, binDir)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
 	fmt.Printf("  装二进制到 %s/{mynet,mynetd}\n", binDir)
 	if enable {
-		fmt.Println("  systemctl daemon-reload")
-		fmt.Println("  systemctl enable --now mynetd mynet_gnb")
-	}
-	if runtime.GOOS != "linux" {
-		fmt.Fprintf(os.Stderr, "  ⚠️ 本命令目前只支持 Linux（systemd）；当前是 %s，下面的单元安装步骤会失败\n", runtime.GOOS)
+		if runtime.GOOS == "darwin" {
+			fmt.Println("  launchctl bootstrap system（com.mynet.mynetd；gnb 由 mynetd 拉起）")
+		} else {
+			fmt.Println("  systemctl daemon-reload")
+			fmt.Println("  systemctl enable --now mynetd mynet_gnb")
+		}
 	}
 	if dry {
 		fmt.Println("\n--dry-run：以上都没有执行")
 		return 0
 	}
 	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "install 需要 root：要写 /etc/systemd/system 与 /etc/mynet。请 sudo mynet install …")
+		fmt.Fprintln(os.Stderr, "install 需要 root：要写服务单元与 /etc/mynet。请 sudo mynet install …")
 		return 1
 	}
 
@@ -112,7 +120,10 @@ func cmdInstall(args []string) int {
 	// `open …: text file busy`，而 install 已经复制完了 mynet、
 	// 失败在 mynetd 上 —— 留下一个**装了一半**的状态（实测踩过）。
 	// 单元可能本来就不存在（首次安装），失败不致命，故只告警。
-	if out, err := runSystemctl("stop", "mynetd", "mynet_gnb"); err != nil {
+	if runtime.GOOS == "darwin" {
+		_, _ = launchctl("bootout", "system/"+LabelMynetd)
+		_, _ = launchctl("bootout", "system/"+LabelGNB)
+	} else if out, err := runSystemctl("stop", "mynetd", "mynet_gnb"); err != nil {
 		fmt.Fprintf(os.Stderr, "  systemctl stop（首次安装可忽略）: %v %s\n", err, strings.TrimSpace(string(out)))
 	}
 
@@ -144,30 +155,38 @@ func cmdInstall(args []string) int {
 	}
 
 	// 3) 环境文件 + 4) 单元（抽成 writeEnvFile / writeSystemdUnits 以便测试）
-	if err := writeEnvFile(envPath, home, gateways, binDir); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	fmt.Println("installed", envPath)
-	if err := writeSystemdUnits(unitDir, gnbBin); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	for _, u := range SystemdUnitNames {
-		fmt.Println("installed", filepath.Join(unitDir, unitFileName(u)))
-	}
-
-	// 5) 让 systemd 认识它们
-	if _, err := runSystemctl("daemon-reload"); err != nil {
-		fmt.Fprintf(os.Stderr, "systemctl daemon-reload: %v\n", err)
-		return 1
-	}
-	if enable {
-		if _, err := runSystemctl("enable", "--now", "mynetd", "mynet_gnb"); err != nil {
-			fmt.Fprintf(os.Stderr, "systemctl enable --now: %v\n", err)
+	if runtime.GOOS != "darwin" {
+		if err := writeEnvFile(envPath, home, gateways, binDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Println("enabled + started: mynetd, mynet_gnb")
+		fmt.Println("installed", envPath)
+		if err := writeSystemdUnits(unitDir, gnbBin); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		for _, u := range SystemdUnitNames {
+			fmt.Println("installed", filepath.Join(unitDir, unitFileName(u)))
+		}
+
+		// 5) 让 systemd 认识它们
+		if _, err := runSystemctl("daemon-reload"); err != nil {
+			fmt.Fprintf(os.Stderr, "systemctl daemon-reload: %v\n", err)
+			return 1
+		}
+		if enable {
+			if _, err := runSystemctl("enable", "--now", "mynetd", "mynet_gnb"); err != nil {
+				fmt.Fprintf(os.Stderr, "systemctl enable --now: %v\n", err)
+				return 1
+			}
+			fmt.Println("enabled + started: mynetd, mynet_gnb")
+		}
+	} else {
+		// launchd：plist 自带 EnvironmentVariables，不需要单独的 env 文件
+		if err := installLaunchd(home, gateways, binDir, gnbBin, enable); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 
 	// 6) gnb 位置校验：单元里写死了绝对路径，位置不对就只在启动那一刻才炸
@@ -224,11 +243,18 @@ func cmdUninstall(args []string) int {
 	}
 
 	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
-	fmt.Println("  systemctl disable --now mynetd mynet_gnb")
-	for _, u := range SystemdUnitNames {
-		fmt.Printf("  删 /etc/systemd/system/%s\n", unitFileName(u))
+	if runtime.GOOS == "darwin" {
+		fmt.Println("  launchctl bootout system/com.mynet.{mynetd,gnb}")
+		for _, label := range []string{LabelMynetd, LabelGNB} {
+			fmt.Printf("  删 %s/%s.plist\n", launchdPlistDir, label)
+		}
+	} else {
+		fmt.Println("  systemctl disable --now mynetd mynet_gnb")
+		for _, u := range SystemdUnitNames {
+			fmt.Printf("  删 /etc/systemd/system/%s\n", unitFileName(u))
+		}
+		fmt.Println("  删 /etc/mynet/mynetd.env")
 	}
-	fmt.Println("  删 /etc/mynet/mynetd.env")
 	if !keepBin {
 		fmt.Printf("  删 %s/bin/{mynet,mynetd}\n", home)
 	}
@@ -242,20 +268,26 @@ func cmdUninstall(args []string) int {
 		return 1
 	}
 
-	if _, err := runSystemctl("disable", "--now", "mynetd", "mynet_gnb"); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️ systemctl disable --now: %v（继续删文件）\n", err)
-	}
-	for _, u := range SystemdUnitNames {
-		p := filepath.Join("/etc/systemd/system", unitFileName(u))
-		if err := os.Remove(p); err == nil {
-			fmt.Println("removed", p)
+	if runtime.GOOS == "darwin" {
+		if err := uninstallLaunchd(keepBin, home); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ uninstall launchd: %v（继续删文件）\n", err)
 		}
-	}
-	if err := os.Remove("/etc/mynet/mynetd.env"); err == nil {
-		fmt.Println("removed /etc/mynet/mynetd.env")
-	}
-	if _, err := runSystemctl("daemon-reload"); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️ systemctl daemon-reload: %v\n", err)
+	} else {
+		if _, err := runSystemctl("disable", "--now", "mynetd", "mynet_gnb"); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ systemctl disable --now: %v（继续删文件）\n", err)
+		}
+		for _, u := range SystemdUnitNames {
+			p := filepath.Join("/etc/systemd/system", unitFileName(u))
+			if err := os.Remove(p); err == nil {
+				fmt.Println("removed", p)
+			}
+		}
+		if err := os.Remove("/etc/mynet/mynetd.env"); err == nil {
+			fmt.Println("removed /etc/mynet/mynetd.env")
+		}
+		if _, err := runSystemctl("daemon-reload"); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ systemctl daemon-reload: %v\n", err)
+		}
 	}
 	if !keepBin {
 		for _, b := range []string{"mynet", "mynetd"} {

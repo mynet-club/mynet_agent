@@ -318,15 +318,36 @@ document.querySelectorAll('[data-wiz="logout"]').forEach(b =>
 // 按钮的可点与否完全跟 Actions 表走，前端不再自己判状态 ——
 // 否则 UI 判据会和 CLI 漂移，又出现「按钮亮着点下去不行」。
 const ACT_CMD = {
-  install:   null,                     // P3 接 mynet install
+  install:   'install',                  // 见下方 doInstall —— 需要 gateway
   configure: () => { wizShow(1); return null; },  // 回向导
   start:     ['service', 'start', 'gnb'],
   restart:   ['service', 'reload', 'gnb'],
   stop:      ['service', 'stop', 'gnb'],
   'fix-routes': ['apply', '--auto'],
-  uninstall: null,
+  uninstall: 'uninstall',
   retry:     ['service', 'start', 'gnb']
 };
+
+// 安装/卸载要 root 且参数特殊（gateway），单独走一条，
+// 不塞进 wizStart 的通用 command 路径 —— 后者假定 argv 是 mynet 子命令。
+async function doInstallOrUninstall(kind) {
+  let argv;
+  if (kind === 'install') {
+    const gw = prompt('gateway 入口（wss://…）：', 'wss://stage-gw.mynet.club');
+    if (!gw) return;
+    argv = ['install', '--gateways', gw.trim()];
+  } else {
+    if (!confirm('卸载会停服务并删除二进制。\n节点身份与密钥保留在 home 下，不会丢。')) return;
+    argv = ['uninstall'];
+  }
+  el('wiz-out').textContent = '执行 ' + kind + ' …（需要 root，若失败请看输出）';
+  const r = await api('/api/v1/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ argv })
+  });
+  show('wiz-out', r);
+  await loadNodeStatus();
+}
 
 async function loadNodeStatus() {
   let st;
@@ -356,6 +377,10 @@ async function loadNodeStatus() {
     b.disabled = !enabled;
     b.onclick = async () => {
       const cmd = ACT_CMD[id];
+      if (cmd === 'install' || cmd === 'uninstall') {
+        await doInstallOrUninstall(cmd);
+        return;
+      }
       if (!cmd) { el('wiz-out').textContent = '该动作尚未接入（' + id + '）'; return; }
       if (typeof cmd === 'function') { cmd(); return; }
       b.disabled = true;
