@@ -79,6 +79,59 @@ type GnbIdentity struct {
 	PeerPublicKeys map[string]string `json:"peer_public_keys,omitempty"`
 }
 
+// UnmarshalJSON 容忍 `peer_public_keys: []`。
+//
+// 为什么要在解码侧也兜一道：PHP 的**空关联数组** json_encode 出来是 `[]` 而不是 `{}`，
+// 于是「还没有 peer 的新节点」下发的 bundle 会让 Go 的 map[string]string 解码直接失败
+// （实测：`cannot unmarshal array into Go struct field …peer_public_keys of type
+// map[string]string`）。back 侧已改为空时输出 `{}`（GnbIdentity::toArray），
+// 但**两端各自兜一道**才是稳的：任何一端的旧版本、或将来别的 PHP 生产者，
+// 都不该让节点拿不到配置。
+//
+// 只放宽「空数组 == 空 map」这一种情况；非空的数组仍然是错误 ——
+// 那说明对端把 map 当成了 list，属于真的契约不符，必须报出来而不是静默吞掉。
+func (g *GnbIdentity) UnmarshalJSON(data []byte) error {
+	type alias GnbIdentity
+	aux := struct {
+		*alias
+		PeerPublicKeys json.RawMessage `json:"peer_public_keys"`
+	}{alias: (*alias)(g)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	raw := bytes.TrimSpace(aux.PeerPublicKeys)
+	if len(raw) == 0 || string(raw) == "null" {
+		g.PeerPublicKeys = nil
+
+		return nil
+	}
+	if string(raw) == "[]" {
+		g.PeerPublicKeys = map[string]string{}
+
+		return nil
+	}
+
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("peer_public_keys 应是对象（node_id → 公钥），实际 %s: %w",
+			truncateForError(raw), err)
+	}
+	g.PeerPublicKeys = m
+
+	return nil
+}
+
+func truncateForError(b []byte) string {
+	const max = 60
+	if len(b) <= max {
+		return string(b)
+	}
+
+	return string(b[:max]) + "…"
+}
+
 // GnbNode overlay 节点（route.conf 创建/绑定）。
 type GnbNode struct {
 	NodeID     string `json:"node_id"`

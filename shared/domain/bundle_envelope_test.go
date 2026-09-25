@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -211,5 +212,58 @@ func TestComputeBundleChecksumMissingChecksumOK(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("去掉 checksum 字段后重算应一致\n want %s\n got  %s", want, got)
+	}
+}
+
+// PHP 的空关联数组 json_encode 出来是 `[]` 而不是 `{}` —— 于是「还没有 peer 的
+// 新节点」下发的 bundle 会让 map[string]string 解码失败。实测就是这个形态：
+//
+//	json: cannot unmarshal array into Go struct field
+//	GnbIdentity.gnb.identity.peer_public_keys of type map[string]string
+//
+// 越是全新的节点越拿不到配置，而有 peer 的老节点反而正常 —— 方向性恰好最难联想。
+func TestGnbIdentityToleratesEmptyPeerPublicKeyArray(t *testing.T) {
+	var g GnbIdentity
+	raw := `{"node_id":"123","key_algorithm":"ed25519","private_key":"aa","public_key":"bb","peer_public_keys":[]}`
+	if err := json.Unmarshal([]byte(raw), &g); err != nil {
+		t.Fatalf("空数组应被当成空 map，实际报错: %v", err)
+	}
+	if g.PeerPublicKeys == nil || len(g.PeerPublicKeys) != 0 {
+		t.Errorf("PeerPublicKeys = %#v，期望空 map", g.PeerPublicKeys)
+	}
+	if g.NodeID != "123" {
+		t.Errorf("其余字段应照常解析，NodeID = %q", g.NodeID)
+	}
+}
+
+// 非空数组仍是**真的契约不符**，必须报出来而不是静默吞掉
+func TestGnbIdentityRejectsNonEmptyPeerArray(t *testing.T) {
+	var g GnbIdentity
+	raw := `{"node_id":"1","peer_public_keys":["aa","bb"]}`
+	err := json.Unmarshal([]byte(raw), &g)
+	if err == nil {
+		t.Fatal("非空数组应报错（对端把 map 当成了 list）")
+	}
+	if !strings.Contains(err.Error(), "应是对象") {
+		t.Errorf("错误信息应说明期望对象，实际: %v", err)
+	}
+}
+
+// 正常对象、null、字段缺失三种形态都要能解
+func TestGnbIdentityAcceptsObjectNullAndMissing(t *testing.T) {
+	cases := map[string]func(*GnbIdentity) bool{
+		`{"node_id":"1","peer_public_keys":{"2":"ab"}}`: func(g *GnbIdentity) bool { return g.PeerPublicKeys["2"] == "ab" },
+		`{"node_id":"1","peer_public_keys":null}`:       func(g *GnbIdentity) bool { return g.PeerPublicKeys == nil },
+		`{"node_id":"1"}`: func(g *GnbIdentity) bool { return g.PeerPublicKeys == nil },
+	}
+	for raw, check := range cases {
+		var g GnbIdentity
+		if err := json.Unmarshal([]byte(raw), &g); err != nil {
+			t.Errorf("%s → 解码失败: %v", raw, err)
+			continue
+		}
+		if !check(&g) {
+			t.Errorf("%s → PeerPublicKeys = %#v，不符预期", raw, g.PeerPublicKeys)
+		}
 	}
 }
