@@ -225,14 +225,22 @@ fi
 before=$(cksum "$HOME_DIR/var/bundle.json" | awk '{print $1}')
 MYNET_HOME="$HOME_DIR" MYNET_GATEWAYS="ws://127.0.0.1:$GW_PORT/v1/node/connect" \
   "$BIN/mynetd" -listen "127.0.0.1:18734" -once > "$WORK/mynetd2.log" 2>&1 || true
-sleep 1
-after=$(cksum "$HOME_DIR/var/bundle.json" | awk '{print $1}')
-if grep -q 'unchanged' "$WORK/mynetd2.log" 2>/dev/null; then
+# 不再 sleep：`-once` 现在会等启动拉取结束才退出（cmd/mynetd/main.go 的 -once 分支）。
+# 此前这里靠 `sleep 1` 糊一个竞态 —— 拉取跑在 goroutine 里而 -once 做完心跳就 return，
+# 于是它可能在拉取完成前退出。实测同一条命令在两台真机上一台落盘、一台 var/ 全空，
+# **两边退出码都是 0、日志都没错误**。而下面原先那个 `before == after` 分支
+# 在「拉取根本没发生」时同样成立 → 判过，等于没测。
+if ! grep -q '启动拉取 bundle' "$WORK/mynetd2.log"; then
+  bad "第二次启动的日志里既无「完成」也无「失败」—— 拉取根本没跑（-once 提前退出的竞态复发）"
+elif grep -q 'unchanged' "$WORK/mynetd2.log"; then
   ok "第二次启动走条件请求拿到 304（unchanged），未重写文件"
-elif [ "$before" = "$after" ]; then
-  ok "第二次启动后文件未变（cksum 一致）"
 else
-  bad "第二次启动改动了 bundle.json，但日志没说明原因"
+  after=$(cksum "$HOME_DIR/var/bundle.json" | awk '{print $1}')
+  if [ "$before" = "$after" ]; then
+    ok "第二次启动后文件未变（cksum 一致）"
+  else
+    bad "第二次启动改动了 bundle.json，但日志没说明原因"
+  fi
 fi
 
 echo

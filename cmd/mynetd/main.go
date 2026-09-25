@@ -81,6 +81,10 @@ func main() {
 	// 表现为「采了但没上报」，而这恰恰是最难查的一种静默失败。
 	hb := &heartbeatLoop{ops: execMynetStd}
 
+	// 启动拉取 bundle 的完成信号，给 `-once` 用（理由见下面 -once 分支）。
+	// 声明在函数级：拉取在 MYNET_GATEWAYS 块内，而 -once 分支在块外。
+	var bundlePullDone chan struct{}
+
 	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
 	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
 		gateways := strings.Split(gw, ",")
@@ -155,7 +159,9 @@ func main() {
 			// 启动即拉一次。否则新装节点要等 back 广播 bundle_changed 才有配置，
 			// 在那之前跑任何 refresh-* 都是「读 bundle 失败: no such file」。
 			// 放 goroutine：拉取失败不该拖住 daemon 启动（back 暂时不可达是常态）。
+			bundlePullDone = make(chan struct{})
 			go func() {
+				defer close(bundlePullDone)
 				ctx, cancel := context.WithTimeout(context.Background(), bundleSyncTimeout)
 				defer cancel()
 				status, err := store.Sync(ctx, client.fetchBundle)
@@ -191,6 +197,20 @@ func main() {
 	// reporter 绑好了再跑，`--once` 才能真的验到上报。
 	if *once {
 		hb.beat(ctx)
+		// ⚠️ 必须等启动拉取结束再退出。启动拉取跑在 goroutine 里（上面），
+		// 而 -once 做完心跳就 return —— 于是它可能在拉取完成前就退出。
+		// 实测：同一条命令在两台机器上，一台 var/bundle.json 落盘了、
+		// 另一台 var/ 全空，**两边退出码都是 0、日志里都没有错误** ——
+		// 纯粹的静默失败，而 -once 恰恰是验收脚本用来当一次性探针的。
+		// scripts/e2e/bundle_pull.sh 此前靠 `-once` 后 `sleep 1` 糊这个竞态，
+		// 且它的 `before == after` 分支在「拉取根本没发生」时也会判过。
+		if bundlePullDone != nil {
+			select {
+			case <-bundlePullDone:
+			case <-time.After(bundleSyncTimeout):
+				logger.Warn("--once: 等启动拉取超时，bundle 可能未落盘")
+			}
+		}
 		// --once 的语义是「只探测一次心跳就退出」（见上面 flag 的说明）。
 		// 此前它 beat 完仍会掉到 <-ctx.Done() 常驻不退，与说明不符 ——
 		// 做全链路验证时只能 sleep + kill，脚本里没法当一次性探针用。
