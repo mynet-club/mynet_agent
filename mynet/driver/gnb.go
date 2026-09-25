@@ -2,6 +2,8 @@ package driver
 
 import (
 	"fmt"
+	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -32,9 +34,19 @@ func (d *GNBDriver) IsAvailable() bool {
 	return err == nil
 }
 
+// IsProcessAlive 按自己的 pid 文件判活。
+//
+// ⚠️ 此前是 `pgrep -f gnb_es` —— gnb_es 是上游的 endpoint scanner 工具，
+// **不是**主守护进程（主进程是 gnb）。用它会得到两种错：本机跑着 gnb 却报 not alive，
+// 以及别的节点上恰好有 gnb_es 时误报 alive。
 func (d *GNBDriver) IsProcessAlive() bool {
-	out, err := d.Exec("pgrep", "-f", "gnb_es")
-	_ = out
+	pid, err := d.readPidFile()
+	if err != nil {
+		return false
+	}
+	// kill -0 只探测存在性与权限，不发信号
+	_, err = d.Exec("kill", "-0", strconv.Itoa(pid))
+
 	return err == nil
 }
 
@@ -115,34 +127,162 @@ func (d *GNBDriver) WriteConfig(b *domain.VPNBundle) error {
 	return writeFile0600(d.ConfDir+"/node.conf", []byte(text))
 }
 
-// WriteIntent GnbIntent → node.conf / route.conf / address.conf。
-// ⚠️ 掩码只认 /32 /24 /16 /8 /0——其余静默忽略（驱动事实）。
+// WriteIntent GnbIntent → gnb 原生配置目录。
+//
+// 每个文件的格式都对着 gnb 源码核实过，并拿一份**真跑通过的**配置比对过
+// （旧 U1 mesh 的 /tmp/t1-gnb/3001/），不是猜的：
+//
+//	node.conf                nodeid/ifname/listen/mtu/daemon/…   gnb_conf_file.c:269,293,300,452,464
+//	route.conf               <uuid>|<ip>|<点分掩码>               gnb_conf_file.c:919-928
+//	address.conf             <attrib>|<uuid>|<host>|<port>       gnb_conf_file.c:50-56
+//	security/<uuid>.private  128 hex，**无换行**                  gnb_keys.c:60,68-73
+//	security/<uuid>.public    64 hex，**无换行**                  gnb_keys.c:61,84-89
+//	ed25519/<peer>.public     64 hex，**无换行**                  gnb_keys.c:103,108-112
+//
+// pid-file / ctl-block 刻意不写：用 `-c <conf_dir>` 时 gnb 自己默认成
+// <conf_dir>/gnb.pid 与 <conf_dir>/gnb.map（gnb_argv.c:855,857-858）。
+// 那份真配置也没写这两项，gnb.map 照样生成了。
+//
+// ⚠️ 此前这里只写 node.conf + route.conf，而且两者格式都是错的：
+// `node <id>`（gnb 认的键是 `nodeid`，strncmp 不匹配 → 静默丢弃）、
+// route 用「空格 + CIDR」（gnb 只认 `|` 或 `/` 分隔的三段，否则 num!=3 → continue，
+// **整份 route.conf 全被跳过**）；address.conf 与两个密钥目录则根本没写。
+// 于是配置"写成功了"、refresh-config 退出码 0，但隧道起不来。
 func (d *GNBDriver) WriteIntent(g *domain.GnbIntent) error {
 	if g == nil {
 		return fmt.Errorf("gnb: nil intent")
 	}
+	if g.Identity.NodeID == "" {
+		return fmt.Errorf("gnb: intent 缺 identity.node_id")
+	}
+	if err := checkGnbIfname(g); err != nil {
+		return err
+	}
+
 	if err := writeFile0600(d.ConfDir+"/node.conf", []byte(RenderGNBNodeConf(g))); err != nil {
 		return err
 	}
-	if len(g.Routes) > 0 {
-		var b strings.Builder
-		for _, r := range g.Routes {
-			// GnbRoute：node_id + prefix（CIDR）；via/proxy 由转发策略另落
-			fmt.Fprintf(&b, "%s %s\n", r.NodeID, r.Prefix)
-		}
-		_ = writeFile(d.ConfDir+"/route.conf", []byte(b.String()), 0o644)
+	// route.conf 必须存在：缺文件 gnb 直接退出（gnb_conf_file.c:897-901）。
+	// 没有对端时也要写个空文件，而不是不写。
+	if err := writeFile(d.ConfDir+"/route.conf", []byte(RenderGNBRouteConf(g)), 0o644); err != nil {
+		return err
 	}
+	if addr := RenderGNBAddressConf(g); addr != "" {
+		if err := writeFile(d.ConfDir+"/address.conf", []byte(addr), 0o644); err != nil {
+			return err
+		}
+	}
+
+	return d.writeGnbKeys(g)
+}
+
+// checkGnbIfname 挡掉超长接口名。
+//
+// gnb 的 ifname 缓冲区是 16 字节且硬截断到 15 字符
+// （gnb_conf_file.c:275-277：memset(…,0,16) + strncpy(…,16) + ifname[15]='\0'），
+// Linux 的 IFNAMSIZ 同样是 16。超长名字会被**静默截断**成一个谁也没预期的接口名，
+// 之后所有按名字找接口的操作全都对不上。宁可在这里报错。
+func checkGnbIfname(g *domain.GnbIntent) error {
+	ifname := gnbIfname(g)
+	if ifname == "" {
+		return nil // 空 → 不写 ifname 键，gnb 用自己的默认 gnb_tun（gnb_argv.c:224）
+	}
+	if len(ifname) > 15 {
+		return fmt.Errorf("gnb: ifname %q 长 %d 字符，超过上限 15（会被静默截断）", ifname, len(ifname))
+	}
+
 	return nil
 }
 
+func gnbIfname(g *domain.GnbIntent) string {
+	if g.Options != nil && g.Options.Ifname != "" {
+		return g.Options.Ifname
+	}
+
+	return ""
+}
+
+// writeGnbKeys 落盘本机密钥与对端公钥。
+//
+// ⚠️ 必须是**纯 hex 无换行**：gnb 用裸 read() 且要求读满
+// 128（私钥）/ 64（公钥）字节，读不满就 exit(0)（gnb_keys.c:68-73, 84-89, 108-112）。
+// gnb_crypto 自己也是 write(fd, hex, 128) 不带换行，与之对齐。
+func (d *GNBDriver) writeGnbKeys(g *domain.GnbIntent) error {
+	self := g.Identity.NodeID
+	if g.Identity.PrivateKey != "" {
+		if err := writeFile0600(d.ConfDir+"/security/"+self+".private",
+			[]byte(strings.TrimSpace(g.Identity.PrivateKey))); err != nil {
+			return err
+		}
+	}
+	if g.Identity.PublicKey != "" {
+		if err := writeFile0600(d.ConfDir+"/security/"+self+".public",
+			[]byte(strings.TrimSpace(g.Identity.PublicKey))); err != nil {
+			return err
+		}
+	}
+	for peer, pub := range g.Identity.PeerPublicKeys {
+		if peer == "" || strings.TrimSpace(pub) == "" {
+			continue
+		}
+		if err := writeFile0600(d.ConfDir+"/ed25519/"+peer+".public",
+			[]byte(strings.TrimSpace(pub))); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Start 拉起 gnb 守护进程。
+//
+// ⚠️ 此前是 `gnb_ctl -b <conf>/gnb.map` —— 那不是启动命令：`-b` 是 `--ctl-block`，
+// 只指定"打开哪块共享内存来读"（gnb_ctl.c:85,107-109）；而且 gnb_ctl 在没有
+// `-s`/`-a` 时只打开映射就 return 0（gnb_ctl.c:149-183），文件不存在也只是打印
+// error 后 exit(0) —— 于是 Start() 会**假装成功**。
+// 真正的守护进程是 `gnb -c <conf_dir>`（gnb_argv.c:899）。
+//
+// node.conf 里写 `daemon on`，gnb 双 fork 后父进程立即 exit(0)（gnb.c:397-399 →
+// gnb_daemon.c:36-48），所以这里的 Exec 不会阻塞；子进程随后写 <conf>/gnb.pid
+// （gnb.c:401）。被 systemd 用 `gnb --systemd` 拉起时该键被忽略、保持前台受监管
+// （gnb_argv.c:439-440 + gnb_conf_file.c:458），正是 E-2 那个模型。
 func (d *GNBDriver) Start() error {
-	_, err := d.Exec("gnb_ctl", "-b", d.ConfDir+"/gnb.map")
+	if d.IsProcessAlive() {
+		return nil
+	}
+	_, err := d.Exec("gnb", "-c", d.ConfDir)
+
 	return err
 }
 
+// Stop 按 pid 文件停，不按名字（AGENTS.md §3：多实例可同名并存，禁 pkill/killall）。
+//
+// ⚠️ 此前是 `gnb_ctl -k`，而 gnb_ctl 的 getopt 串是 "b:n:csa:o46h"
+// （gnb_ctl.c:102），long_options 里也没有 k —— **这个 flag 根本不存在**。
+// gnb 装了 SIGTERM handler（gnb.c:395），发 SIGTERM 即可优雅退出。
 func (d *GNBDriver) Stop() error {
-	_, err := d.Exec("gnb_ctl", "-k")
+	pid, err := d.readPidFile()
+	if err != nil {
+		return err
+	}
+	_, err = d.Exec("kill", "-TERM", strconv.Itoa(pid))
+
 	return err
+}
+
+// readPidFile 读 <ConfDir>/gnb.pid —— gnb 用 -c 时的默认 pid 路径
+// （gnb_argv.c:857-858）。
+func (d *GNBDriver) readPidFile() (int, error) {
+	raw, err := os.ReadFile(d.ConfDir + "/gnb.pid")
+	if err != nil {
+		return 0, fmt.Errorf("gnb: 读 pid 文件失败（进程可能没在跑）: %w", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("gnb: pid 文件内容非法: %q", strings.TrimSpace(string(raw)))
+	}
+
+	return pid, nil
 }
 
 // Reload 退化为 Stop+Start（热重启未验证）。
@@ -297,24 +437,188 @@ func firstUint(s string) uint64 {
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
-// RenderGNBNodeConf GnbIntent → node.conf（服务端渲染语义）。
+// RenderGNBNodeConf GnbIntent → node.conf。
+//
+// 键名与取值格式逐条对着 gnb 的解析器核实：
+//
+//	nodeid <十进制>            gnb_conf_file.c:293   sscanf("%32[^ ] %llu")
+//	ifname <≤15 字符>          gnb_conf_file.c:269   sscanf("%32[^ ] %16s")，16 字节缓冲硬截断
+//	listen <port | host:port>  gnb_conf_file.c:300 + gnb_conf.c:71-82（含 ':' 返 4 → v4 分支）
+//	mtu <int>                  gnb_conf_file.c:465
+//	daemon on|off              gnb_conf_file.c:452-462
+//	multi-socket on|off        gnb_conf_file.c:356-366（off 走 else 置 0，安全）
+//	safe-index on|off          gnb_conf_file.c:555-561
+//	direct-forwarding on|off   gnb_conf_file.c:381-387
+//	standard-forwarding on|off gnb_conf_file.c:369-375
+//	unified-forwarding <v>     gnb_conf_file.c:393-410（off/auto/force/super/hyper，未识别回落 auto）
+//
+// ⚠️ 此前写的是 `node <id>`。gnb 认的键是 `nodeid`：
+// strncmp("node 1001", "nodeid", 6) 比的是 "node 1" vs "nodeid" → 不匹配 →
+// 这一行被**静默跳过**，本机 uuid 根本没设上。没有报错，只是隧道不通。
 func RenderGNBNodeConf(g *domain.GnbIntent) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "node %s\n", g.Identity.NodeID)
-	for _, ln := range g.Listeners {
-		fmt.Fprintf(&b, "listen %s\n", ln)
+	fmt.Fprintf(&b, "nodeid %s\n", g.Identity.NodeID)
+	if ifname := gnbIfname(g); ifname != "" {
+		fmt.Fprintf(&b, "ifname %s\n", ifname)
 	}
-	// 交给 procd 前台（E-2）
-	b.WriteString("daemon off\n")
+	for _, ln := range g.Listeners {
+		if ln = strings.TrimSpace(ln); ln != "" {
+			fmt.Fprintf(&b, "listen %s\n", ln)
+		}
+	}
+	// daemon on：自己起时 gnb 双 fork、父进程立即 exit(0)，Start() 不会阻塞；
+	// 被 systemd 以 --systemd 拉起时这个键被忽略、保持前台受监管。两种模式都对。
+	b.WriteString("daemon on\n")
+
+	if g.Options != nil {
+		if g.Options.MTU > 0 {
+			fmt.Fprintf(&b, "mtu %d\n", g.Options.MTU)
+		}
+		fmt.Fprintf(&b, "multi-socket %s\n", onOff(g.Options.MultiSocket))
+		fmt.Fprintf(&b, "safe-index %s\n", onOff(g.Options.SafeIndex))
+		if p := strings.TrimSpace(g.Options.Passcode); p != "" {
+			fmt.Fprintf(&b, "passcode %s\n", p)
+		}
+	}
+	if g.Forwarding != nil {
+		fmt.Fprintf(&b, "direct-forwarding %s\n", onOff(g.Forwarding.Direct))
+		fmt.Fprintf(&b, "standard-forwarding %s\n", onOff(g.Forwarding.Standard))
+		if u := strings.TrimSpace(g.Forwarding.Unified); u != "" {
+			fmt.Fprintf(&b, "unified-forwarding %s\n", u)
+		}
+	}
+
 	return b.String()
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+
+	return "off"
+}
+
+// RenderGNBRouteConf GnbIntent → route.conf，每行 `<uuid>|<ip>|<点分掩码>`。
+//
+// 格式取自 gnb_conf_file.c:919-928：先 gnb_test_field_separator 判分隔符，
+// 只认 `/` 或 `|`；随后 sscanf 三段（uuid / ip / netmask），`3 != num` 就 continue。
+// 掩码是**点分十进制**（后面直接 inet_pton(AF_INET, …)），不是 CIDR 前缀长度。
+//
+// ⚠️ 必须包含**本机自己**那一行：gnb 是靠 route.conf 里 uuid == 本机 的那条
+// 来设自己的 tun 地址的（:938-946 的 `0 != p[3] && 0 == node->tun_addr4.s_addr` 分支）。
+// 旧 U1 mesh 那份真跑通的配置第一行就是 `3001|10.31.0.1|255.255.255.0`（3001 是自己）。
+// bundle 的 gnb.routes 只含对端，本机地址在 gnb.nodes 里 —— 所以这里以 nodes 为主源。
+func RenderGNBRouteConf(g *domain.GnbIntent) string {
+	var b strings.Builder
+	seen := make(map[string]bool, len(g.Nodes)+len(g.Routes))
+
+	emit := func(nodeID, cidr string) {
+		if nodeID == "" || cidr == "" || seen[nodeID] {
+			return
+		}
+		ip, mask, ok := splitCIDR(cidr)
+		if !ok {
+			return
+		}
+		seen[nodeID] = true
+		fmt.Fprintf(&b, "%s|%s|%s\n", nodeID, ip, mask)
+	}
+
+	// g.Nodes 含本机与对端（publisher 两边都放），是 route.conf 的主源。
+	// g.Routes 只含对端 —— projector 明确跳过自环（NetworkSemanticsProjector:113-115），
+	// 所以本机那条不可能从 Routes 来，只能靠 Nodes。
+	for _, n := range g.Nodes {
+		emit(n.NodeID, n.TunAddress)
+	}
+	// gnb.routes 里可能有 nodes 没覆盖到的前缀（例如对端公告的整个网段）
+	for _, r := range g.Routes {
+		emit(r.NodeID, r.Prefix)
+	}
+
+	return b.String()
+}
+
+// splitCIDR "10.0.0.16/32" → ("10.0.0.16", "255.255.255.255", true)。
+func splitCIDR(cidr string) (string, string, bool) {
+	ip, ipnet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil {
+		return "", "", false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String(), net.IP(ipnet.Mask).To4().String(), true
+	}
+
+	// gnb 的 route.conf 只走 inet_pton(AF_INET, …)（gnb_conf_file.c:933-934），
+	// IPv6 前缀在这里落不了地 —— 如实跳过，不要写出一行会被静默 continue 的东西。
+	return "", "", false
+}
+
+// RenderGNBAddressConf GnbIntent → address.conf，每行 `<attrib>|<uuid>|<host>|<port>`。
+//
+// 格式取自 gnb_conf_file.c:50-56（sscanf "%16[^|]|%llu|%46[^|]|%hu"，4 段缺一不可）。
+// attrib 里只有 i/u/r/s/f 会置节点类型（:~95-115）；普通直连对端用别的字母即可，
+// 地址照样进该节点的 static_address_list。上游官方示例是 `i|0|101.32.178.3|9001`，
+// 旧 U1 mesh 那份真配置用的是 `n|3002|192.168.0.16|9202`。
+//
+// 没有 address.conf 时 gnb 直接 return（:59-63），不报错 —— 但节点就**没有任何
+// 对端传输地址**，只能靠 index 发现。这是「配置写成功了却连不上」的又一形态。
+func RenderGNBAddressConf(g *domain.GnbIntent) string {
+	if g.Discovery == nil {
+		return ""
+	}
+	var b strings.Builder
+
+	for _, s := range g.Discovery.StaticNodes {
+		host, port, ok := splitHostPort(s.Endpoint)
+		if !ok || s.NodeID == "" {
+			continue
+		}
+		role := strings.TrimSpace(s.Role)
+		if role == "" {
+			role = "n"
+		}
+		fmt.Fprintf(&b, "%s|%s|%s|%s\n", role, s.NodeID, host, port)
+	}
+	// index 服务：uuid 用 0（与上游官方示例一致），attrib 必须是 i 才会进
+	// index_address_ring（gnb_conf_file.c:~95-98）
+	for _, ep := range g.Discovery.IndexServers {
+		host, port, ok := splitHostPort(ep)
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "i|0|%s|%s\n", host, port)
+	}
+
+	return b.String()
+}
+
+// splitHostPort "192.168.0.16:9016" → ("192.168.0.16", "9016", true)。
+// 也吃得下 [::1]:9016 与裸端口。
+func splitHostPort(ep string) (string, string, bool) {
+	ep = strings.TrimSpace(ep)
+	if ep == "" {
+		return "", "", false
+	}
+	if h, p, err := net.SplitHostPort(ep); err == nil && h != "" && p != "" {
+		return h, p, true
+	}
+	// 裸端口：gnb 的 address.conf 必须要 host，给不出就如实失败
+	if _, err := strconv.Atoi(ep); err == nil {
+		return "", "", false
+	}
+
+	return "", "", false
 }
 
 func RenderGNBNodeConfFromBundle(b *domain.VPNBundle) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "node %s\n", b.Node.ID)
+	// 同 RenderGNBNodeConf：键名是 nodeid，不是 node
+	fmt.Fprintf(&sb, "nodeid %s\n", b.Node.ID)
 	if b.Node.ListenPort > 0 {
 		fmt.Fprintf(&sb, "listen %d\n", b.Node.ListenPort)
 	}
-	sb.WriteString("daemon off\n")
+	sb.WriteString("daemon on\n")
+
 	return sb.String()
 }

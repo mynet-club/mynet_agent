@@ -21,7 +21,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   detector          探测系统能力 → 写 $MYNET_HOME/var/system.json
   metrics           采集系统指标 + VPN/peer 状态（--json，心跳数据源）
   apply             应用配置：驱动原生配置 + OS 路由/防火墙
-  service           进程生命周期（委托 procd/systemd/launchd）
+  service           进程生命周期（start|stop|reload|status <gnb|wireguard>）
   driver            驱动管理（列/装/升）
 
 配置工具:

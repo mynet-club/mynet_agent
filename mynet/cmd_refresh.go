@@ -1,13 +1,16 @@
 package mynet
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
+	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
 	"github.com/mynet-club/mynet_agent-V2/shared"
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
 )
@@ -82,6 +85,39 @@ func varDir() string {
 	return sharedVarDir()
 }
 
+// readNodeConf 读 $MYNET_HOME/conf/mynet.conf 的 KEY=VALUE。
+//
+// cmd/mynetd/nodeface.go 里有一份同形实现，但那是 package main，import 不到。
+// 两处都只有十来行、且各自需要的字段不同（那边要 NODE_ID+PRIV+BACK_PUB 三个齐全
+// 才能签名，这边只要 PRIV），暂不强行抽公共层。
+func readNodeConf() (map[string]string, error) {
+	path := filepath.Join(confDir(), "mynet.conf")
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("读节点配置失败（先运行 mynet setup）: %w", err)
+	}
+	defer f.Close()
+
+	kv := make(map[string]string)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		kv[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("解析 %s: %w", path, err)
+	}
+
+	return kv, nil
+}
+
 func sharedVarDir() string {
 	return filepath.Dir(shared.DefaultSnapshotPath())
 }
@@ -120,8 +156,52 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 		}
 		fmt.Println("wrote", d.ConfPath)
 	case domain.DriverTypeGNB:
-		d := driver.NewGNBDriver(0)
+		if env.Gnb == nil {
+			fmt.Fprintln(os.Stderr, "bundle 里没有 gnb 段")
+			return 1
+		}
+		// ⚠️ NodeID 必须是真值：此前写死 NewGNBDriver(0)，于是 Status() 报的
+		// node_id 恒为 0，按 pid/接口名做的任何关联都对不上。
+		nodeID, err := strconv.ParseInt(env.Gnb.Identity.NodeID, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bundle 的 gnb.identity.node_id 非法: %q\n", env.Gnb.Identity.NodeID)
+			return 1
+		}
+		d := driver.NewGNBDriver(nodeID)
 		d.ConfDir = filepath.Join(varDir(), "gnb")
+
+		// back **不下发**节点私钥（P0-4 收口，bundle 里 private_key 恒为空），
+		// 而 gnb 必须有 security/<uuid>.private 才能起（gnb_keys.c:62-67 读不到就 exit）。
+		// 私钥只从本机 conf/mynet.conf 来 —— 这正是「控制面集中、密钥不出节点」。
+		if env.Gnb.Identity.PrivateKey == "" {
+			kv, cerr := readNodeConf()
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "refresh-config: %v\n", cerr)
+				return 1
+			}
+			priv := kv["NODE_PRIV_HEX"]
+			if priv == "" {
+				fmt.Fprintln(os.Stderr, "refresh-config: conf/mynet.conf 缺 NODE_PRIV_HEX，gnb 起不来")
+				return 1
+			}
+			// 校验本机私钥与 back 下发的公钥是否一对。不校验的话，
+			// 「mynet.conf 是另一个节点的」这种错配会一路走到隧道握手才炸，
+			// 症状是「对端 PONG 不上」，极难定位。
+			if pub := env.Gnb.Identity.PublicKey; pub != "" {
+				match, verr := keys.VerifyGNBKeyPair(priv, pub)
+				if verr != nil {
+					fmt.Fprintf(os.Stderr, "refresh-config: 校验节点密钥对失败: %v\n", verr)
+					return 1
+				}
+				if !match {
+					fmt.Fprintln(os.Stderr, "refresh-config: 本机 NODE_PRIV_HEX 与 bundle 里的 public_key 不是一对"+
+						"（mynet.conf 可能属于另一个节点）")
+					return 1
+				}
+			}
+			env.Gnb.Identity.PrivateKey = priv
+		}
+
 		if err := d.WriteIntent(env.Gnb); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

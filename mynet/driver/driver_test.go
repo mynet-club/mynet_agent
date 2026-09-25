@@ -245,7 +245,22 @@ func TestRenderGNBNodeConf(t *testing.T) {
 		Listeners: []string{"0.0.0.0:9000"},
 	}
 	text := RenderGNBNodeConf(g)
-	if !strings.Contains(text, "node 1001") || !strings.Contains(text, "daemon off") {
-		t.Fatalf("text=%s", text)
+	// 键名必须是 nodeid：gnb 用 strncmp(line,"nodeid",6) 匹配
+	// （gnb_conf_file.c:293）。写成 `node 1001` 会比成 "node 1" vs "nodeid" →
+	// 不匹配 → 整行静默跳过，本机 uuid 设不上。这个断言就是钉这一点。
+	if !strings.Contains(text, "nodeid 1001") {
+		t.Fatalf("缺 nodeid 键: text=%s", text)
+	}
+	if strings.Contains(text, "\nnode ") || strings.HasPrefix(text, "node ") {
+		t.Fatalf("出现了 gnb 不认的 `node ` 键: text=%s", text)
+	}
+	if !strings.Contains(text, "listen 0.0.0.0:9000") {
+		t.Fatalf("缺 listen: text=%s", text)
+	}
+	// daemon on：自己起时 gnb 双 fork 后父进程立即 exit(0)，Start() 才不阻塞；
+	// 被 systemd 以 --systemd 拉起时该键被忽略（gnb_argv.c:439-440 +
+	// gnb_conf_file.c:458），保持前台。daemon off 会让 Start() 永远挂住。
+	if !strings.Contains(text, "daemon on") {
+		t.Fatalf("应为 daemon on: text=%s", text)
 	}
 }

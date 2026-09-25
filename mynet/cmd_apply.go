@@ -3,9 +3,13 @@ package mynet
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 
+	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
 	"github.com/mynet-club/mynet_agent-V2/mynet/upgrade"
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/domain"
 )
 
 // cmdApply — F-2/F-3/F-5：唯一写入者。
@@ -50,13 +54,120 @@ func cmdApply(args []string) int {
 	return executeApply(snap, plan, dry)
 }
 
+// cmdService — 驱动进程生命周期。
+//
+//	mynet service <start|stop|reload|status> <gnb|wireguard>
+//
+// ⚠️ 此前这里是桩：直接返回 1 并打印「委托 procd/systemd/launchd（E 阶段落地）」。
+// 后果是 GNBDriver.Start()/Stop() 全仓**没有任何调用者**（Reload() 也零调用者），
+// 配置渲染得再对，隧道也永远起不来 —— 0→1 链在最后一公里断掉。
+//
+// 现在直接驱动 driver 的 Start/Stop，不依赖外部监管也能后台跑：gnb 的 node.conf
+// 写 `daemon on`，gnb 自己双 fork、父进程立即 exit(0)（gnb.c:397-399 →
+// gnb_daemon.c:36-48），子进程写 <conf>/gnb.pid（gnb.c:401）。
+// 要 systemd/procd 监管时走 `mynet install` 装单元、用 `gnb --systemd` 拉起 ——
+// 那时 daemon 键被忽略、保持前台（gnb_argv.c:439-440 + gnb_conf_file.c:458），
+// 两种模式共用同一份 node.conf。
+//
+// ⚠️ 已知缺口（wireguard）：refresh-config 把配置写到 var/wg.conf，而
+// WireGuardDriver.Start() 走 `wg-quick up <iface>`，wg-quick 只读
+// /etc/wireguard/<iface>.conf（wireguard.go:146,158,164）—— 路径对不上。
+// gnb 那条链已通；wg 这条要等 install 阶段落地，此处不假装它能用。
 func cmdService(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|status> <name>")
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|status> <gnb|wireguard>")
 		return 2
 	}
-	fmt.Fprintf(os.Stderr, "mynet service %v: 委托 procd/systemd/launchd（E 阶段落地）\n", args)
-	return 1
+	action, name := args[0], args[1]
+
+	var typ domain.VPNDriverType
+	switch name {
+	case "gnb":
+		typ = domain.DriverTypeGNB
+	case "wireguard", "wg":
+		typ = domain.DriverTypeWireGuard
+	default:
+		fmt.Fprintf(os.Stderr, "未知驱动: %s（只支持 gnb|wireguard）\n", name)
+		return 2
+	}
+
+	d, err := buildLifecycleDriver(typ)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mynet service: %v\n", err)
+		return 1
+	}
+
+	switch action {
+	case "start":
+		if err := d.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "start %s: %v\n", name, err)
+			return 1
+		}
+		fmt.Printf("started %s\n", name)
+		return 0
+	case "stop":
+		if err := d.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "stop %s: %v\n", name, err)
+			return 1
+		}
+		fmt.Printf("stopped %s\n", name)
+		return 0
+	case "reload":
+		if err := d.Reload(); err != nil {
+			fmt.Fprintf(os.Stderr, "reload %s: %v\n", name, err)
+			return 1
+		}
+		fmt.Printf("reloaded %s\n", name)
+		return 0
+	case "status":
+		st, err := d.Status()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "status %s: %v\n", name, err)
+			return 1
+		}
+		fmt.Printf("%s running=%v node_id=%s\n", name, st.Running, st.NodeID)
+		if !st.Running {
+			return 1
+		}
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "未知动作: %s（只支持 start|stop|reload|status）\n", action)
+		return 2
+	}
+}
+
+// buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。
+//
+// 两处必须一致：写配置的目录和起进程的目录若对不上，症状是「配置明明写了，
+// 起的却是另一个目录」—— 而这正是此前 GNBDriver 默认 ConfDir
+// （driver/gnb/conf/<nodeId>）与 refresh-config 覆盖值（var/gnb）不一致的形态。
+func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, error) {
+	env, err := loadBundleEnvelope()
+	if err != nil {
+		return nil, fmt.Errorf("读 bundle 失败（先让 mynetd 拉一版，或跑 mynet refresh-config）: %w", err)
+	}
+
+	switch typ {
+	case domain.DriverTypeGNB:
+		if env.Gnb == nil {
+			return nil, fmt.Errorf("bundle 里没有 gnb 段")
+		}
+		nodeID, err := strconv.ParseInt(env.Gnb.Identity.NodeID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("bundle 的 gnb.identity.node_id 非法: %q", env.Gnb.Identity.NodeID)
+		}
+		d := driver.NewGNBDriver(nodeID)
+		d.ConfDir = filepath.Join(varDir(), "gnb")
+
+		return d, nil
+	case domain.DriverTypeWireGuard:
+		d := driver.NewWireGuardDriver(env.Node.Interface, 0)
+		d.ConfPath = filepath.Join(varDir(), "wg.conf")
+
+		return d, nil
+	default:
+		return nil, fmt.Errorf("未知驱动类型 %q", typ)
+	}
 }
 
 func cmdDriver(args []string) int {
