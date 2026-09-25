@@ -56,6 +56,32 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
     <div class="acts" id="node-acts"></div>
   </div>
 
+  <!-- ② 节点身份 + ④ 运行 + ⑤ 对端与路由：状态明细，与横幅同源 -->
+  <div class="card" id="zone-identity">
+    <h2>节点身份</h2>
+    <div class="row" id="id-row"><span class="muted">—</span></div>
+  </div>
+  <div class="card" id="zone-run">
+    <h2>运行</h2>
+    <div class="row" id="run-row"><span class="muted">—</span></div>
+    <div class="row" id="run-acts" style="margin-top:10px"></div>
+  </div>
+  <div class="card" id="zone-peers">
+    <h2>对端与路由</h2>
+    <table class="table" id="peers-table" style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;color:var(--mut);font-size:12px">
+        <th style="padding:6px 8px">角色</th><th style="padding:6px 8px">NODE_ID</th>
+        <th style="padding:6px 8px">overlay</th><th style="padding:6px 8px">链路</th>
+        <th style="padding:6px 8px">OS 路由</th>
+      </tr></thead>
+      <tbody id="peers-body"><tr><td colspan="5" class="muted" style="padding:8px">—</td></tr></tbody>
+    </table>
+    <details style="margin-top:10px">
+      <summary class="muted" style="cursor:pointer">route.conf（本机在前 · 节点一律 /32）</summary>
+      <pre id="route-conf" style="margin-top:8px">—</pre>
+    </details>
+  </div>
+
   <div id="view-wizard">
     <div class="card">
       <h2>首次运行向导</h2>
@@ -353,6 +379,68 @@ async function loadNodeStatus() {
       b.disabled = !(st.actions && st.actions[id]);
     });
   }
+
+  // ── ② 节点身份 ─────────────────────────────────────
+  const kv = (k, v) => `<div class="kv"><div class="k">${k}</div><div class="v">${v || '—'}</div></div>`;
+  el('id-row').innerHTML =
+    kv('NODE_ID', st.node_id) +
+    kv('overlay', st.overlay_ip) +
+    kv('接口', st.tun_iface) +
+    kv('MTU', st.mtu) +
+    kv('gnb', st.gnb_bin ? '已安装' : '未安装');
+
+  // ── ④ 运行 ─────────────────────────────────────────
+  const up = st.uptime_sec ? fmtDur(st.uptime_sec) : '—';
+  const fmtB = n => n ? (n > 1048576 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB') : '—';
+  el('run-row').innerHTML =
+    kv('进程', st.process_up ? `pid ${st.process_pid} · 已运行 ${up}` : '未运行') +
+    kv('tun', st.tun_up ? `${st.tun_iface} · ${st.overlay_ip}` : '无') +
+    kv('RX', fmtB(st.rx_bytes)) + kv('TX', fmtB(st.tx_bytes)) +
+    kv('对端在线', `${st.peers_routed}/${st.peers_total}`);
+  // 运行区的按钮也走同一套 Actions
+  const runActs = el('run-acts');
+  runActs.innerHTML = '';
+  for (const id of ['start', 'restart', 'stop', 'fix-routes', 'retry']) {
+    if (!(st.actions && st.actions[id])) continue;
+    const b = document.createElement('button');
+    b.className = id === st.primary_action ? 'primary' : '';
+    b.textContent = (st.labels && st.labels[id]) || id;
+    b.onclick = async () => {
+      const cmd = ACT_CMD[id];
+      if (!cmd) return;
+      b.disabled = true;
+      await wizStart(cmd);
+      await loadNodeStatus();
+    };
+    runActs.appendChild(b);
+  }
+
+  // ── ⑤ 对端表 ───────────────────────────────────────
+  const tb = el('peers-body');
+  if (!st.peers || !st.peers.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="muted" style="padding:8px">无对端（bundle 里没有路由）</td></tr>';
+  } else {
+    tb.innerHTML = st.peers.map(p => {
+      const routed = p.routed
+        ? '<span class="tag ok">✓</span>'
+        : '<span class="tag bad">✗ 缺</span>';
+      return `<tr style="border-top:1px solid #243044">
+        <td style="padding:6px 8px">${p.is_self ? '本机' : '对端'}</td>
+        <td style="padding:6px 8px"><code>${p.node_id || '—'}</code></td>
+        <td style="padding:6px 8px"><code>${p.overlay || '—'}</code></td>
+        <td style="padding:6px 8px">${p.link || '—'}</td>
+        <td style="padding:6px 8px">${routed}</td>
+      </tr>`;
+    }).join('');
+  }
+  el('route-conf').textContent = st.route_conf_text || '（无 route.conf）';
+}
+
+function fmtDur(sec) {
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec/60) + 'm';
+  if (sec < 86400) return Math.floor(sec/3600) + 'h' + (sec%3600)/60 + 'm';
+  return Math.floor(sec/86400) + 'd' + Math.floor((sec%86400)/3600) + 'h';
 }
 loadNodeStatus();
 // 状态变化（起停后）就地刷新；30s 轮询兜底「人从别处 kill 了 gnb」

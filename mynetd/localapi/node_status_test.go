@@ -3,6 +3,7 @@ package localapi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -257,5 +258,79 @@ func TestDarwinRouteGetRejectsDefault(t *testing.T) {
 	if osRouteExists("203.0.113.1") && osRouteExists("203.0.113.1/32") {
 		// 有的环境会加黑洞路由，允许；只要 127.0.0.1 那条对即可
 		t.Log("203.0.113.1 有路由，跳过 default 判定")
+	}
+}
+
+// P2：⑤ 对端表每行要能回答「配置里有没有、OS 路由装没装」。
+// 本机行在最前（与 route.conf 约定同形）。
+func TestNodeStatusPeerRowsSelfFirst(t *testing.T) {
+	f := newFixture(t)
+	f.write("conf/mynet.conf", "NODE_ID=1001\n")
+	f.write("var/gnb/node.conf", "nodeid 1001\n")
+	f.write("var/gnb/gnb.pid", "4242\n")
+	f.write("var/gnb/route.conf", "1001|10.0.0.1|255.255.255.255\n")
+	f.write("var/bundle.json", `{"network":{
+		"addresses":["10.0.0.1/32"],
+		"routes":[{"prefix":"10.0.0.2/32","dev":"gnb_tun"}]
+	},"gnb":{"nodes":[
+		{"node_id":"1001","tun_address":"10.0.0.1/32"},
+		{"node_id":"1002","tun_address":"10.0.0.2/32"}
+	]}}`)
+	p := f.probe()
+	p.gnbPath = "/usr/bin/gnb"
+	p.pidAlive = func(int) bool { return true }
+	p.findIface = func(string) string { return "utun4" }
+	p.routeExists = func(string) bool { return true }
+	p.ifaceStats = func(string) (int64, int64, int, bool) { return 840, 840, 1450, true }
+	p.procUptimeSec = func(int) int64 { return 3600 }
+	st := computeNodeStatus(p)
+	if len(st.Peers) != 2 {
+		t.Fatalf("peers=%d want 2（本机+对端）", len(st.Peers))
+	}
+	if !st.Peers[0].IsSelf || st.Peers[0].NodeID != "1001" {
+		t.Fatalf("第一条必须是本机: %+v", st.Peers[0])
+	}
+	if st.Peers[1].NodeID != "1002" || st.Peers[1].Overlay != "10.0.0.2" {
+		t.Fatalf("对端行应带 node_id 与 overlay: %+v", st.Peers[1])
+	}
+	if !st.Peers[1].Routed {
+		t.Fatal("对端路由装了时 Routed 必须为 true")
+	}
+	// ④ 运行区
+	if st.UptimeSec != 3600 {
+		t.Fatalf("uptime=%d want 3600", st.UptimeSec)
+	}
+	if st.RxBytes != 840 || st.TxBytes != 840 || st.Mtu != 1450 {
+		t.Fatalf("rx/tx/mtu = %d/%d/%d", st.RxBytes, st.TxBytes, st.Mtu)
+	}
+	if !strings.Contains(st.RouteConfText, "1001|10.0.0.1|") {
+		t.Fatalf("route.conf 原文应带上:\n%s", st.RouteConfText)
+	}
+}
+
+// 对端路由缺失时，那行的 Routed=false —— 这是 DEGRADED 的证据，UI 要能指出来。
+func TestNodeStatusPeerRowUnrouted(t *testing.T) {
+	f := newFixture(t)
+	f.write("conf/mynet.conf", "NODE_ID=1001\n")
+	f.write("var/gnb/node.conf", "x\n")
+	f.write("var/gnb/gnb.pid", "4242\n")
+	f.write("var/bundle.json", `{"network":{
+		"addresses":["10.0.0.1/32"],
+		"routes":[{"prefix":"10.0.0.2/32","dev":"gnb_tun"}]
+	}}`)
+	p := f.probe()
+	p.gnbPath = "/usr/bin/gnb"
+	p.pidAlive = func(int) bool { return true }
+	p.findIface = func(string) string { return "utun4" }
+	p.routeExists = func(string) bool { return false }
+	st := computeNodeStatus(p)
+	if st.State != StateDegraded {
+		t.Fatalf("state=%s want DEGRADED", st.State)
+	}
+	if len(st.Peers) < 2 {
+		t.Fatalf("peers=%d", len(st.Peers))
+	}
+	if st.Peers[1].Routed {
+		t.Fatal("路由缺失时对端行 Routed 必须为 false")
 	}
 }

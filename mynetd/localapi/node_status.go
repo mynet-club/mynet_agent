@@ -41,7 +41,7 @@ type NodeStatus struct {
 	Actions map[string]bool `json:"actions"`
 	// 按钮文案（前端直接用，保证「一言之」与按钮用词一致）
 	Labels map[string]string `json:"labels"`
-	// 明细区（P1 只给关键项，P2 再补对端/路由全表）
+	// 明细区
 	Home        string `json:"home"`
 	GnbBin      string `json:"gnb_bin"`
 	Installed   bool   `json:"installed"`
@@ -57,6 +57,31 @@ type NodeStatus struct {
 	PeersRouted int    `json:"peers_routed"`
 	// Detail 一言之外的补充说明（可空），比如「缺 2 条路由」
 	Detail string `json:"detail,omitempty"`
+
+	// ── ④ 运行区（P2）──────────────────────────────────────
+	UptimeSec int64 `json:"uptime_sec,omitempty"`
+	Mtu       int   `json:"mtu,omitempty"`
+	RxBytes   int64 `json:"rx_bytes,omitempty"`
+	TxBytes   int64 `json:"tx_bytes,omitempty"`
+
+	// ── ⑤ 对端与路由区（P2）────────────────────────────────
+	// Peers 含本机那一行 + 每个对端一行。每行三件事：
+	// 配置里有没有、OS 路由装没装、链路通不通（gnb_ctl 有则给）。
+	Peers []PeerRow `json:"peers"`
+	// RouteConfText route.conf 原文（本机在前、节点一律 /32），供「配置」折叠区
+	RouteConfText string `json:"route_conf_text,omitempty"`
+}
+
+// PeerRow 对端表一行。Routed 是内核路由是否装上 —— 这是 DEGRADED 的判据。
+type PeerRow struct {
+	NodeID  string `json:"node_id"`
+	Overlay string `json:"overlay,omitempty"`
+	IsSelf  bool   `json:"is_self"`
+	Routed  bool   `json:"routed"`
+	// Link 链路态：Direct / Relay / unknown（gnb_ctl 不可用时）
+	Link string `json:"link,omitempty"`
+	// LatencyMs gnb_ctl 报的时延；0 表示未知
+	LatencyMs int `json:"latency_ms,omitempty"`
 }
 
 // 动作 id —— 前后端共用的契约
@@ -78,6 +103,10 @@ type statusProbe struct {
 	gnbPath string
 	// pidAlive 真实 pid 是否存活
 	pidAlive func(pid int) bool
+	// ifaceStats 接口计数器（RX/TX/MTU）；接口不存在时返回 ok=false
+	ifaceStats func(iface string) (rx, tx int64, mtu int, ok bool)
+	// procUptimeSec 进程运行时长（秒）；未知返回 0
+	procUptimeSec func(pid int) int64
 	// routeExists 查一条 OS 路由是否已装（目的地 CIDR 或 IP）
 	routeExists func(dest string) bool
 	// findIface 找挂了某 IP 的接口名
@@ -101,8 +130,131 @@ func defaultProbe() statusProbe {
 		routeExists: func(dest string) bool {
 			return osRouteExists(dest)
 		},
-		findIface: ifaceWithAddr,
+		findIface:     ifaceWithAddr,
+		ifaceStats:    ifaceStats,
+		procUptimeSec: procUptimeSec,
 	}
+}
+
+// ifaceStats 读接口计数器。Linux 走 sysfs，darwin 解析 ifconfig。
+func ifaceStats(iface string) (rx, tx int64, mtu int, ok bool) {
+	// Linux：/sys/class/net/<if>/statistics/{rx,tx}_bytes
+	if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "statistics", "rx_bytes")); err == nil {
+		rx, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "statistics", "tx_bytes")); err == nil {
+			tx, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+		}
+		if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "mtu")); err == nil {
+			mtu, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		return rx, tx, mtu, true
+	}
+	// darwin：ifconfig <if> 里 "mtu 1450" / 无 RX/TX 行（utun 常不报计数器）
+	bin := lookPathAny("ifconfig")
+	if bin == "" {
+		return 0, 0, 0, false
+	}
+	out, err := exec.Command(bin, iface).Output()
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	s := string(out)
+	if !strings.Contains(s, iface+":") && !strings.Contains(s, iface+" ") {
+		return 0, 0, 0, false
+	}
+	for _, ln := range strings.Split(s, "\n") {
+		f := strings.Fields(ln)
+		for i := 0; i+1 < len(f); i++ {
+			if f[i] == "mtu" {
+				mtu, _ = strconv.Atoi(f[i+1])
+			}
+			if f[i] == "RX" && i+2 < len(f) && f[i+1] == "packets" {
+				// macOS 的计数器是 "RX packets: 840  bytes: ..." 另一种排版
+			}
+		}
+		// "input packets 840, bytes 1234"（Linux netstat 风格）/ "RX packets: 840 bytes: N"
+		if n := parseCountAfter(ln, "bytes"); n > 0 && strings.Contains(ln, "RX") {
+			rx = n
+		}
+		if n := parseCountAfter(ln, "bytes"); n > 0 && strings.Contains(ln, "TX") {
+			tx = n
+		}
+	}
+	return rx, tx, mtu, true
+}
+
+func parseCountAfter(s, key string) int64 {
+	i := strings.Index(s, key)
+	if i < 0 {
+		return 0
+	}
+	f := strings.Fields(s[i+len(key):])
+	if len(f) == 0 {
+		return 0
+	}
+	n, _ := strconv.ParseInt(strings.Trim(f[0], ","), 10, 64)
+	return n
+}
+
+// procUptimeSec 进程运行时长。Linux 读 /proc/<pid>/stat 的 starttime，
+// darwin 用 ps -o etime=（elapsed）。
+func procUptimeSec(pid int) int64 {
+	if b, err := os.ReadFile("/proc/uptime"); err == nil {
+		// /proc/<pid>/stat 第 22 个字段是 starttime（clock ticks）
+		st, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		if err == nil {
+			// comm 可能带空格括号，从最后一个 ')' 之后切
+			s := string(st)
+			if i := strings.LastIndex(s, ")"); i >= 0 {
+				f := strings.Fields(s[i+1:])
+				// f[0]=state … starttime 是 f[19]（0-based，从 state 起）
+				if len(f) > 19 {
+					startTicks, _ := strconv.ParseInt(f[19], 10, 64)
+					var up float64
+					fmtS := strings.Fields(string(b))
+					if len(fmtS) > 0 {
+						up, _ = strconv.ParseFloat(fmtS[0], 64)
+					}
+					hz := float64(100) // Linux USER_HZ 通常 100
+					if up > 0 && startTicks > 0 {
+						return int64(up - float64(startTicks)/hz)
+					}
+				}
+			}
+		}
+	}
+	// darwin / 兜底：ps -o etime=
+	bin := lookPathAny("ps")
+	if bin == "" {
+		return 0
+	}
+	out, err := exec.Command(bin, "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0
+	}
+	return parseETime(strings.TrimSpace(string(out)))
+}
+
+// parseETime 解析 ps etime：[[dd-]hh:]mm:ss
+func parseETime(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	s = strings.TrimSpace(s)
+	days := int64(0)
+	if i := strings.Index(s, "-"); i >= 0 {
+		days, _ = strconv.ParseInt(s[:i], 10, 64)
+		s = s[i+1:]
+	}
+	parts := strings.Split(s, ":")
+	var sec int64
+	mult := int64(1)
+	for i := len(parts) - 1; i >= 0; i-- {
+		n, _ := strconv.ParseInt(parts[i], 10, 64)
+		sec += n * mult
+		mult *= 60
+	}
+	return days*86400 + sec
 }
 
 func lookGnb() string {
@@ -284,22 +436,52 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 		st.TunIface = p.findIface(st.OverlayIP)
 		st.TunUp = st.TunIface != ""
 	}
+	// ④ 运行区：进程时长 + 接口计数器
+	if st.ProcessUp && p.procUptimeSec != nil {
+		st.UptimeSec = p.procUptimeSec(pid)
+	}
+	if st.TunUp && p.ifaceStats != nil {
+		rx, tx, mtu, ok := p.ifaceStats(st.TunIface)
+		if ok {
+			st.RxBytes, st.TxBytes, st.Mtu = rx, tx, mtu
+		}
+	}
 
-	// 路由：每个对端 /32 都要在系统路由表里
+	// ⑤ 对端表 + 路由：每个对端 /32 都要在系统路由表里
 	routed := 0
 	var missing []string
+	// 本机行在最前（与 route.conf 约定同形：第一条 = 本机）
+	st.Peers = append(st.Peers, PeerRow{
+		NodeID:  st.NodeID,
+		Overlay: st.OverlayIP,
+		IsSelf:  true,
+		Routed:  st.TunUp, // 本机行的「路由」= tun 是否在
+		Link:    "local",
+	})
 	for _, r := range peers {
 		if r.PeerIP == "" {
 			continue
 		}
-		if p.routeExists(r.PeerIP+"/32") || p.routeExists(r.PeerIP) {
+		ok := p.routeExists(r.PeerIP+"/32") || p.routeExists(r.PeerIP)
+		if ok {
 			routed++
 		} else {
 			missing = append(missing, r.PeerIP)
 		}
+		st.Peers = append(st.Peers, PeerRow{
+			NodeID:  r.NodeID,
+			Overlay: r.PeerIP,
+			Routed:  ok,
+			Link:    "unknown", // gnb_ctl 不可用时如实说未知，别猜
+		})
 	}
 	st.PeersRouted = routed
 	st.RoutesOK = st.PeersTotal > 0 && routed == st.PeersTotal
+
+	// route.conf 原文（⑤ 折叠区）—— 配置层面的「有没有」
+	if b, err := os.ReadFile(filepath.Join(gnbConf, "route.conf")); err == nil {
+		st.RouteConfText = string(b)
+	}
 
 	// ── ④ 判状态 ─────────────────────────────────────────
 	switch {
@@ -358,13 +540,15 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	return st
 }
 
-// peerRoute 一对「本机 IP + 对端 IP」，用于路由存在性检查。
+// peerRoute 一对「本机 IP + 对端 IP」，用于路由存在性检查与对端表。
 type peerRoute struct {
+	NodeID string
 	SelfIP string
 	PeerIP string
 }
 
 // loadPeerRoutes 从 bundle.json 读本机地址与对端 /32 列表。
+// 对端的 node_id 来自 gnb.nodes（tun_address 与 routes.prefix 对得上时）。
 func loadPeerRoutes(bundlePath string) []peerRoute {
 	b, err := os.ReadFile(bundlePath)
 	if err != nil {
@@ -378,6 +562,12 @@ func loadPeerRoutes(bundlePath string) []peerRoute {
 				Dev    string `json:"dev"`
 			} `json:"routes"`
 		} `json:"network"`
+		Gnb struct {
+			Nodes []struct {
+				NodeID     string `json:"node_id"`
+				TunAddress string `json:"tun_address"`
+			} `json:"nodes"`
+		} `json:"gnb"`
 	}
 	if err := json.Unmarshal(b, &env); err != nil {
 		return nil
@@ -386,13 +576,21 @@ func loadPeerRoutes(bundlePath string) []peerRoute {
 	if len(env.Network.Addresses) > 0 {
 		self = strings.Split(env.Network.Addresses[0], "/")[0]
 	}
+	// IP → nodeID 映射（gnb.nodes 的 tun_address）
+	idOf := map[string]string{}
+	for _, n := range env.Gnb.Nodes {
+		ip := strings.Split(n.TunAddress, "/")[0]
+		if ip != "" {
+			idOf[ip] = n.NodeID
+		}
+	}
 	var out []peerRoute
 	for _, r := range env.Network.Routes {
 		ip := strings.Split(r.Prefix, "/")[0]
 		if ip == "" || ip == self {
 			continue
 		}
-		out = append(out, peerRoute{SelfIP: self, PeerIP: ip})
+		out = append(out, peerRoute{NodeID: idOf[ip], SelfIP: self, PeerIP: ip})
 	}
 	// 至少把本机地址带回去，供 OverlayIP 用
 	if len(out) == 0 && self != "" {
