@@ -212,8 +212,9 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 					return 1
 				}
 				if !match {
-					fmt.Fprintln(os.Stderr, "refresh-config: 本机 NODE_PRIV_HEX 与 bundle 里的 public_key 不是一对"+
-						"（mynet.conf 可能属于另一个节点）")
+					fmt.Fprintln(os.Stderr, "refresh-config: 本机 NODE_PRIV_HEX 与 bundle 里的 public_key 不是一对。"+
+						"两种可能：① mynet.conf 属于另一个节点；② bundle 是**旧修订**（换了公钥但没重新发布）。"+
+						"② 就是 claim 撞到过的：GET /nodes/{id}/bundle 返回 config_revisions 里的旧版本。")
 					return 1
 				}
 			}

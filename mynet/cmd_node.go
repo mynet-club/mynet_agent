@@ -215,6 +215,19 @@ func nodeClaim(args []string) int {
 	}
 	fmt.Printf("公钥已上传到 back（key_type=%s）\n", keyType)
 
+	// ⚠️ 必须强制重新发布 bundle，再往下下载。
+	// GET /nodes/{id}/bundle 返回的是 config_revisions 里的**旧修订**
+	// （只在没有修订时才现算）。刚换了公钥，旧修订里还是上一次的公钥 ——
+	// 于是 refresh-config 的密钥对校验会正确地拒掉：
+	//   「本机 NODE_PRIV_HEX 与 bundle 里的 public_key 不是一对」
+	// 实测第一次跑 claim 就撞上了。根因在 back：节点密钥变更时该让 bundle
+	// 失效（记 CPI）；这里在客户端强制 publish 一次，先把链路走通。
+	if _, code, err := c.doJSON("POST", "/api/v1/nodes/"+nodeID+"/bundle/publish", map[string]any{}); err != nil {
+		fmt.Fprintf(os.Stderr, "重新发布 bundle 失败（HTTP %d）: %v\n", code, err)
+		return 1
+	}
+	fmt.Println("bundle 已重新发布（纳入新公钥）")
+
 	// 4) 设 endpoint（没有 index 时的最小可用发现方式，见
 	//    BundleEnvelopePublisher 的 static_nodes 注释）
 	if endpoint != "" {
@@ -229,14 +242,26 @@ func nodeClaim(args []string) int {
 
 	// 5) 下载配置 —— **用户凭证**走 GET /nodes/{id}/bundle。
 	//    这一步解鸡生蛋：节点签名通道需要先有 mynet.conf，而它正是上一步写的。
-	//    拿到的 envelope 落到 var/bundle.json，与 mynetd 拉的是同一个文件，
-	//    之后 refresh-config 就能渲染出 gnb 原生配置。
+	//    拿到的 envelope 落到 var/bundle.json，与 mynetd 拉的是同一个文件。
 	if rc := downloadBundle(c, nodeID); rc != 0 {
 		return rc
 	}
 
-	fmt.Println("\nclaim 完成。下一步：")
-	fmt.Printf("  sudo %s service start gnb      # 或 mynet install 装成服务\n", os.Args[0])
+	// 6) 渲染驱动原生配置 —— **claim 必须做到这一步**。
+	//
+	// ⚠️ 只下载 bundle 是**没做完**：var/gnb/ 里要有 node.conf / route.conf /
+	// address.conf / security/ / ed25519/ 才轮得到 gnb 起进程。
+	// 早期版本 claim 到 downloadBundle 就收尾，向导随后 `service start gnb`
+	// 直接失败在「找不到 node.conf」—— 而 claim 还打印「完成」，把人引向下一步。
+	// 那正是「向导没把活干完」的形态：每一步都绿，最后一步才发现前面少干了事。
+	if rc := cmdRefresh([]string{"refresh-config", "--auto"}); rc != 0 {
+		fmt.Fprintln(os.Stderr, "渲染驱动配置失败（claim 的最后一步）")
+		return rc
+	}
+
+	fmt.Println("\nclaim 完成：密钥已生成、公钥已上传、配置已渲染。")
+	fmt.Printf("启动隧道: sudo %s service start gnb\n", os.Args[0])
+	fmt.Printf("装成服务: sudo %s install --gateways <wss://…>\n", os.Args[0])
 	return 0
 }
 

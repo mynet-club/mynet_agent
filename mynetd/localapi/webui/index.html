@@ -68,14 +68,27 @@ pre{background:#0b1016;padding:12px;border-radius:8px;overflow:auto;max-height:2
           私钥不上传、不出本机。</p>
       </div>
 
-      <!-- 步骤 3：完成 -->
+      <!-- 步骤 3：下载配置（claim 完成）-->
       <div id="wiz-step-3" hidden>
         <div class="row" style="margin-top:12px">
-          <button class="primary" id="wiz-finish">完成，去看本机状态</button>
+          <button class="primary" id="wiz-start">启动隧道</button>
           <button id="wiz-logout">退出登录</button>
         </div>
-        <p class="muted">下一步可选：<code>mynet install</code> 把节点装成系统服务
-          （重启自动恢复），或 <code>mynet service start gnb</code> 直接拉起隧道。</p>
+        <p class="muted">配置已就位。下一步<strong>把隧道拉起来</strong> ——
+          不启动的话节点只是"配好了"，还没在跑。</p>
+      </div>
+
+      <!-- 步骤 4：启动隧道 -->
+      <div id="wiz-step-4" hidden>
+        <div class="row" style="margin-top:12px">
+          <button class="primary" id="wiz-start">启动隧道</button>
+          <button id="wiz-restart">重启隧道</button>
+          <button id="wiz-finish">完成，去看本机状态</button>
+          <button id="wiz-logout">退出登录</button>
+        </div>
+        <p class="muted">隧道要建 tun 设备，需要<strong>特权</strong>（节点部署下 mynetd
+          以 root 跑；本机调试请用 <code>sudo</code> 启 mynetd）。
+          装成开机自启：<code>mynet install --gateways wss://…</code></p>
       </div>
 
       <pre id="wiz-out" style="margin-top:12px">—</pre>
@@ -140,8 +153,8 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
 // 步骤由 /api/v1/wizard/state 决定（看磁盘产物），不靠页面里的计数器 ——
 // 重开浏览器、重启 mynetd 都要一致（CPI-68 的教训：落盘结果比命令退出码可信）。
 function wizShow(step) {
-  for (let i = 1; i <= 3; i++) el('wiz-step-' + i).hidden = (i !== step);
-  el('wiz-steps').innerHTML = ['1 登录', '2 选节点', '3 下载配置'].map((s, i) =>
+  for (let i = 1; i <= 4; i++) el('wiz-step-' + i).hidden = (i !== step);
+  el('wiz-steps').innerHTML = ['1 登录', '2 选节点', '3 下载配置', '4 启动隧道'].map((s, i) =>
     `<span class="tag ${i + 1 === step ? 'ok' : ''}">${s}</span>`).join(' ');
 }
 
@@ -187,8 +200,38 @@ el('wiz-claim').onclick = async () => {
     body: JSON.stringify({ argv })
   });
   show('wiz-out', r);
-  if (r.success) wizShow(3);
+  if (r.success) wizShow(3);   // 第 3 步 = 配置就位，再点「启动隧道」
 };
+
+// 启动隧道：走既有 /api/v1/command 白名单（service 子命令已在白名单里）
+async function wizStart(cmd) {
+  el('wiz-out').textContent = '执行中…';
+  // ⚠️ 起隧道是**两件事**，不是一件：
+  //   ① service start gnb —— 起驱动、建 tun 接口
+  //   ② apply --auto      —— 装内核路由
+  // 只做 ① 的后果：接口在、IP 在，但到对端的路由还走默认网关 → ping 100% 丢包。
+  // 实测撞过（本机 utun4 有 10.0.0.15，而 `route get 10.0.0.16` 仍指 en0）。
+  // 顺序不能反：`ip route … dev <if>` 要求接口已存在。
+  const steps = cmd[0] === 'service' && cmd[1] === 'start'
+    ? [cmd, ['apply', '--auto']]
+    : [cmd];
+  const all = [];
+  for (const argv of steps) {
+    all.push(await api('/api/v1/command', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ argv })
+    }));
+  }
+  show('wiz-out', all.length === 1 ? all[0] : all);
+  // 同时把状态拉出来给人看 —— 只看退出码不够（CPI-68 的教训）
+  const st = await api('/api/v1/command', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ argv: ['service', 'status', 'gnb'] })
+  });
+  el('wiz-out').textContent += '\n\n── 隧道状态 ──\n' + ((st.data && st.data.stdout) || JSON.stringify(st, null, 2));
+}
+el('wiz-start').onclick = () => wizStart(['service', 'start', 'gnb']);
+el('wiz-restart').onclick = () => wizStart(['service', 'reload', 'gnb']);
 
 el('wiz-finish').onclick = () => {
   document.querySelector('nav button[data-v="local"]').click();
@@ -204,7 +247,9 @@ el('wiz-logout').onclick = async () => {
     const s = r.data || {};
     if (s.node_configured && s.bundle_downloaded) {
       el('wiz-out').textContent = '已配置：' + JSON.stringify(s, null, 2);
-      wizShow(3);
+      // 配好了不等于跑起来了 —— 直接把人送到「启动」那一步，
+      // 不要让他以为向导已经结束（那正是「没让 gnb 跑起来」的观感来源）
+      wizShow(4);
     } else if (s.logged_in) {
       el('wiz-out').textContent = '已登录 ' + (s.user_email || '') + '，请选择节点';
       await wizLoadNodes();

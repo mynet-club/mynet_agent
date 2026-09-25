@@ -96,7 +96,23 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 	}
 	out, err := s.Ops(argv)
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
+		// ⚠️ 必须把 stdout/stderr 一起回，不能只回 err.Error()。
+		// `exit status 1` 说明不了任何事 —— 真正的原因在子进程的 stderr 里，
+		// 而 defaultExecMynet 已经把它放进 out 了，扔掉等于让每次失败都
+		// 变成「exit status 1」，只能靠人再手动跑一遍命令去猜。
+		payload := map[string]any{"success": false, "message": err.Error()}
+		if m, ok := out.(map[string]any); ok {
+			if v, ok := m["stdout"]; ok {
+				payload["stdout"] = sanitizeValue(v)
+			}
+			if v, ok := m["stderr"]; ok {
+				payload["stderr"] = sanitizeValue(v)
+			}
+			if v, ok := m["argv"]; ok {
+				payload["argv"] = v
+			}
+		}
+		writeJSON(w, 500, payload)
 		return
 	}
 	// 统一脱敏：/api/v1/command 的输出与向导端点一样直接进浏览器
@@ -134,6 +150,15 @@ func defaultExecMynet(argv []string) (any, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// sanitizeValue 对非 map 的值也走一遍脱敏（错误分支里 stdout/stderr 是字符串）。
+func sanitizeValue(v any) any {
+	if str, ok := v.(string); ok {
+		return redactSecrets(str)
+	}
+
+	return v
 }
 
 func systemJSONPath() string {

@@ -134,7 +134,8 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 //
 // 顺序**不能调换**：
 //  1. refresh-config —— 写出驱动原生配置（node.conf/route.conf/address.conf/密钥）
-//  2. service start  —— 起驱动、建 tun 接口。已在跑时 Start() 自己会短路
+//  2. service reload —— 重载驱动（Stop+Start），让它吃下新配置。
+//     不能用 start：已在跑时会短路，而 gnb 的 HotReload 是 false。
 //  3. apply --auto   —— 装内核路由。必须排在 2 之后：`ip route … dev gnb_tun`
 //     要求接口已存在，否则直接失败
 //
@@ -145,7 +146,14 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		op    string
 	}{
 		{"刷新驱动配置", commands.OpNodeRefresh},
-		{"起驱动", commands.OpServiceStart},
+		// ⚠️ 必须 reload（Stop+Start），不能是 start：
+		// Start() 在驱动已在跑时会短路（先查 IsProcessAlive），而 gnb 的
+		// HotReload 是 false（见 driver/gnb.go 的 Capabilities）→
+		// **配置改了但完全没生效**。实测撞到：p6-B 的 route.conf 里已有新对端，
+		// 而 gnb_ctl 的对端列表里根本没有它 —— gnb 进程 etimes 显示是
+		// 17 分钟前起的，配置 1 分钟前才改。症状是「关系建好了、配置写了、
+		// 而隧道不通」，而日志里三步都是「成功」。
+		{"重载驱动", commands.OpServiceReload},
 		{"装内核路由", commands.OpRouteUpdate},
 	}
 	for _, s := range steps {

@@ -315,21 +315,24 @@ func TestBundleChangedPullsBeforeRefresh(t *testing.T) {
 	// 顺序断言从 [sync exec] 升级为 [sync exec exec exec]：
 	// 「先拉后刷」这条性质仍然是重点（先刷后拉等于刷了个旧配置），
 	// 但现在还要钉住**三步的先后** —— refresh-config 必须在 service start 之前
-	// （否则起的是旧配置），service start 必须在 apply 之前
+	// （否则起的是旧配置），service reload 必须在 apply 之前
 	// （`ip route … dev gnb_tun` 要求接口已存在）。
 	if len(order) != 4 || order[0] != "sync" {
 		t.Fatalf("执行顺序 = %v，期望 [sync exec exec exec]", order)
 	}
 	calls := ex.snapshot()
-	for i, want := range []string{"refresh-config", "service start", "apply --auto"} {
+	// 第 2 步是 **reload** 而不是 start：start 在驱动已在跑时会短路，
+	// 而 gnb 的 HotReload 是 false → 配置改了不生效（实测撞过：
+	// route.conf 里有新对端、gnb_ctl 的对端列表里却没有它）
+	for i, want := range []string{"refresh-config", "service reload", "apply --auto"} {
 		if !strings.Contains(calls[i], want) {
 			t.Errorf("第 %d 步 argv = %q，期望含 %q（完整顺序：%v）", i+1, calls[i], want, calls)
 		}
 	}
-	// service start 不带驱动名：执行器会从 bundle 的 driver 字段取，
+	// service reload 不带驱动名：执行器会从 bundle 的 driver 字段取，
 	// 守护进程不该硬编码驱动类型（拼空串会被当成「指定了叫 "" 的驱动」）
-	if strings.HasSuffix(strings.TrimSpace(calls[1]), "start ") || strings.Contains(calls[1], `""`) {
-		t.Errorf("service start 不该带空的驱动名占位：argv = %q", calls[1])
+	if strings.HasSuffix(strings.TrimSpace(calls[1]), "reload ") || strings.Contains(calls[1], `""`) {
+		t.Errorf("service reload 不该带空的驱动名占位：argv = %q", calls[1])
 	}
 	if !sink.waitLog(t, "bundle updated") {
 		t.Errorf("日志没说明拉取结果；日志：%s", sink.joined())
