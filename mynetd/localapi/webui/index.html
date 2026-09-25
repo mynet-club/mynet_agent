@@ -61,6 +61,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:12px;user-select:none}
     <button data-v="wizard">向导</button>
     <button data-v="local">本机</button>
     <button data-v="platform">平台</button>
+    <button data-v="console">控制台</button>
   </nav>
   <span class="muted mono" id="listen"></span>
 </header>
@@ -195,6 +196,18 @@ details summary{cursor:pointer;color:var(--mut);font-size:12px;user-select:none}
     </div>
   </div>
 
+  <!-- ══════════ 控制台（mynet_gui） ══════════ -->
+  <div id="view-console" class="hidden">
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="row" style="padding:10px 14px;border-bottom:1px solid var(--line);margin:0">
+        <span class="muted">back 控制台 · mynet_gui（API 经本机 relay → gateway → back）</span>
+        <button class="ghost" id="btn-console-reload" style="margin-left:auto">刷新</button>
+        <button class="ghost" id="btn-console-open">新窗口打开</button>
+      </div>
+      <iframe id="console-frame" src="/gui/" style="width:100%;height:calc(100vh - 220px);border:0;background:#0f1419"></iframe>
+    </div>
+  </div>
+
   <!-- ══════════ 平台（relay） ══════════ -->
   <div id="view-platform" class="hidden">
     <div class="card">
@@ -257,7 +270,7 @@ async function apiJSON(path, method, body, headers){
 // ── 导航 ──────────────────────────────────────────────
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('#nav button').forEach(x => x.classList.toggle('on', x===b));
-  for (const v of ['panel','wizard','local','platform']) {
+  for (const v of ['panel','wizard','local','platform','console']) {
     el('view-'+v).classList.toggle('hidden', b.dataset.v !== v);
   }
 });
@@ -509,6 +522,13 @@ document.querySelectorAll('#view-local [data-cmd]').forEach(b => {
     await loadLocal();
   };
 });
+
+// ── 控制台 ─────────────────────────────────────────────
+el('btn-console-reload').onclick = () => {
+  const f = el('console-frame');
+  f.src = f.src; // 重新加载
+};
+el('btn-console-open').onclick = () => window.open('/gui/', '_blank');
 
 // ── 平台（relay） ─────────────────────────────────────
 async function relay(path, method, body, headers){
