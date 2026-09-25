@@ -135,10 +135,19 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 			continue
 		}
 		if v.Interface == "" {
-			// ifname 是 required_with:vpn_interfaces，空值会 422。
-			// gnb 侧目前拿不到接口名（`gnb_ctl -s` 的输出里没有），
-			// 所以整个 vpn_interfaces 段不发 —— 它是可选的，
-			// back 的 isVpnInterfaceDown(null) 不会因此判节点下线。
+			// ifname 是 back 的 required_with:vpn_interfaces，空值会让整条心跳 422，
+			// 所以拿不到接口名时只能不发这一段。
+			//
+			// ⚠️ 但别以为「不发」是安全的降级：back 的 isVpnInterfaceDown()
+			// 第一行就是 `if (empty($vpnInterface)) return true;`
+			// （NodeHeartbeatController.php，注释写着「如果没有 VPN 接口信息，
+			// 视为网络不可用」）→ 走 markNodeOffline 并**提前 return**，
+			// 连 node_monitor 都不处理。也就是「少报一个接口」会被上报成
+			// 「节点离线 + 监控数据全丢」。
+			// 此处曾写着「isVpnInterfaceDown(null) 不会因此判节点下线」——
+			// 那是没核实的错误假设，Phase 6 实测正好相反。
+			// 真正的修法在 probeGNB：接口名从 bundle 的 gnb.options.ifname 取，
+			// 不依赖 gnb_ctl（它的状态输出里没有接口名，且读 ctl block 要 root）。
 			continue
 		}
 		p.VPNInterfaces = append(p.VPNInterfaces, vpnIfaceHB{

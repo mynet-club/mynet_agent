@@ -157,7 +157,7 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("bundle 的 gnb.identity.node_id 非法: %q", env.Gnb.Identity.NodeID)
 		}
 		d := driver.NewGNBDriver(nodeID)
-		d.ConfDir = filepath.Join(varDir(), "gnb")
+		d.ConfDir = gnbConfDir()
 
 		return d, nil
 	case domain.DriverTypeWireGuard:

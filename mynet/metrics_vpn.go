@@ -1,6 +1,7 @@
 package mynet
 
 import (
+	"net"
 	"os/exec"
 	"strings"
 
@@ -57,16 +58,90 @@ func detectWGInterface() string {
 	return fields[0]
 }
 
+// probeGNB 探测 gnb。
+//
+// ⚠️ 与 probeWireGuard 同一条红线：**只要接口在就必须报出来**，不能返回 nil。
+// back 的 isVpnInterfaceDown() 把「心跳里没有 vpn_interfaces 段」直接判成
+// 「网络不可用」→ markNodeOffline → 连 node_monitor 都不处理
+// （NodeHeartbeatController.php:88-108）。少报 peer 数只是数据不全，
+// 误报离线是**状态错误**。
+//
+// 此前这里把这条红线踩了两遍（wg 侧的注释早就写下了这个坑，gnb 侧没跟上）：
+//  1. 接口名硬编码成 ""（`projectPeers("gnb", "", peers)`）。而 ifname 是
+//     back 的 required_with:vpn_interfaces，空值会让整条心跳 422 ——
+//     于是 heartbeat.go 干脆整段不发，还写着「back 的 isVpnInterfaceDown(null)
+//     不会因此判节点下线」，**那句是错的**：源码第一行就是 empty() → return true。
+//     实测后果：隧道 Direct Point to Point、ping 0% 丢包，而 back 侧
+//     Redis status=offline、node_monitor_snapshots 0 行、nodes.last_seen NULL。
+//  2. 用 d.IsAvailable() 当闸门，而它当时是 `gnb_ctl -s`（不带 -b）——
+//     gnb_ctl 缺 -b 时只打印 usage 就 exit 0，于是「可用」恒为真，
+//     GetAllPeers 再把那段 usage 当状态解析出 0 个 peer。
 func probeGNB() []VPNDriverMetrics {
-	d := driver.NewGNBDriver(0)
-	if !d.IsAvailable() {
+	ifname, addrs := detectGNBInterface()
+	if ifname == "" {
 		return nil
 	}
+	d := driver.NewGNBDriver(0)
+	d.ConfDir = gnbConfDir()
 	peers, err := d.GetAllPeers()
 	if err != nil {
-		return nil
+		// gnb.map 是 0600 root:root（gnb 以 root 跑），而 mynetd 是非 root
+		// （它启动时自己就打印「mynetd 无需 root」）—— 实测读到
+		// `open ctl block error`。读不到 peer 数**不影响接口在**这个事实，
+		// 照样上报，理由同 probeWireGuard。
+		return []VPNDriverMetrics{{Driver: "gnb", Interface: ifname, Up: true, Addrs: addrs}}
 	}
-	return []VPNDriverMetrics{projectPeers("gnb", "", peers)}
+	m := projectPeers("gnb", ifname, peers)
+	if len(m.Addrs) == 0 {
+		m.Addrs = addrs // peer 的 tun 地址之外，本机地址从接口上取
+	}
+
+	return []VPNDriverMetrics{m}
+}
+
+// detectGNBInterface 取 gnb 的接口名，并用标准库确认它真的存在且 UP。
+//
+// 为什么从 bundle 取而不是问 gnb_ctl：`gnb_ctl -b … -c -s` 的输出里
+// **没有接口名**（只有 conf_dir / node_num / wan*_port 与每个 node 的 tun_ipv4），
+// 而读 ctl block 又要 root。bundle 里的 gnb.options.ifname 正是我们渲染进
+// node.conf 的那个值，是权威来源，且读它不需要任何特权。
+//
+// 存在性与 UP 用 net.InterfaceByName 判 —— 标准库、跨平台、不 exec、不要 root
+// （对照 detectWGInterface 要 shell 出 wg）。
+func detectGNBInterface() (string, []string) {
+	ifname := gnbIfnameFromBundle()
+	if ifname == "" {
+		return "", nil
+	}
+	iface, err := net.InterfaceByName(ifname)
+	if err != nil || iface.Flags&net.FlagUp == 0 {
+		return "", nil
+	}
+	var addrs []string
+	if as, err := iface.Addrs(); err == nil {
+		for _, a := range as {
+			// 只要 IPv4：back 的 vpn_interfaces.*.ip 是单个字符串，
+			// 而 gnb 的 tun 会同时挂 64:ff9b:: 前缀的 v6 与 fe80:: 链路本地
+			if s := a.String(); !strings.Contains(s, ":") {
+				addrs = append(addrs, s)
+			}
+		}
+	}
+
+	return ifname, addrs
+}
+
+// gnbIfnameFromBundle 从 $MYNET_HOME/var/bundle.json 取 gnb 的接口名。
+func gnbIfnameFromBundle() string {
+	env, err := loadBundleEnvelope()
+	if err != nil || env.Gnb == nil {
+		return ""
+	}
+	if env.Gnb.Options != nil && env.Gnb.Options.Ifname != "" {
+		return env.Gnb.Options.Ifname
+	}
+
+	return env.Node.Interface
 }
 
 // projectPeers 把 driver 的 peer 列表投影成统一视图。

@@ -85,6 +85,15 @@ func varDir() string {
 	return sharedVarDir()
 }
 
+// gnbConfDir gnb 原生配置目录。
+//
+// 唯一口径：refresh-config 写它、service start 起它、metrics 读它的 gnb.map，
+// 三处必须一致 —— 此前 GNBDriver 的默认值是 driver/gnb/conf/<nodeId>，
+// 而 refresh-config 覆盖成 var/gnb，两边对不上。
+func gnbConfDir() string {
+	return filepath.Join(varDir(), "gnb")
+}
+
 // readNodeConf 读 $MYNET_HOME/conf/mynet.conf 的 KEY=VALUE。
 //
 // cmd/mynetd/nodeface.go 里有一份同形实现，但那是 package main，import 不到。
@@ -168,7 +177,7 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 			return 1
 		}
 		d := driver.NewGNBDriver(nodeID)
-		d.ConfDir = filepath.Join(varDir(), "gnb")
+		d.ConfDir = gnbConfDir()
 
 		// back **不下发**节点私钥（P0-4 收口，bundle 里 private_key 恒为空），
 		// 而 gnb 必须有 security/<uuid>.private 才能起（gnb_keys.c:62-67 读不到就 exit）。

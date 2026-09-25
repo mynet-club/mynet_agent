@@ -17,20 +17,78 @@ type GNBDriver struct {
 	NodeID  int64
 	ConfDir string
 	Exec    func(name string, args ...string) ([]byte, error)
+	// Spawn 用于会自我 daemon 化的命令，语义见 spawnDetached。
+	// 与 Exec 分开是因为两者的等待条件根本不同：Exec 要拿到输出，
+	// Spawn 只要父进程退出。
+	Spawn func(name string, args ...string) error
+	// Start 之后确认进程真活着的探测次数与间隔。做成字段是为了测试能缩短 ——
+	// 否则「起不来」那条用例要真等满 5s。零值表示用默认。
+	StartProbes     int
+	StartProbeDelay time.Duration
 }
+
+// Start 后确认存活的默认预算：25 × 200ms = 5s。
+const (
+	defaultStartProbes     = 25
+	defaultStartProbeDelay = 200 * time.Millisecond
+)
 
 func NewGNBDriver(nodeID int64) *GNBDriver {
 	return &GNBDriver{
-		NodeID:  nodeID,
-		ConfDir: fmt.Sprintf("driver/gnb/conf/%d", nodeID),
-		Exec:    execCombined,
+		NodeID:          nodeID,
+		ConfDir:         fmt.Sprintf("driver/gnb/conf/%d", nodeID),
+		Exec:            execCombined,
+		Spawn:           spawnDetached,
+		StartProbes:     defaultStartProbes,
+		StartProbeDelay: defaultStartProbeDelay,
 	}
 }
 
 func (d *GNBDriver) GetDriverType() domain.VPNDriverType { return domain.DriverTypeGNB }
 
+// gnbCtlStatusArgs 返回读取状态所需的完整参数。
+//
+// ⚠️ 三个 flag 缺一不可，而且**不能只看退出码**：
+//   - 缺 `-b <conf>/gnb.map`：gnb_ctl 只打印 usage 就 **exit 0**（实测），
+//     于是「可用」恒为真，而 GetAllPeers 会把那段 usage 文本当状态解析出 0 个 peer
+//   - 缺 `-c`：只输出头部（conf_dir / node_num / wan*_port），**没有任何 node 段**
+//   - map 是 0600 root:root（gnb 以 root 跑）：非 root 读到
+//     `open ctl block error`，而 gnb_ctl **仍然 exit 0**
+//
+// 所以这里用「输出里必须有 node_num[ 这一行」作为真的读到了状态的判据 ——
+// 它是 gnb_ctl_dump_status 的头部字段（gnb_ctl_dump.c），usage 与错误信息里都没有。
+func (d *GNBDriver) gnbCtlStatusArgs() []string {
+	return []string{"-b", d.ConfDir + "/gnb.map", "-c", "-s"}
+}
+
+func (d *GNBDriver) ctlStatus() (string, error) {
+	out, err := d.Exec("gnb_ctl", d.gnbCtlStatusArgs()...)
+	if err != nil {
+		return "", fmt.Errorf("gnb_ctl %v: %w", d.gnbCtlStatusArgs(), err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "node_num[") {
+		return "", fmt.Errorf("gnb_ctl 没有返回状态（退出码 0 但输出不含 node_num[）：%s",
+			firstLine(strings.TrimSpace(s)))
+	}
+
+	return s, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i] + "…"
+	}
+	if len(s) > 80 {
+		return s[:80] + "…"
+	}
+
+	return s
+}
+
 func (d *GNBDriver) IsAvailable() bool {
-	_, err := d.Exec("gnb_ctl", "-s")
+	_, err := d.ctlStatus()
+
 	return err == nil
 }
 
@@ -61,16 +119,18 @@ func (d *GNBDriver) Capabilities() domain.DriverCaps {
 }
 
 func (d *GNBDriver) Refresh() error {
-	_, err := d.Exec("gnb_ctl", "-s")
+	_, err := d.ctlStatus()
+
 	return err
 }
 
 func (d *GNBDriver) GetAllPeers() ([]*domain.VPNPeer, error) {
-	out, err := d.Exec("gnb_ctl", "-s")
+	out, err := d.ctlStatus()
 	if err != nil {
-		return nil, fmt.Errorf("gnb_ctl -s: %w", err)
+		return nil, err
 	}
-	return parseGNBStatus(string(out)), nil
+
+	return parseGNBStatus(out), nil
 }
 
 func (d *GNBDriver) GetOnlinePeers() ([]*domain.VPNPeer, error) {
@@ -250,9 +310,30 @@ func (d *GNBDriver) Start() error {
 	if d.IsProcessAlive() {
 		return nil
 	}
-	_, err := d.Exec("gnb", "-c", d.ConfDir)
+	if err := d.Spawn("gnb", "-c", d.ConfDir); err != nil {
+		return fmt.Errorf("gnb 启动失败: %w", err)
+	}
+	// ⚠️ Spawn 返回 nil **不代表起来了**。`daemon on` 时父进程在 fork 后立刻
+	// exit(0)（gnb_daemon.c:40-42），真正读配置、建 tun 的是子进程 ——
+	// 子进程失败时 gnb 是 `exit(0)` 而不是非零码（gnb_keys.c:66,72,78 等），
+	// 错误根本传不回父进程。所以必须回头确认真的活着。
+	probes, delay := d.StartProbes, d.StartProbeDelay
+	if probes <= 0 {
+		probes = defaultStartProbes
+	}
+	if delay <= 0 {
+		delay = defaultStartProbeDelay
+	}
+	for i := 0; i < probes; i++ {
+		if d.IsProcessAlive() {
+			return nil
+		}
+		time.Sleep(delay)
+	}
 
-	return err
+	return fmt.Errorf("gnb 启动后 %s 内没有活进程；配置有误时 gnb 子进程会直接退出且"+
+		"错误报不回来，请检查 %s 下的 node.conf/route.conf/address.conf 与 security/ 密钥",
+		time.Duration(probes)*delay, d.ConfDir)
 }
 
 // Stop 按 pid 文件停，不按名字（AGENTS.md §3：多实例可同名并存，禁 pkill/killall）。

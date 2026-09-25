@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
 )
@@ -280,24 +281,62 @@ func recordingExec(d *GNBDriver, calls *[]string) {
 	}
 }
 
+// recordingSpawn 同上，但记的是 Spawn（会自我 daemon 化的命令走这条路）。
+// 同时模拟 gnb 起来后写 pid 文件 —— 否则 Start() 的存活确认会白等 5s 再报错。
+func recordingSpawn(d *GNBDriver, calls *[]string, pidFile string) {
+	d.Spawn = func(name string, args ...string) error {
+		*calls = append(*calls, strings.Join(append([]string{name}, args...), " "))
+		if pidFile != "" {
+			return os.WriteFile(pidFile, []byte("4242\n"), 0o644)
+		}
+		return nil
+	}
+}
+
 func TestGnbStartExecsGnbNotGnbCtl(t *testing.T) {
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
 	var calls []string
 	recordingExec(d, &calls)
+	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
 
 	if err := d.Start(); err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(calls, "\n")
 	if !strings.Contains(joined, "gnb -c "+dir) {
-		t.Fatalf("Start 必须 exec `gnb -c <confdir>`（gnb_argv.c:899），实际调用:\n%s", joined)
+		t.Fatalf("Start 必须拉起 `gnb -c <confdir>`（gnb_argv.c:899），实际调用:\n%s", joined)
 	}
 	// 旧实现是 `gnb_ctl -b <conf>/gnb.map`：-b 只是 --ctl-block（指定读哪块共享内存），
 	// 且 gnb_ctl 没有 -s/-a 时只打开映射就 return 0 —— 会**假装启动成功**
 	if strings.Contains(joined, "gnb_ctl") {
 		t.Fatalf("Start 不该调 gnb_ctl（那是控制/查询工具，起不了守护进程）:\n%s", joined)
+	}
+	// 存活确认走 kill -0，不是 pgrep gnb_es
+	if !strings.Contains(joined, "kill -0 4242") {
+		t.Fatalf("Start 应确认进程真的活着（daemon 化后父进程 exit(0)，配置错报不回来），实际:\n%s", joined)
+	}
+}
+
+func TestGnbStartReportsFailureWhenProcessNeverAppears(t *testing.T) {
+	dir := t.TempDir()
+	d := NewGNBDriver(3001)
+	d.ConfDir = dir
+	var calls []string
+	recordingExec(d, &calls)
+	// Spawn 成功但**不写 pid 文件** —— 模拟 gnb 子进程读配置失败后 exit
+	recordingSpawn(d, &calls, "")
+	// 缩短探测预算，否则这条用例要真等满 5s
+	d.StartProbes, d.StartProbeDelay = 3, time.Millisecond
+
+	err := d.Start()
+	if err == nil {
+		t.Fatal("gnb 没起来时 Start 必须报错：daemon 化后父进程已 exit(0)，" +
+			"子进程的配置错误传不回来，只看 Spawn 返回值会误判成功")
+	}
+	if !strings.Contains(err.Error(), "没有活进程") {
+		t.Fatalf("错误信息应说明现象与去哪查，got: %v", err)
 	}
 }
 
@@ -310,6 +349,7 @@ func TestGnbStartIsIdempotentWhenAlreadyRunning(t *testing.T) {
 	d.ConfDir = dir
 	var calls []string
 	recordingExec(d, &calls)
+	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
 
 	if err := d.Start(); err != nil {
 		t.Fatal(err)
@@ -375,5 +415,130 @@ func TestGnbIsProcessAliveDoesNotLookForGnbEs(t *testing.T) {
 	// 用它会有两种错：本机跑着 gnb 却报 not alive；别处恰好有 gnb_es 时误报 alive。
 	if strings.Contains(strings.Join(calls, "\n"), "gnb_es") {
 		t.Fatalf("不该用 gnb_es 判活:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+// gnbUsageOutput 是 `gnb_ctl` 缺 -b 时的真实输出（实测于 1.6.8）：
+// 打印 usage 然后 **exit 0**。此前 IsAvailable() 就是被它骗过去的。
+const gnbUsageOutput = `GNB Ctl
+GNB version Dev 1.6.8  protocol version 1.6.0
+Build Time [Sep 23 2026,16:39:09]
+Copyright (C) 2019 gnbdev
+Usage: gnb_ctl -b CTL_BLOCK [OPTION]
+Command Summary:
+  -b, --ctl-block           ctl block mapper file
+`
+
+// gnbCtlBlockError 是非 root 读 0600 root:root 的 gnb.map 时的真实输出，
+// 同样 **exit 0**。
+const gnbCtlBlockError = "open ctl block error [/home/arthur/mynet-stage/var/gnb/gnb.map]\n"
+
+// gnbStatusOutput 是 `gnb_ctl -b <map> -c -s` 的真实输出形状（截取自 Phase 6 实测）。
+const gnbStatusOutput = `conf->conf_dir[/home/arthur/mynet-stage/var/gnb]
+node_num[2]
+wan6_port[0]
+wan4_port[0]
+
+====================
+node 2132596500330640
+tun_ipv4 10.0.0.10
+in  840 (840 bytes)
+out 840 (840 bytes)
+ipv4 Local node
+
+====================
+node 1005272783125838
+tun_ipv4 10.0.0.16
+in  840 (840 bytes)
+out 840 (840 bytes)
+ipv4 Direct Point to Point
+`
+
+func TestGnbCtlStatusPassesFullFlags(t *testing.T) {
+	dir := t.TempDir()
+	d := NewGNBDriver(3001)
+	d.ConfDir = dir
+	var calls []string
+	d.Exec = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		return []byte(gnbStatusOutput), nil
+	}
+
+	if !d.IsAvailable() {
+		t.Fatal("有真状态输出时应判为可用")
+	}
+	got := strings.Join(calls, " ")
+	// -b 必须指向**本实例**的 map：不带 -b 时 gnb_ctl 只打 usage 就 exit 0
+	want := "gnb_ctl -b " + dir + "/gnb.map -c -s"
+	if got != want {
+		t.Fatalf("argv 不对\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestGnbCtlStatusRejectsUsageOutput(t *testing.T) {
+	d := NewGNBDriver(3001)
+	d.ConfDir = t.TempDir()
+	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbUsageOutput), nil }
+
+	if d.IsAvailable() {
+		t.Fatal("gnb_ctl 打印 usage 时退出码也是 0 —— 只看退出码会把「命令没干活」当成「驱动可用」")
+	}
+	if _, err := d.GetAllPeers(); err == nil {
+		t.Fatal("GetAllPeers 必须报错，不能把 usage 文本当状态解析成 0 个 peer")
+	}
+}
+
+func TestGnbCtlStatusRejectsCtlBlockError(t *testing.T) {
+	d := NewGNBDriver(3001)
+	d.ConfDir = t.TempDir()
+	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbCtlBlockError), nil }
+
+	if d.IsAvailable() {
+		t.Fatal("读不到 ctl block（gnb.map 是 0600 root:root）时退出码仍是 0，必须靠输出判")
+	}
+	_, err := d.GetAllPeers()
+	if err == nil {
+		t.Fatal("应报错")
+	}
+	if !strings.Contains(err.Error(), "open ctl block error") {
+		t.Fatalf("错误里应带上 gnb_ctl 的原话便于定位，got: %v", err)
+	}
+}
+
+func TestGnbParseStatusFromRealCtlOutput(t *testing.T) {
+	d := NewGNBDriver(3001)
+	d.ConfDir = t.TempDir()
+	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbStatusOutput), nil }
+
+	peers, err := d.GetAllPeers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 头部 4 行 + 分隔行不属于任何 peer；两个 `node <uuid>` 段才是
+	if len(peers) != 2 {
+		t.Fatalf("应解析出 2 个 node 段，实际 %d：%+v", len(peers), peers)
+	}
+	var local, remote *domain.VPNPeer
+	for _, p := range peers {
+		if p.IsLocal {
+			local = p
+		} else {
+			remote = p
+		}
+	}
+	if local == nil || remote == nil {
+		t.Fatalf("应各有 1 个本机与对端，got %+v", peers)
+	}
+	if remote.VirtualIP != "10.0.0.16" {
+		t.Fatalf("对端 tun_ipv4 解析错: %q", remote.VirtualIP)
+	}
+	if !remote.IsOnline() {
+		t.Fatalf("`ipv4 Direct Point to Point` 必须判为在线，got status=%q", remote.ConnectionStatus)
+	}
+	if local.IsOnline() {
+		t.Fatal("本机那段是 `Local node`，不该被判成在线 peer")
+	}
+	if remote.RxBytes != 840 || remote.TxBytes != 840 {
+		t.Fatalf("in/out 字节数解析错: rx=%d tx=%d", remote.RxBytes, remote.TxBytes)
 	}
 }
