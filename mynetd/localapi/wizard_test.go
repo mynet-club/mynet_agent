@@ -1,6 +1,7 @@
 package localapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,59 +26,51 @@ func wizardReq(t *testing.T, s *Server, method, path string, body string) *httpt
 
 // TestWizardLoginNeverPutsPasswordInArgv —— 本文件最重要的一条。
 //
-// 口令若进 argv，任何本机进程 `ps` 都看得见；而向导是**装机第一步**，
-// 那台机器上可能还有别的服务在跑。所以它必须走 stdin
-// （mynet auth login --password-stdin）。这条性质不能靠肉眼看代码确认。
+// 口令不得出现在 argv（ps 可见）或响应里。登录走 relay 请求体，不进 argv。
 func TestWizardLoginNeverPutsPasswordInArgv(t *testing.T) {
 	s := newTestServer(t)
-	var gotArgv []string
-	var gotStdin string
-	s.ExecStdin = func(argv []string, stdin string) (map[string]any, error) {
-		gotArgv, gotStdin = argv, stdin
-		return map[string]any{"stdout": "已登录", "argv": argv}, nil
+	var gotBody []byte
+	var gotPath string
+	s.Relay = func(_ context.Context, method, backPath string, body []byte) ([]byte, int, error) {
+		gotPath = method + " " + backPath
+		gotBody = append([]byte(nil), body...)
+		return []byte(`{"success":true,"data":{"user":{"user_id":1,"email":"a@b.c"},"tenant_id":2,"auth_token":"T","refresh_token":"R","auth_token_expires_in":1800,"refresh_token_expires_in":604800}}`), 200, nil
 	}
 
 	const secret = "S3cr3t-Pa55w0rd-Do-NOT-Leak" // GUARD-OK 测试哨兵：用来验证它不会泄漏进 argv/响应，不是真凭据
+	t.Setenv("HOME", t.TempDir())
 	rec := wizardReq(t, s, http.MethodPost, "/api/v1/wizard/login", `{
-		"api_base_url":"https://api.mynet.club",
 		"email":"a@b.c",
 		"password":"`+secret+`"
 	}`)
 	if rec.Code != 200 {
 		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body.String())
 	}
-
-	// ① argv 里绝不能出现口令（会进 ps）
-	if strings.Contains(strings.Join(gotArgv, " "), secret) {
-		t.Fatalf("口令出现在 argv 里 → ps 可见：%v", gotArgv)
+	if gotPath != "POST /api/v1/auth/login" {
+		t.Fatalf("relay path 不对：%s", gotPath)
 	}
-	// ② 口令必须经 stdin 交给 --password-stdin
-	if !strings.Contains(strings.Join(gotArgv, " "), "--password-stdin") {
-		t.Fatalf("argv 里缺 --password-stdin：%v", gotArgv)
+	// ① 口令只在请求体里（发给 back），不进 argv
+	if !strings.Contains(string(gotBody), secret) {
+		t.Fatalf("relay body 里没有口令，登录不可能成功")
 	}
-	if !strings.Contains(gotStdin, secret) {
-		t.Fatalf("stdin 里没有口令，登录不可能成功：%q", gotStdin)
-	}
-	// ③ 响应里绝不能回显口令
+	// ② 响应里绝不能回显口令或 token
 	if strings.Contains(rec.Body.String(), secret) {
 		t.Fatalf("响应里回显了口令：%s", rec.Body.String())
 	}
+	if strings.Contains(rec.Body.String(), `"auth_token"`) || strings.Contains(rec.Body.String(), "T\"") {
+		if strings.Contains(rec.Body.String(), "auth_token") {
+			t.Fatalf("响应里回显了 token：%s", rec.Body.String())
+		}
+	}
 }
 
-// TestWizardLoginSanitizesOutput —— 钉住「过滤**真的被应用**」。
-//
-// 上面那条只证明了 argv 不含口令；它**证不了** sanitizeWizardOut 被调用了 ——
-// 因为 mock 返回的 stdout 本来就不含秘密，滤不滤都一样。
-// 这条让 mock 故意吐出带 token 的 stdout，只有过滤真的生效，响应才是干净的。
+// TestWizardLoginSanitizesOutput —— 登录成功响应不得含 token。
 func TestWizardLoginSanitizesOutput(t *testing.T) {
 	s := newTestServer(t)
-	s.ExecStdin = func(argv []string, stdin string) (map[string]any, error) {
-		return map[string]any{
-			"stdout": "登录成功 auth_token=" + strings.Repeat("A", 40), // GUARD-OK 假 token 夹具：验证 sanitizeWizardOut 真的会遮它
-			"stderr": "debug 42|" + strings.Repeat("B", 40),
-			"argv":   argv,
-		}, nil
+	s.Relay = func(_ context.Context, method, backPath string, body []byte) ([]byte, int, error) {
+		return []byte(`{"success":true,"data":{"user":{"user_id":9,"email":"x@y.z"},"tenant_id":8,"auth_token":"` + strings.Repeat("A", 40) + `","refresh_token":"` + strings.Repeat("B", 40) + `","auth_token_expires_in":60,"refresh_token_expires_in":60}}`), 200, nil
 	}
+	t.Setenv("HOME", t.TempDir())
 
 	rec := wizardReq(t, s, http.MethodPost, "/api/v1/wizard/login", `{
 		"api_base_url":"https://api.mynet.club","email":"a@b.c","password":"pw"
@@ -91,12 +84,12 @@ func TestWizardLoginSanitizesOutput(t *testing.T) {
 	}
 }
 
-// TestWizardLoginRequiresAllThreeFields 空字段要拒，别让 mynet 自己去报模糊的错。
+// TestWizardLoginRequiresAllThreeFields 空字段要拒，别让 relay 白跑。
 func TestWizardLoginRequiresAllThreeFields(t *testing.T) {
 	s := newTestServer(t)
-	s.ExecStdin = func(argv []string, stdin string) (map[string]any, error) {
-		t.Fatal("参数不全时不该被执行")
-		return nil, nil
+	s.Relay = func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+		t.Fatal("参数不全时不该走 relay")
+		return nil, 0, nil
 	}
 	rec := wizardReq(t, s, http.MethodPost, "/api/v1/wizard/login", `{"email":"a@b.c"}`)
 	if rec.Code != 400 {
@@ -214,8 +207,8 @@ func TestWebUIHasNoDuplicateIDs(t *testing.T) {
 			t.Errorf("id=%q 出现 %d 次 —— 重复 id 让 getElementById 只绑到第一份，其余按钮是死的", id, n)
 		}
 	}
-	// 启动/退出必须用 data-wiz 绑定（3、4 两步各一份），且 JS 里统一 querySelectorAll
-	for _, want := range []string{`data-wiz="start"`, `data-wiz="restart"`, `data-wiz="logout"`, `querySelectorAll('[data-wiz]')`} {
+	// 启动/退出用向导按钮 id 绑定（IA：向导低频，不占主导航）
+	for _, want := range []string{`id="wiz-start"`, `id="wiz-finish"`, `id="wiz-key-gen"`, `id="wiz-rt-make"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("webui 缺 %s", want)
 		}

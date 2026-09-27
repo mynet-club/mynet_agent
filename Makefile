@@ -20,6 +20,7 @@ lint:
 test:
 	@echo "▸ test"
 	@go test ./...
+	@sh scripts/check-route-writers.sh
 	# PHP: php vendor/bin/phpunit
 	# Vue: npm run test:unit
 
@@ -55,14 +56,15 @@ endif
 # "flag provided but not defined: -s"）。-s 去符号表、-w 去 DWARF，产物小一半。
 GO_LDFLAGS := -s -w \
 	-X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=$(VERSION) \
-	-X github.com/mynet-club/mynet_agent-V2/mynet.Version=$(VERSION)
+	-X github.com/mynet-club/mynet_agent-V2/mynet.Version=$(VERSION) \
+	-X main.version=$(VERSION)
 
 # 平台矩阵：goos goarch <ctl 侧 arch 名>
 # ⚠️ Go 的 mipsle 在 ctl 侧叫 mipsel —— 产物名必须用 ctl 的叫法，
 #    否则 ctl 的 validateArch() 拒收、下载 404。
 # 用冒号分隔而非空格：`for x in $(VAR)` 的展开会按 IFS 切词，变量里的引号是字面量
 # 不被 shell 认，写成 "a b c" "d e f" 只会得到一堆单词而非三元组。
-DIST_MATRIX := darwin:arm64:arm64 darwin:amd64:amd64 linux:amd64:amd64 linux:arm64:arm64 linux:mipsle:mipsel
+DIST_MATRIX := darwin:arm64:arm64 darwin:amd64:amd64 linux:amd64:amd64 linux:arm64:arm64 linux:mipsle:mipsel windows:amd64:amd64
 
 # 打包器：darwin/windows 用 zip，其余 tgz（对齐 ctl PLATFORMS 的 ext）
 PACK = sh scripts/pack.sh
@@ -90,9 +92,22 @@ dist:
 		name=mynet_agent_$${goos}_$${ctlarch}_$(VERSION); \
 		out=dist/$$name; \
 		mkdir -p $$out; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet ./cmd/mynet; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd ./cmd/mynetd; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_gateway ./cmd/mynet_gateway; \
+		ext=""; if [ "$$goos" = windows ]; then ext=".exe"; fi; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet$$ext ./cmd/mynet; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd$$ext ./cmd/mynetd; \
+		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_gateway$$ext ./cmd/mynet_gateway; \
+		case "$$goos" in \
+		  darwin) \
+		    if [ "$$(uname -s)" = Darwin ]; then \
+		      GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=1 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_tray$$ext ./cmd/mynet_tray; \
+		    else \
+		      echo "  ⚠ 跳过 $$goos mynet_tray（systray 需在 macOS 宿主编，见 mynet_desktop 的 package-macos）"; \
+		    fi; \
+		    ;; \
+		  windows) \
+		    GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_tray$$ext ./cmd/mynet_tray; \
+		    ;; \
+		esac; \
 		cp mynetd/localapi/webui/index.html $$out/webui.html; \
 		$(PACK) $$out; \
 		echo "  $$name"; \

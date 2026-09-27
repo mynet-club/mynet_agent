@@ -224,3 +224,113 @@ func TestResolveBinFindsSystemSbin(t *testing.T) {
 		t.Fatalf("resolveBin(route)=%q 应是绝对路径", p)
 	}
 }
+
+// 对端 LAN 与本机直连网段同网段时，装隧道路由会劫持局域网
+// （delete net 192.168.0.0 拆掉 en0 直连）。必须在 executeApply 前滤掉。
+func TestOverlapsAnyDetectsHijack(t *testing.T) {
+	local := []*net.IPNet{mustCIDR(t, "192.168.0.0/24")}
+	cases := []struct {
+		dest string
+		want bool
+	}{
+		{"192.168.0.0/24", true},  // 同网段
+		{"192.168.0.0/16", true},  // 更宽，盖住本机
+		{"192.168.0.1/32", true},  // 本机网段里的主机
+		{"192.168.8.0/24", false}, // 对端 LAN，不冲突
+		{"10.182.236.182/32", false},
+		{"192.168.100.0/24", false},
+	}
+	for _, c := range cases {
+		got := overlapsAny(parseDestNet(c.dest), local)
+		if got != c.want {
+			t.Fatalf("overlapsAny(%s)=%v want %v", c.dest, got, c.want)
+		}
+	}
+}
+
+func TestParseDestNet(t *testing.T) {
+	n := parseDestNet("192.168.8.0/24")
+	if n == nil || n.String() != "192.168.8.0/24" {
+		t.Fatalf("got %v", n)
+	}
+	h := parseDestNet("10.0.0.16/32")
+	if h == nil || h.String() != "10.0.0.16/32" {
+		t.Fatalf("got %v", h)
+	}
+	if parseDestNet("fd00::1/128") != nil {
+		t.Fatal("IPv6 dest 应返回 nil（本函数只做 IPv4 冲突判断）")
+	}
+}
+
+func mustCIDR(t *testing.T, s string) *net.IPNet {
+	t.Helper()
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// 「只删自己配置的」：目的地空闲或挂在自己的隧道口才准 replace/del；
+// 挂在直连口/别人的路由上一律不碰。
+func TestRouteTouchedOnlyOwn(t *testing.T) {
+	cases := []struct {
+		owner, ourDev string
+		want          bool
+	}{
+		{"", "utun7", true},       // 空闲 → 可装
+		{"utun7", "utun7", true},  // 自己装的 → 可改/可删
+		{"en0", "utun7", false},   // 系统直连 → 不碰
+		{"utun8", "utun7", false}, // 别的隧道 → 不碰
+		{"eth0", "gnb0", false},   // 别人的静态路由 → 不碰
+		{"utun7", "", false},      // 没有目标设备时无法主张所有权
+	}
+	for _, c := range cases {
+		if got := routeTouched(c.owner, c.ourDev); got != c.want {
+			t.Fatalf("routeTouched(%q,%q)=%v want %v", c.owner, c.ourDev, got, c.want)
+		}
+	}
+}
+
+func snapWin() *shared.SystemSnapshot {
+	return &shared.SystemSnapshot{OS: "windows", Capabilities: map[string]bool{}}
+}
+
+func TestNetshRouteCmds(t *testing.T) {
+	// 语法钉 MicrosoftDocs netsh-interface.md：具名 prefix=/interface=/store=active
+	r := RouteOp{Destination: "192.168.8.0/24", Device: "P2PNet", Action: "replace"}
+	cmds := routeCmds(snapWin(), r)
+	if len(cmds) != 2 {
+		t.Fatalf("replace 应是 delete+add，got %v", cmds)
+	}
+	wantDel := []string{"netsh", "interface", "ipv4", "delete", "route", "prefix=192.168.8.0/24", "interface=P2PNet", "store=active"}
+	wantAdd := []string{"netsh", "interface", "ipv4", "add", "route", "prefix=192.168.8.0/24", "interface=P2PNet", "store=active"}
+	if !argvEq(cmds[0].argv, wantDel) {
+		t.Fatalf("del=%v want %v", cmds[0].argv, wantDel)
+	}
+	if !argvEq(cmds[1].argv, wantAdd) {
+		t.Fatalf("add=%v want %v", cmds[1].argv, wantAdd)
+	}
+
+	h := RouteOp{Destination: "10.0.0.16/32", Device: "P2PNet", Gateway: "10.0.0.16", Action: "add"}
+	hc := routeCmds(snapWin(), h)
+	wantHost := []string{"netsh", "interface", "ipv4", "add", "route", "prefix=10.0.0.16/32", "interface=P2PNet", "nexthop=10.0.0.16", "store=active"}
+	if len(hc) != 1 || !argvEq(hc[0].argv, wantHost) {
+		t.Fatalf("host=%v want %v", hc, wantHost)
+	}
+}
+
+func TestNormalizeBSDDest(t *testing.T) {
+	cases := map[string]string{
+		"192.168.8":      "192.168.8.0/24",
+		"10.8":           "10.8.0.0/16",
+		"127":            "127.0.0.0/8",
+		"10.0.0.16":      "10.0.0.16/32",
+		"192.168.8.0/24": "192.168.8.0/24",
+	}
+	for in, want := range cases {
+		if got := normalizeBSDDest(in); got != want {
+			t.Fatalf("normalizeBSDDest(%q)=%q want %q", in, got, want)
+		}
+	}
+}

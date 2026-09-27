@@ -10,9 +10,13 @@ import (
 	"github.com/mynet-club/mynet_agent-V2/mynet/upgrade"
 	"github.com/mynet-club/mynet_agent-V2/shared"
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 )
 
 // cmdApply — F-2/F-3/F-5：唯一写入者。
+//
+// 路由 SSOT = bundle.network.routes（不是 gnb route.conf，见 ApplyPlan 注释）。
+// 三面对称：--active 写驱动配置 · --auto 装 OS 路由 · --clear 只清隧道口上的。
 //
 // 读 system.json 决定 exec 什么工具，对 gnb0 与 wg0 一视同仁（不感知驱动）。
 //
@@ -27,6 +31,8 @@ import (
 func cmdApply(args []string) int {
 	dry := false
 	auto := false
+	active := false
+	clear := false
 	planPath := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -34,6 +40,10 @@ func cmdApply(args []string) int {
 			dry = true
 		case "--auto":
 			auto = true
+		case "--active":
+			active = true
+		case "--clear":
+			clear = true
 		case "--out", "--plan":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "缺少参数值")
@@ -46,10 +56,25 @@ func cmdApply(args []string) int {
 		}
 	}
 
+	// --active：从 mode.json / intent / bundle 生成 driver 投影
+	if active {
+		if err := ApplyFromActive(dry); err != nil {
+			fmt.Fprintf(os.Stderr, "apply --active: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
 	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读 system.json 失败（先跑 mynet detector）: %v\n", err)
 		return 1
+	}
+
+	// --clear：只清**自己装的**隧道路由（dev = 隧道口上的），与 --auto 对称。
+	// 绝不按目的地盲删 —— 见 apply_plan.go 的所有权闸。
+	if clear {
+		return clearTunnelRoutes(snap, dry)
 	}
 
 	if auto {
@@ -70,7 +95,7 @@ func cmdApply(args []string) int {
 	}
 
 	if planPath == "" {
-		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] <plan.json> | --auto")
+		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] <plan.json> | --auto | --clear")
 		return 2
 	}
 
@@ -104,7 +129,7 @@ func cmdApply(args []string) int {
 // gnb 那条链已通；wg 这条要等 install 阶段落地，此处不假装它能用。
 func cmdService(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|status> [gnb|wireguard]")
+		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|restart|status> [gnb|wireguard]")
 		return 2
 	}
 	action := args[0]
@@ -151,6 +176,12 @@ func cmdService(args []string) int {
 			return 1
 		}
 		fmt.Printf("started %s\n", name)
+		// 起隧道后必须装路由，否则「起来了但 ping 不通」——
+		// 流量没进隧道（实测 DEGRADED：22 条路由未安装）。
+		if code := applyAutoAfterStart(); code != 0 {
+			fmt.Fprintf(os.Stderr, "start %s: 隧道已启动，但路由 apply 未全部成功（exit %d）\n", name, code)
+			return code
+		}
 		return 0
 	case "stop":
 		if err := d.Stop(); err != nil {
@@ -159,12 +190,17 @@ func cmdService(args []string) int {
 		}
 		fmt.Printf("stopped %s\n", name)
 		return 0
-	case "reload":
+	case "reload", "restart":
+		// UI 用语是「重启」；CLI 历史名是 reload。两者同一动作。
 		if err := d.Reload(); err != nil {
 			fmt.Fprintf(os.Stderr, "reload %s: %v\n", name, err)
 			return 1
 		}
 		fmt.Printf("reloaded %s\n", name)
+		if code := applyAutoAfterStart(); code != 0 {
+			fmt.Fprintf(os.Stderr, "reload %s: 路由 apply 未全部成功（exit %d）\n", name, code)
+			return code
+		}
 		return 0
 	case "status":
 		st, err := d.Status()
@@ -178,9 +214,16 @@ func cmdService(args []string) int {
 		}
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "未知动作: %s（只支持 start|stop|reload|status）\n", action)
+		fmt.Fprintf(os.Stderr, "未知动作: %s（只支持 start|stop|reload|restart|status）\n", action)
 		return 2
 	}
+}
+
+// applyAutoAfterStart 启动/重启后从 bundle 自动装 OS 路由与防火墙。
+// 复用 `apply --auto` 同一套策略（防劫持跳过、所有权闸等）。
+func applyAutoAfterStart() int {
+	logger.Comp("apply").Info("启动后自动 apply 路由")
+	return cmdApply([]string{"--auto"})
 }
 
 // buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。

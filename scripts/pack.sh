@@ -44,9 +44,15 @@ if [ ! -s "$out" ]; then
   exit 1
 fi
 
-# 归档里至少要有一个二进制，否则打的是空壳
-count=$(tar -tzf "$out" 2>/dev/null | grep -cE '/(mynet|mynetd|mynet_gateway)$' || true)
-if [ "$ext" = tgz ] && [ "$count" -lt 1 ]; then
+# 归档里至少要有一个二进制，否则打的是空壳。
+# Windows 产物名带 .exe，两种后缀都要认；zip 用 unzip -l（tar 读不了 zip）。
+count=0
+if [ "$ext" = "zip" ]; then
+  count=$(unzip -l "$out" 2>/dev/null | grep -cE '(mynet|mynetd|mynet_gateway)(\.exe)?$' || true)
+else
+  count=$(tar -tzf "$out" 2>/dev/null | grep -cE '/(mynet|mynetd|mynet_gateway)(\.exe)?$' || true)
+fi
+if [ "$count" -lt 1 ]; then
   echo "pack: $out 里没有 mynet/mynetd/mynet_gateway —— 打包前构建失败？" >&2
   exit 1
 fi

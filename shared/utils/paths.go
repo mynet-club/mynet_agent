@@ -1,9 +1,13 @@
 package utils
 
-// 跨平台路径解析：env 覆盖 > MYNET_HOME/可执行文件推断 > 平台默认。
-// 隐性知识：sudo 下优先用原始用户 home（SUDO_USER），并复用已存在的 ~/.mynet。
+// 跨平台路径 —— 配置树 v2（conf / plugins / driver / var / state 三分）。
+//
+//	env 覆盖 > MYNET_HOME > 平台默认
+//
+// 开发期不留 legacy ~/.mynet。旧扁平 conf/mynet.conf 不在本布局内。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,7 +21,7 @@ const (
 )
 
 // GetMyNetHome 安装/数据根目录。
-// 优先级: MYNET_HOME > 可执行文件路径推断（…/bin/mynet → …）> 当前目录
+// 优先级: MYNET_HOME > 可执行文件上推（…/bin → …）> 当前目录
 func GetMyNetHome() string {
 	if mynetHome := os.Getenv(envHome); mynetHome != "" {
 		return mynetHome
@@ -35,6 +39,236 @@ func GetMyNetHome() string {
 	return "."
 }
 
+// ── v2 配置树 ─────────────────────────────────────────────────
+
+// ConfDir $HOME/conf —— 真相源（意图 + 身份 + 插件配置）。
+func ConfDir() string {
+	if v := os.Getenv(envConfigHome); v != "" {
+		_ = SafeCreateDir(v, 0o700)
+		return v
+	}
+	d := filepath.Join(GetMyNetHome(), "conf")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// LocalConfDir 本地模式配置根。
+func LocalConfDir() string {
+	d := filepath.Join(ConfDir(), "local")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// OnlineConfDir 联网配置根（不含租户）。
+func OnlineConfDir() string {
+	d := filepath.Join(ConfDir(), "online")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// OnlineTenantDir 某租户目录。tenantID 非法时返回错误（防穿越）。
+func OnlineTenantDir(tenantID string) (string, error) {
+	if err := ValidateDirName(tenantID); err != nil {
+		return "", err
+	}
+	d := filepath.Join(OnlineConfDir(), tenantID)
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// NodeKeysDir 节点级密钥目录：{space}/nodes/{nodeID}/keys
+// space 为 LocalConfDir() 或 OnlineTenantDir(t) —— 密钥**挂节点**，不挂租户。
+func NodeKeysDir(space, nodeID string) (string, error) {
+	if err := ValidateDirName(nodeID); err != nil {
+		return "", err
+	}
+	d := filepath.Join(space, "nodes", nodeID, "keys")
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// NodeSpaceDir 节点空间根：{space}/nodes/{nodeID}
+func NodeSpaceDir(space, nodeID string) (string, error) {
+	if err := ValidateDirName(nodeID); err != nil {
+		return "", err
+	}
+	d := filepath.Join(space, "nodes", nodeID)
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// LegacyKeysDir 兼容：旧布局 {space}/keys（迁移读回用，不再写入）。
+func LegacyKeysDir(space string) string {
+	return filepath.Join(space, "keys")
+}
+
+// ResolveKeysDir 优先 nodes/{id}/keys，无则回退 legacy {space}/keys。
+func ResolveKeysDir(space, nodeID string) string {
+	if nodeID != "" {
+		p := filepath.Join(space, "nodes", nodeID, "keys")
+		if fileExists(filepath.Join(p, "node.private")) || dirExists(p) {
+			return p
+		}
+		// 新目录不存在时也返回新路径（写入方会创建）
+		if !fileExists(filepath.Join(LegacyKeysDir(space), "node.private")) {
+			return p
+		}
+	}
+	if fileExists(filepath.Join(LegacyKeysDir(space), "node.private")) {
+		return LegacyKeysDir(space)
+	}
+	if nodeID != "" {
+		if p, err := NodeKeysDir(space, nodeID); err == nil {
+			return p
+		}
+	}
+	return LegacyKeysDir(space)
+}
+
+// PluginsConfDir 插件配置（base 为 LocalConfDir 或 OnlineTenantDir）。
+func PluginsConfDir(base string) string {
+	d := filepath.Join(base, "plugins")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// PluginsRoot 已安装插件包体。
+func PluginsRoot() string {
+	d := filepath.Join(GetMyNetHome(), "plugins")
+	_ = SafeCreateDir(d, 0o755)
+	return d
+}
+
+// PluginPackageDir plugins/{name} 包体目录。
+func PluginPackageDir(name string) (string, error) {
+	if err := ValidateDirName(name); err != nil {
+		return "", err
+	}
+	d := filepath.Join(PluginsRoot(), name)
+	return d, nil
+}
+
+// DriverDir 驱动投影根（driver/gnb、driver/wireguard）。
+func DriverDir() string {
+	d := filepath.Join(GetMyNetHome(), "driver")
+	_ = SafeCreateDir(d, 0o755)
+	return d
+}
+
+// GnbConfDir gnb 投影：driver/gnb/conf。
+func GnbConfDir() string {
+	d := filepath.Join(DriverDir(), "gnb", "conf")
+	_ = SafeCreateDir(d, 0o755)
+	return d
+}
+
+// GnbNodeConfDir driver/gnb/conf/{nodeID}（AGENTS.md §1.1 布局不变）。
+func GnbNodeConfDir(nodeID string) (string, error) {
+	if err := ValidateDirName(nodeID); err != nil {
+		return "", err
+	}
+	d := filepath.Join(GnbConfDir(), nodeID)
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// WireGuardNodeDir driver/wireguard/{nodeID}。
+func WireGuardNodeDir(nodeID string) (string, error) {
+	if err := ValidateDirName(nodeID); err != nil {
+		return "", err
+	}
+	d := filepath.Join(DriverDir(), "wireguard", nodeID)
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// StateDir 激活态 / last-good。
+func StateDir() string {
+	d := filepath.Join(GetMyNetHome(), "state")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// ModeFilePath mode.json。
+func ModeFilePath() string {
+	return filepath.Join(GetMyNetHome(), "mode.json")
+}
+
+// LastGoodDir Apply 成功快照。
+func LastGoodDir() string {
+	d := filepath.Join(StateDir(), "last-good")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// VarDir 运行态（可丢）。
+func VarDir() string {
+	if v := os.Getenv(envDataHome); v != "" {
+		_ = SafeCreateDir(v, 0o700)
+		return v
+	}
+	d := filepath.Join(GetMyNetHome(), "var")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// PluginVarDir var/plugins/{name}（pid、generated、logs）。
+func PluginVarDir(name string) (string, error) {
+	if err := ValidateDirName(name); err != nil {
+		return "", err
+	}
+	d := filepath.Join(VarDir(), "plugins", name)
+	_ = SafeCreateDir(d, 0o700)
+	return d, nil
+}
+
+// TokenDir var/token。
+func TokenDir() string {
+	d := filepath.Join(VarDir(), "token")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// PIDDir var/pid。
+func PIDDir() string {
+	d := filepath.Join(VarDir(), "pid")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// LogsDir 日志。MYNET_LOG_DIR > $HOME/logs（兼容 unit 配置）。
+func LogsDir() string {
+	if v := os.Getenv(envLogDir); v != "" {
+		_ = SafeCreateDir(v, 0o755)
+		return v
+	}
+	d := filepath.Join(GetMyNetHome(), "logs")
+	_ = SafeCreateDir(d, 0o755)
+	return d
+}
+
+// BackupsDir export / pre-restore 包。
+func BackupsDir() string {
+	d := filepath.Join(GetMyNetHome(), "backups")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
+// SystemJSONPath var/system.json。
+func SystemJSONPath() string {
+	return filepath.Join(VarDir(), "system.json")
+}
+
+// ── 兼容别名（调用方少改）────────────────────────────────────
+// ConfigDir / DataDir 已删：统一走 ConfDir / VarDir。
+
+// NodesDir 元数据（var/nodes）。
+func NodesDir() string {
+	d := filepath.Join(VarDir(), "nodes")
+	_ = SafeCreateDir(d, 0o700)
+	return d
+}
+
 func dirExists(p string) bool {
 	if fi, err := os.Stat(p); err == nil {
 		return fi.IsDir()
@@ -49,116 +283,39 @@ func fileExists(p string) bool {
 	return false
 }
 
-func getSudoUserHome() string {
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
-		switch runtime.GOOS {
-		case "darwin":
-			return filepath.Join("/Users", sudoUser)
-		default:
-			return filepath.Join("/home", sudoUser)
+// ValidateDirName 单层目录名：禁路径分隔与点段。
+func ValidateDirName(name string) error {
+	if name == "" {
+		return fmt.Errorf("目录名为空")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("目录名非法: %q", name)
+	}
+	for _, r := range name {
+		switch r {
+		case '/', '\\', ':':
+			return fmt.Errorf("目录名含非法字符 %q: %q", string(r), name)
 		}
 	}
-	if home, _ := os.UserHomeDir(); home != "" {
-		return home
+	if filepath.Base(name) != name {
+		return fmt.Errorf("目录名不是单层: %q", name)
 	}
-	return ""
+	return nil
 }
 
-// UserBaseDir 用户状态/配置基目录。
-// 优先级: MYNET_HOME > root 系统目录 > legacy ~/.mynet > 平台默认
-func UserBaseDir() string {
-	if v := os.Getenv(envHome); v != "" {
-		_ = SafeCreateDir(v, 0o700)
-		return v
-	}
-	if os.Getuid() == 0 {
-		switch runtime.GOOS {
-		case "darwin":
-			d := "/usr/local/var/lib/mynet"
-			_ = SafeCreateDir(d, 0o700)
-			return d
-		default:
-			d := "/var/lib/mynet"
-			_ = SafeCreateDir(d, 0o700)
-			return d
-		}
-	}
-	home := getSudoUserHome()
-	if home == "" {
-		if h, _ := os.UserHomeDir(); h != "" {
-			home = h
-		}
-	}
-	if home != "" {
-		legacy := filepath.Join(home, ".mynet")
-		if dirExists(legacy) || fileExists(filepath.Join(legacy, "config.json")) || fileExists(filepath.Join(legacy, "storage.json")) {
-			_ = SafeCreateDir(legacy, 0o700)
-			return legacy
-		}
-	}
-	if home != "" {
-		switch runtime.GOOS {
-		case "darwin":
-			d := filepath.Join(home, "Library", "Application Support", "MyNet")
-			_ = SafeCreateDir(d, 0o700)
-			return d
-		case "windows":
-			d := filepath.Join(home, "AppData", "Local", "MyNet")
-			_ = SafeCreateDir(d, 0o700)
-			return d
-		default:
-			if v := os.Getenv("XDG_STATE_HOME"); v != "" {
-				d := filepath.Join(v, "mynet")
-				_ = SafeCreateDir(d, 0o700)
-				return d
-			}
-			d := filepath.Join(home, ".local", "state", "mynet")
-			_ = SafeCreateDir(d, 0o700)
-			return d
-		}
-	}
-	d := ".mynet"
-	_ = SafeCreateDir(d, 0o700)
-	return d
-}
-
-// ConfigDir 配置目录。优先级: MYNET_CONFIG_HOME > UserBaseDir
-func ConfigDir() string {
-	if v := os.Getenv(envConfigHome); v != "" {
-		_ = SafeCreateDir(v, 0o700)
-		return v
-	}
-	return UserBaseDir()
-}
-
-// DataDir 可变状态目录。优先级: MYNET_DATA_HOME > UserBaseDir
-func DataDir() string {
-	if v := os.Getenv(envDataHome); v != "" {
-		_ = SafeCreateDir(v, 0o700)
-		return v
-	}
-	return UserBaseDir()
-}
-
-// LogsDir 日志目录。优先级: MYNET_LOG_DIR > UserBaseDir/logs
-func LogsDir() string {
-	if v := os.Getenv(envLogDir); v != "" {
-		_ = SafeCreateDir(v, 0o755)
-		return v
-	}
-	d := filepath.Join(UserBaseDir(), "logs")
-	_ = SafeCreateDir(d, 0o755)
-	return d
-}
-
-// NodesDir 每节点运行时元数据
-func NodesDir() string {
-	d := filepath.Join(DataDir(), "nodes")
-	_ = SafeCreateDir(d, 0o700)
-	return d
-}
-
-// SafeCreateDir 创建目录（shared 层不做 chown——属系统能力，归执行器）
+// SafeCreateDir 创建目录（shared 不做 chown）。
 func SafeCreateDir(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
+}
+
+// PlatformDefaultHome 平台默认 HOME（未设 MYNET_HOME 且无 exe 可推断时的文档说明）。
+func PlatformDefaultHome() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/opt/mynet"
+	case "windows":
+		return `C:\Program Files\MyNet`
+	default:
+		return "/opt/mynet"
+	}
 }

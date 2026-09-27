@@ -25,14 +25,15 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   driver            驱动管理（列/装/升）
 
 配置工具:
-  setup             首次配置（生成节点密钥 + 写 mynet.conf）
+  setup            --local | --online --tenant T（配置树 v2）
   auth              账号态：login | status | logout（向导第 1 步）
   tenants           列出可用租户（向导第 2 步）
   node              节点归属：claim（向导第 3 步：选节点 + 密钥 + 上传公钥）
   install           安装到系统
   uninstall         卸载
   update            自更新 / 组件升级
-  config            show | check
+  config            export | import | use local|online
+  plugin            list | install | enable | disable | status
 
 只读状态:
   status            节点/链路状态
@@ -70,7 +71,7 @@ func Run(args []string) int {
 	case "driver":
 		return cmdDriver(rest)
 	case "setup":
-		return cmdSetup(rest)
+		return cmdSetupV2(rest)
 	case "auth":
 		return cmdAuth(rest)
 	case "tenants":
@@ -93,7 +94,11 @@ func Run(args []string) int {
 		return cmdUninstall(rest)
 	case "update":
 		return cmdUpdate(rest)
-	case "config", "monitor":
+	case "config":
+		return cmdConfig(rest)
+	case "plugin":
+		return cmdPlugin(rest)
+	case "monitor":
 		return cmdStub(cmd, rest)
 	case "help", "-h", "--help":
 		fmt.Print(usage)

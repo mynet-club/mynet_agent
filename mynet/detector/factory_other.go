@@ -113,31 +113,16 @@ func (d *StubServiceDetector) IsSupported() bool {
 func (f *DetectorFactory) registerPlatformSpecificDetectors() {
 	platform := runtime.GOOS
 
-	// 注册系统检测器
-	f.RegisterSystemDetector(platform, func() SystemDetector {
-		return &StubSystemDetector{}
-	})
+	// 注册系统检测器：windows 有真实现（system_win.go），其余平台 stub。
+	// 不在本文件直接引用 NewWindowsSystemDetector —— darwin 构建会炸。
+	registerPlatformSystem(f, platform)
 
-	// 注册路由检测器（darwin 有真实实现，见 routing_darwin.go）
-	f.RegisterRoutingDetector(platform, func(systemDetector SystemDetector) RoutingDetector {
-		switch runtime.GOOS {
-		case "darwin":
-			return &DarwinRoutingDetector{}
-		case "windows":
-			return &WindowsRoutingDetector{}
-		default:
-			// openwrt 走 linux 实现（同内核族）；其它平台 stub
-			return &StubRoutingDetector{}
-		}
-	})
+	// 注册路由检测器：实现按平台拆在各 routing_*.go / factory_stub_routing.go，
+	// 这里不直接引用平台专用类型 —— 否则 windows 构建会引用 darwin 类型而失败。
+	registerPlatformRouting(f)
 
-	// 注册防火墙检测器
-	f.RegisterFirewallDetector(platform, func(systemDetector SystemDetector) FirewallDetector {
-		return &StubFirewallDetector{}
-	})
-
-	// 注册服务检测器
-	f.RegisterServiceDetector(platform, func(systemDetector SystemDetector) ServiceDetector {
-		return &StubServiceDetector{}
-	})
+	// 防火墙 / 服务：darwin（pfctl、launchd）与 windows（netsh、sc）有真实现；
+	// 其余平台由 factory_stub_fw_service.go 兜底 stub。同样不在本文件引用平台类型。
+	registerPlatformFirewall(f, platform)
+	registerPlatformService(f, platform)
 }

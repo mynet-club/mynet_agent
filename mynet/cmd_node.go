@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
 )
 
 // cmdTenants / cmdNode —— 首次运行向导的第 2、3 步（账号态操作）。
@@ -188,9 +191,11 @@ func nodeClaim(args []string) int {
 		fmt.Println("back 节点面公钥:", backPub)
 	}
 
-	// 2) 本机生成密钥 + 写 mynet.conf（复用 cmdSetup 的逻辑）
+	// 2) 本机生成密钥 + 写 conf/online/{tenant}/keys（配置树 v2）
 	//    私钥只在本机产生，绝不向 back 索取
-	if rc := cmdSetup([]string{
+	if rc := cmdSetupV2([]string{
+		"--online",
+		"--tenant", tenantOr(cred),
 		"--vpn-type", vpnType,
 		"--node-id", nodeID,
 		"--back-pub", backPub,
@@ -199,9 +204,9 @@ func nodeClaim(args []string) int {
 	}
 
 	// 3) 上传**公钥**（私钥不上传 —— back 的 validateCustomGnbKey 允许只给 public）
-	pub, err := readNodeConfField("NODE_PUB_HEX")
+	pub, err := readNodePublicKey(cred, nodeID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "读 NODE_PUB_HEX 失败:", err)
+		fmt.Fprintln(os.Stderr, "读 node.public 失败:", err)
 		return 1
 	}
 	keyType := gnbKeyType(vpnType)
@@ -316,18 +321,34 @@ func requireCred() *Credential {
 	return cred
 }
 
-// readNodeConfField 从 mynet.conf 读一个字段（KEY=VALUE）。
-func readNodeConfField(key string) (string, error) {
-	kv, err := readNodeConf()
+// tenantOr 从凭证推 tenant 目录名。
+func tenantOr(cred *Credential) string {
+	if cred == nil {
+		return "default"
+	}
+	if cred.TenantID != "" {
+		return cred.TenantID
+	}
+	if cred.UserID != "" {
+		return "u_" + cred.UserID
+	}
+	return "default"
+}
+
+// readNodePublicKey 读 conf/online/{tenant}/keys/node.public。
+func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
+	_, pub, _, _, err := keys.LoadNodeKeys(confOnlineKeysDir(tenantOr(cred)))
 	if err != nil {
 		return "", err
 	}
-	v := kv[key]
-	if v == "" {
-		return "", fmt.Errorf("mynet.conf 缺 %s", key)
+	if pub == "" {
+		return "", fmt.Errorf("node.public 为空")
 	}
+	return pub, nil
+}
 
-	return v, nil
+func confOnlineKeysDir(tenant string) string {
+	return filepath.Join(confDir(), "online", tenant, "keys")
 }
 
 // joinIfSlice vpn_type 在 back 侧是 string[]（A-7），打印时合起来。

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
 // cmdAuth — 账号态（登录/状态/登出）。
@@ -85,6 +87,9 @@ func authLogin(args []string) int {
 	}
 	if api == "" {
 		// 没给就用已有凭证里记的，或配置里的 —— 免得每次都要敲一遍域名
+		if cfg := utils.LoadAgentCfg(); cfg.APIBase != "" {
+			api = cfg.APIBase
+		}
 		if c := LoadCredential(); c != nil && c.APIBaseURL != "" {
 			api = c.APIBaseURL
 		}
@@ -112,6 +117,8 @@ func authLogin(args []string) int {
 	raw, code, err := c.doJSON("POST", "/api/v1/auth/login", map[string]string{
 		"email":    email,
 		"password": password,
+		// Token Binding：登录时声明设备指纹，back 与 token 绑定（integration-plan §14.4）
+		"device_fingerprint": DeviceFingerprint(),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "登录失败（HTTP %d）: %v\n", code, err)
@@ -153,13 +160,14 @@ func authLogin(args []string) int {
 		//（30 分钟 access token 够用）。真到「上周 login、今天 nodes」时，
 		// 自动续期会拿空 refresh_token 去续 → 死路。验证产物里读出来
 		// `refresh_token = <0 字符>` 才发现。
-		RefreshToken:     env.Data.RefreshToken,
-		AuthExpiresAt:    expiryFrom(env.Data.AuthTokenExpiresIn),
-		RefreshExpiresAt: expiryFrom(env.Data.RefreshExpiresIn),
-		MachineID:        machineID(),
-		APIBaseURL:       api,
-		TenantID:         anyToStr(env.Data.TenantID),
-		CreatedAt:        nowISO(),
+		RefreshToken:      env.Data.RefreshToken,
+		AuthExpiresAt:     expiryFrom(env.Data.AuthTokenExpiresIn),
+		RefreshExpiresAt:  expiryFrom(env.Data.RefreshExpiresIn),
+		MachineID:         machineID(),
+		DeviceFingerprint: DeviceFingerprint(),
+		APIBaseURL:        api,
+		TenantID:          anyToStr(env.Data.TenantID),
+		CreatedAt:         nowISO(),
 	}
 	// （写这段时又把 PHP 的 `$cred` 与 `''` 带进了 Go —— 本仓今天第二次。
 	//  可见「跨语言写代码」时语法残留是系统性的，靠编译器兜比靠仔细强。）

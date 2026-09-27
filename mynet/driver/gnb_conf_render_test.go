@@ -114,6 +114,48 @@ func TestGnbRouteConf24BecomesDottedMask(t *testing.T) {
 	}
 }
 
+// 顺序约定（用户 2026-09-27）：先按 nodeid 分组（同节点主机行+网段行相邻），
+// 再按 overlay IP 排序；本机置顶，随后同 /24 按 IP 升序，其它网段最后。
+// 形态取自本机生产 overlay：10.182.236.181 为本机，对端 178/180/182/183，
+// 另有一个 10.147.x 的节点，不得插进 182.236 段里。
+func TestGnbRouteConfGroupsByNodeThenSortsByOverlayIP(t *testing.T) {
+	g := realIntent()
+	g.Identity.NodeID = "local-181"
+	g.Nodes = []domain.GnbNode{
+		// 故意乱序喂入，模拟 publisher 迭代序变化
+		{NodeID: "n-183", TunAddress: "10.182.236.183/32"},
+		{NodeID: "n-147", TunAddress: "10.147.1.9/32"},
+		{NodeID: "n-178", TunAddress: "10.182.236.178/32"},
+		{NodeID: "local-181", TunAddress: "10.182.236.181/32"},
+		{NodeID: "n-182", TunAddress: "10.182.236.182/32"},
+		{NodeID: "n-180", TunAddress: "10.182.236.180/32"},
+	}
+	g.Routes = []domain.GnbRoute{
+		// 同节点网段行必须紧跟该节点主机行，不能被拆到文件末尾
+		{NodeID: "n-178", Prefix: "192.168.178.0/24"},
+	}
+
+	lines := strings.Split(strings.TrimSpace(RenderGNBRouteConf(g)), "\n")
+	want := []string{
+		"local-181|10.182.236.181|255.255.255.255", // 本机置顶
+		"n-178|10.182.236.178|255.255.255.255",     // 同 /24 按 IP 升序
+		"n-178|192.168.178.0|255.255.255.0",        // 同 nodeid 网段行紧跟主机行
+		"n-180|10.182.236.180|255.255.255.255",
+		"n-182|10.182.236.182|255.255.255.255",
+		"n-183|10.182.236.183|255.255.255.255",
+		"n-147|10.147.1.9|255.255.255.255", // 其它网段最后
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("行数 %d，want %d:\ngot:\n%s\nwant:\n%s", len(lines), len(want),
+			strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Fatalf("第 %d 行\n got: %s\nwant: %s\n全文:\n%s", i+1, lines[i], w, strings.Join(lines, "\n"))
+		}
+	}
+}
+
 // 本机那条必须在第一条 —— 约定（用户 2026-09-25），也是排错时的「我是谁」。
 func TestGnbRouteConfLocalFirst(t *testing.T) {
 	g := realIntent()

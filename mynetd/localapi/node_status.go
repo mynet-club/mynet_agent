@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
 )
@@ -30,6 +29,7 @@ const (
 	StateRunning     NodeState = "RUNNING"
 	StateDegraded    NodeState = "DEGRADED"
 	StateFailed      NodeState = "FAILED"
+	StateStopped     NodeState = "STOPPED"
 )
 
 // NodeStatus 状态机输出。one_line 是「状态一言之」；actions 是按钮面。
@@ -44,19 +44,22 @@ type NodeStatus struct {
 	// 按钮文案（前端直接用，保证「一言之」与按钮用词一致）
 	Labels map[string]string `json:"labels"`
 	// 明细区
-	Home        string `json:"home"`
-	GnbBin      string `json:"gnb_bin"`
-	Installed   bool   `json:"installed"`
-	Configured  bool   `json:"configured"`
-	ProcessUp   bool   `json:"process_up"`
-	ProcessPID  int    `json:"process_pid,omitempty"`
-	TunIface    string `json:"tun_iface,omitempty"`
-	OverlayIP   string `json:"overlay_ip,omitempty"`
-	TunUp       bool   `json:"tun_up"`
-	RoutesOK    bool   `json:"routes_ok"`
-	NodeID      string `json:"node_id,omitempty"`
-	PeersTotal  int    `json:"peers_total"`
-	PeersRouted int    `json:"peers_routed"`
+	Home           string   `json:"home"`
+	GnbBin         string   `json:"gnb_bin"`
+	Installed      bool     `json:"installed"`
+	Configured     bool     `json:"configured"`
+	ProcessUp      bool     `json:"process_up"`
+	ProcessPID     int      `json:"process_pid,omitempty"`
+	TunIface       string   `json:"tun_iface,omitempty"`
+	OverlayIP      string   `json:"overlay_ip,omitempty"`
+	TunUp          bool     `json:"tun_up"`
+	RoutesOK       bool     `json:"routes_ok"`
+	NodeID         string   `json:"node_id,omitempty"`
+	ActiveNodeID   string   `json:"active_node_id,omitempty"`
+	ConfigMismatch bool     `json:"config_mismatch"`
+	PeersTotal     int      `json:"peers_total"`
+	PeersRouted    int      `json:"peers_routed"`
+	MissingRoutes  []string `json:"missing_routes,omitempty"`
 	// Detail 一言之外的补充说明（可空），比如「缺 2 条路由」
 	Detail string `json:"detail,omitempty"`
 
@@ -111,6 +114,8 @@ type statusProbe struct {
 	procUptimeSec func(pid int) int64
 	// routeExists 查一条 OS 路由是否已装（目的地 CIDR 或 IP）
 	routeExists func(dest string) bool
+	// localRouteExists 目的地已由本机物理接口承载；这类网段不应计为 MyNet 缺失。
+	localRouteExists func(dest string) bool
 	// findIface 找挂了某 IP 的接口名
 	findIface func(ip string) string
 	// gnbPeerLinks 读 gnb_ctl 的对端链路态；不可用时返回 nil
@@ -135,10 +140,11 @@ func defaultProbe() statusProbe {
 		routeExists: func(dest string) bool {
 			return osRouteExists(dest)
 		},
-		findIface:     ifaceWithAddr,
-		ifaceStats:    ifaceStats,
-		procUptimeSec: procUptimeSec,
-		gnbPeerLinks:  gnbPeerLinksOf,
+		localRouteExists: localRouteExists,
+		findIface:        ifaceWithAddr,
+		ifaceStats:       ifaceStats,
+		procUptimeSec:    procUptimeSec,
+		gnbPeerLinks:     gnbPeerLinksOf,
 	}
 }
 
@@ -285,24 +291,35 @@ func parseETime(s string) int64 {
 }
 
 func lookGnb() string {
-	if p, err := exec.LookPath("gnb"); err == nil {
-		return p
-	}
-	for _, dir := range []string{"/usr/local/bin", "/usr/bin", "/opt/mynet/bin"} {
-		p := filepath.Join(dir, "gnb")
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
+	// 平台可执行名见 gnb_bin_{unix,windows}.go
+	name := gnbExeName()
+	// 与 driver.resolveGNBBinary / plugin findGnbBin 同一优先级：
+	// 标准位是 MYNET_HOME/driver/gnb/bin，不是 bin/。
+	if v := os.Getenv("MYNET_GNB_BIN"); v != "" {
+		if st, err := os.Stat(v); err == nil && !st.IsDir() {
+			return v
 		}
 	}
-	return ""
-}
-
-func pidAlive(pid int) bool {
-	if pid <= 0 {
-		return false
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = "."
 	}
-	// signal 0 只做存在性检查，不发信号
-	return syscall.Kill(pid, 0) == nil
+	dirs := append([]string{
+		filepath.Join(home, "driver", "gnb", "bin"),
+		filepath.Join(home, "bin"),
+	}, gnbExtraDirs()...)
+	for _, dir := range dirs {
+		for _, n := range []string{name, "gnb"} {
+			p := filepath.Join(dir, n)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return ""
 }
 
 // ifaceWithAddr 找挂了该 IPv4 的接口名（darwin 的 utunN / linux 的 gnb_tun）。
@@ -333,44 +350,8 @@ func ifaceWithAddr(ip string) string {
 	return ""
 }
 
-// osRouteExists 查系统路由表里有没有这个目的地。
-// darwin 用 `route -n get`，linux 用 `ip route show` —— 两者的退出码都可靠。
-//
-// ⚠️ 必须用 lookPathAny 解析出绝对路径再 exec：daemon 的 PATH 往往没有
-// /sbin，而 route/ifconfig 就在那儿。症状是「终端里查得到、node-status 说缺失」
-// —— 与 apply 曾经的 `exec: "route": not found` 同一坑。
-func osRouteExists(dest string) bool {
-	// 裸 IP 当 host 查；带前缀的当整条查
-	if _, _, err := net.ParseCIDR(dest); err == nil {
-		host := dest
-		if ip, _, err := net.ParseCIDR(dest); err == nil {
-			host = ip.String()
-		}
-		// linux: ip route show <cidr> 有输出即存在
-		if ipBin := lookPathAny("ip"); ipBin != "" {
-			out, err := exec.Command(ipBin, "route", "show", dest).Output()
-			if err == nil {
-				return len(strings.TrimSpace(string(out))) > 0
-			}
-		}
-		return darwinRouteGet(host)
-	}
-	return darwinRouteGet(dest)
-}
-
-func darwinRouteGet(host string) bool {
-	bin := lookPathAny("route")
-	if bin == "" {
-		return false
-	}
-	out, err := exec.Command(bin, "-n", "get", host).Output()
-	if err != nil {
-		return false
-	}
-	s := string(out)
-	// route get 对「走默认网关」的目标也 exit 0，要看 destination 是不是 host 本身
-	return strings.Contains(s, host) && !strings.Contains(s, "destination: default")
-}
+// osRouteExists / localRouteExists 见 route_query_{unix,windows}.go。
+// darwin 用 `route -n get`，linux 用 `ip route show`，windows 用 `route print`。
 
 // lookPathAny 先走 PATH，失败后扫系统目录。
 // mynetd 起来时 PATH 常是残的（/sbin 不在里面），而 route/ifconfig 在 /sbin。
@@ -387,10 +368,42 @@ func lookPathAny(name string) string {
 	return ""
 }
 
+// gnbProjectionDir 与 mynet 的 gnbConfDir 同一口径：
+// driver/gnb/conf/{nodeID}（apply 投影），旧 var/gnb 仅作回退。
+func gnbProjectionDir(home string) string {
+	nodeID := ""
+	if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+		var m struct {
+			Active struct {
+				NodeID string `json:"node_id"`
+			} `json:"active"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			nodeID = m.Active.NodeID
+		}
+	}
+	base := filepath.Join(home, "driver", "gnb", "conf")
+	if nodeID != "" {
+		p := filepath.Join(base, nodeID)
+		if _, err := os.Stat(filepath.Join(p, "node.conf")); err == nil {
+			return p
+		}
+	}
+	if ents, err := os.ReadDir(base); err == nil {
+		for _, e := range ents {
+			if e.IsDir() {
+				return filepath.Join(base, e.Name())
+			}
+		}
+	}
+	// 旧布局
+	return filepath.Join(home, "var", "gnb")
+}
+
 func computeNodeStatus(p statusProbe) NodeStatus {
 	home := p.home
 	conf := filepath.Join(home, "conf")
-	gnbConf := filepath.Join(home, "var", "gnb")
+	gnbConf := gnbProjectionDir(home)
 	bundlePath := filepath.Join(home, "var", "bundle.json")
 
 	st := NodeStatus{
@@ -411,6 +424,11 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 			ActRetry:     "重试启动",
 		},
 	}
+	// 激活配置的 node_id 是当前投影的权威身份。bundle 可能仍保留旧节点，
+	// 不能用 bundle 的 self 行覆盖刚切换后的运行节点。
+	if id := activeNodeID(home); id != "" {
+		st.NodeID = id
+	}
 
 	// ── ① 装没装 ─────────────────────────────────────────
 	st.GnbBin = p.gnbPath
@@ -426,19 +444,48 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	}
 
 	// ── ② 配没配 ─────────────────────────────────────────
-	myConf := filepath.Join(conf, "mynet.conf")
 	nodeConf := filepath.Join(gnbConf, "node.conf")
-	st.Configured = fileNonEmpty(myConf) && fileNonEmpty(nodeConf)
-	if kv := readKV(myConf); kv != nil {
-		st.NodeID = kv["NODE_ID"]
-		if kv["OVERLAY_IP"] != "" {
+	// 配置树 v2：keys 存在即算已配；旧 mynet.conf 仅作兼容
+	myConf := filepath.Join(conf, "mynet.conf")
+	keysOK := fileNonEmpty(filepath.Join(conf, "local", "nodes", st.NodeID, "keys", "node.private")) ||
+		fileNonEmpty(filepath.Join(conf, "local", "keys", "node.private"))
+	if !keysOK {
+		// online：按 mode.json 的 node_id 找
+		if id := activeNodeID(home); id != "" {
+			for _, p := range []string{
+				filepath.Join(conf, "online", activeTenantID(home), "nodes", id, "keys", "node.private"),
+				filepath.Join(conf, "online", activeTenantID(home), "keys", "node.private"),
+			} {
+				if fileNonEmpty(p) {
+					keysOK = true
+					if st.NodeID == "" {
+						st.NodeID = id
+					}
+					break
+				}
+			}
+		}
+	}
+	legacyOK := fileNonEmpty(myConf)
+	st.Configured = fileNonEmpty(nodeConf) && (keysOK || legacyOK)
+
+	// overlay 优先级：intent/route.conf 本机行 → bundle → 旧 mynet.conf
+	st.OverlayIP = overlayFromRouteConf(filepath.Join(gnbConf, "route.conf"))
+	if st.OverlayIP == "" {
+		if li := readIntentOverlay(home); li != "" {
+			st.OverlayIP = li
+		}
+	}
+	if kv := readKV(filepath.Join(conf, "mynet.conf")); kv != nil {
+		if st.NodeID == "" {
+			st.NodeID = kv["NODE_ID"]
+		}
+		if st.OverlayIP == "" && kv["OVERLAY_IP"] != "" {
 			st.OverlayIP = kv["OVERLAY_IP"]
 		}
 	}
-	// overlay IP 优先取 bundle 的 network.addresses（mynet.conf 不一定带）
 	peers := loadPeerRoutes(bundlePath)
 	if st.OverlayIP == "" && len(peers) > 0 {
-		// 本机地址在 bundle 的 addresses 里
 		st.OverlayIP = peers[0].SelfIP
 	}
 	st.PeersTotal = len(peers)
@@ -495,6 +542,22 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 			continue
 		}
 		ok := p.routeExists(r.PeerIP+"/32") || p.routeExists(r.PeerIP)
+		// 对端可能宣告**网段**（route.conf 形如 192.168.0.0/24）。只查 /32 会把
+		// 已装好的 /24 网段路由误报成缺失（实测 192.168.0.0）。
+		if !ok && strings.HasSuffix(r.PeerIP, ".0") {
+			ok = p.routeExists(r.PeerIP + "/24")
+			if !ok {
+				// darwin `route get 网段地址` 不可靠，用段内首主机探
+				if v := net.ParseIP(r.PeerIP); v != nil && v.To4() != nil {
+					b := v.To4()
+					b[3] = 1
+					ok = p.routeExists(b.String())
+				}
+			}
+		}
+		if !ok && p.localRouteExists != nil {
+			ok = p.localRouteExists(r.PeerIP)
+		}
 		if ok {
 			routed++
 		} else {
@@ -527,6 +590,7 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 		st.Peers = append(st.Peers, row)
 	}
 	st.PeersRouted = routed
+	st.MissingRoutes = append([]string(nil), missing...)
 	st.RoutesOK = st.PeersTotal > 0 && routed == st.PeersTotal
 
 	// route.conf 原文（⑤ 折叠区）—— 配置层面的「有没有」
@@ -537,20 +601,22 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	// ── ④ 判状态 ─────────────────────────────────────────
 	switch {
 	case !st.ProcessUp:
-		// 配好了但没在跑。pid 文件在而进程没了 = 上次没干净退出
+		// 配好了但没在跑。
+		// pid 文件在而进程没了 = 异常退出或上次没干净退出；
+		// 用户主动 Stop() 会清掉 pid 文件，走到下面的「已停止」。
 		if pid > 0 {
 			st.State = StateFailed
-			st.OneLine = "启动失败：gnb 已退出"
-			st.Detail = "pid 文件还在但进程不在（查 var/gnb/node.conf 与 security/ 密钥）"
+			st.OneLine = "隧道已退出"
+			st.Detail = "进程不在，但 pid 文件仍在 —— 可能是异常退出。查 /var/log/mynet/gnb.err 与配置密钥。"
 			st.Actions[ActRetry] = true
 			st.Actions[ActStart] = true
 			st.Actions[ActConfigure] = true
 			st.Actions[ActUninstall] = true
 			st.PrimaryAction = ActRetry
 		} else {
-			st.State = StateConfigured
-			st.OneLine = "已配置 " + orDash(st.OverlayIP) + "，隧道未启动"
-			st.Detail = "不启动的话节点只是「配好了」，还没在跑"
+			st.State = StateStopped
+			st.OneLine = "已停止"
+			st.Detail = "隧道未运行。可启动网络重新接入。"
 			st.Actions[ActStart] = true
 			st.Actions[ActConfigure] = true
 			st.Actions[ActUninstall] = true
@@ -571,8 +637,8 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 
 	case st.PeersTotal > 0 && !st.RoutesOK:
 		st.State = StateDegraded
-		st.OneLine = "进程在，但到 " + strings.Join(missing, "、") + " 的路由缺失"
-		st.Detail = "接口在、IP 在，但内核路由没装上 —— ping 会 100% 丢包"
+		st.OneLine = "网络连接需要处理 · " + strconv.Itoa(len(missing)) + " 条路由未安装"
+		st.Detail = "接口和网络地址正常，但这些目标没有可用路由：" + strings.Join(missing, "、") + "。"
 		st.Actions[ActFixRoutes] = true
 		st.Actions[ActRestart] = true
 		st.Actions[ActStop] = true
@@ -672,5 +738,78 @@ func orDash(s string) string {
 // handleNodeStatus GET /api/v1/node-status —— 状态机出口。
 func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request) {
 	st := ComputeNodeStatus()
+	// 运行态与 mode.json 是两个事实源：激活配置切换后，旧进程可能仍在运行。
+	// 必须显式告诉前端，不能把旧节点伪装成当前激活节点。
+	if home := os.Getenv("MYNET_HOME"); home != "" {
+		st.ActiveNodeID = activeNodeID(home)
+	} else {
+		st.ActiveNodeID = activeNodeID(st.Home)
+	}
+	if st.ProcessUp && st.ActiveNodeID != "" && st.NodeID != "" && st.ActiveNodeID != st.NodeID {
+		st.ConfigMismatch = true
+		st.State = StateDegraded
+		st.OneLine = "运行节点与激活配置不一致"
+		st.Detail = "当前进程是 " + st.NodeID + "，激活配置是 " + st.ActiveNodeID + "；请切换并重新应用"
+		st.PrimaryAction = ActRestart
+		st.Actions[ActRestart] = true
+	}
 	writeJSON(w, 200, map[string]any{"success": true, "data": st})
+}
+
+// overlayFromRouteConf route.conf 本机行（nodeid|ip|mask）取 overlay。
+func overlayFromRouteConf(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, ln := range strings.Split(string(b), "\n") {
+		parts := strings.Split(strings.TrimSpace(ln), "|")
+		if len(parts) >= 2 && parts[1] != "" && !strings.Contains(parts[1], ":") {
+			// 第一条主机行即本机（writeGnbProjection 会把本机放最前）
+			return parts[1]
+		}
+	}
+	return ""
+}
+
+func activeNodeID(home string) string {
+	raw, err := os.ReadFile(filepath.Join(home, "mode.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Active struct {
+			NodeID string `json:"node_id"`
+		} `json:"active"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.Active.NodeID
+}
+
+func activeTenantID(home string) string {
+	raw, err := os.ReadFile(filepath.Join(home, "mode.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Active struct {
+			TenantID string `json:"tenant_id"`
+		} `json:"active"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.Active.TenantID
+}
+
+func readIntentOverlay(home string) string {
+	b, err := os.ReadFile(filepath.Join(home, "conf", "local", "intent.json"))
+	if err != nil {
+		return ""
+	}
+	var li struct {
+		Node struct {
+			Overlay string `json:"overlay"`
+		} `json:"node"`
+	}
+	_ = json.Unmarshal(b, &li)
+	return strings.TrimSuffix(li.Node.Overlay, "/32")
 }

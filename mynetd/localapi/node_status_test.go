@@ -87,8 +87,8 @@ func TestNodeStatusConfiguredNotRunning(t *testing.T) {
 	p := f.probe()
 	p.gnbPath = "/usr/local/bin/gnb"
 	st := computeNodeStatus(p)
-	if st.State != StateConfigured {
-		t.Fatalf("state=%s want %s", st.State, StateConfigured)
+	if st.State != StateStopped {
+		t.Fatalf("state=%s want %s", st.State, StateStopped)
 	}
 	if st.PrimaryAction != ActStart {
 		t.Fatalf("primary=%s want %s", st.PrimaryAction, ActStart)

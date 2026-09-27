@@ -76,6 +76,10 @@ func cmdInstall(args []string) int {
 		// （无 WS、无节点身份、不碰驱动），装了等于没装。
 		return usageInstall("需要 --gateways wss://…（节点模式的 WS 入口；不给则 mynetd 只有 localapi，隧道起不来）")
 	}
+	// Windows 走独立路径：没有 systemd/launchd，二进制名带 .exe（V5-2）
+	if runtime.GOOS == "windows" {
+		return installWindows(prefix, home, gateways, gnbBin, enable, dry)
+	}
 	if err := assertUnitsEmbedded(); err != nil {
 		fmt.Fprintln(os.Stderr, "内嵌单元异常：", err)
 		return 1
@@ -113,6 +117,13 @@ func cmdInstall(args []string) int {
 	}
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "install 需要 root：要写服务单元与 /etc/mynet。请 sudo mynet install …")
+		fmt.Fprintln(os.Stderr, "  （TUN / 路由表 / 系统服务都属于系统层，桌面托盘本身不需要 root）")
+		return 1
+	}
+
+	// 端口闸门：8096 被别人占着就不装；是旧版 MyNet 就走升级（保 conf）
+	if err := mustAcceptPort(DefaultLocalAPI); err != nil {
+		fmt.Fprintln(os.Stderr, "✗", err)
 		return 1
 	}
 
@@ -127,7 +138,8 @@ func cmdInstall(args []string) int {
 		fmt.Fprintf(os.Stderr, "  systemctl stop（首次安装可忽略）: %v %s\n", err, strings.TrimSpace(string(out)))
 	}
 
-	// 1) 二进制
+	// 1) 二进制 —— 升级时**只覆盖 bin/**，conf 与身份目录绝不动
+	//    （UpgradePreserve 契约，port_owner.go）
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -302,13 +314,7 @@ func cmdUninstall(args []string) int {
 	return 0
 }
 
-func defaultPrefix() string {
-	if runtime.GOOS == "darwin" {
-		return "/usr/local/opt/mynet"
-	}
-
-	return "/opt/mynet"
-}
+// defaultPrefix 见 prefix_{unix,windows}.go。
 
 // fileExists 存在性判断（比到处写 os.Stat 两次可读）。
 func fileExists(p string) bool {

@@ -2,12 +2,14 @@ package mynet
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -40,13 +42,16 @@ type Credential struct {
 	// RefreshToken 7 天期，续期时会被**换掉**（轮转），所以每次续期后都要
 	// 重新落盘 —— 只存内存里的旧值，下次续期就撞 REFRESH_TOKEN_REUSED，
 	// 而那个信号会把整个会话吊销。
-	RefreshToken     string `json:"refresh_token"`
-	MachineID        string `json:"machine_id,omitempty"`
-	TenantID         string `json:"tenant_id,omitempty"`
-	APIBaseURL       string `json:"api_base_url,omitempty"`
-	CreatedAt        string `json:"created_at,omitempty"`
-	AuthExpiresAt    string `json:"auth_token_expires_at,omitempty"`
-	RefreshExpiresAt string `json:"refresh_token_expires_at,omitempty"`
+	RefreshToken string `json:"refresh_token"`
+	MachineID    string `json:"machine_id,omitempty"`
+	// DeviceFingerprint Token Binding（integration-plan §14.4）：与 back 上该 token
+	// 绑定的稳定设备指纹。换机复制 credential 后指纹对不上，back 应 401 并吊销。
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
+	TenantID          string `json:"tenant_id,omitempty"`
+	APIBaseURL        string `json:"api_base_url,omitempty"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	AuthExpiresAt     string `json:"auth_token_expires_at,omitempty"`
+	RefreshExpiresAt  string `json:"refresh_token_expires_at,omitempty"`
 }
 
 func credentialPath() string {
@@ -200,6 +205,8 @@ func (c *backClient) raw(method, path string, body any) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
+	// Token Binding：指纹随请求带上；与登录时绑定值不一致则 back 应拒绝
+	req.Header.Set("X-Device-Fingerprint", DeviceFingerprint())
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -289,6 +296,36 @@ func machineID() string {
 	}
 
 	return h
+}
+
+// DeviceFingerprint 稳定设备指纹（Token Binding，integration-plan §14.4）。
+// UUID v5 风格：SHA1(DNS-namespace ‖ host 特征)，同机稳定、异机不同。
+// 与旧 TUI credential.GenerateMachineID 同思路，但不引入 uuid 依赖。
+func DeviceFingerprint() string {
+	hostname, _ := os.Hostname()
+	mid := ""
+	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
+		mid = strings.TrimSpace(string(b))
+	}
+	if mid == "" {
+		if b, err := os.ReadFile("/var/lib/mynet/var/machine-id"); err == nil {
+			mid = strings.TrimSpace(string(b))
+		}
+	}
+	// ⚠️ 不要掺 USER/用户名：sudo 与非 sudo 会得到不同指纹，同一台机被误判为换机。
+	unique := hostname + "|" + runtime.GOOS + "|" + runtime.GOARCH + "|" + mid
+	// DNS namespace UUID（RFC4122）后 16 字节 + SHA1 → 取前 16 字节作 UUID v5
+	var ns [16]byte
+	copy(ns[:], []byte{0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8})
+	h := sha1.New()
+	h.Write(ns[:])
+	h.Write([]byte(unique))
+	sum := h.Sum(nil)
+	var u [16]byte
+	copy(u[:], sum[:16])
+	u[6] = (u[6] & 0x0f) | 0x50 // version 5
+	u[8] = (u[8] & 0x3f) | 0x80 // variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
 
 func nowISO() string {

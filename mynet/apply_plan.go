@@ -7,12 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 )
 
 // ApplyPlan 是 L6 写入计划：只含系统网络语义，不含驱动原生语法。
 // 跨驱动互通（A gnb → C 双驱动 → B wg）就是这里的几条 Route，驱动层互不知晓对方。
+//
+// SSOT（route-apply-unification.md）：OS 路由的数据源是 bundle.network.routes
+// （back 从 node_ips 投影），**不是** gnb 的 route.conf —— 后者是 L5 地址宣告，
+// 不进内核。平台只分叉 routeCmds 的命令方言，策略全在 executeApply。
 type ApplyPlan struct {
 	Routes     []RouteOp    `json:"routes,omitempty"`
 	Firewall   []FirewallOp `json:"firewall,omitempty"`
@@ -76,29 +82,63 @@ type routeCmd struct {
 }
 
 // executeApply 按 system.json 能力选择工具执行。唯一写入入口（F-5）。
+//
+// 路由三道闸（对齐 openwrt node.lua:clear_routes / route_policy.sh）：
+//  1. 滤掉与本机直连网段冲突的条目（防路由劫持）
+//  2. **只删自己装的**：replace 的「先删后加」前先查目的地现挂在谁的设备上，
+//     不是我们的隧道口就整条跳过 —— 系统直连/别人的静态路由碰都不碰
+//  3. 网关被隧道盖住时才钉回物理口（fix_wan_gateway_route 同款，先查再钉）
 func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
+	log := logger.Comp("apply")
+	log.Info("apply 开始",
+		"routes", len(plan.Routes), "firewall", len(plan.Firewall), "ifaces", len(plan.Interfaces),
+		"execs", len(plan.ExtraExec), "dry", dry)
 	fail := 0
+	localNets := localConnectedNets()
+	var routes []RouteOp
 	for _, r := range plan.Routes {
+		if n := parseDestNet(r.Destination); n != nil && overlapsAny(n, localNets) {
+			fmt.Fprintf(os.Stderr, "skip route %s: 与本机直连网段冲突（防路由劫持）\n", r.Destination)
+			log.Warn("跳过路由（与直连网段冲突）", "dest", r.Destination)
+			continue
+		}
+		routes = append(routes, r)
+	}
+	for _, r := range routes {
 		r.Device = resolveDevice(r.Device, plan.LocalAddresses)
+		if destOwnerDev(r.Destination) != "" && !destOwnedBy(r.Destination, r.Device) {
+			fmt.Fprintf(os.Stderr, "skip route %s: 现挂在 %s，不是我们装的（只删自己配置的）\n",
+				r.Destination, destOwnerDev(r.Destination))
+			log.Warn("跳过路由（非本配置安装）", "dest", r.Destination, "owner", destOwnerDev(r.Destination))
+			continue
+		}
 		for _, c := range routeCmds(snap, r) {
 			if err := runOp(dry, c.argv); err != nil {
 				if c.optional {
 					continue
 				}
 				fmt.Fprintf(os.Stderr, "route %s %s: %v\n", r.Action, r.Destination, err)
+				log.Error("路由失败", "action", r.Action, "dest", r.Destination, "err", err)
 				fail = 1
 			}
 		}
+	}
+	if err := pinDefaultGateway(snap, dry); err != nil {
+		fmt.Fprintf(os.Stderr, "pin default gateway: %v\n", err)
+		log.Warn("钉默认网关失败", "err", err)
+		fail = 1
 	}
 	for _, f := range plan.Firewall {
 		argv := firewallArgv(snap, f)
 		if len(argv) == 0 {
 			fmt.Fprintf(os.Stderr, "firewall %s: 当前 system.json 无可用工具\n", f.Action)
+			log.Warn("防火墙无可用工具", "action", f.Action)
 			fail = 1
 			continue
 		}
 		if err := runOp(dry, argv); err != nil {
 			fmt.Fprintf(os.Stderr, "firewall %s: %v\n", f.Action, err)
+			log.Error("防火墙失败", "action", f.Action, "err", err)
 			fail = 1
 		}
 	}
@@ -106,14 +146,21 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		argv := ifaceArgv(snap, i)
 		if err := runOp(dry, argv); err != nil {
 			fmt.Fprintf(os.Stderr, "iface %s %s: %v\n", i.Action, i.Name, err)
+			log.Error("接口操作失败", "action", i.Action, "name", i.Name, "err", err)
 			fail = 1
 		}
 	}
 	for _, e := range plan.ExtraExec {
 		if err := runOp(dry, e.Argv); err != nil {
 			fmt.Fprintf(os.Stderr, "exec %v: %v\n", e.Argv, err)
+			log.Error("附加命令失败", "argv", strings.Join(e.Argv, " "), "err", err)
 			fail = 1
 		}
+	}
+	if fail == 0 {
+		log.Info("apply 完成", "dry", dry)
+	} else {
+		log.Error("apply 部分失败", "fail", fail, "dry", dry)
 	}
 	return fail
 }
@@ -134,9 +181,10 @@ func preferBSDNetTools(snap *shared.SystemSnapshot) bool {
 // resolveDevice 把 bundle 里的**逻辑设备名**解析成此刻真实存在的接口。
 //
 // 情况一（darwin/gnb）：配置写 ifname gnb_tun，但 gnb_drv_darwin.c:249-252
-// 在 tun_alloc 之后用 UTUN_OPT_IFNAME 把 ifname 覆盖成 utunN ——
-// 系统里根本没有叫 gnb_tun 的接口。
-// 情况二：接口还在、名字也对，直接用。
+// 在 tun_alloc 之后用 UTUN_OPT_IFNAME 把 ifname 覆盖成 utunN。
+// 情况二（windows/gnb + wintun）：适配器名是 **P2PNet**，不是 gnb_tun；
+// netsh 的 interface= 吃**名称或 ifIndex**（MicrosoftDocs netsh-interface.md）。
+// 情况三：接口还在、名字也对，直接用。
 // 解析不出来时**原样返回**，让后面的命令去失败 —— 静默换成别的接口
 // 会把路由装到错误的网卡上，比失败更糟。
 func resolveDevice(name string, localAddrs []string) string {
@@ -144,18 +192,20 @@ func resolveDevice(name string, localAddrs []string) string {
 		return name
 	}
 	if _, err := net.InterfaceByName(name); err == nil {
-		return name
+		return platformIfaceToken(name)
 	}
+	// 1) 用本机 overlay IP 反查（darwin utunN / windows P2PNet）
 	for _, cidr := range localAddrs {
 		ip := parseAddr(cidr)
 		if ip == nil {
 			continue
 		}
 		if iface := ifaceWithIP(ip); iface != "" {
-			return iface
+			return platformIfaceToken(iface)
 		}
 	}
-	return name
+	// 2) 平台隧道口兜底（windows wintun P2PNet / ifIndex）
+	return platformTunnelIface(name)
 }
 
 func parseAddr(s string) net.IP {
@@ -206,6 +256,10 @@ func hostDestIP(dest string) string {
 }
 
 func routeCmds(snap *shared.SystemSnapshot, r RouteOp) []routeCmd {
+	// Windows 优先：它既无 `ip` 也无 `route(8)`，preferBSDNetTools 会误判。
+	if snap != nil && snap.OS == "windows" {
+		return netshRouteCmds(r)
+	}
 	if preferBSDNetTools(snap) {
 		return bsdRouteCmds(r)
 	}
@@ -224,6 +278,60 @@ func routeCmds(snap *shared.SystemSnapshot, r RouteOp) []routeCmd {
 		argv = append(argv, "metric", fmt.Sprintf("%d", r.Metric))
 	}
 	return []routeCmd{{argv: argv}}
+}
+
+// netshRouteCmds Windows 的 netsh 方言。
+//
+// 语法取自 MicrosoftDocs windowsserverdocs netsh-interface.md（2025-10）：
+//
+//	netsh interface ipv4 add route    [prefix=]<IPv4>/<len> [interface=]<string> [nexthop=]<IPv4> …
+//	netsh interface ipv4 delete route [prefix=]<IPv4>/<len> [interface=]<string> [nexthop=]<IPv4> [store=]…
+//
+// 说明：
+//   - `interface` 是**名称或索引**（resolveDevice 给出的名称）
+//   - `nexthop` 仅在前缀非 on-link 时需要（我们经隧道口的对端 /32 与 LAN 都是 on-link）
+//   - 用 **具名参数**（prefix= interface=）：位置参数在接口名异常时会报
+//     「文件名、目录名或卷标语法不正确」/「找不到元素」（183 实测）
+//   - store=active：随重启消失，与 apply --clear 对称，不污染 persistent 存储
+func netshRouteCmds(r RouteOp) []routeCmd {
+	prefix := r.Destination
+	if isHostDest(prefix) {
+		if ip := net.ParseIP(hostDestIP(prefix)); ip != nil {
+			prefix = ip.String() + "/32"
+		}
+	}
+	verb := map[string]string{"add": "add", "replace": "add", "del": "delete"}[r.Action]
+	if verb == "" {
+		verb = "add"
+	}
+	build := func(v string) []string {
+		argv := []string{"netsh", "interface", "ipv4", v, "route", "prefix=" + prefix}
+		if r.Device != "" {
+			// 文档：interface=<名称或索引>
+			argv = append(argv, "interface="+r.Device)
+		}
+		// nexthop 仅非 on-link；我们只走隧道口 on-link，除非显式给了 Gateway
+		if r.Gateway != "" {
+			argv = append(argv, "nexthop="+r.Gateway)
+		}
+		if v == "add" && r.Metric > 0 {
+			argv = append(argv, fmt.Sprintf("metric=%d", r.Metric))
+		}
+		argv = append(argv, "store=active")
+		return argv
+	}
+	if r.Action == "del" {
+		return []routeCmd{{argv: build("delete")}}
+	}
+	if r.Action == "add" {
+		return []routeCmd{{argv: build("add")}}
+	}
+	// replace：netsh 无 replace，先 delete（忽略不存在）再 add —— 但只在
+	// 所有权闸放行后才会走到这里（见 executeApply）。
+	return []routeCmd{
+		{argv: build("delete"), optional: true},
+		{argv: build("add")},
+	}
 }
 
 // bsdRouteCmds darwin/net-tools 的 route 方言。
@@ -331,4 +439,211 @@ func runOp(dry bool, argv []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// localConnectedNets 本机物理口的直连 IPv4 网段（跳过 lo / 隧道口）。
+//
+// 隧道口（utun/tun/gnb/wg）不算：它们是我们自己装路由的目标，
+// 用它们的网段去过滤会把自己的 overlay 路由也滤掉。
+func localConnectedNets() []*net.IPNet {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var nets []*net.IPNet
+	for _, iface := range ifaces {
+		name := iface.Name
+		if strings.HasPrefix(name, "lo") ||
+			strings.HasPrefix(name, "utun") ||
+			strings.HasPrefix(name, "tun") ||
+			strings.HasPrefix(name, "gnb") ||
+			strings.HasPrefix(name, "wg") {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil {
+				continue
+			}
+			nets = append(nets, ipnet)
+		}
+	}
+	return nets
+}
+
+// parseDestNet 目的地解析成 IPv4 网段；裸 IP 当 /32。
+func parseDestNet(dest string) *net.IPNet {
+	if dest == "" {
+		return nil
+	}
+	if _, ipnet, err := net.ParseCIDR(dest); err == nil {
+		if ipnet.IP.To4() == nil {
+			return nil
+		}
+		return ipnet
+	}
+	ip := net.ParseIP(dest)
+	if ip == nil || ip.To4() == nil {
+		return nil
+	}
+	return &net.IPNet{IP: ip.To4(), Mask: net.CIDRMask(32, 32)}
+}
+
+// overlapsAny dest 与任一网段互相包含即冲突。
+// 同网段（192.168.0.0/24 vs 本机 192.168.0.0/24）是最常见形态；
+// 更宽的 /16 盖住本机 /24 同样劫持。
+func overlapsAny(dest *net.IPNet, nets []*net.IPNet) bool {
+	if dest == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n == nil {
+			continue
+		}
+		if n.Contains(dest.IP) || dest.Contains(n.IP) {
+			return true
+		}
+	}
+	return false
+}
+
+// pinDefaultGateway 网关被隧道 /24 盖住时，把它钉回物理口 /32。
+//
+// 对齐 openwrt route_policy.sh:146 的 fix_wan_gateway_route：
+// **先查再钉** —— 网关本来就在直连口上时动它，反而会写出错误的
+// 邻接项（实测 `add -host gw -interface en0` 把 MAC 写成本机网卡，
+// ping 网关 100% 丢包、整机断外网）。已与本机直连网段冲突的路由
+// 在装之前就被 filter 跳过了，这里只是残留覆盖的兜底。
+func pinDefaultGateway(snap *shared.SystemSnapshot, dry bool) error {
+	gw, dev := defaultGateway()
+	if gw == "" || dev == "" {
+		return nil
+	}
+	if !gatewayHijacked(gw) {
+		return nil
+	}
+	// BSD：via <gw> 而不是 -interface —— 前者走正常 ARP，后者会钉错 MAC。
+	r := RouteOp{Destination: gw + "/32", Gateway: gw, Device: dev, Action: "replace"}
+	if preferBSDNetTools(snap) {
+		// host 路由去掉 /32 后缀；gateway 保留（见上）
+		r.Destination = gw
+	}
+	for _, c := range routeCmds(snap, r) {
+		if err := runOp(dry, c.argv); err != nil {
+			if c.optional {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// gatewayHijacked 默认网关当前是否被路由进隧道口。
+func gatewayHijacked(gw string) bool {
+	dev := destOwnerDev(gw)
+	if dev == "" {
+		return false
+	}
+	return strings.HasPrefix(dev, "utun") || strings.HasPrefix(dev, "tun") ||
+		strings.HasPrefix(dev, "gnb") || strings.HasPrefix(dev, "wg")
+}
+
+// destOwnedBy 目的地是否允许我们动：
+//
+//   - 空闲（查不到现路由）→ 可以装
+//   - 已挂在**我们的**隧道口 → 是我们装的，可以 replace/del
+//   - 挂在别人（直连口、别的隧道、静态路由）→ 不碰
+//
+// 「只删自己配置的」的落点。对齐 openwrt node.lua:clear_routes
+// （`ip route show dev $tun` 再删，绝不按目的地盲删）。
+func destOwnedBy(dest, ourDev string) bool {
+	return routeTouched(destOwnerDev(dest), ourDev)
+}
+
+// routeTouched 纯策略：owner 是目的地现挂设备（"" = 空闲），
+// ourDev 是本次操作的目标隧道口。只有空闲或自己装的才准动。
+func routeTouched(owner, ourDev string) bool {
+	if owner == "" {
+		return true
+	}
+	return ourDev != "" && owner == ourDev
+}
+
+// clearTunnelRoutes 清掉隧道口上的路由（`mynet apply --clear`）。
+//
+// 对齐 openwrt node.lua:clear_routes：`ip route show dev <tun>` 后逐条 del，
+// **只动本隧道设备上的**，绝不按目的地删 —— 别的口的静态路由碰都不碰。
+// stop 服务 / 换代时调用。
+func clearTunnelRoutes(snap *shared.SystemSnapshot, dry bool) int {
+	devs := tunnelDevices()
+	if len(devs) == 0 {
+		fmt.Println("apply --clear: 未发现隧道口，无路由可清")
+		return 0
+	}
+	fail := 0
+	for _, dev := range devs {
+		dests := routesOnDevice(dev)
+		if len(dests) == 0 {
+			continue
+		}
+		fmt.Printf("clear %s: %d 条\n", dev, len(dests))
+		for _, dest := range dests {
+			r := RouteOp{Destination: dest, Device: dev, Action: "del"}
+			for _, c := range routeCmds(snap, r) {
+				if err := runOp(dry, c.argv); err != nil {
+					if c.optional {
+						continue
+					}
+					fmt.Fprintf(os.Stderr, "clear %s %s: %v\n", dev, dest, err)
+					fail = 1
+				}
+			}
+		}
+	}
+	return fail
+}
+
+// tunnelDevices 本机隧道接口名（gnb/wg/utun/tun 前缀）。
+func tunnelDevices() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, iface := range ifaces {
+		name := iface.Name
+		if strings.HasPrefix(name, "utun") ||
+			strings.HasPrefix(name, "tun") ||
+			strings.HasPrefix(name, "gnb") ||
+			strings.HasPrefix(name, "wg") {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// normalizeBSDDest netstat 的 192.168.8 这种缩写 → 192.168.8.0/24。
+func normalizeBSDDest(d string) string {
+	if strings.Contains(d, "/") {
+		return d
+	}
+	parts := strings.Split(d, ".")
+	switch len(parts) {
+	case 1:
+		return d + ".0.0.0/8"
+	case 2:
+		return d + ".0.0/16"
+	case 3:
+		return d + ".0/24"
+	default:
+		if net.ParseIP(d) != nil {
+			return d + "/32"
+		}
+		return d
+	}
 }

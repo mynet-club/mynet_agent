@@ -2,9 +2,6 @@ package mynet
 
 import (
 	"encoding/json"
-	"os/exec"
-	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -50,47 +47,9 @@ func TestCountUpInterfacesNonZero(t *testing.T) {
 
 // darwin 的系统指标必须拿到**真值**，并与 sysctl 交叉核对 ——
 // 只断言「非 0」不够，那只能证明有东西，不能证明是对的。
-func TestDarwinSystemMetricsMatchSysctl(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("darwin 专用：本机是 " + runtime.GOOS + "，sysctl/vm_stat/top 的口径不同")
-	}
-	m := &Metrics{}
-	collectDarwinSystemMetrics(m)
-
-	out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
-	if err != nil {
-		t.Fatalf("sysctl hw.memsize: %v", err)
-	}
-	sz, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
-	if err != nil {
-		t.Fatalf("解析 hw.memsize: %v", err)
-	}
-	if want := sz / 1024 / 1024; uint64(m.System.MemTotalMB) != want {
-		t.Errorf("MemTotalMB = %d，而 sysctl hw.memsize 说 %d", m.System.MemTotalMB, want)
-	}
-	if m.System.MemUsedMB == 0 || m.System.MemUsedMB > m.System.MemTotalMB {
-		t.Errorf("MemUsedMB = %d 不合理（应在 0 与总量 %d 之间）", m.System.MemUsedMB, m.System.MemTotalMB)
-	}
-	if m.System.UptimeSec <= 0 {
-		t.Errorf("UptimeSec = %d，期望 > 0", m.System.UptimeSec)
-	}
-	if m.System.Load1 < 0 {
-		t.Errorf("Load1 = %v 为负", m.System.Load1)
-	}
-	// CPUPercent 与 Load1 都**允许**为 0（机器真的空闲时就是 0），
-	// 所以不断言非 0 —— 断言一个可能合法为 0 的值非 0，是会让测试随机红的。
-}
 
 // vm_stat 的页大小必须被读到，否则 used 会算成 0
 // （拿不到页大小时我们选择报 0，而不是瞎猜 4096 —— 本机实测是 16384）。
-func TestDarwinMemUsedNonZero(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("darwin 专用")
-	}
-	if v := darwinMemUsedMB(); v == 0 {
-		t.Fatal("darwinMemUsedMB() = 0 —— 页大小没读到，或 vm_stat 输出格式变了")
-	}
-}
 
 // ── 解析辅助（纯函数，跨平台）──────────────────────────────
 

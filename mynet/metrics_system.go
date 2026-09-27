@@ -1,12 +1,10 @@
 package mynet
 
 import (
-	"fmt"
 	"math"
 	"net"
 	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -22,14 +20,7 @@ func collectSystemMetrics(m *Metrics) {
 	m.System.InterfaceUp = countUpInterfaces()
 	// 磁盘同理跨平台（df 在 linux/darwin 都有，且 -P 的输出格式一致）
 	m.System.DiskUsedPercent = diskUsedPercent("/")
-	switch runtime.GOOS {
-	case "linux":
-		collectLinuxSystemMetrics(m)
-	case "darwin":
-		collectDarwinSystemMetrics(m)
-	default:
-		m.Notes = append(m.Notes, "system metrics 未覆盖 "+runtime.GOOS)
-	}
+	collectPlatformSystemMetrics(m)
 }
 
 // countUpInterfaces 数 up 状态的非 loopback 接口。
@@ -47,39 +38,6 @@ func countUpInterfaces() int {
 		n++
 	}
 	return n
-}
-
-func collectLinuxSystemMetrics(m *Metrics) {
-	// loadavg
-	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
-		var l1 float64
-		if n, _ := fmt.Sscanf(string(b), "%f", &l1); n == 1 {
-			m.System.Load1 = l1
-		}
-	}
-	// uptime
-	if b, err := os.ReadFile("/proc/uptime"); err == nil {
-		var up float64
-		if n, _ := fmt.Sscanf(string(b), "%f", &up); n == 1 {
-			m.System.UptimeSec = int64(up)
-		}
-	}
-	// meminfo
-	if b, err := os.ReadFile("/proc/meminfo"); err == nil {
-		var total, avail uint64
-		for _, line := range splitLines(string(b)) {
-			var v uint64
-			if n, _ := fmt.Sscanf(line, "MemTotal: %d kB", &v); n == 1 {
-				total = v / 1024
-			}
-			if n, _ := fmt.Sscanf(line, "MemAvailable: %d kB", &v); n == 1 {
-				avail = v / 1024
-			}
-		}
-		m.System.MemTotalMB = total
-		m.System.MemUsedMB = total - avail
-	}
-	m.System.CPUPercent = linuxCPUPercent()
 }
 
 // linuxCPUPercent 读两次 /proc/stat 求差。
@@ -143,17 +101,6 @@ func readCPUJiffies() (cpuJiffies, bool) {
 // 把内容丢掉，只留一句「darwin metrics 为精简实现」的 note。于是 macOS 上
 // `mynet metrics` 的系统段恒为全 0 —— 而开发机恰好就是 macOS，
 // 所以这个「全 0」一直摆在眼前却没人当回事。
-func collectDarwinSystemMetrics(m *Metrics) {
-	if out, err := exec.Command("sysctl", "-n", "hw.memsize").Output(); err == nil {
-		if bytes, e := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64); e == nil {
-			m.System.MemTotalMB = bytes / 1024 / 1024
-		}
-	}
-	m.System.MemUsedMB = darwinMemUsedMB()
-	m.System.Load1 = darwinLoad1()
-	m.System.UptimeSec = darwinUptimeSec()
-	m.System.CPUPercent = darwinCPUPercent()
-}
 
 // darwinMemUsedMB = (active + wired + 压缩器占用) × page size，数据来自 vm_stat。
 // 口径对齐「活动监视器」的已用内存：不含 free / inactive / speculative。
@@ -302,9 +249,11 @@ func leadingUint(s string) uint64 {
 // 折行（macOS 上很常见），按行解析就会读到半截。
 // 为什么不用 syscall.Statfs：字段类型在 linux（int64）与 darwin（uint32）之间
 // 不一致，要么上 build tag 要么上 x/sys；一条 df 换掉这些复杂度是划算的。
-// Windows 没有 df → 返回 0（back 的验证只要求 numeric，0 能过；
-// 真要在 Windows 上采磁盘得另走 GetDiskFreeSpaceEx）。
+// Windows 没有 df，走 CIM（Win32_LogicalDisk）—— 见 windowsDiskUsedPercent。
 func diskUsedPercent(path string) float64 {
+	if p := diskUsedPercentOS(path); p >= 0 {
+		return p
+	}
 	out, err := exec.Command("df", "-P", "-k", path).Output()
 	if err != nil {
 		return 0

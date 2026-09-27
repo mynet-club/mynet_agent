@@ -25,3 +25,4 @@ id_ed25519*
 *.swp
 webui/*.bak
 dist/
+mynetd/localapi/conf/credential.json

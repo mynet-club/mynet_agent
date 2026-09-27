@@ -34,6 +34,9 @@ var AllowedPathPrefixes = []string{
 	"/api/v1/dashboard",
 	"/api/v1/config",
 	"/api/v1/system",
+	// 通知与头像（gui 主布局启动即调，缺了就一片 403）
+	"/api/v1/notifications",
+	"/api/v1/files",
 }
 
 // deniedFragments 即便前缀命中也必须拒绝。

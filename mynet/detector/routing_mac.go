@@ -36,6 +36,13 @@ func (d *DarwinRoutingDetector) DetectRouting(ctx DetectionContext) (*RoutingInf
 func (d *DarwinRoutingDetector) GetCacheKey() string { return "routing:darwin" }
 func (d *DarwinRoutingDetector) IsSupported() bool   { return runtime.GOOS == "darwin" }
 
+// registerPlatformRouting 供 factory_other.go（!linux）调用。
+func registerPlatformRouting(f *DetectorFactory) {
+	f.RegisterRoutingDetector("darwin", func(SystemDetector) RoutingDetector {
+		return &DarwinRoutingDetector{}
+	})
+}
+
 func darwinDefaultGateway(info *RoutingInfo) error {
 	out, err := sysExec("route", "-n", "get", "default").Output()
 	if err != nil {

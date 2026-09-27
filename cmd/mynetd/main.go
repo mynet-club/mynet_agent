@@ -29,13 +29,14 @@ import (
 	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
+var (
+	flagListen  = flag.String("listen", mynetd.DefaultLocalAPI, "本机 API 监听")
+	flagConsole = flag.Bool("console", false, "console 模式：无 WS、无节点身份（D-12）")
+	flagOnce    = flag.Bool("once", false, "只探测一次心跳就退出（调试）")
+	flagVersion = flag.Bool("version", false, "打印版本并退出")
+)
+
 func main() {
-	var (
-		listen  = flag.String("listen", mynetd.DefaultLocalAPI, "本机 API 监听")
-		console = flag.Bool("console", false, "console 模式：无 WS、无节点身份（D-12）")
-		once    = flag.Bool("once", false, "只探测一次心跳就退出（调试）")
-		version = flag.Bool("version", false, "打印版本并退出")
-	)
 	flag.Parse()
 
 	// 日志装配必须在任何日志输出之前 —— 否则前几条会走默认 handler，
@@ -48,8 +49,13 @@ func main() {
 	defer logger.Close()
 
 	// 守护进程最需要「装的是哪个版本」——升级排查、心跳上报版本、远程排障都靠它。
-	if *version {
+	if *flagVersion {
 		fmt.Printf("mynetd %s\n", utils.AppVersion)
+		return
+	}
+
+	// Windows 服务（SCM）：必须在起 localapi 之前接管，否则 svc.Run 里再起会端口冲突
+	if tryRunAsWindowsService() {
 		return
 	}
 
@@ -68,7 +74,7 @@ func main() {
 	// （它就是非 root 跑常驻 mynetd）。改为**高声警告 + 每个特权操作各自报明确的权限错**，
 	// 生产部署走 deploy/systemd/mynetd.service（root）。
 	if os.Geteuid() != 0 {
-		if *console {
+		if *flagConsole {
 			logger.Info("console 模式非 root 运行（D-8/D-12：无 WS、无节点身份、不碰驱动）")
 		} else if os.Getenv("MYNET_GATEWAYS") != "" {
 			logger.Warn("节点模式下以非 root 运行 —— 隧道生命周期将无法自动管理",
@@ -83,7 +89,16 @@ func main() {
 		}
 	}
 
-	api := localapi.NewServer(localapi.Config{Listen: *listen})
+	// 交互/守护（systemd·launchd·手动）：SIGINT/SIGTERM 退出
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	runAgent(ctx)
+}
+
+// runAgent 常驻主体：localapi + 心跳 + WS + 隧道恢复。
+// ctx 取消时记录隧道状态并收尾 —— Windows 服务 Stop 与 SIGTERM 共用这条。
+func runAgent(ctx context.Context) {
+	api := localapi.NewServer(localapi.Config{Listen: *flagListen})
 	api.Ops = execMynet
 
 	if err := api.Start(); err != nil {
@@ -92,15 +107,12 @@ func main() {
 	}
 	logger.Info("localapi 已启动", "addr", api.Addr())
 
-	if *console {
+	if *flagConsole {
 		// D-12：平台态经 gateway /v1/relay；无 WS、无驱动密钥
-		waitSignal()
+		<-ctx.Done()
 		_ = api.Close()
 		return
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	// S3-1：心跳组装 + 命令分派 + WS 长连接。
 	// ops 用 execMynetStd（直接给 stdout 字符串），省掉在 beat 里再拆 map。
@@ -115,19 +127,22 @@ func main() {
 
 	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
 	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
-		gateways := strings.Split(gw, ",")
+		var gateways []string
+		for _, g := range strings.Split(gw, ",") {
+			// 归一 WS 路径：裸 wss://host 会打到 404（见 NormalizeGatewayURL）
+			gateways = append(gateways, utils.NormalizeGatewayURL(g))
+		}
 		nodeID := os.Getenv("MYNET_NODE_ID")
 
 		// 节点面身份（C-2）：命令结果要签名后才能上报 back，
-		// 拉取待执行命令也要签名。读不到 mynet.conf 时**明确告警**而不是静默降级——
+		// 拉取待执行命令也要签名。读不到 keys/ 时**明确告警**而不是静默降级——
 		// 否则症状是「命令下发了但节点毫无反应」，比直接报错难查得多。
 		var (
 			onResult func(context.Context, commands.Result) ([]byte, error)
 			pull     func(context.Context) ([]pendingCommand, error)
 			bc       *backClient
 		)
-		confPath := mynetConfPath()
-		id, idErr := loadNodeIdentity(confPath)
+		id, idErr := loadNodeIdentity("")
 		if idErr != nil {
 			logger.Warn("节点面未就绪，命令拉取与结果上报都不可用", "err", idErr)
 		} else {
@@ -153,7 +168,7 @@ func main() {
 				// relay 白名单本来就含 /api/v1/monitor，不需要给 gateway 加新面。
 				hb.setReporter(id.nodeID, c.reportHeartbeat)
 			}
-			logger.Info("节点面签名就绪", "node_id", id.nodeID, "conf", confPath)
+			logger.Info("节点面签名就绪", "node_id", id.nodeID, "keys", "conf/**/keys")
 		}
 
 		// report 需要 cli.Send，而 cli 的 Handlers 又需要 dispatcher.Handle——
@@ -208,7 +223,7 @@ func main() {
 				//
 				// `-once` 时跳过：那是验收用的一次性探针（只验「拉取 + 心跳」），
 				// 让它顺手起隧道/改内核路由会污染被测机器的状态。
-				if !*once {
+				if !*flagOnce {
 					dispatcher.runBundleLifecycle()
 				}
 			}()
@@ -235,7 +250,7 @@ func main() {
 
 	// 启动心跳。放在节点面客户端装配**之后**（理由见上面 hb 创建处）：
 	// reporter 绑好了再跑，`--once` 才能真的验到上报。
-	if *once {
+	if *flagOnce {
 		hb.beat(ctx)
 		// ⚠️ 必须等启动拉取结束再退出。启动拉取跑在 goroutine 里（上面），
 		// 而 -once 做完心跳就 return —— 于是它可能在拉取完成前就退出。
@@ -260,7 +275,18 @@ func main() {
 	}
 	go hb.run(ctx)
 
+	// 随 mynetd 恢复隧道：按上次退出时 gnb|wg 状态 + agent.json 开关
+	go func() {
+		time.Sleep(2 * time.Second) // 等 localapi / bundle 就绪
+		restoreTunnelIfNeeded(func(drv string) error {
+			_, err := execMynet([]string{"service", "start", drv})
+			return err
+		})
+	}()
+
 	<-ctx.Done()
+	// 退出前记下 gnb|wg 是否在跑，下次启动按此恢复
+	recordTunnelExit()
 	_ = api.Close()
 }
 
@@ -296,14 +322,20 @@ func mynetBin() string {
 	if v := os.Getenv("MYNET_BIN"); v != "" {
 		return v
 	}
+	// Windows 可执行文件带 .exe —— 只找 "mynet" 会永远 Stat 不到，
+	// 于是掉到 PATH 查找；而安装目录通常不在 PATH（V5-2 真机实测）。
+	name := utils.ExeName("mynet")
 	if exe, err := os.Executable(); err == nil {
 		// 同目录 mynet
-		cand := filepath.Join(filepath.Dir(exe), "mynet")
+		cand := filepath.Join(filepath.Dir(exe), name)
 		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
 			return cand
 		}
 	}
-	return "mynet"
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return name
 }
 
 // heartbeatLoop 组装心跳（`mynet metrics --json`）并上报 back。

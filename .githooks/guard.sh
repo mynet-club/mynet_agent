@@ -126,6 +126,7 @@ done
 
 # ── B 结构红线（架构约束，违反会静默扩散）──────────────────
 # B1 mynet_gnb/src/ 只读 —— 补丁包机制依赖上游树原样
+#    只在 mynet_gnb 仓内有意义；其他仓不能证明兄弟仓状态。
 b1=0
 case "$ROOT" in
   *mynet_gnb*)
@@ -133,23 +134,29 @@ case "$ROOT" in
       case "$f" in
         src/*) bad "B1 mynet_gnb/src/ 是上游树，改动须走补丁包（packages/）: $f"; b1=1 ;;
       esac
-    done ;;
+    done
+    [ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
+    ;;
+  *)
+    echo "  · B1 跳过（当前仓非 mynet_gnb；src/ 状态请在 mynet_gnb 根目录跑 guard）"
+    ;;
 esac
-[ "$b1" -eq 0 ] && ok "B1 mynet_gnb/src/ 未被直改"
 
-# B2 mynetd 不得依赖系统能力（执行器架构：mynetd 纯通信）
-#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 的**import 路径**（注释里提到 detector 是允许的）
-B2PAT='mynet/detector|mynet/tools|mynet/apply|mynet/metrics|mynet/service|gopsutil|shirou/gopsutil' # GUARD-OK 自检正则
+# B2 mynetd 不得依赖系统能力或配置面（执行器架构：mynetd 纯通信）
+#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 的 **import 字符串**（注释里提到 detector 是允许的）
+#    系统能力 + 配置文件格式都在执行器；localapi 只做 HTTP 壳走 Ops。
+#    要求 import 引号，避免误伤注释里的包名。
+B2PAT='"[^"]*mynet/(detector|tools|apply|metrics|service|keys)|"[^"]*shared/config|gopsutil|shirou/gopsutil'
 b2=0
 for f in $FILES; do
   case "$f" in
     mynetd/*)
       if added_in_file "$f" | grep -qE "$B2PAT"; then
-        bad "B2 mynetd 不得依赖系统能力（执行器架构）: $f"; b2=1
+        bad "B2 mynetd 不得依赖系统能力/配置面（执行器架构）: $f"; b2=1
       fi ;;
   esac
 done
-[ "$b2" -eq 0 ] && ok "B2 mynetd 未依赖系统能力"
+[ "$b2" -eq 0 ] && ok "B2 mynetd 未依赖系统能力/配置面"
 
 # B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归 back）—— 只扫 relaypolicy/
 B3PAT='Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature' # GUARD-OK 自检正则

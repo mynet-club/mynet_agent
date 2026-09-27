@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 )
 
 // GNBDriver — A-3。只读 + 生命周期。
@@ -16,7 +20,10 @@ import (
 type GNBDriver struct {
 	NodeID  int64
 	ConfDir string
-	Exec    func(name string, args ...string) ([]byte, error)
+	// Binary gnb 可执行文件路径。空则 resolveGNBBinary（MYNET_GNB_BIN → PATH → 常见安装位）。
+	// Windows 上 gnb 常装在 C:\gnb-win\bin\，不在 PATH —— 只 Spawn("gnb") 必失败。
+	Binary string
+	Exec   func(name string, args ...string) ([]byte, error)
 	// Spawn 用于会自我 daemon 化的命令，语义见 spawnDetached。
 	// 与 Exec 分开是因为两者的等待条件根本不同：Exec 要拿到输出，
 	// Spawn 只要父进程退出。
@@ -116,10 +123,7 @@ func (d *GNBDriver) IsProcessAlive() bool {
 	if err != nil {
 		return false
 	}
-	// kill -0 只探测存在性与权限，不发信号
-	_, err = d.Exec("kill", "-0", strconv.Itoa(pid))
-
-	return err == nil
+	return d.pidAliveOS(pid)
 }
 
 func (d *GNBDriver) Capabilities() domain.DriverCaps {
@@ -348,22 +352,88 @@ func (d *GNBDriver) systemdManages() bool {
 }
 
 func (d *GNBDriver) Start() error {
+	log := logger.Comp("driver")
 	if d.IsProcessAlive() {
+		log.Debug("gnb 已在运行", "conf", d.ConfDir)
 		return nil
 	}
+	log.Info("gnb 启动", "conf", d.ConfDir, "systemd", d.systemdManages())
 	if d.systemdManages() {
 		_, err := d.Exec("systemctl", "start", d.ServiceUnit)
 		if err != nil {
+			log.Error("systemctl start 失败", "unit", d.ServiceUnit, "err", err)
 			return fmt.Errorf("systemctl start %s: %w", d.ServiceUnit, err)
 		}
 
-		return d.waitAlive()
+		if err := d.waitAlive(); err != nil {
+			log.Error("gnb 启动后未就绪", "err", err)
+			return err
+		}
+		log.Info("gnb 已就绪", "via", "systemd")
+		return nil
 	}
-	if err := d.Spawn("gnb", "-c", d.ConfDir); err != nil {
+	bin := d.gnbBinary()
+	pid, err := d.spawnGnb(bin)
+	if err != nil {
+		log.Error("gnb 启动失败", "bin", bin, "err", err)
 		return fmt.Errorf("gnb 启动失败: %w", err)
 	}
+	d.writePidAfterSpawn(pid)
 
-	return d.waitAlive()
+	if err := d.waitAlive(); err != nil {
+		log.Error("gnb 启动后未就绪", "pid", pid, "err", err)
+		return err
+	}
+	log.Info("gnb 已就绪", "pid", pid, "bin", bin)
+	return nil
+}
+
+// gnbBinary 解析 gnb 可执行文件。
+// 优先级：Binary 字段 → $MYNET_GNB_BIN → PATH 上的 gnb[.exe] → 常见安装位。
+// Windows 无 PATH 时必须能认 C:\gnb-win\bin\gnb.exe（183 实测形态）。
+func (d *GNBDriver) gnbBinary() string {
+	if d.Binary != "" {
+		return d.Binary
+	}
+	return resolveGNBBinary()
+}
+
+// resolveGNBBinary 见 gnbBinary。与 plugin_proxy.findGnbBin 同一优先级：
+//  1. $MYNET_GNB_BIN（显式覆盖）
+//  2. $MYNET_HOME/driver/gnb/bin/gnb[.exe]  ← 标准位（与 conf 投影同树）
+//  3. PATH
+//  4. 发行版常见安装位（含历史 C:\gnb-win，便于迁移）
+//
+// ⚠️ 不要一上来就 LookPath —— 系统 PATH 里可能是旧 gnb。
+func resolveGNBBinary() string {
+	name := gnbExeName()
+	if v := os.Getenv("MYNET_GNB_BIN"); v != "" {
+		return v
+	}
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = "."
+	}
+	cands := []string{
+		filepath.Join(home, "driver", "gnb", "bin", name),
+		filepath.Join(home, "driver", "gnb", "bin", "gnb"),
+		"/usr/local/opt/mynet/driver/gnb/bin/gnb",
+		"/usr/sbin/gnb",
+		"/usr/local/opt/mynet/bin/gnb",
+		"/opt/mynet/bin/gnb",
+		// 历史手装位（183 迁移期）
+		`C:\gnb-win\bin\gnb.exe`,
+		`C:\gnb-win\gnb.exe`,
+	}
+	for _, p := range cands {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return name // 交给 Spawn 去失败（错误信息里带名字）
 }
 
 // waitAlive 确认进程真的起来了。
@@ -405,20 +475,29 @@ func (d *GNBDriver) waitAlive() error {
 // （gnb_ctl.c:102），long_options 里也没有 k —— **这个 flag 根本不存在**。
 // gnb 装了 SIGTERM handler（gnb.c:395），发 SIGTERM 即可优雅退出。
 func (d *GNBDriver) Stop() error {
+	log := logger.Comp("driver")
+	log.Info("gnb 停止", "conf", d.ConfDir)
 	if d.systemdManages() {
 		if _, err := d.Exec("systemctl", "stop", d.ServiceUnit); err != nil {
+			log.Error("systemctl stop 失败", "unit", d.ServiceUnit, "err", err)
 			return fmt.Errorf("systemctl stop %s: %w", d.ServiceUnit, err)
 		}
-
 		return nil
 	}
 	pid, err := d.readPidFile()
 	if err != nil {
+		log.Warn("gnb 停止：读 pid 失败", "err", err)
 		return err
 	}
-	_, err = d.Exec("kill", "-TERM", strconv.Itoa(pid))
-
-	return err
+	if err := d.pidKillOS(pid); err != nil {
+		log.Error("gnb 停止失败", "pid", pid, "err", err)
+		return err
+	}
+	// 清 pid 文件：否则 node-status 会把「用户主动停」误判成
+	// 「启动失败：gnb 已退出」（pid 文件在、进程没了）。
+	_ = os.Remove(d.ConfDir + "/gnb.pid")
+	log.Info("gnb 已停止", "pid", pid)
+	return nil
 }
 
 // readPidFile 读 <ConfDir>/gnb.pid —— gnb 用 -c 时的默认 pid 路径
@@ -438,6 +517,7 @@ func (d *GNBDriver) readPidFile() (int, error) {
 
 // Reload 退化为 Stop+Start（热重启未验证）。
 func (d *GNBDriver) Reload() error {
+	logger.Comp("driver").Info("gnb reload", "conf", d.ConfDir)
 	_ = d.Stop()
 	return d.Start()
 }
@@ -609,7 +689,8 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 func RenderGNBNodeConf(g *domain.GnbIntent) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "nodeid %s\n", g.Identity.NodeID)
-	if ifname := gnbIfname(g); ifname != "" {
+	// Windows 不写 ifname（wintun 适配器名固定 P2PNet，见 gnb_platform_windows.go）
+	if ifname := gnbIfname(g); ifname != "" && gnbPlatformConfKeys() == "" {
 		fmt.Fprintf(&b, "ifname %s\n", ifname)
 	}
 	for _, ln := range g.Listeners {
@@ -617,9 +698,8 @@ func RenderGNBNodeConf(g *domain.GnbIntent) string {
 			fmt.Fprintf(&b, "listen %s\n", ln)
 		}
 	}
-	// daemon on：自己起时 gnb 双 fork、父进程立即 exit(0)，Start() 不会阻塞；
-	// 被 systemd 以 --systemd 拉起时这个键被忽略、保持前台受监管。两种模式都对。
-	b.WriteString("daemon on\n")
+	b.WriteString(gnbDaemonLine())
+	b.WriteString(gnbPlatformConfKeys())
 
 	if g.Options != nil {
 		if g.Options.MTU > 0 {
@@ -637,7 +717,21 @@ func RenderGNBNodeConf(g *domain.GnbIntent) string {
 		if u := strings.TrimSpace(g.Forwarding.Unified); u != "" {
 			fmt.Fprintf(&b, "unified-forwarding %s\n", u)
 		}
+		// proxy on：未登记目的兜底走 f 节点（AGENTS.md / mynet-overview 第 7 条）
+		// 只在开启时写键 —— 未打 P2 的 gnb 不认 `proxy` 键，写 `proxy off`
+		// 也会变成配置解析告警。
+		if g.Forwarding.Proxy {
+			b.WriteString("proxy on\n")
+		}
 	}
+
+	// zip auto：与线上节点压缩设置对齐。缺 zip 时大包会被对端压成我们解不开的帧，
+	// 症状是「小 ping 通、≥~290B 全丢、SSH/HTTP 不通」（2026-09-27 实测）。
+	// zip-level -1 = 默认级别；memory tiny = 小内存机型默认（gnb 历史包同款）。
+	b.WriteString("zip auto\n")
+	b.WriteString("zip-level -1\n")
+	b.WriteString("forward on\n")
+	b.WriteString("keepalive 25\n")
 
 	return b.String()
 }
@@ -742,26 +836,99 @@ func RenderGNBRouteConf(g *domain.GnbIntent) string {
 		}
 	}
 
-	var b strings.Builder
-	// ③ 本机置顶
+	// ③ 先按 nodeid 分组（同节点主机行+网段行相邻，主机行在前），
+	//    再按 overlay IP 排序：本机置顶，其余同 /24 按 IP 升序、其它网段最后。
 	local := g.Identity.NodeID
-	if h, ok := hostOf[local]; ok {
-		fmt.Fprintf(&b, "%s|%s|%s\n", h.nodeID, h.ip, h.mask)
+
+	type nodeGroup struct {
+		id   string
+		ip   string // 该节点主机行的 overlay，用于排序
+		host hostLine
+		nets []hostLine
 	}
-	// ④ 其余主机行（保持 Nodes 原序）
-	for _, id := range hostOrder {
-		if id == local {
-			continue
+	groups := make([]*nodeGroup, 0, len(hostOf))
+	byID := map[string]*nodeGroup{}
+
+	get := func(id string) *nodeGroup {
+		if g, ok := byID[id]; ok {
+			return g
 		}
-		h := hostOf[id]
-		fmt.Fprintf(&b, "%s|%s|%s\n", h.nodeID, h.ip, h.mask)
-	}
-	// ⑤ 网段行（同节点的相邻输出，便于人眼分组）
-	for _, n := range nets {
-		fmt.Fprintf(&b, "%s|%s|%s\n", n.nodeID, n.ip, n.mask)
+		g := &nodeGroup{id: id}
+		byID[id] = g
+		groups = append(groups, g)
+		return g
 	}
 
+	for _, id := range hostOrder {
+		h := hostOf[id]
+		g := get(id)
+		g.host = h
+		g.ip = h.ip
+	}
+	for _, n := range nets {
+		g := get(n.nodeID)
+		g.nets = append(g.nets, n)
+	}
+
+	// 本机第一；同网段（与本机同 /24）其次按 IP 升序；其它网段最后。
+	// 这样 10.182.236.181 后面紧跟 182、183…，不会被 147.x 插队。
+	localIP := ""
+	if h, ok := hostOf[local]; ok {
+		localIP = h.ip
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		a, b := groups[i], groups[j]
+		if a.id == local {
+			return true
+		}
+		if b.id == local {
+			return false
+		}
+		as, bs := sameSubnet24(a.ip, localIP), sameSubnet24(b.ip, localIP)
+		if as != bs {
+			return as // 同网段优先
+		}
+		return ipLess(a.ip, b.ip)
+	})
+
+	var b strings.Builder
+	for _, g := range groups {
+		if g.host.nodeID != "" {
+			fmt.Fprintf(&b, "%s|%s|%s\n", g.host.nodeID, g.host.ip, g.host.mask)
+		}
+		for _, n := range g.nets {
+			fmt.Fprintf(&b, "%s|%s|%s\n", n.nodeID, n.ip, n.mask)
+		}
+	}
 	return b.String()
+}
+
+// sameSubnet24 判与本机是否同 /24。
+func sameSubnet24(ip, local string) bool {
+	a := net.ParseIP(ip).To4()
+	l := net.ParseIP(local).To4()
+	if a == nil || l == nil {
+		return false
+	}
+	return a[0] == l[0] && a[1] == l[1] && a[2] == l[2]
+}
+
+// ipLess 按 IPv4 数值比较（空 IP 排后）。
+func ipLess(a, b string) bool {
+	pa := net.ParseIP(a).To4()
+	pb := net.ParseIP(b).To4()
+	if pa == nil {
+		return false
+	}
+	if pb == nil {
+		return true
+	}
+	for i := 0; i < 4; i++ {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	return false
 }
 
 type hostLine struct{ nodeID, ip, mask string }
@@ -883,7 +1050,8 @@ func RenderGNBNodeConfFromBundle(b *domain.VPNBundle) string {
 	if b.Node.ListenPort > 0 {
 		fmt.Fprintf(&sb, "listen %d\n", b.Node.ListenPort)
 	}
-	sb.WriteString("daemon on\n")
+	sb.WriteString(gnbDaemonLine())
+	sb.WriteString(gnbPlatformConfKeys())
 
 	return sb.String()
 }

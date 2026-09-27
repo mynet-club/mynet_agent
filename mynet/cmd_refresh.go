@@ -1,7 +1,6 @@
 package mynet
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,7 +11,9 @@ import (
 	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
 	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/config"
 	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
 // cmdRefresh — R2-3：refresh-{routes,address,config,keys}
@@ -85,45 +86,70 @@ func varDir() string {
 	return sharedVarDir()
 }
 
-// gnbConfDir gnb 原生配置目录。
+// gnbConfDir gnb 原生配置目录 —— **投影目录** driver/gnb/conf/{nodeID}。
 //
-// 唯一口径：refresh-config 写它、service start 起它、metrics 读它的 gnb.map，
-// 三处必须一致 —— 此前 GNBDriver 的默认值是 driver/gnb/conf/<nodeId>，
-// 而 refresh-config 覆盖成 var/gnb，两边对不上。
+// 与 writeGnbProjection / ApplyFromActive 同一路径。此前这里是 var/gnb，
+// 于是「apply 写了投影、service start 起了旧目录」—— 状态乱、启动失败的根因。
 func gnbConfDir() string {
-	return filepath.Join(varDir(), "gnb")
+	nodeID := ""
+	store := &config.Store{}
+	if _, mode, err := store.ActiveSource(); err == nil && mode != nil {
+		nodeID = mode.Active.NodeID
+	}
+	if nodeID == "" {
+		// 兜底：扫投影目录唯一子目录
+		base := utils.GnbConfDir()
+		if ents, err := os.ReadDir(base); err == nil {
+			for _, e := range ents {
+				if e.IsDir() {
+					nodeID = e.Name()
+					break
+				}
+			}
+		}
+	}
+	if nodeID != "" {
+		return filepath.Join(utils.GnbConfDir(), nodeID)
+	}
+	return filepath.Join(utils.GnbConfDir(), "default")
 }
 
-// readNodeConf 读 $MYNET_HOME/conf/mynet.conf 的 KEY=VALUE。
+// readNodeConf 从配置树 v2 的 keys/ 读身份，拼成 KEY=VALUE 形态
+// （调用方仍吃 NODE_PRIV_HEX 等旧键名，避免 refresh 整条链改名）。
 //
-// cmd/mynetd/nodeface.go 里有一份同形实现，但那是 package main，import 不到。
-// 两处都只有十来行、且各自需要的字段不同（那边要 NODE_ID+PRIV+BACK_PUB 三个齐全
-// 才能签名，这边只要 PRIV），暂不强行抽公共层。
+// 位置：
+//
+//	local  → conf/local/keys/node.{private,public,meta}
+//	online → conf/online/{tenant}/keys/
+//
+// 不再读 conf/mynet.conf。
 func readNodeConf() (map[string]string, error) {
-	path := filepath.Join(confDir(), "mynet.conf")
-	f, err := os.Open(path)
+	store := &config.Store{}
+	src, mode, err := store.ActiveSource()
 	if err != nil {
-		return nil, fmt.Errorf("读节点配置失败（先运行 mynet setup）: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-
-	kv := make(map[string]string)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		kv[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	if mode == nil {
+		// 未初始化时退回 local
+		src = filepath.Join(confDir(), "local")
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("解析 %s: %w", path, err)
+	priv, pub, algo, nodeID, err := keys.LoadNodeKeys(filepath.Join(src, "keys"))
+	if err != nil {
+		return nil, fmt.Errorf("读节点密钥失败（先 mynet setup --local|--online）: %w", err)
 	}
-
+	kv := map[string]string{
+		"NODE_PRIV_HEX": priv,
+		"NODE_PUB_HEX":  pub,
+		"NODE_ID":       nodeID,
+		"VPN_TYPE":      "gnb",
+	}
+	if algo != "" {
+		kv["ALGORITHM"] = algo
+	}
+	// back_pub 在 meta.json 里
+	if meta, err := keys.LoadNodeMeta(filepath.Join(src, "keys")); err == nil && meta.BackPubHex != "" {
+		kv["BACK_PUB_HEX"] = meta.BackPubHex
+	}
 	return kv, nil
 }
 

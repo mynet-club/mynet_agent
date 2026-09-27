@@ -68,7 +68,7 @@ type NodeRef struct {
 
 // getConfigPath returns the path to the configuration file
 func getConfigPath() (string, error) {
-	configDir := utils.ConfigDir()
+	configDir := utils.ConfDir()
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create config directory: %w", err)
 	}
@@ -146,7 +146,7 @@ func LoadServerConfig() (*ServerConfig, error) {
 	if appConfig.ServerConfig == nil {
 		// Return default configuration instead of localhost
 		return &ServerConfig{
-			APIBaseURL: "https://api.mynet.example.com/v1",
+			APIBaseURL: utils.DefaultAPIBase,
 			Timeout:    30,
 			RetryCount: 3,
 		}, nil
@@ -167,6 +167,10 @@ func ResolveServerURL(userCfg *Config) string {
 	if env := strings.TrimSpace(os.Getenv("MYNET_API_BASE_URL")); env != "" {
 		return env
 	}
+	// agent.json 是端点 SSOT（用户 2026-09-26：写进配置，不写死代码）
+	if c := utils.LoadAgentCfg(); c.APIBase != "" {
+		return c.APIBase
+	}
 	if _, err := os.Stat("conf/config.json"); err == nil {
 		if appCfg, e2 := LoadAppConfig("conf/config.json"); e2 == nil && appCfg.ServerConfig != nil {
 			if s := strings.TrimSpace(appCfg.ServerConfig.APIBaseURL); s != "" {
@@ -174,7 +178,7 @@ func ResolveServerURL(userCfg *Config) string {
 			}
 		}
 	}
-	return "https://api.mynet.example.com/v1"
+	return utils.DefaultAPIBase
 }
 
 // GetLastLoginEmail 获取最后登录的邮箱，即使当前没有有效Token

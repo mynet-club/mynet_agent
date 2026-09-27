@@ -20,18 +20,40 @@ const (
 	vecNodeID   = "1245816621804034"
 )
 
-// writeConf 造一个 mynet.conf（KEY=VALUE，与 mynet/cmd_setup.go:69-70 的写法一致）。
+// writeConf 接受旧 KEY=VALUE 文本，落到配置树 v2 的 keys/。
+// 测试仍用旧形状的夹具，内部转成 node.private + meta.json。
 func writeConf(t *testing.T, body string) string {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "conf", "mynet.conf")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	kv := map[string]string{}
+	for _, ln := range strings.Split(body, "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(ln, "=")
+		if ok {
+			kv[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	return writeKeys(t, kv["NODE_ID"], kv["NODE_PRIV_HEX"], kv["BACK_PUB_HEX"])
+}
+
+func writeKeys(t *testing.T, nodeID, priv, backPub string) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	dir := filepath.Join(home, "conf", "local", "keys")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "node.private"), []byte(priv+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	meta := `{"node_id":"` + nodeID + `","algorithm":"x25519","back_pub_hex":"` + backPub + `"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func validConf() string {
@@ -42,7 +64,8 @@ func validConf() string {
 }
 
 func TestLoadNodeIdentity(t *testing.T) {
-	id, err := loadNodeIdentity(writeConf(t, validConf()))
+	writeConf(t, validConf())
+	id, err := loadNodeIdentity("")
 	if err != nil {
 		t.Fatalf("loadNodeIdentity: %v", err)
 	}
@@ -84,9 +107,9 @@ func TestLoadNodeIdentityMissingFields(t *testing.T) {
 	if err == nil {
 		t.Fatal("缺字段应报错")
 	}
-	for _, want := range []string{"NODE_PRIV_HEX", "BACK_PUB_HEX"} {
+	for _, want := range []string{"node.private", "back_pub_hex"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误应点名缺失字段 %s，实际: %v", want, err)
+			t.Errorf("错误应点名缺失 %s，实际: %v", want, err)
 		}
 	}
 }
@@ -231,15 +254,28 @@ func TestSignatureCoversBody(t *testing.T) {
 	}
 }
 
-// mynet.conf 的路径必须跟 mynet setup 的写入方一致，否则永远读不到。
-func TestMynetConfPathMatchesSetupWriter(t *testing.T) {
-	t.Setenv("MYNET_HOME", "/opt/mynet")
-	if got, want := mynetConfPath(), "/opt/mynet/conf/mynet.conf"; got != want {
-		t.Errorf("MYNET_HOME 设置时 = %q, want %q", got, want)
+// keys 目录必须跟 mynet setup v2 的写入方一致，否则永远读不到。
+func TestNodeKeysDirMatchesSetupWriter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	// 无 mode.json → 默认 local
+	got, err := nodeKeysDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	t.Setenv("MYNET_HOME", "")
-	if got := mynetConfPath(); got != filepath.Join("conf", "mynet.conf") {
-		t.Errorf("MYNET_HOME 未设时 = %q, want conf/mynet.conf", got)
+	if want := filepath.Join(home, "conf", "local", "keys"); got != want {
+		t.Errorf("默认 keys = %q, want %q", got, want)
+	}
+	// mode.json online → online/{tenant}/keys
+	if err := os.WriteFile(filepath.Join(home, "mode.json"),
+		[]byte(`{"schema":2,"mode":"online","active":{"tenant_id":"t_9","node_id":"n"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = nodeKeysDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "conf", "online", "t_9", "nodes", "n", "keys"); got != want {
+		t.Errorf("online keys = %q, want %q", got, want)
 	}
 }

@@ -58,14 +58,15 @@ echo "▸ 目标：${CTL_BASE_URL}/api/v2/releases  product=${PRODUCT}"
 echo
 
 n=0; skipped=0; failed=0
-for f in "$DIST"/${PRODUCT}_*.tgz; do
+# 同批要传：tgz 裸包 + 桌面安装器（exe/dmg/pkg）。zip 是 windows 裸包。
+for f in "$DIST"/${PRODUCT}_*.tgz "$DIST"/${PRODUCT}_*.zip "$DIST"/${PRODUCT}_*.exe "$DIST"/${PRODUCT}_*.dmg "$DIST"/${PRODUCT}_*.pkg; do
   [ -f "$f" ] || continue
   base=$(basename "$f")
+  ext="${base##*.}"
 
-  # 文件名形状：mynet_agent_<platform>_<arch>_<version>.tgz
-  # version 里可以有点和横线（如 v0.0.0-0de6f86），所以只切前两刀，其余全归 version
+  # 文件名形状：mynet_agent_<platform>_<arch>_<version>.<ext>
   rest=${base#"${PRODUCT}_"}
-  rest=${rest%.tgz}
+  rest=${rest%."$ext"}
   platform=${rest%%_*}
   tmp=${rest#*_}
   arch=${tmp%%_*}

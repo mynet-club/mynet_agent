@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/shared"
@@ -46,6 +48,19 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "subcommand not allowed"})
 		return
 	}
+	// 启停意图：供 mynetd 开机恢复隧道（agent.json 开关）
+	if len(body.Argv) >= 2 && body.Argv[0] == "service" {
+		driver := "gnb"
+		if len(body.Argv) >= 3 && body.Argv[2] == "wireguard" {
+			driver = "wireguard"
+		}
+		switch body.Argv[1] {
+		case "start":
+			markTunnelWantDriver(true, driver)
+		case "stop":
+			markTunnelWantDriver(false, driver)
+		}
+	}
 	s.dispatch(w, body.Argv)
 }
 
@@ -81,7 +96,7 @@ func allowedSubcommand(cmd string) bool {
 	switch cmd {
 	case "detector", "metrics", "apply", "service", "driver",
 		"setup", "install", "uninstall", "update", "config",
-		"status", "monitor", "check", "nodes", "platform",
+		"status", "monitor", "check", "nodes", "platform", "plugin",
 		// 向导用到的账号态/节点归属原语
 		"auth", "tenants", "node":
 		return true
@@ -128,10 +143,7 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 
 func defaultExecMynet(argv []string) (any, error) {
 	// 执行器：桌面 exec mynet <子命令>；OpenWrt 装配时换 lua
-	bin := os.Getenv("MYNET_BIN")
-	if bin == "" {
-		bin = "mynet"
-	}
+	bin := resolveMynetBin()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, argv...)
@@ -150,6 +162,34 @@ func defaultExecMynet(argv []string) (any, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// resolveMynetBin 找执行器二进制。
+//
+// 顺序：MYNET_BIN → mynetd 同目录 → PATH。
+// 为什么要看同目录：Windows 上装完是 `C:\mynet\bin\{mynetd,mynet}.exe`，
+// 这个目录通常**不在 PATH** 里。只查 PATH 会让 mynetd 一起来就
+// 「找不到 mynet」，每个分派都 500 —— 真机实测咬过（V5-2）。
+// 同目录查找对 linux/darwin 的 /opt/mynet/bin 形态同样有用。
+func resolveMynetBin() string {
+	if bin := os.Getenv("MYNET_BIN"); bin != "" {
+		return bin
+	}
+	name := utils.ExeName("mynet")
+	if self, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(self), name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	// PATH 查找；LookPath 在 Windows 上会自动补 .exe
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	if p, err := exec.LookPath("mynet"); err == nil {
+		return p
+	}
+	return name // 让 Run() 报出带名字的错误，而不是空路径
 }
 
 // sanitizeValue 对非 map 的值也走一遍脱敏（错误分支里 stdout/stderr 是字符串）。

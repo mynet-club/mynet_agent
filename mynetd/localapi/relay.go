@@ -1,6 +1,7 @@
 package localapi
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent-V2/gateway/relaypolicy"
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
 // /api/v1/relay —— GUI → mynetd → gateway → back 的**两跳**中继。
@@ -98,10 +100,15 @@ const relayTimeout = 30 * time.Second // 与 gateway 侧一致
 func firstGateway() string {
 	gw := os.Getenv("MYNET_GATEWAYS")
 	if gw == "" {
+		// launchd/桌面安装不一定注入 MYNET_GATEWAYS：回退 agent.json 里**显式**的 gateway。
+		// 不用 LoadAgentCfg 的代码默认值 —— 那是 WS 拨号默认；relay 要的是「本机确实配了网关」。
+		gw = agentGatewayExplicit()
+	}
+	if gw == "" {
 		return ""
 	}
 	gw = strings.Split(gw, ",")[0]
-	// MYNET_GATEWAYS 是 WS 入口（wss://…）；relay 是同主机的 HTTPS 面。
+	// MYNET_GATEWAYS / agent.json 是 WS 入口（wss://…）；relay 是同主机的 HTTPS 面。
 	// 不换协议会得到 `unsupported protocol scheme "wss"` —— 实测撞过。
 	if strings.HasPrefix(gw, "wss://") {
 		return "https://" + strings.TrimPrefix(gw, "wss://")
@@ -110,4 +117,19 @@ func firstGateway() string {
 		return "http://" + strings.TrimPrefix(gw, "ws://")
 	}
 	return gw
+}
+
+// agentGatewayExplicit 只读 agent.json 文件里写明的 gateway，不读代码默认。
+func agentGatewayExplicit() string {
+	b, err := os.ReadFile(utils.AgentConfigPath())
+	if err != nil {
+		return ""
+	}
+	var j struct {
+		Gateway string `json:"gateway"`
+	}
+	if err := json.Unmarshal(b, &j); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(j.Gateway)
 }

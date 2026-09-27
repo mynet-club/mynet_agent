@@ -1,15 +1,86 @@
 package localapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mynet-club/mynet_agent-V2/mynet"
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
+
+// relayToBack 经 gateway /v1/relay 打 back 路径（本机 WebUI 的唯一出网方式）。
+func relayToBack(ctx context.Context, method, backPath string, body []byte) ([]byte, int, error) {
+	gw := firstGateway()
+	if gw == "" {
+		return nil, 0, fmt.Errorf("未配置 MYNET_GATEWAYS，无法中继到 back")
+	}
+	target := strings.TrimRight(gw, "/") + "/v1/relay?path=" + url.QueryEscape(backPath)
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, rd)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := (&http.Client{Timeout: relayTimeout}).Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	return raw, resp.StatusCode, err
+}
+
+func anyToStrSafe(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case float64:
+		// JSON 数字默认进 float64；雪花 ID 用 %v 会变科学计数法（3.84e+15）
+		if t == float64(int64(t)) {
+			return fmt.Sprintf("%d", int64(t))
+		}
+		return strings.TrimSpace(strconv.FormatFloat(t, 'f', -1, 64))
+	case json.Number:
+		return t.String()
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	default:
+		return strings.TrimSpace(fmt.Sprint(t))
+	}
+}
+
+func expiryFromSecs(secs int) string {
+	if secs <= 0 {
+		return ""
+	}
+	return time.Now().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
+}
+
+func machineName() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "local"
+}
 
 // 「首次运行向导：登录 → 选节点 → 下载配置」的**本机 API 面**。
 //
@@ -38,38 +109,111 @@ func (s *Server) registerWizardRoutes() {
 	s.mux.HandleFunc("/api/v1/node-status", s.handleNodeStatus)
 }
 
-// handleWizardLogin 口令走 stdin，绝不进 argv。
+// handleWizardLogin —— 本机 WebUI 登录。
 //
-//	POST {"api_base_url":"https://…","email":"you@example.com","password":"…"}
+// 链路：浏览器 → mynetd(127.0.0.1) → gateway /v1/relay → back `/api/v1/auth/login`
+// **不**让浏览器/表单填云端 API；api_base 概念对本机页不存在。
+// 口令只进请求体（发给 back），**不进 argv、不落日志、不回显**。
+// 成功后把会话写进本机 credential.json（0600），供节点面/CLI 复用。
+//
+//	POST {"email":"…","password":"…"}
 func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
 		return
 	}
 	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		// 旧字段忽略：本机页不填 API
 		APIBaseURL string `json:"api_base_url"`
-		Email      string `json:"email"`
-		Password   string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "bad json"})
 		return
 	}
-	if body.APIBaseURL == "" || body.Email == "" || body.Password == "" {
-		writeJSON(w, 400, map[string]any{"success": false, "message": "api_base_url / email / password 均必填"})
+	if body.Email == "" || body.Password == "" {
+		writeJSON(w, 400, map[string]any{"success": false, "message": "email / password 必填"})
 		return
 	}
 
-	argv := []string{"auth", "login", "--api", body.APIBaseURL, "--email", body.Email, "--password-stdin"}
-	out, err := s.execWithStdin(argv, body.Password+"\n")
-
-	// ⚠️ 响应里绝不回显口令或 token
-	safe := sanitizeWizardOut(out)
+	payload, _ := json.Marshal(map[string]string{
+		"email":              body.Email,
+		"password":           body.Password,
+		"device_name":        machineName(),
+		"device_fingerprint": mynet.DeviceFingerprint(),
+	})
+	relayFn := s.Relay
+	if relayFn == nil {
+		relayFn = relayToBack
+	}
+	raw, code, err := relayFn(r.Context(), "POST", "/api/v1/auth/login", payload)
 	if err != nil {
-		writeJSON(w, 502, map[string]any{"success": false, "message": err.Error(), "data": safe})
+		writeJSON(w, 502, map[string]any{"success": false, "message": "登录转发失败: " + err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"success": true, "data": safe})
+
+	var env struct {
+		Success bool `json:"success"`
+		Data    struct {
+			User struct {
+				UserID interface{} `json:"user_id"`
+				Name   string      `json:"name"`
+				Email  string      `json:"email"`
+			} `json:"user"`
+			TenantID           interface{} `json:"tenant_id"`
+			AuthToken          string      `json:"auth_token"`
+			RefreshToken       string      `json:"refresh_token"`
+			AuthTokenExpiresIn int         `json:"auth_token_expires_in"`
+			RefreshExpiresIn   int         `json:"refresh_token_expires_in"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		writeJSON(w, 502, map[string]any{"success": false, "message": "登录响应无法解析"})
+		return
+	}
+	if !env.Success || env.Data.AuthToken == "" {
+		msg := env.Message
+		if msg == "" {
+			msg = fmt.Sprintf("登录失败（HTTP %d）", code)
+		}
+		writeJSON(w, code, map[string]any{"success": false, "message": msg})
+		return
+	}
+
+	// 会话落盘（0600）：token 不回浏览器
+	apiBase := utils.LoadAgentCfg().APIBase
+	if apiBase == "" {
+		apiBase = utils.DefaultAPIBase
+	}
+	cred := &mynet.Credential{
+		UserID:            anyToStrSafe(env.Data.User.UserID),
+		UserEmail:         env.Data.User.Email,
+		Token:             env.Data.AuthToken,
+		RefreshToken:      env.Data.RefreshToken,
+		AuthExpiresAt:     expiryFromSecs(env.Data.AuthTokenExpiresIn),
+		RefreshExpiresAt:  expiryFromSecs(env.Data.RefreshExpiresIn),
+		TenantID:          anyToStrSafe(env.Data.TenantID),
+		APIBaseURL:        apiBase,
+		MachineID:         machineName(),
+		DeviceFingerprint: mynet.DeviceFingerprint(),
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := mynet.SaveCredential(cred); err != nil {
+		writeJSON(w, 500, map[string]any{"success": false, "message": "会话保存失败: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"logged_in":  true,
+			"user_email": cred.UserEmail,
+			"user_id":    cred.UserID,
+			"tenant_id":  cred.TenantID,
+		},
+	})
 }
 
 func (s *Server) handleWizardLogout(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +252,19 @@ func (s *Server) handleWizardState(w http.ResponseWriter, r *http.Request) {
 	if kv := readKV(filepath.Join(conf, "mynet.conf")); kv != nil {
 		st["node_id"] = kv["NODE_ID"]
 		st["back_pub"] = kv["BACK_PUB_HEX"]
+	}
+	// 运行中的身份以 active profile 为准：mynet.conf 可能残留切换/迁移前的旧 NODE_ID，
+	// 两处不一致时 UI 会「一边成功一边未配置」。
+	if data, err := s.opsJSON([]string{"config", "identity", "--json"}); err == nil && data != nil {
+		if id, _ := data["node_id"].(string); id != "" {
+			st["node_id"] = id
+		}
+		if nm, _ := data["tenant_name"].(string); nm != "" {
+			st["tenant_name"] = nm
+		}
+		if em, _ := data["user_email"].(string); em != "" {
+			st["user_email"] = em
+		}
 	}
 	// 从 credential.json 只取**非敏感**字段
 	if b, err := os.ReadFile(filepath.Join(conf, "credential.json")); err == nil {

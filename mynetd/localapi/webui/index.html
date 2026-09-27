@@ -1,20 +1,1911 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MyNet 节点中心</title>
+<!-- AI生成 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MyNet</title>
 <style>
-:root{--bg:#07100f;--side:#0a1513;--card:#101d1a;--card2:#14231f;--line:#21332e;--ink:#f1f7f4;--mut:#91a59e;--brand:#50e3a4;--warn:#f6c762;--bad:#ff7b7b;--r:18px;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 70% -10%,#17352c,transparent 38%),var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif}.shell{min-height:100vh;display:grid;grid-template-columns:240px 1fr}.side{height:100vh;position:sticky;top:0;padding:24px 16px;border-right:1px solid var(--line);background:#091411dd;display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:11px;padding:0 10px 28px;font-size:17px;font-weight:750}.logo{width:32px;height:32px;border-radius:10px;background:linear-gradient(145deg,var(--brand),#2aa8a1);display:grid;place-items:center;color:#062019;font-weight:900}.label{padding:0 11px 8px;color:#63776f;font-size:11px;font-weight:700;letter-spacing:.12em}.nav{display:grid;gap:5px}.nav button{border:0;background:transparent;color:var(--mut);text-align:left;padding:12px;border-radius:11px;cursor:pointer}.nav button:hover,.nav button.on{background:#163027;color:var(--brand)}.sidefoot{margin-top:auto;padding:14px 10px;border-top:1px solid var(--line);color:var(--mut);font-size:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#667a73;margin-right:8px}.dot.ok{background:var(--brand);box-shadow:0 0 0 4px #50e3a422}.top{height:72px;padding:0 34px;display:flex;align-items:center;border-bottom:1px solid var(--line);position:sticky;top:0;background:#07100fbb;backdrop-filter:blur(14px);z-index:10}.top strong{font-weight:650}.top .space{margin-left:auto;border:1px solid var(--line);background:var(--card);padding:7px 12px;border-radius:99px;color:var(--mut);font-size:12px}.content{max-width:1180px;margin:auto;padding:32px 34px 52px}.view{display:none}.view.on{display:block}.head{display:flex;align-items:end;margin-bottom:24px}.eyebrow{color:var(--brand);font-size:11px;font-weight:750;letter-spacing:.12em;text-transform:uppercase}.head h1{font-size:28px;letter-spacing:-.03em;margin:5px 0 0}.head p{color:var(--mut);margin:5px 0 0}.actions{margin-left:auto;display:flex;gap:8px}button{border:1px solid var(--line);background:var(--card2);color:var(--ink);padding:9px 14px;border-radius:10px;cursor:pointer;font:inherit}button:hover{border-color:#45675b}button:disabled{opacity:.45}.primary{background:var(--brand);border-color:var(--brand);color:#062017;font-weight:700}.quiet{background:transparent;color:var(--mut)}.danger{background:#ff7b7b12;color:var(--bad);border-color:#ff7b7b55}.hero,.card,.stat{background:#101d1aee;border:1px solid var(--line);border-radius:var(--r)}.hero{padding:25px 26px;display:flex;align-items:center;gap:16px;margin-bottom:14px;box-shadow:0 18px 50px #0003}.light{width:13px;height:13px;border-radius:50%;background:#667a73;box-shadow:0 0 0 6px #667a7322}.hero.ok .light{background:var(--brand);box-shadow:0 0 0 6px #50e3a422}.hero.warn .light{background:var(--warn)}.hero.bad .light{background:var(--bad)}.hero h2{font-size:20px;margin:0}.hero p{color:var(--mut);margin:4px 0 0}.hero .actions{z-index:1}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}.stat{padding:17px}.stat small{display:block;color:var(--mut);margin-bottom:7px}.stat b{font-size:17px}.sub{font-size:11px;color:#667a73;margin-top:3px}.grid2{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}.card{padding:20px}.cardhead{display:flex;align-items:center;margin-bottom:13px}.cardhead h3{font-size:14px;margin:0}.cardhead span,.cardhead button{margin-left:auto}.facts{display:grid}.fact{display:flex;padding:11px 0;border-bottom:1px solid #21332eb8}.fact:last-child{border:0}.fact span{color:var(--mut)}.fact b{margin-left:auto}.check{display:flex;gap:10px;padding:10px 0}.checki{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#50e3a422;color:var(--brand);flex:none}.checki.off{background:#91a59e15;color:#71857e}.check small{display:block;color:var(--mut)}.mono{font:12px var(--mono)}table{width:100%;border-collapse:collapse}th{text-align:left;color:#71857e;font-size:11px;letter-spacing:.07em;padding:10px;border-bottom:1px solid var(--line)}td{padding:14px 10px;border-bottom:1px solid #21332eaa}.badge{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:3px 8px;color:var(--mut);font-size:11px;margin:2px}.badge.ok{color:var(--brand);border-color:#50e3a444}.badge.warn{color:var(--warn)}.settings{display:grid;grid-template-columns:200px 1fr;gap:14px}.subnav button{width:100%;border:0;background:transparent;text-align:left;color:var(--mut)}.subnav button.on{background:#163027;color:var(--brand)}.pane{display:none}.pane.on{display:block}.row{display:flex;gap:9px;align-items:end;flex-wrap:wrap}.field{display:grid;gap:5px;flex:1;min-width:160px}.field label,.note{color:var(--mut);font-size:12px}input{width:100%;background:#08130f;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:10px}details{margin-top:15px;color:var(--mut);font-size:12px}pre{background:#08130f;border:1px solid var(--line);border-radius:12px;padding:14px;max-height:300px;overflow:auto;white-space:pre-wrap;font:11px/1.6 var(--mono)}.console{padding:0;overflow:hidden}.consolebar{padding:20px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center}.consolebar .mark{width:42px;height:42px;border-radius:13px;background:linear-gradient(145deg,#6faeff,#7c6fff);display:grid;place-items:center;margin-right:13px}.consolebar h3,.consolebar p{margin:0}.consolebar p{color:var(--mut);font-size:12px}.consolebar .badge{margin-left:auto}iframe{width:100%;height:calc(100vh - 230px);min-height:560px;border:0;background:white}.modalbg{position:fixed;inset:0;background:#000a;display:grid;place-items:center;z-index:100;padding:18px}.modal{width:min(520px,100%);background:var(--card);border:1px solid #385147;border-radius:20px;padding:22px}.choice{display:grid;grid-template-columns:1fr 1fr;gap:10px}.choice button{text-align:left;padding:18px}.choice small{display:block;color:var(--mut)}.wiz{display:none}.wiz.on{display:block}.hidden{display:none!important}#toasts{position:fixed;right:18px;bottom:18px;z-index:200;display:grid;gap:8px}.toast{background:#182923;border:1px solid #345147;border-left:3px solid var(--brand);padding:10px 14px;border-radius:11px}.toast.err{border-left-color:var(--bad)}.toast span{display:block;color:var(--mut);font-size:12px}.spin{display:inline-block;width:12px;height:12px;border:2px solid;border-right-color:transparent;border-radius:50%;animation:s .7s linear infinite;margin-right:6px}@keyframes s{to{transform:rotate(360deg)}}@media(max-width:850px){.shell{grid-template-columns:1fr}.side{height:auto;position:static;flex-direction:row;align-items:center;padding:13px 18px}.brand{padding:0}.label,.sidefoot{display:none}.nav{display:flex;margin-left:auto}.top{padding:0 20px}.content{padding:24px 18px}.stats{grid-template-columns:1fr 1fr}.grid2,.settings{grid-template-columns:1fr}.subnav{display:flex;overflow:auto}.head{align-items:start;flex-direction:column}.actions{margin-left:0;margin-top:12px}}@media(max-width:520px){.stats{grid-template-columns:1fr}.hero{align-items:start;flex-wrap:wrap}.hero .actions{margin-left:28px}.choice{grid-template-columns:1fr}}
-</style></head><body><div class="shell"><aside class="side"><div class="brand"><div class="logo">M</div>MyNet</div><div class="label">工作区</div><nav class="nav"><button class="on" data-main="overview">◉　本机节点</button><button data-main="console">◎　网络控制台</button></nav><div class="sidefoot"><span class="dot" id="daemon-dot"></span><span id="daemon">正在连接本机服务</span></div></aside><div><header class="top"><strong id="crumb">本机节点 · 概览</strong><div class="space"><span class="dot" id="space-dot"></span><span id="space-name">读取中…</span>　<button class="quiet" id="refresh">↻</button></div></header><main class="content">
-<section class="view on" id="view-overview"><div class="head"><div><div class="eyebrow">Local node</div><h1>这台设备</h1><p>管理隧道、查看连接，并保持节点在线。</p></div><div class="actions"><button class="quiet" data-go="settings">节点设置</button><button class="quiet" data-main="console">进入网络控制台 ↗</button></div></div><div class="hero" id="hero"><span class="light"></span><div><h2 id="status-title">正在读取节点状态…</h2><p id="status-detail">请稍候</p></div><div class="actions"><button class="primary" id="primary">启动节点</button><button class="quiet" id="secondary">配置节点</button></div></div><div class="stats"><div class="stat"><small>虚拟地址</small><b class="mono" id="overlay">—</b><div class="sub">Overlay IP</div></div><div class="stat"><small>连接节点</small><b id="peers">—</b><div class="sub" id="peers-sub">等待状态</div></div><div class="stat"><small>隧道接口</small><b class="mono" id="tun">—</b><div class="sub" id="uptime">尚未运行</div></div><div class="stat"><small>网络流量</small><b id="traffic">—</b><div class="sub">接收 / 发送</div></div></div><div class="grid2"><div class="card"><div class="cardhead"><h3>节点身份</h3><span class="badge" id="mode">—</span></div><div class="facts"><div class="fact"><span>节点 ID</span><b class="mono" id="node-id">—</b></div><div class="fact"><span>运行空间</span><b id="fact-space">—</b></div><div class="fact"><span>网络驱动</span><b id="driver">—</b></div><div class="fact"><span>MTU</span><b id="mtu">—</b></div></div></div><div class="card"><div class="cardhead"><h3>运行检查</h3><button class="quiet" data-go="connections">查看连接</button></div><div id="checks"></div></div></div><details><summary>诊断数据</summary><pre id="raw">—</pre></details></section>
-<section class="view" id="view-connections"><div class="head"><div><div class="eyebrow">Connections</div><h1>节点连接</h1><p>查看链路方式、延迟与路由状态。</p></div><div class="actions"><button data-go="overview">返回概览</button></div></div><div class="card" style="overflow:auto"><table><thead><tr><th>节点</th><th>虚拟地址</th><th>链路</th><th>延迟</th><th>路由</th></tr></thead><tbody id="peer-table"></tbody></table></div></section>
-<section class="view" id="view-settings"><div class="head"><div><div class="eyebrow">Node settings</div><h1>节点设置</h1><p>低频配置集中在这里，日常使用无需改动。</p></div><div class="actions"><button data-go="overview">返回概览</button><button class="primary" id="btn-new-ws">添加配置</button></div></div><div class="settings"><nav class="card subnav"><button class="on" data-pane="keys">身份与密钥</button><button data-pane="runtime">运行配置</button><button data-pane="plugins">转发出口</button></nav><div><div class="card pane on" id="pane-keys"><div class="cardhead"><h3>身份与密钥</h3></div><p class="note">私钥只保存在本机。更换密钥会使现有连接暂时中断。</p><div id="keys-status"></div><div class="row" style="margin-top:16px"><button id="btn-key-restore">导入密钥</button><button class="danger" id="btn-key-gen">生成新密钥</button><button id="btn-key-upload">同步公钥</button></div><div class="row hidden" id="keys-form" style="margin-top:15px"><div class="field"><label>私钥</label><input type="password" id="key-priv"></div><div class="field"><label>公钥</label><input id="key-pub"></div><button class="primary" id="btn-key-save">保存</button><button id="btn-key-cancel">取消</button></div><details><summary>密钥诊断</summary><pre id="keys-raw"></pre></details></div><div class="card pane" id="pane-runtime"><div class="cardhead"><h3>运行配置</h3></div><p class="note">联网节点从服务端更新配置；本地节点由当前设置生成。</p><div id="rt-status"></div><div class="row" style="margin-top:16px"><button id="btn-rt-pull">从服务端更新</button><button class="primary" id="btn-rt-apply">重新生成并启动</button></div><details><summary>驱动配置</summary><pre id="rt-raw"></pre></details></div><div class="card pane" id="pane-plugins"><div class="cardhead"><h3>转发出口</h3></div><p class="note">将本机作为流量入口，并选择可用的出口节点。</p><div id="plug-status"></div><div class="row" style="margin-top:16px"><button id="btn-plug-refresh">刷新</button><button class="primary" id="btn-plug-toggle">启用 proxy</button><button id="btn-plug-add">添加出口</button></div><div class="row hidden" id="plug-form" style="margin-top:15px"><div class="field"><label>节点 ID</label><input id="plug-id"></div><div class="field"><label>权重</label><input id="plug-weight" value="10"></div><div class="field"><label>顺序</label><input id="plug-order" value="1"></div><button class="primary" id="btn-plug-save">保存</button></div><div id="plug-exits"></div><details><summary>插件诊断</summary><pre id="plug-raw"></pre></details></div></div></div></section> <!-- GUARD-OK 误报：HTML 表单 id/class 长字面量，非凭据 -->
-<section class="view" id="view-console"><div class="head"><div><div class="eyebrow">Gateway relay</div><h1>网络控制台</h1><p>通过本机节点安全进入 MyNet，管理网络、成员与设备。</p></div><div class="actions"><button id="console-reload">重新载入</button><button class="primary" id="console-new">新窗口打开 ↗</button></div></div><div class="card console"><div class="consolebar"><div class="mark">↗</div><div><h3>经 Gateway 连接</h3><p>浏览器只连接本机；平台请求由 mynetd 转发。</p></div><span class="badge ok">Relay</span></div><iframe id="console-frame" title="MyNet 网络控制台"></iframe></div></section>
-</main></div></div><div id="toasts"></div><div id="modal-root"></div>
-<div class="modalbg hidden" id="wizard"><div class="modal"><div class="cardhead"><h3>添加节点配置</h3><button id="wiz-finish">关闭</button></div><div class="wiz on" data-wiz="1"><p>这台设备要如何加入网络？</p><div class="choice"><button id="wiz-online"><b>连接 MyNet</b><small>登录并选择平台节点</small></button><button id="wiz-local"><b>仅本机配置</b><small>不登录平台，手工配置</small></button></div></div><div class="wiz" data-wiz="2"><div class="row"><div class="field"><label>API 地址</label><input id="wiz-api" placeholder="https://api.mynet.club"></div><div class="field"><label>邮箱</label><input id="wiz-email"></div><div class="field"><label>密码</label><input type="password" id="wiz-pass"></div></div><div class="row" style="margin-top:15px"><button class="primary" id="wiz-login">登录</button><button class="danger" id="wiz-key-gen">生成密钥</button><button id="wiz-rt-make">生成配置</button></div></div><div class="wiz" data-wiz="3"><h3>配置已准备</h3><p>现在可以启动节点，也可以稍后从概览页启动。</p><div class="actions"><button id="wiz-skip">稍后启动</button><button class="primary" id="wiz-start">启动节点</button></div></div></div></div> <!-- GUARD-OK 误报：HTML 表单 id/class 长字面量，非凭据 -->
+:root{
+  --bg:#f4f7f6;--card:#ffffff;--soft:#eef5f2;--line:#d7e4de;
+  --ink:#152a23;--mut:#61766d;--brand:#16805d;--brand-soft:#e4f3ed;
+  --warn:#b77908;--warn-bg:#fff8e8;--bad:#c94b4b;--bad-bg:#fff1ef;
+  --ok:#16805d;--r:14px;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:linear-gradient(180deg,#f7fbf9 0%,var(--bg) 220px);
+  color:var(--ink);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+}
+button{font:inherit;cursor:pointer;border-radius:10px}
+button:disabled{opacity:.45;cursor:not-allowed}
+.mono{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere}
+.hidden{display:none!important}
+
+/* ── ① 顶栏：路径导航 ── */
+.topbar{
+  position:sticky;top:0;z-index:20;
+  display:flex;align-items:center;gap:14px;
+  height:56px;padding:0 28px;
+  background:#ffffffee;backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);
+}
+.crumb{display:flex;align-items:center;gap:8px;font-size:15px}
+.crumb .home{font-weight:700;color:var(--ink);cursor:pointer;user-select:none}
+.crumb .sep{color:var(--mut);opacity:.55}
+.crumb .page-name{font-weight:600;color:var(--brand)}
+.crumb .tab-name{font-weight:550;color:var(--mut)}
+.crumb .crumb-tab-sep{opacity:.45}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.net-chip{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 12px;border:1px solid var(--line);border-radius:99px;
+  background:var(--card);color:var(--mut);font-size:12.5px;
+}
+.dot{width:8px;height:8px;border-radius:50%;background:#9bb0a7;flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px #16805d22}
+.dot.warn{background:var(--warn)}
+.dot.bad{background:var(--bad)}
+.btn{
+  border:1px solid var(--line);background:var(--card);color:var(--ink);
+  padding:7px 13px;border-radius:10px;
+}
+.btn:hover{background:var(--soft)}
+.btn.primary{
+  border-color:transparent;background:var(--brand);color:#fff;
+  box-shadow:0 4px 12px #16805d2b;
+}
+.btn.primary:hover{filter:brightness(1.05)}
+.btn.caution{background:var(--warn-bg);border-color:#e8c982;color:#9a6400}
+.btn.danger{background:var(--bad-bg);border-color:#e8aaa6;color:#b83d38}
+.btn.ghost{background:transparent}
+
+/* ── 主区域 ── */
+.wrap{max-width:1040px;margin:0 auto;padding:22px 28px 56px}
+.page{display:none}
+.page.on{display:block}
+
+/* ── ② 页面核心卡片 ── */
+.hero{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:22px 24px;margin-bottom:16px;
+  box-shadow:0 8px 24px #315b4a0d;
+}
+.hero-head{display:flex;align-items:flex-start;gap:12px}
+.hero-head .grow{flex:1;min-width:0}
+.hero h1{margin:0;font-size:22px;font-weight:700;letter-spacing:-.01em}
+.hero h1 .light{
+  display:inline-block;width:10px;height:10px;border-radius:50%;
+  background:#9bb0a7;margin-right:10px;vertical-align:2px;
+}
+.hero.ok h1 .light{background:var(--ok);box-shadow:0 0 0 4px #16805d22}
+.hero.warn h1 .light{background:var(--warn);box-shadow:0 0 0 4px #b7790822}
+.hero.bad h1 .light{background:var(--bad);box-shadow:0 0 0 4px #c94b4b22}
+.hero .detail{margin:8px 0 0;color:var(--mut);font-size:13.5px}
+.hero-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.facts{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:14px 18px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line);
+}
+.facts .f small{display:block;color:var(--mut);font-size:11.5px;margin-bottom:3px}
+.facts .f b{font-size:16px;font-weight:650;font-variant-numeric:tabular-nums}
+.facts .f .sub{color:var(--mut);font-size:11.5px;margin-top:2px}
+
+/* ── ① 第一层 Tab：页面 ── */
+.pagetabs{
+  display:flex;gap:4px;padding:4px;margin-bottom:16px;
+  background:#e7efeb;border-radius:12px;
+}
+.pagetabs button{
+  flex:1;border:0;background:transparent;color:var(--mut);
+  padding:11px 14px;border-radius:9px;font-weight:600;font-size:14px;
+}
+.pagetabs button:hover{color:var(--ink);background:#ffffff66}
+.pagetabs button.on{
+  background:var(--card);color:var(--brand);
+  box-shadow:0 2px 10px #315b4a18;font-weight:700;
+}
+
+/* ── ③ 第二层 Tab：功能区 ── */
+.tabbar{
+  display:flex;gap:4px;padding:5px;margin-bottom:14px;
+  background:var(--soft);border-radius:12px;
+}
+.tabbar button{
+  flex:1;border:0;background:transparent;color:var(--mut);
+  padding:10px 12px;border-radius:9px;font-weight:500;
+}
+.tabbar button:hover{color:var(--ink)}
+.tabbar button.on{
+  background:var(--card);color:var(--brand);
+  box-shadow:0 2px 8px #315b4a14;font-weight:650;
+}
+
+/* ── Tab 内容 ── */
+.panel{display:none}
+.panel.on{display:block}
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:18px 20px;margin-bottom:12px;
+}
+.card h3{margin:0 0 4px;font-size:15px;font-weight:650}
+.card .note{margin:0 0 14px;color:var(--mut);font-size:12.5px;line-height:1.55}
+.cardhead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.cardhead h3{margin:0}
+
+.kv-table{width:100%;border-collapse:collapse}
+.kv-table th{
+  text-align:left;color:var(--mut);font-size:11.5px;font-weight:600;
+  letter-spacing:.04em;text-transform:uppercase;
+  padding:8px 10px;border-bottom:1px solid var(--line);
+}
+.kv-table td{padding:11px 10px;border-top:1px solid var(--line);font-size:13.5px}
+.kv-table tr:first-child td{border-top:0}
+.kv-table .k{color:var(--mut);width:38%}
+.kv-table .v{font-weight:550}
+
+.grid-table{width:100%;border-collapse:collapse;font-size:13px}
+.grid-table th{
+  text-align:left;color:var(--mut);font-size:11.5px;font-weight:600;
+  padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;
+}
+.grid-table td{padding:10px;border-top:1px solid var(--line);vertical-align:top}
+.grid-table tr:first-child td{border-top:0}
+.table-scroll{overflow:auto}
+
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:2px 9px;border-radius:99px;font-size:12px;
+  background:var(--soft);color:var(--mut);border:1px solid transparent;
+}
+.badge.ok{background:var(--brand-soft);color:var(--brand)}
+.badge.warn{background:var(--warn-bg);color:var(--warn)}
+.badge.bad{background:var(--bad-bg);color:var(--bad)}
+
+.check-list{display:grid;gap:8px}
+.check{
+  display:flex;align-items:flex-start;gap:10px;
+  padding:11px 12px;border-radius:11px;background:var(--soft);
+}
+.checki{
+  width:22px;height:22px;border-radius:50%;flex:none;
+  display:grid;place-items:center;font-size:12px;font-weight:700;
+  background:var(--brand-soft);color:var(--brand);
+}
+.checki.off{background:#e8eeeb;color:#8a9a93}
+.check b{display:block;font-size:13.5px}
+.check small{color:var(--mut);font-size:12px}
+
+/* 节点配置 2×2 选择卡片 */
+.key-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0;
+}
+.key-card{
+  text-align:left;padding:14px 14px 12px;border:1.5px solid var(--line);
+  background:var(--card);border-radius:12px;cursor:pointer;color:var(--ink);
+  font:inherit;transition:border-color .15s,background .15s,opacity .15s;
+}
+.key-card:hover{border-color:#a8cfc0;background:var(--soft)}
+.key-card.on{border-color:var(--brand);background:var(--brand-soft);box-shadow:0 0 0 2px #16805d22}
+.key-grid.has-on .key-card:not(.on){opacity:.45;filter:grayscale(.25)}
+.kc-title{font-weight:700;font-size:14px;margin-bottom:6px}
+.kc-desc{font-size:12px;color:var(--mut);line-height:1.55;min-height:54px}
+.kc-meta{margin-top:8px}
+.key-op{
+  margin:8px 0 4px;padding:14px;border:1px dashed var(--brand);
+  border-radius:12px;background:#f6fbf9;
+}
+.key-op h4{margin:0 0 6px;font-size:14px}
+@media (max-width:520px){
+  .key-grid{grid-template-columns:1fr}
+  .kc-desc{min-height:0}
+}
+.subtabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.subtabs button{
+  border:1px solid var(--line);background:var(--card);color:var(--mut);
+  padding:7px 13px;border-radius:99px;font-size:12.5px;
+}
+.subtabs button.on{
+  background:var(--brand-soft);border-color:#b9dfd0;color:var(--brand);font-weight:650;
+}
+.subpane{display:none}
+.subpane.on{display:block}
+
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.field{display:grid;gap:5px;min-width:160px;flex:1}
+.field label{font-size:12px;color:var(--mut);font-weight:600}
+.field input,.field select{
+  border:1px solid var(--line);background:var(--card);color:var(--ink);
+  border-radius:10px;padding:9px 11px;font:inherit;
+}
+.stack{display:grid;gap:8px}
+
+details.raw{margin-top:12px}
+details.raw summary{
+  cursor:pointer;color:var(--mut);font-size:12px;user-select:none;
+  padding:6px 0;
+}
+details.raw pre{
+  margin:8px 0 0;padding:12px;background:#0f1c17;color:#cfe8dc;
+  border-radius:10px;overflow:auto;max-height:280px;
+  font:12px/1.5 var(--mono);
+}
+
+.topo{
+  display:grid;place-items:center;min-height:280px;
+  background:var(--soft);border-radius:12px;padding:18px;
+}
+.topo svg{max-width:100%;height:auto}
+.placeholder{
+  padding:28px 16px;text-align:center;color:var(--mut);
+  background:var(--soft);border-radius:12px;font-size:13px;
+}
+.placeholder b{display:block;color:var(--ink);margin-bottom:4px}
+
+.console-frame{
+  width:100%;height:520px;border:1px solid var(--line);
+  border-radius:12px;background:#fff;
+}
+
+/* 设置三块 */
+.settings-grid{display:grid;gap:12px}
+
+/* 模态 / toast */
+.modalbg{
+  position:fixed;inset:0;z-index:80;background:#17312955;
+  backdrop-filter:blur(5px);display:grid;place-items:center;padding:20px;
+}
+.modal{
+  width:min(560px,100%);max-height:min(86vh,720px);overflow:auto;
+  background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:20px 22px;box-shadow:0 20px 60px #1731292a;
+}
+.modal h3{margin:0 0 8px;font-size:17px}
+.modal .note{color:var(--mut);font-size:13px;line-height:1.55;margin:0 0 16px}
+.modal .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
+
+#toasts{
+  position:fixed;right:18px;bottom:18px;z-index:100;
+  display:grid;gap:8px;max-width:min(360px,calc(100vw - 36px));
+}
+.toast{
+  background:#152a23;color:#eef7f2;padding:11px 14px;border-radius:12px;
+  font-size:13px;box-shadow:0 10px 28px #152a2333;
+  display:grid;gap:2px;
+}
+.toast b{font-weight:650}
+.toast.err{background:#5c2222}
+.toast.warn{background:#5c4a18}
+.toast.ok{background:#1a4d38}
+.toast.info{background:#2a4555}
+
+.wiz{display:none}
+.wiz.on{display:block}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.choice button{
+  text-align:left;padding:18px;border:1px solid var(--line);
+  background:var(--soft);border-radius:12px;min-height:100px;
+}
+.choice button b{display:block;font-size:15px;margin-bottom:6px}
+.choice button small{color:var(--mut);font-size:12px;line-height:1.5}
+.choice button:hover{border-color:var(--brand);background:var(--brand-soft)}
+
+.spin{
+  display:inline-block;width:14px;height:14px;border-radius:50%;
+  border:2px solid #ffffff55;border-top-color:#fff;
+  animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px;
+}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── 手机自适应 ── */
+@media (max-width:720px){
+  html{-webkit-text-size-adjust:100%}
+  body{font-size:13.5px}
+
+  /* 顶栏：两行 —— 路径一行、操作一行 */
+  .topbar{
+    height:auto;min-height:52px;padding:10px 14px;
+    flex-wrap:wrap;gap:8px 10px;
+  }
+  .crumb{font-size:13.5px;max-width:100%;overflow:hidden;flex:1 1 100%}
+  .crumb .tab-name{display:none}          /* 窄屏只留 页级 路径 */
+  .crumb .crumb-tab-sep{display:none}
+  .top-right{margin-left:0;flex:1 1 100%;justify-content:space-between;gap:8px}
+  .net-chip{max-width:46%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:6px 10px}
+  .net-chip #net-name{overflow:hidden;text-overflow:ellipsis}
+  .top-right .btn{min-height:36px;padding:8px 14px}
+
+  /* 内容区 */
+  .wrap{padding:12px 12px 48px}
+
+  /* 第一层页面 Tab：横向滚动，不再挤成五等分 */
+  .pagetabs{
+    overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;
+    scroll-snap-type:x proximity;
+    gap:6px;padding:4px;margin-bottom:12px;
+  }
+  .pagetabs button{
+    flex:0 0 auto;min-width:72px;scroll-snap-align:start;
+    padding:10px 14px;font-size:13px;white-space:nowrap;
+    min-height:40px;
+  }
+
+  /* 主卡片 */
+  .hero{padding:16px 14px;margin-bottom:12px;border-radius:12px}
+  .hero-head{flex-direction:column;gap:12px}
+  .hero h1{font-size:18px}
+  .hero .detail{font-size:12.5px}
+  .hero-actions{width:100%;justify-content:stretch}
+  .hero-actions .btn{flex:1;min-height:42px;justify-content:center;text-align:center}
+
+  /* 主卡片关键数：两列 */
+  .facts{grid-template-columns:1fr 1fr;gap:12px 10px;margin-top:14px;padding-top:14px}
+  .facts .f b{font-size:15px}
+
+  /* 第二层功能区 Tab：横向滚动 */
+  .tabbar{
+    overflow-x:auto;-webkit-overflow-scrolling:touch;
+    gap:4px;padding:4px;
+  }
+  .tabbar button{
+    flex:0 0 auto;min-width:88px;white-space:nowrap;
+    padding:10px 12px;font-size:13px;min-height:40px;
+  }
+
+  /* 卡片与表格 */
+  .card{padding:14px 12px;margin-bottom:10px;border-radius:12px}
+  .card h3{font-size:14.5px}
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .grid-table{min-width:520px}
+  .kv-table .k{width:42%;font-size:12px}
+  .kv-table td{padding:9px 6px;font-size:13px}
+
+  /* 表单 / 按钮行：竖排 + 大触控 */
+  .row{flex-direction:column;align-items:stretch;gap:8px}
+  .row .field{min-width:0;width:100%}
+  .row .btn{width:100%;min-height:42px;justify-content:center}
+  .field input,.field select{min-height:42px;font-size:16px} /* 16px 防 iOS 聚焦缩放 */
+  .keys-form .btn,.hero-actions .btn{font-size:14px}
+
+  /* 检查列表 */
+  .check{padding:10px}
+  .check-list{gap:6px}
+
+  /* 模态：贴边、可滚 */
+  .modalbg{padding:0;align-items:flex-end}
+  .modal{
+    width:100%;max-height:88vh;border-radius:16px 16px 0 0;
+    padding:18px 14px 24px;
+  }
+  .modal .actions .btn{flex:1;min-height:42px}
+  .choice{grid-template-columns:1fr}
+  .choice button{min-height:88px}
+
+  /* 网络空间 iframe */
+  .console-frame{height:360px}
+
+  /* Toast 避开底部安全区 */
+  #toasts{left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));max-width:none}
+}
+
+@media (max-width:380px){
+  .facts{grid-template-columns:1fr}
+  .pagetabs button{min-width:64px;padding:10px;font-size:12.5px}
+  .crumb{font-size:12.5px}
+}
+</style>
+</head>
+<body>
+<p data-aigc-mark="1" style="margin:0 0 8px;font-size:10px;line-height:1.3;color:#6b6560;font-weight:400;">AI生成</p>
+
+
+<!-- ① 顶栏：品牌 + 当前网络 -->
+<header class="topbar">
+  <div class="crumb">
+    <span class="home" id="crumb-home">MyNet</span>
+    <span class="sep">›</span>
+    <span class="page-name" id="crumb-page">概览</span>
+    <span class="sep crumb-tab-sep">›</span>
+    <span class="page-name tab-name" id="crumb-tab">节点状态</span>
+  </div>
+  <div class="top-right">
+    <div class="net-chip" title="当前网络">
+      <span class="dot" id="net-dot"></span>
+      <span id="net-name">读取中…</span>
+    </div>
+    <button class="btn ghost" id="btn-context" title="管理模式与运行设备">切换</button>
+    <button class="btn" id="btn-refresh">刷新</button>
+  </div>
+</header>
+
+<main class="wrap">
+
+<!-- 第一层 Tab：页面 -->
+<nav class="pagetabs" id="pagetabs" aria-label="页面">
+  <button class="on" data-page="overview">概览</button>
+  <button data-page="config">配置</button>
+  <button data-page="routes">路由</button>
+  <button data-page="diag">诊断与日志</button>
+  <button data-page="space">网络空间</button>
+</nav>
+
+<!-- ══════════ 概览 ══════════ -->
+<section class="page on" id="page-overview">
+  <div class="hero" id="hero">
+    <div class="hero-head">
+      <div class="grow">
+        <h1><span class="light"></span><span id="status-title">读取中…</span></h1>
+        <p class="detail" id="status-detail"></p>
+      </div>
+      <div class="hero-actions">
+        <button class="btn" id="btn-cfg">配置</button>
+        <button class="btn primary" id="btn-start">起</button>
+        <button class="btn danger" id="btn-stop">停</button>
+        <button class="btn caution" id="btn-restart">重启</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="f"><small>空间</small><b id="f-net">—</b></div>
+      <div class="f"><small>节点名</small><b id="f-node">—</b></div>
+      <div class="f"><small>隧道类型</small><b id="f-tun">—</b></div>
+      <div class="f"><small>转发</small><b id="f-proxy">—</b></div>
+    </div>
+  </div>
+
+  <div class="tabbar" id="tabs-overview" data-page="overview">
+    <button class="on" data-tab="nodes">节点</button>
+    <button data-tab="system">系统</button>
+    <button data-tab="peers">连接</button>
+  </div>
+
+  <div class="panel on" data-panel="overview/nodes">
+    <div class="card">
+      <div class="cardhead"><h3>节点</h3><span class="badge" id="mode-badge">—</span></div>
+      <table class="kv-table">
+        <tr><td class="k">节点名称</td><td class="v" id="n-name">—</td></tr>
+        <tr><td class="k">节点 ID</td><td class="v mono" id="n-id">—</td></tr>
+        <tr><td class="k">网络驱动</td><td class="v" id="n-driver">—</td></tr>
+        <tr><td class="k">网络接口</td><td class="v mono" id="n-tun">—</td></tr>
+        <tr><td class="k">网络地址</td><td class="v mono" id="n-addr">—</td></tr>
+        <tr><td class="k">MTU</td><td class="v" id="n-mtu">—</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="overview/system">
+    <div class="card">
+      <div class="cardhead"><h3>系统</h3><button class="btn ghost" id="btn-recheck-sys">重新检查</button></div>
+      <table class="kv-table">
+        <tr><td class="k">MyNet 服务</td><td class="v" id="s-daemon">—</td></tr>
+        <tr><td class="k">网络驱动进程</td><td class="v" id="s-proc">—</td></tr>
+        <tr><td class="k">系统路由</td><td class="v" id="s-routes">—</td></tr>
+        <tr><td class="k">防火墙</td><td class="v" id="s-fw"><span class="badge">未检测</span></td></tr>
+        <tr><td class="k">接收 / 发送</td><td class="v mono" id="s-traffic">—</td></tr>
+      </table>
+      <p class="note" style="margin-top:12px">防火墙状态暂未接入探测，后端就绪后自动显示。</p>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="overview/peers">
+    <div class="card table-scroll">
+      <div class="cardhead"><h3>连接</h3></div>
+      <table class="grid-table">
+        <thead><tr><th>节点</th><th>地址</th><th>链路</th><th>延迟</th><th>状态</th></tr></thead>
+        <tbody id="ov-peer-rows">
+          <tr><td colspan="5" class="placeholder" style="border:0">暂无对端</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 配置 ══════════ -->
+<section class="page" id="page-config">
+  <div class="hero" id="config-hero">
+    <div class="hero-head">
+      <div class="grow">
+        <h1><span class="light"></span><span id="cfg-state">读取中…</span></h1>
+        <p class="detail mono" id="cfg-artifacts">—</p>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" id="btn-cfg-reload">重新加载</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="f"><small>节点配置</small><b id="cfg-node">—</b><div class="sub">密钥 · 身份</div></div>
+      <div class="f"><small>系统配置</small><b id="cfg-sys">—</b><div class="sub">路由 · 防火墙</div></div>
+      <div class="f"><small>插件</small><b id="cfg-plug">—</b><div class="sub">plugin</div></div>
+    </div>
+  </div>
+
+  <div class="tabbar" id="tabs-config" data-page="config">
+    <button class="on" data-tab="keys">节点配置</button>
+    <button data-tab="runtime">系统配置</button>
+    <button data-tab="proxy">插件</button>
+  </div>
+
+  <div class="panel on" data-panel="config/keys">
+    <div class="card">
+      <div class="cardhead"><h3>节点配置</h3><span class="badge" id="keys-status-inline">—</span></div>
+      <p class="note">密钥标识「这台设备是谁」，只存在本机。下面四种方式<strong>互斥</strong>，点选一张卡片再操作；未选中的不会执行。</p>
+      <div id="keys-status"></div>
+
+      <div class="key-grid" id="key-grid">
+        <button type="button" class="key-card" data-key-op="import">
+          <div class="kc-title">① 导入密钥</div>
+          <div class="kc-desc">从备份或其它机器带来的密钥对。可粘贴十六进制，或上传文件（自动识别其中的公钥/私钥）。</div>
+          <div class="kc-meta"><span class="badge warn">覆盖现有身份</span></div>
+        </button>
+        <button type="button" class="key-card" data-key-op="generate">
+          <div class="kc-title">② 生成并同步新密钥</div>
+          <div class="kc-desc">在本机重新生成密钥对，替换当前身份；随后把<strong>新公钥</strong>同步到云端。连接会短暂中断。</div>
+          <div class="kc-meta"><span class="badge danger">高风险 · 换身份</span></div>
+        </button>
+        <button type="button" class="key-card" data-key-op="sync">
+          <div class="kc-title">③ 仅同步现有公钥</div>
+          <div class="kc-desc"><strong>不改本机密钥</strong>，只把当前公钥重新登记到云端（换设备名/修声明时用）。私钥始终不离开本机。</div>
+          <div class="kc-meta"><span class="badge ok">低风险 · 只上传公钥</span></div>
+        </button>
+        <button type="button" class="key-card" data-key-op="backup">
+          <div class="kc-title">④ 备份与恢复</div>
+          <div class="kc-desc">导出完整身份配置包（密钥+配置），或从<strong>历史备份列表</strong>按时间恢复。恢复前会自动快照现状。</div>
+          <div class="kc-meta"><span class="badge warn">可覆盖配置</span></div>
+        </button>
+      </div>
+
+      <!-- 选中后的操作面板 -->
+      <div class="key-op hidden" id="key-op-import">
+        <h4>导入密钥</h4>
+        <p class="note">粘贴 hex 密钥，或上传备份/密钥文件。服务端会扫描文件内容，识别出成对的公私钥即可写入。</p>
+        <div class="stack">
+          <div class="field"><label>公钥（hex）</label><input id="key-pub" placeholder="64 hex 字符"></div>
+          <div class="field"><label>私钥（hex）</label><input type="password" id="key-priv" autocomplete="off"></div> <!-- GUARD-OK 误报：HTML password 输入框，非硬编码凭据 -->
+          <div class="field"><label>或上传文件</label><input type="file" id="key-file" accept=".txt,.json,.conf,.gz,.tar.gz,*"></div>
+          <div class="note" id="key-file-hint">支持：hex 文本、含 keys 的 JSON/配置、config export 的 tar.gz。</div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" id="btn-key-save">写入密钥</button>
+          <button class="btn" data-key-cancel>取消</button>
+        </div>
+      </div>
+
+      <div class="key-op hidden" id="key-op-generate">
+        <h4>生成并同步新密钥</h4>
+        <p class="note">会替换本机身份：新私钥只存在本机，新公钥上传云端并通知其他节点。当前连接会断开，需重新启动网络。</p>
+        <div class="row">
+          <button class="btn danger" id="btn-key-gen">确认生成并同步</button>
+          <button class="btn" data-key-cancel>取消</button>
+        </div>
+      </div>
+
+      <div class="key-op hidden" id="key-op-sync">
+        <h4>仅同步现有公钥</h4>
+        <p class="note">保持密钥不变，只重新登记公钥。适用：云端公钥丢失/不一致、要触发其他节点刷新，<strong>不会</strong>生成新身份。</p>
+        <div class="row">
+          <button class="btn primary" id="btn-key-upload">同步当前公钥</button>
+          <button class="btn" data-key-cancel>取消</button>
+        </div>
+      </div>
+
+      <div class="key-op hidden" id="key-op-backup">
+        <h4>备份与恢复</h4>
+        <p class="note">备份包含 conf/ 与身份相关文件（不含日志）。请选择具体备份再恢复，不要盲操作。</p>
+        <div class="row">
+          <button class="btn primary" id="btn-key-export">导出当前配置为备份</button>
+          <button class="btn" id="btn-backup-refresh">刷新列表</button>
+          <button class="btn" data-key-cancel>取消</button>
+        </div>
+        <div class="table-scroll" style="margin-top:12px">
+          <table class="grid-table">
+            <thead><tr><th>备份时间</th><th>文件</th><th>大小</th><th>文件数</th><th></th></tr></thead>
+            <tbody id="backup-rows">
+              <tr><td colspan="5" class="placeholder" style="border:0">读取备份列表…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <details class="raw"><summary>密钥诊断</summary><pre id="keys-raw">—</pre></details>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="config/runtime">
+    <div class="card">
+      <div class="cardhead"><h3>系统配置</h3></div>
+      <p class="note">MyNet 云端会自动同步网络配置；自主管理模式由你维护网络配置。</p>
+      <div id="rt-status"></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn" id="btn-rt-pull">从 MyNet 云端更新</button>
+        <button class="btn primary" id="btn-rt-apply-2">应用配置</button>
+        <button class="btn" id="btn-parity-refresh">检查对等配置</button>
+      </div>
+      <div id="parity-box" style="margin-top:14px"></div>
+      <details class="raw"><summary>驱动配置</summary><pre id="rt-raw">—</pre></details>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="config/proxy">
+    <div class="card">
+      <div class="cardhead"><h3>插件</h3></div>
+      <p class="note">把当前设备作为流量入口，并选择可用的出口设备。</p>
+      <div id="plug-status"></div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="btn-plug-toggle">启用代理</button>
+        <button class="btn" id="btn-plug-add">选择出口设备</button>
+      </div>
+      <div class="row hidden" id="plug-form" style="margin-top:12px">
+        <div class="field"><label>出口设备</label><select id="plug-peer"><option value="">选择一个对端设备</option></select></div>
+        <div class="field" style="max-width:90px"><label>权重</label><input id="plug-weight" value="10"></div>
+        <div class="field" style="max-width:90px"><label>顺序</label><input id="plug-order" value="1"></div>
+        <button class="btn primary" id="btn-plug-save">加入出口</button>
+        <button class="btn" id="btn-plug-cancel">取消</button>
+      </div>
+      <div id="plug-exits"></div>
+      <details class="raw"><summary>插件诊断</summary><pre id="plug-raw">—</pre></details>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 路由 ══════════ -->
+<section class="page" id="page-routes">
+  <div class="hero" id="route-hero">
+    <div class="hero-head">
+      <div class="grow">
+        <h1><span class="light"></span><span id="route-state">读取中…</span></h1>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" id="btn-fix-routes">修复路由</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="f"><small>peer</small><b id="r-peer">—</b><div class="sub" id="r-peer-sub">对端路由</div></div>
+      <div class="f"><small>lan</small><b id="r-lan">—</b><div class="sub">网段路由</div></div>
+      <div class="f"><small>proxy</small><b id="r-proxy">—</b><div class="sub">转发出口</div></div>
+    </div>
+  </div>
+
+  <div class="tabbar" id="tabs-routes" data-page="routes">
+    <button class="on" data-tab="peer">对端</button>
+    <button data-tab="lan">网段</button>
+    <button data-tab="topo">拓扑</button>
+  </div>
+
+  <div class="panel on" data-panel="routes/peer">
+    <div class="card table-scroll">
+      <div class="cardhead"><h3>对端</h3></div>
+      <table class="grid-table">
+        <thead>
+          <tr><th>目标</th><th>经由设备</th><th>接口</th><th>状态</th></tr>
+        </thead>
+        <tbody id="route-peer-rows">
+          <tr><td colspan="4" class="placeholder" style="border:0">暂无对端路由</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="routes/lan">
+    <div class="card table-scroll">
+      <div class="cardhead"><h3>网段</h3></div>
+      <table class="grid-table">
+        <thead>
+          <tr><th>目标</th><th>经由设备</th><th>接口</th><th>状态</th></tr>
+        </thead>
+        <tbody id="route-lan-rows">
+          <tr><td colspan="4" class="placeholder" style="border:0">暂无网段路由</td></tr>
+        </tbody>
+      </table>
+      <details class="raw"><summary>route.conf 原文</summary><pre id="route-conf">—</pre></details>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="routes/topo">
+    <div class="card">
+      <div class="cardhead"><h3>拓扑</h3></div>
+      <p class="note">中心为当前设备，外围为已知对端。连线表示路由可达。</p>
+      <div class="topo" id="topo-box">
+        <div class="placeholder"><b>等待节点数据</b>启动网络后，这里显示拓扑。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 诊断与日志 ══════════ -->
+<section class="page" id="page-diag">
+  <div class="hero" id="diag-hero">
+    <div class="hero-head">
+      <div class="grow">
+        <h1><span class="light"></span><span id="diag-state">读取中…</span></h1>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" id="btn-diag-recheck">重新检查</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="f"><small>隧道</small><b id="d-tun">—</b><div class="sub" id="d-tun-sub">接口</div></div>
+      <div class="f"><small>进程</small><b id="d-proc">—</b><div class="sub">驱动进程</div></div>
+      <div class="f"><small>守护</small><b id="d-daemon">—</b><div class="sub">mynetd</div></div>
+    </div>
+  </div>
+
+  <div class="tabbar" id="tabs-diag" data-page="diag">
+    <button class="on" data-tab="run">检查</button>
+    <button data-tab="log">日志</button>
+    <button data-tab="raw">原始</button>
+  </div>
+
+  <div class="panel on" data-panel="diag/run">
+    <div class="card">
+      <h3>检查</h3>
+      <p class="note">下列检查反映本机当前可验证的运行条件。</p>
+      <div class="check-list" id="diag-checks"></div>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="diag/log">
+    <div class="card">
+      <div class="cardhead">
+        <h3>运行日志</h3>
+        <button class="btn ghost" id="btn-reload-logs">刷新</button>
+      </div>
+      <p class="note">来自本机 /var/log/mynet（mynetd / gnb）。已脱敏。</p>
+      <div id="runtime-logs" class="stack">
+        <div class="placeholder">读取日志…</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="cardhead"><h3>本次会话操作</h3><button class="btn ghost" id="btn-clear-log">清空</button></div>
+      <p class="note">仅记录本页内的按钮操作；刷新后清空。</p>
+      <div class="table-scroll">
+        <table class="grid-table">
+          <thead><tr><th>时间</th><th>操作</th><th>结果</th></tr></thead>
+          <tbody id="log-rows">
+            <tr><td colspan="3" class="placeholder" style="border:0">暂无操作记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="diag/raw">
+    <div class="card">
+      <h3>原始</h3>
+      <p class="note">默认折叠，仅用于排查。含接口探测与配置原文。</p>
+      <details class="raw" open><summary>node-status JSON</summary><pre id="raw-status">—</pre></details>
+      <details class="raw"><summary>system.json</summary><pre id="raw-system">—</pre></details>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 网络空间 ══════════ -->
+<section class="page" id="page-space">
+  <div class="hero" id="space-hero">
+    <div class="hero-head">
+      <div class="grow">
+        <h1><span class="light"></span><span id="space-state">读取中…</span></h1>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" id="btn-space-login">登录</button>
+        <button class="btn" id="btn-space-logout">退出</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="f"><small>空间</small><b id="sp-tenant">—</b><div class="sub">租户</div></div>
+      <div class="f"><small>用户</small><b id="sp-user">—</b></div>
+      <div class="f"><small>节点</small><b id="sp-node">—</b></div>
+    </div>
+  </div>
+
+  <div class="tabbar" id="tabs-space" data-page="space">
+    <button class="on" data-tab="embed">控制台</button>
+    <button data-tab="info">连接</button>
+  </div>
+
+  <div class="panel on" data-panel="space/embed">
+    <div class="card">
+      <div class="cardhead"><h3>控制台</h3></div>
+      <p class="note">固定高度，内容超出时在框内滚动。</p>
+      <iframe class="console-frame" id="console-frame" title="MyNet 网络空间"></iframe>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="space/info">
+    <div class="card">
+      <h3>连接</h3>
+      <table class="kv-table">
+        <tr><td class="k">Gateway 状态</td><td class="v" id="c-gateway">—</td></tr>
+        <tr><td class="k">Relay 地址</td><td class="v mono" id="c-relay">本机 /gui/</td></tr>
+        <tr><td class="k">最近连接</td><td class="v" id="c-last">—</td></tr>
+      </table>
+      <p class="note" style="margin-top:12px">部分连接指标暂未接入后端，就绪后自动填充。</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="toasts"></div>
+
+<!-- 登录小框（网络空间 · 登录） -->
+<div class="modalbg hidden" id="login-modal">
+  <div class="modal" style="max-width:420px">
+    <div class="cardhead">
+      <h3>登录 MyNet</h3>
+      <button class="btn ghost" id="login-close">关闭</button>
+    </div>
+    <p class="note">登录信息只交给本机 MyNet 服务保存。平台请求经本机转发，无需填写 API 地址。</p>
+    <div class="stack">
+      <div class="field"><label>邮箱</label><input id="login-email" type="email" autocomplete="username"></div>
+      <div class="field"><label>密码</label><input id="login-pass" type="password" autocomplete="current-password"></div> <!-- GUARD-OK 误报：HTML password 输入框，非硬编码凭据 -->
+    </div>
+    <div class="actions">
+      <button class="btn" id="login-cancel">取消</button>
+      <button class="btn primary" id="login-submit">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 配置向导（低频旁路） -->
+<div class="modalbg hidden" id="wizard">
+  <div class="modal">
+    <div class="cardhead">
+      <h3>添加设备配置</h3>
+      <button class="btn ghost" id="wiz-finish">关闭</button>
+    </div>
+    <div class="wiz on" data-wiz="1">
+      <p class="note">这台设备要如何加入网络？</p>
+      <div class="choice">
+        <button id="wiz-online"><b>MyNet 云端</b><small>加入组织，选择网络设备</small></button>
+        <button id="wiz-local"><b>自主管理模式</b><small>自己维护网络配置和启动方式</small></button>
+      </div>
+    </div>
+    <div class="wiz" data-wiz="2">
+      <div class="row">
+        <div class="field"><label>API 地址</label><input id="wiz-api" placeholder="https://api.mynet.club"></div>
+        <div class="field"><label>邮箱</label><input id="wiz-email"></div>
+        <div class="field"><label>密码</label><input type="password" id="wiz-pass" autocomplete="off"></div> <!-- GUARD-OK 误报：HTML password 输入框，非硬编码凭据 -->
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button class="btn primary" id="wiz-login">登录</button>
+        <button class="btn" id="wiz-key-gen">生成密钥</button>
+        <button class="btn" id="wiz-rt-make">生成配置</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn ghost" id="wiz-skip2">稍后再说</button>
+      </div>
+      <p class="note" style="margin-top:12px">登录后可生成密钥与运行配置；也可稍后在网络设置中完成。</p>
+    </div>
+    <div class="wiz" data-wiz="3">
+      <h3>配置已准备</h3>
+      <p class="note">现在可以启动网络，也可以稍后从概览启动。</p>
+      <div class="actions">
+        <button class="btn" id="wiz-skip">稍后启动</button>
+        <button class="btn primary" id="wiz-start">启动网络</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-const $=x=>document.getElementById(x),esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));let status={},mode={};
-async function api(p,m='GET',b){try{const r=await fetch(p,{method:m,headers:{'Content-Type':'application/json','Origin':location.origin},body:b?JSON.stringify(b):null});return await r.json()}catch(e){return{success:false,message:e.message}}}function toast(t,m='',k=''){let e=document.createElement('div');e.className='toast '+k;e.innerHTML='<b>'+esc(t)+'</b><span>'+esc(m)+'</span>';$('toasts').append(e);setTimeout(()=>e.remove(),4000)}async function busy(b,f){let o=b.innerHTML;b.disabled=true;b.innerHTML='<i class="spin"></i>处理中';try{return await f()}finally{b.disabled=false;b.innerHTML=o}}function badge(t,k=''){return'<span class="badge '+k+'">'+esc(t)+'</span>'}function bytes(n){n=+n||0;for(var i=0,u=['B','KB','MB','GB'];n>=1024&&i<3;i++)n/=1024;return n.toFixed(i?1:0)+' '+u[i]}function duration(s){s=+s||0;return s?Math.floor(s/3600)+' 小时 '+Math.floor(s%3600/60)+' 分':'尚未运行'}
-function go(v){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('on',x.id==='view-'+v));$('crumb').textContent='本机节点 · '+({overview:'概览',connections:'连接',settings:'设置'}[v]||'网络控制台');if(v==='settings')settings();if(v==='connections')peers();if(v==='console'){document.querySelectorAll('[data-main]').forEach(x=>x.classList.toggle('on',x.dataset.main==='console'));if(!$('console-frame').src)$('console-frame').src='/gui/'}else document.querySelectorAll('[data-main]').forEach(x=>x.classList.toggle('on',x.dataset.main==='overview'));scrollTo(0,0)}document.querySelectorAll('[data-go]').forEach(x=>x.onclick=()=>go(x.dataset.go));document.querySelectorAll('[data-main]').forEach(x=>x.onclick=()=>go(x.dataset.main));
-function action(id){return{install:['安装驱动',['install']],configure:['配置节点',null],start:['启动节点',['service','start','gnb']],restart:['重新启动',['service','restart','gnb']],stop:['停止节点',['service','stop','gnb']],'fix-routes':['修复路由',['apply','--auto']],retry:['重试启动',['service','start','gnb']]}[id]||['刷新',null]}async function act(id,b){if(id==='configure'){openWizard();return}let [l,a]=action(id);await busy(b,async()=>{let r=a?await api('/api/v1/command','POST',{argv:a}):{success:true};toast(r.success?l+'完成':l+'失败',r.message||r.stderr||'',r.success?'':'err');setTimeout(refresh,500)})}
-async function refresh(){let [s,m,d]=await Promise.all([api('/api/v1/node-status'),api('/api/v1/config/mode'),api('/api/v1/status')]);status=s.data||{};mode=m.data||{};$('daemon-dot').className='dot '+(d.success?'ok':'');$('daemon').textContent=d.success?'本机服务已连接':'本机服务不可用';render()}function render(){let s=status,k=s.state==='RUNNING'?'ok':s.state==='DEGRADED'?'warn':s.state==='FAILED'?'bad':'';$('hero').className='hero '+k;$('status-title').textContent=s.one_line||'暂时无法判断节点状态';$('status-detail').textContent=s.detail||'节点状态来自本机实时探测';let a=mode.active||{},sp=!mode.initialized?'未配置':mode.mode==='local'?'本机配置':'MyNet · '+(a.tenant_id||'在线空间');$('space-name').textContent=sp;$('space-dot').className='dot '+(k==='ok'?'ok':'');$('overlay').textContent=s.overlay_ip||'—';$('peers').textContent=(s.peers_routed||0)+' / '+(s.peers_total||0);$('peers-sub').textContent=s.routes_ok?'路由全部正常':'存在未就绪连接';$('tun').textContent=s.tun_iface||'—';$('uptime').textContent=duration(s.uptime_sec);$('traffic').textContent=bytes(s.rx_bytes)+' / '+bytes(s.tx_bytes);$('node-id').textContent=s.node_id||'—';$('fact-space').textContent=sp;$('driver').textContent=a.driver||'gnb';$('mtu').textContent=s.mtu||'—';$('mode').textContent=mode.mode==='online'?'在线配置':'本地配置';let cs=[['驱动已安装',s.installed,s.gnb_bin||'gnb 可用'],['节点配置完整',s.configured,s.configured?'运行配置已生成':'需要完成配置'],['隧道接口',s.tun_up,s.tun_up?(s.tun_iface+' · '+s.overlay_ip):'当前未启动'],['节点路由',s.routes_ok,s.routes_ok?'全部正常':'尚未全部就绪']];$('checks').innerHTML=cs.map(c=>'<div class="check"><span class="checki '+(c[1]?'':'off')+'">'+(c[1]?'✓':'·')+'</span><div><b>'+esc(c[0])+'</b><small>'+esc(c[2])+'</small></div></div>').join('');$('raw').textContent=JSON.stringify(s,null,2);let p=s.primary_action||'start';$('primary').textContent=s.labels?.[p]||action(p)[0];$('primary').onclick=e=>act(p,e.currentTarget);let q=(s.state==='RUNNING'||s.state==='DEGRADED')?'stop':'configure';$('secondary').textContent=s.labels?.[q]||action(q)[0];$('secondary').onclick=e=>act(q,e.currentTarget);peers()}function peers(){let p=status.peers||[];$('peer-table').innerHTML=p.length?p.map(x=>'<tr><td class="mono">'+esc(x.node_id)+(x.is_self?' '+badge('本机','ok'):'')+'</td><td class="mono">'+esc(x.overlay)+'</td><td>'+badge(x.link||'未知',x.link==='Direct'?'ok':'')+'</td><td>'+(x.latency_ms?x.latency_ms+' ms':'—')+'</td><td>'+badge(x.routed?'已就绪':'未就绪',x.routed?'ok':'warn')+'</td></tr>').join(''):'<tr><td colspan="5" style="text-align:center;color:var(--mut)">当前没有连接</td></tr>'}
-document.querySelectorAll('[data-pane]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-pane]').forEach(x=>x.classList.toggle('on',x===b));document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('on',x.id==='pane-'+b.dataset.pane))});async function settings(){let[k,r,p]=await Promise.all([api('/api/v1/config/keys'),api('/api/v1/config/runtime'),api('/api/v1/plugins')]),kd=k.data||{},rd=r.data||{},pl=Array.isArray(p.data)?p.data:[];$('keys-status').innerHTML=kd.has_private?badge('密钥完整','ok'):badge(kd.public_hex?'缺少私钥':'尚未配置','warn');$('keys-raw').textContent=JSON.stringify(kd,null,2);$('rt-status').innerHTML=badge('对端 '+(rd.peer_count||0))+badge('网段 '+(rd.network_count||0))+badge('入口 '+(rd.endpoint_count||0));$('rt-raw').textContent=['=== node.conf ===',rd.node_conf||'—','=== route.conf ===',rd.route_conf||'—','=== address.conf ===',rd.address_conf||'—'].join('\n');$('plug-status').innerHTML=pl.length?pl.map(x=>badge(x.name+' · '+(x.enabled?'已启用':'未启用'),x.enabled?'ok':'')).join(''):badge('无已配置插件');$('plug-raw').textContent=JSON.stringify(p,null,2)}
-$('refresh').onclick=e=>busy(e.currentTarget,refresh);$('btn-key-restore').onclick=()=>$('keys-form').classList.remove('hidden');$('btn-key-cancel').onclick=()=>$('keys-form').classList.add('hidden');$('btn-key-save').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/keys','POST',{private_hex:$('key-priv').value.trim(),public_hex:$('key-pub').value.trim()});toast(r.success?'密钥已保存':'保存失败',r.message||'',r.success?'':'err');settings()});$('btn-key-gen').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/keys','POST',{generate:true});toast(r.success?'已生成新密钥':'生成失败',r.message||'',r.success?'':'err');settings()});$('btn-key-upload').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/command','POST',{argv:['node','claim']});toast(r.success?'公钥已同步':'同步失败',r.message||'',r.success?'':'err')});$('btn-rt-pull').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/command','POST',{argv:['config','pull','--json']});toast(r.success?'配置已更新':'更新失败',r.message||'',r.success?'':'err');settings()});$('btn-rt-apply').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/apply','POST',{start:true});toast(r.success?'配置已应用':'应用失败',r.message||r.warning||'',r.success?'':'err');refresh()});$('btn-plug-refresh').onclick=e=>busy(e.currentTarget,settings);$('btn-plug-toggle').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/command','POST',{argv:['plugin','enable','proxy']});toast(r.success?'Proxy 已更新':'操作失败',r.message||'',r.success?'':'err');settings()});$('btn-plug-add').onclick=()=>$('plug-form').classList.toggle('hidden');$('btn-plug-save').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/command','POST',{argv:['plugin','exits','add',$('plug-id').value.trim(),'--weight',$('plug-weight').value||'10','--order',$('plug-order').value||'1']});toast(r.success?'出口已添加':'添加失败',r.message||'',r.success?'':'err');settings()}); <!-- GUARD-OK 误报：HTML 表单 id/class 长字面量，非凭据 -->
-$('console-reload').onclick=()=>$('console-frame').src='/gui/?r='+Date.now();$('console-new').onclick=()=>open('/gui/','_blank','noopener');function openWizard(){$('wizard').classList.remove('hidden');wiz(1)}function wiz(n){document.querySelectorAll('.wiz').forEach(x=>x.classList.toggle('on',+x.dataset.wiz===n))}$('btn-new-ws').onclick=openWizard;$('wiz-finish').onclick=()=>$('wizard').classList.add('hidden');$('wiz-online').onclick=()=>wiz(2);$('wiz-local').onclick=async()=>{let r=await api('/api/v1/config/mode','POST',{mode:'local'});toast(r.success?'已切换到本机配置':'切换失败',r.message||'',r.success?'':'err');wiz(2)};$('wiz-login').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/wizard/login','POST',{api_base:$('wiz-api').value.trim(),email:$('wiz-email').value.trim(),password:$('wiz-pass').value});toast(r.success?'登录成功':'登录失败',r.message||'',r.success?'':'err');if(r.success)wiz(3)});$('wiz-key-gen').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/keys','POST',{generate:true});toast(r.success?'密钥已生成':'生成失败',r.message||'',r.success?'':'err')});$('wiz-rt-make').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/apply','POST',{start:false});toast(r.success?'配置已生成':'生成失败',r.message||'',r.success?'':'err');if(r.success)wiz(3)});$('wiz-start').onclick=e=>busy(e.currentTarget,async()=>{let r=await api('/api/v1/config/apply','POST',{start:true});toast(r.success?'节点已启动':'启动失败',r.message||'',r.success?'':'err');$('wizard').classList.add('hidden');refresh()});$('wiz-skip').onclick=()=>$('wizard').classList.add('hidden');refresh(); <!-- GUARD-OK 误报：HTML 表单 id/class 长字面量，非凭据 -->
-</script><script src="webui-context.js?v=20260927-2"></script></body></html>
+/* ── 基础工具 ── */
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v == null ? '—' : v).replace(/[&<>"']/g, (c) => (
+  { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]
+));
+
+async function api(path, method, body) {
+  try {
+    const r = await fetch(path, {
+      method: method || 'GET',
+      headers: { 'Content-Type': 'application/json', 'Origin': location.origin },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return await r.json();
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+}
+
+function toast(title, message, kind) {
+  const root = $('toasts');
+  const e = document.createElement('div');
+  e.className = 'toast ' + (kind || '');
+  e.innerHTML = '<b>' + esc(title) + '</b>' + (message ? '<span>' + esc(message) + '</span>' : '');
+  root.appendChild(e);
+  setTimeout(() => e.remove(), 4000);
+}
+
+function busy(btn, fn) {
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="spin"></i>处理中';
+  return Promise.resolve(fn()).finally(() => {
+    btn.disabled = false;
+    btn.innerHTML = old;
+  });
+}
+
+function confirmDlg(title, message, okLabel, fn) {
+  const back = document.createElement('div');
+  back.className = 'modalbg';
+  back.innerHTML =
+    '<div class="modal"><h3>' + esc(title) + '</h3>' +
+    '<p class="note">' + esc(message) + '</p>' +
+    '<div class="actions"><button class="btn" data-cancel>取消</button>' +
+    '<button class="btn danger" data-ok>' + esc(okLabel || '继续') + '</button></div></div>';
+  document.body.appendChild(back);
+  back.querySelector('[data-cancel]').onclick = () => back.remove();
+  back.querySelector('[data-ok]').onclick = async () => { back.remove(); await fn(); };
+}
+
+function badge(text, kind) {
+  return '<span class="badge ' + (kind || '') + '">' + esc(text) + '</span>';
+}
+
+function bytes(n) {
+  n = +n || 0;
+  let i = 0;
+  const u = ['B', 'KB', 'MB', 'GB'];
+  while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+}
+
+function duration(s) {
+  s = +s || 0;
+  if (!s) return '尚未运行';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? h + ' 小时 ' + m + ' 分' : m + ' 分';
+}
+
+function nowHM() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+/* ── 操作日志（会话内） ── */
+const actionLog = [];
+function logAction(name, ok, message) {
+  actionLog.unshift({ t: nowHM(), name, ok: !!ok, message: message || '' });
+  if (actionLog.length > 50) actionLog.pop();
+  renderLog();
+}
+function renderLog() {
+  const body = $('log-rows');
+  if (!body) return;
+  if (!actionLog.length) {
+    body.innerHTML = '<tr><td colspan="3" class="placeholder" style="border:0">暂无操作记录</td></tr>';
+    return;
+  }
+  body.innerHTML = actionLog.map((x) =>
+    '<tr><td class="mono">' + esc(x.t) + '</td><td>' + esc(x.name) + '</td><td>' +
+    (x.ok ? badge('成功', 'ok') : badge('失败', 'bad')) +
+    (x.message ? ' <span style="color:var(--mut);font-size:12px">' + esc(x.message) + '</span>' : '') +
+    '</td></tr>'
+  ).join('');
+}
+
+/* ── 导航：页 + Tab ── */
+const PAGES = {
+  overview: { el: 'page-overview', label: '概览' },
+  config:   { el: 'page-config',   label: '配置' },
+  routes:   { el: 'page-routes',   label: '路由' },
+  diag:     { el: 'page-diag',     label: '诊断与日志' },
+  space:    { el: 'page-space',    label: '网络空间' }
+};
+const DEFAULT_TAB = {
+  overview: 'nodes', config: 'keys',
+  routes: 'peer', diag: 'run', space: 'embed'
+};
+const TAB_LABEL = {
+  nodes: '节点', system: '系统', peers: '连接',
+  keys: '节点配置', runtime: '系统配置', proxy: '插件',
+  peer: '对端', lan: '网段', topo: '拓扑',
+  run: '检查', log: '日志', raw: '原始',
+  embed: '控制台', info: '连接'
+};
+
+function goPage(page, tab) {
+  if (!PAGES[page]) page = 'overview';
+  const t = tab || DEFAULT_TAB[page];
+  Object.keys(PAGES).forEach((k) => {
+    $(PAGES[k].el).classList.toggle('on', k === page);
+  });
+  $('crumb-page').textContent = PAGES[page].label;
+  $('crumb-tab').textContent = TAB_LABEL[t] || t;
+  /* 第一层：页面 Tab */
+  document.querySelectorAll('#pagetabs button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.page === page);
+  });
+  /* 第二层：功能区 Tab */
+  document.querySelectorAll('.tabbar').forEach((bar) => {
+    const on = bar.dataset.page === page;
+    bar.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', on && b.dataset.tab === t);
+    });
+  });
+  document.querySelectorAll('.panel').forEach((p) => {
+    p.classList.toggle('on', p.dataset.panel === page + '/' + t);
+  });
+  history.replaceState(null, '', '#' + page + (t !== DEFAULT_TAB[page] ? '/' + t : ''));
+  if (page === 'routes') renderRoutes();
+  if (page === 'diag') { renderDiag(); loadRuntimeLogs(); }
+  if (page === 'space') ensureConsole();
+  if (page === 'config') loadSettings();
+  if (page === 'overview' && t === 'settings') goPage('config');
+  scrollTo(0, 0);
+}
+
+function parseHash() {
+  const h = (location.hash || '').replace(/^#/, '');
+  if (!h) return goPage('overview');
+  const [page, tab] = h.split('/');
+  goPage(page, tab);
+}
+
+document.querySelectorAll('.tabbar button').forEach((b) => {
+  b.addEventListener('click', () => {
+    const bar = b.closest('.tabbar');
+    goPage(bar.dataset.page, b.dataset.tab);
+  });
+});
+document.querySelectorAll('#pagetabs button').forEach((b) => {
+  b.addEventListener('click', () => goPage(b.dataset.page));
+});
+$('crumb-home').onclick = () => goPage('overview');
+window.addEventListener('hashchange', parseHash);
+
+/* ── 状态与刷新 ── */
+let status = {};
+let modeInfo = {};
+let identity = {};
+let peers = [];
+/* 登录态：用户 + 租户/空间。relay 转发本就依赖本地 token，加载时必查。 */
+let session = {
+  logged_in: false, user_email: '', user_id: '',
+  tenant_id: '', tenant_name: '', node_id: '', node_name: '',
+  api_base: '', gateway: ''
+};
+window.session = session;
+
+async function loadSession() {
+  const [st, idn] = await Promise.all([
+    api('/api/v1/wizard/state'),
+    api('/api/v1/config/identity')
+  ]);
+  const w = st.data || {};
+  const i = idn.data || {};
+  session.logged_in = !!(i.logged_in || w.logged_in);
+  session.user_email = i.user_email || w.user_email || '';
+  session.user_id = i.user_id || '';
+  session.tenant_id = i.tenant_id || '';
+  session.tenant_name = i.tenant_name || '';
+  session.node_id = i.node_id || w.node_id || '';
+  session.node_name = i.node_name || '';
+  session.api_base = i.api_base || w.api_base_url || '';
+  session.gateway = i.gateway || '';
+  window.session = session;
+  /* 登录态一到就刷新空间页，避免首屏时序丢状态 */
+  if (typeof ensureConsole === 'function') ensureConsole();
+  return session;
+}
+
+async function refresh() {
+  const [s, m, d, idn] = await Promise.all([
+    api('/api/v1/node-status'),
+    api('/api/v1/config/mode'),
+    api('/api/v1/status'),
+    api('/api/v1/config/identity')
+  ]);
+  status = s.data || {};
+  modeInfo = m.data || {};
+  identity = idn.data || {};
+  peers = Array.isArray(status.peers) ? status.peers : [];
+  window.__mynetDriver = identity.driver === 'wireguard' ? 'wireguard' : 'gnb';
+
+  await loadSession();
+
+  const daemonOk = !!d.success;
+  $('net-dot').className = 'dot ' + (daemonOk ? 'ok' : 'bad');
+
+  try { renderOverview(daemonOk); } catch (e) { console.error('renderOverview', e); }
+  try { renderDiag(daemonOk); } catch (e) { console.error('renderDiag', e); }
+  try { renderRoutes(); } catch (e) { console.error('renderRoutes', e); }
+  try { ensureConsole(); } catch (e) { console.error('ensureConsole', e); }
+  try { if (document.querySelector('#page-diag.on')) loadRuntimeLogs(); } catch (e) { console.error('logs', e); }
+}
+window.refresh = refresh;
+
+function renderOverview(daemonOk) {
+  const s = status;
+  const k = s.state === 'RUNNING' ? 'ok' : s.state === 'DEGRADED' ? 'warn' : s.state === 'FAILED' ? 'bad' : '';
+  const hero = $('hero');
+  hero.className = 'hero ' + k;
+
+  /* 状态机 */
+  const stateName = {
+    RUNNING: '运行中', DEGRADED: '降级', FAILED: '异常',
+    INSTALLED: '已安装', CONFIGURED: '已配置', UNINSTALLED: '未安装',
+    STOPPED: '已停止'
+  }[s.state] || (!modeInfo.initialized ? '未配置' : '已停止');
+  $('status-title').textContent = stateName;
+  /* 紧挨状态灯的原因一句话（如「启动失败：gnb 已退出」） */
+  const detailEl = $('status-detail');
+  if (detailEl) {
+    detailEl.textContent = s.one_line || s.detail || '';
+    detailEl.style.display = detailEl.textContent ? '' : 'none';
+  }
+  $('net-name').textContent = !modeInfo.initialized
+    ? '未配置'
+    : modeInfo.mode === 'local' ? '自主管理' : (identity.tenant_name || '云端网络');
+
+  /* 三格 */
+  $('f-net').textContent = !modeInfo.initialized
+    ? '未配置'
+    : modeInfo.mode === 'local' ? '自主管理' : (identity.tenant_name || '云端');
+  $('f-node').textContent = identity.node_name || s.node_id || '—';
+  $('f-tun').textContent = (identity.driver || 'gnb') + (s.tun_iface ? ' · ' + s.tun_iface : '');
+  $('f-proxy').textContent = s.proxy_enabled ? '转发中' : '未转发';
+
+  /* 节点状态 / 系统状态 功能区（保留） */
+  $('n-name').textContent = identity.node_name || s.node_id || '—';
+  $('n-id').textContent = s.node_id || '—';
+  $('n-driver').textContent = identity.driver || s.driver || 'gnb';
+  $('n-tun').textContent = s.tun_iface || '—';
+  $('n-addr').textContent = s.overlay_ip || '—';
+  $('n-mtu').textContent = s.mtu != null ? s.mtu : '—';
+  $('mode-badge').textContent = modeInfo.mode === 'online' ? 'MyNet 云端模式' : '自主管理模式';
+  $('mode-badge').className = 'badge ' + (modeInfo.mode === 'online' ? 'ok' : '');
+  $('s-daemon').innerHTML = daemonOk ? badge('正常', 'ok') : badge('不可用', 'bad');
+  $('s-proc').innerHTML = s.process_up ? badge('正常', 'ok') : badge('未运行', 'warn');
+  $('s-routes').innerHTML = s.routes_ok ? badge('正常', 'ok') : badge('未就绪', 'warn');
+  $('s-traffic').textContent = bytes(s.rx_bytes) + ' / ' + bytes(s.tx_bytes);
+
+  /* 概览 · 连接 */
+  const plist = peers.length ? peers : [];
+  const ovPeer = $('ov-peer-rows');
+  if (ovPeer) {
+    ovPeer.innerHTML = plist.length ? plist.map((p) =>
+      '<tr><td>' + esc(p.node_name || p.node_id || (p.is_self ? '本机' : '—')) +
+      (p.is_self ? ' ' + badge('本机', 'ok') : '') + '</td>' +
+      '<td class="mono">' + esc(p.overlay || '—') + '</td>' +
+      '<td>' + esc(p.link || '—') + '</td>' +
+      '<td>' + (p.latency_ms ? p.latency_ms + ' ms' : '—') + '</td>' +
+      '<td>' + (p.is_self ? badge('本机', 'ok') : p.routed ? badge('可达', 'ok') : badge('不可达', 'bad')) + '</td></tr>'
+    ).join('') : '<tr><td colspan="5" class="placeholder" style="border:0">暂无对端</td></tr>';
+  }
+
+  /* 主操作：配置 · 起 · 停 · 重启
+     ⚠️ 不要用 e.currentTarget 进 confirm 回调：事件分发结束后 currentTarget 为 null，
+     doAction 会静默失败（点了没反应）。一律按 id 取按钮。 */
+  const drv = window.__mynetDriver || 'gnb';
+  const running = s.state === 'RUNNING' || s.state === 'DEGRADED';
+  $('btn-cfg').onclick = () => goPage('config');
+  $('btn-start').disabled = running;
+  $('btn-stop').disabled = !running;
+  $('btn-restart').disabled = !running;
+  $('btn-start').onclick = () => doAction($('btn-start'), '启动', ['service', 'start', drv]);
+  $('btn-stop').onclick = () => confirmDlg('停止网络连接？', '停止后这台设备无法访问 MyNet 网络，直到再次启动。', '确认停止',
+    () => doAction($('btn-stop'), '停止', ['service', 'stop', drv]));
+  $('btn-restart').onclick = () => confirmDlg('重启网络？', '连接会短暂中断，正在使用这台设备的会话可能需要重连。', '确认重启',
+    () => doAction($('btn-restart'), '重启', ['service', 'restart', drv]));
+}
+
+/** doAction 执行一条 mynet 命令：过程 toast + 按钮忙态 + 结果日志。 */
+async function doAction(btn, label, argv) {
+  const target = btn || document.createElement('button');
+  toast(label + '中…', Array.isArray(argv) ? argv.join(' ') : '', 'info');
+  await busy(target, async () => {
+    let r = { success: true };
+    if (argv) {
+      r = await api('/api/v1/command', 'POST', { argv });
+    }
+    const msg = (r.message || r.stderr || r.stdout || '').trim();
+    logAction(label, r.success, msg);
+    toast(r.success ? label + '完成' : label + '失败', msg, r.success ? 'ok' : 'err');
+    await refresh();
+    if (typeof loadSettings === 'function') {
+      try { loadSettings(); } catch (_) {}
+    }
+  });
+}
+
+/* ── 路由页 ── */
+function renderRoutes() {
+  const s = status;
+  const list = peers.length ? peers : (Array.isArray(s.peers) ? s.peers : []);
+  const missing = Array.isArray(s.missing_routes) ? s.missing_routes : [];
+
+  const rows = [];
+  list.forEach((p) => {
+    rows.push({
+      dest: p.overlay || p.node_id || '—',
+      via: p.node_name || p.node_id || (p.is_self ? '当前设备' : '—'),
+      iface: p.is_self ? (s.tun_iface || '—') : (s.tun_iface || 'utun'),
+      ok: p.is_self ? true : !!p.routed,
+      self: !!p.is_self
+    });
+  });
+  missing.forEach((m) => {
+    rows.push({ dest: m, via: '—', iface: s.tun_iface || '—', ok: false, self: false });
+  });
+
+  /* 主卡片三格：peer / lan / proxy */
+  const peerRows = rows.filter((r) => !r.self && !String(r.dest).includes('/'));
+  const lanRows = rows.filter((r) => String(r.dest).includes('/'));
+  const peerOk = peerRows.filter((r) => r.ok).length;
+  const lanOk = lanRows.filter((r) => r.ok).length;
+  const down = rows.filter((r) => !r.ok).length;
+  $('r-peer').textContent = peerRows.length ? peerOk + ' / ' + peerRows.length : '0';
+  $('r-peer-sub').textContent = down ? down + ' 不可达' : '全部可达';
+  $('r-lan').textContent = lanRows.length || '0';
+  $('r-proxy').textContent = '0'; /* 占位：proxy 出口数后端未并入 */
+
+  const routeHero = $('route-hero');
+  routeHero.className = 'hero ' + (down ? 'warn' : rows.length ? 'ok' : '');
+  $('route-state').textContent = !rows.length ? '暂无路由' : down ? down + ' 条不可达' : '路由正常';
+
+  const rowHTML = (r) =>
+    '<tr><td class="mono">' + esc(r.dest) + '</td><td>' + esc(r.via) +
+    (r.self ? ' ' + badge('本机', 'ok') : '') + '</td><td class="mono">' + esc(r.iface) +
+    '</td><td>' + (r.ok ? badge('正常', 'ok') : badge('不可达', 'bad')) + '</td></tr>';
+  $('route-peer-rows').innerHTML = peerRows.length
+    ? peerRows.map(rowHTML).join('')
+    : '<tr><td colspan="4" class="placeholder" style="border:0">暂无对端路由</td></tr>';
+  $('route-lan-rows').innerHTML = lanRows.length
+    ? lanRows.map(rowHTML).join('')
+    : '<tr><td colspan="4" class="placeholder" style="border:0">暂无网段路由</td></tr>';
+  void lanOk;
+
+  $('route-conf').textContent = s.route_conf_text || '—';
+  renderTopo(list, s);
+}
+
+function renderTopo(list, s) {
+  const box = $('topo-box');
+  const peersOnly = list.filter((p) => !p.is_self);
+  if (!list.length) {
+    box.innerHTML = '<div class="placeholder"><b>等待节点数据</b>启动网络后，这里显示拓扑。</div>';
+    return;
+  }
+  const W = 640, H = 320, cx = W / 2, cy = H / 2;
+  const n = peersOnly.length || 1;
+  const nodes = peersOnly.map((p, i) => {
+    const a = (-Math.PI / 2) + (i * 2 * Math.PI / n);
+    const R = 110;
+    return {
+      x: cx + R * Math.cos(a) * 1.7,
+      y: cy + R * Math.sin(a),
+      label: (p.node_name || p.node_id || '?').slice(0, 10),
+      ok: !!p.routed
+    };
+  });
+
+  const lines = nodes.map((nd) =>
+    '<line x1="' + cx + '" y1="' + cy + '" x2="' + nd.x + '" y2="' + nd.y +
+    '" stroke="' + (nd.ok ? '#16805d' : '#c94b4b') + '" stroke-width="1.5" stroke-opacity="0.7"/>'
+  ).join('');
+  const dots = nodes.map((nd) =>
+    '<g><circle cx="' + nd.x + '" cy="' + nd.y + '" r="22" fill="#fff" stroke="' +
+    (nd.ok ? '#16805d' : '#c94b4b') + '" stroke-width="1.5"/>' +
+    '<text x="' + nd.x + '" y="' + (nd.y + 4) + '" text-anchor="middle" font-size="10" fill="#152a23">' +
+    esc(nd.label) + '</text></g>'
+  ).join('');
+
+  box.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" xmlns="http://www.w3.org/2000/svg">' +
+    lines +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="34" fill="#e4f3ed" stroke="#16805d" stroke-width="2"/>' +
+    '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="11" fill="#152a23">当前设备</text>' +
+    '<text x="' + cx + '" y="' + (cy + 12) + '" text-anchor="middle" font-size="10" fill="#61766d">' +
+    esc((s.overlay_ip || '—').slice(0, 16)) + '</text>' +
+    dots +
+    '</svg>';
+}
+
+/* ── 诊断页 ── */
+function renderDiag(daemonOk) {
+  const s = status;
+  const okDaemon = daemonOk !== undefined ? daemonOk : true;
+  const items = [
+    ['MyNet 服务', okDaemon, okDaemon ? '正常' : '本机服务不可用'],
+    ['驱动已安装', !!s.installed, s.gnb_bin ? s.gnb_bin + ' 可用' : (s.installed ? '驱动可用' : '需要安装驱动')],
+    ['运行配置完整', !!s.configured, s.configured ? '运行配置已生成' : '需要完成配置'],
+    ['网络接口', !!s.tun_up, s.tun_up ? (s.tun_iface || '已启动') + (s.overlay_ip ? ' · ' + s.overlay_ip : '') : '当前未启动'],
+    ['路由', !!s.routes_ok, s.routes_ok ? '全部正常' : '尚未全部就绪'],
+    ['防火墙', null, '未检测（后端未接入）']
+  ];
+
+  /* 主卡片三格：隧道 / 进程 / 守护 */
+  $('d-tun').innerHTML = s.tun_up ? badge('已启动', 'ok') : badge('未启动', 'warn');
+  $('d-tun-sub').textContent = s.tun_iface || '接口';
+  $('d-proc').innerHTML = s.process_up ? badge('运行中', 'ok') : badge('未运行', 'warn');
+  $('d-daemon').innerHTML = okDaemon ? badge('正常', 'ok') : badge('不可用', 'bad');
+
+  const bad = items.filter((c) => c[1] === false);
+  const diagHero = $('diag-hero');
+  diagHero.className = 'hero ' + (bad.length ? (okDaemon ? 'warn' : 'bad') : 'ok');
+  const shortName = {
+    'MyNet 服务': '服务', '驱动已安装': '驱动', '运行配置完整': '运行配置',
+    '网络接口': '接口', '路由': '路由', '防火墙': '防火墙'
+  };
+  $('diag-state').textContent = !bad.length ? '系统正常' : (shortName[bad[0][0]] || bad[0][0]) + '未就绪';
+
+  /* 功能区完整清单 */
+  const html = items.map((c) => {
+    const state = c[1] === null ? 'off' : (c[1] ? '' : 'off');
+    const mark = c[1] === null ? '?' : (c[1] ? '✓' : '·');
+    return '<div class="check"><span class="checki ' + state + '">' + mark + '</span>' +
+      '<div><b>' + esc(c[0]) + '</b><small>' + esc(c[2]) + '</small></div></div>';
+  }).join('');
+  $('diag-checks').innerHTML = html;
+  $('raw-status').textContent = JSON.stringify(s, null, 2);
+}
+
+async function loadRuntimeLogs() {
+  const box = $('runtime-logs');
+  if (!box) return;
+  const r = await api('/api/v1/logs?lines=80');
+  const d = r.data || {};
+  const events = d.events || [];
+  const files = d.files || [];
+  if (!r.success && !events.length && !files.length) {
+    box.innerHTML = '<div class="placeholder"><b>暂无运行日志</b>' + esc(r.message || '读取失败') + '</div>';
+    return;
+  }
+  let html = '';
+  if (events.length) {
+    html += '<div><div style="margin:8px 0 4px;font-size:12px;color:var(--mut);font-weight:650">事件（本进程）</div>' +
+      '<div class="table-scroll"><table class="grid-table"><thead><tr><th>时间</th><th>级别</th><th>组件</th><th>消息</th></tr></thead><tbody>' +
+      events.slice().reverse().map((e) => {
+        const kind = e.level === 'ERROR' ? 'bad' : e.level === 'WARN' ? 'warn' : e.level === 'DEBUG' ? '' : 'ok';
+        return '<tr><td class="mono">' + esc(e.time) + '</td><td>' + badge(e.level, kind) + '</td>' +
+          '<td class="mono">' + esc(e.comp || '—') + '</td><td>' + esc(e.msg) +
+          (e.attrs ? ' <span style="color:var(--mut);font-size:11px">' + esc(e.attrs) + '</span>' : '') +
+          '</td></tr>';
+      }).join('') + '</tbody></table></div></div>';
+  }
+  if (files.length) {
+    html += files.map((f) =>
+      '<div><div style="margin:12px 0 4px;font-size:12px;color:var(--mut);font-weight:650">文件 · ' +
+      esc(f.name) + '</div><pre style="margin:0;padding:12px;background:#0f1c17;color:#cfe8dc;' +
+      'border-radius:10px;overflow:auto;max-height:200px;font:12px/1.45 var(--mono)">' +
+      esc(f.text) + '</pre></div>'
+    ).join('');
+  }
+  box.innerHTML = html || '<div class="placeholder">暂无日志</div>';
+}
+
+async function loadSystemRaw() {
+  const r = await api('/api/v1/system.json');
+  $('raw-system').textContent = r.success ? JSON.stringify(r.data, null, 2) : (r.message || '—');
+}
+
+/* ── 设置区 ── */
+async function loadSettings() {
+  const [k, r, p] = await Promise.all([
+    api('/api/v1/config/keys'),
+    api('/api/v1/config/runtime'),
+    api('/api/v1/plugins')
+  ]);
+  loadParity();
+  const kd = k.data || {};
+  const rd = r.data || {};
+  const pl = Array.isArray(p.data) ? p.data : [];
+
+  /* 配置页主卡片：状态机 + 驱动产物 + 三格 */
+  const hasPub = kd.has_public === true || !!kd.public_hex;
+  const hasPriv = kd.has_private === true;
+  const nodeReady = hasPriv && hasPub;
+  const rtReady = !!(rd.peer_count || rd.network_count || rd.node_conf);
+  const proxyItem = pl.find((x) => x.name === 'proxy');
+  const plugReady = !!(proxyItem && (proxyItem.enabled || proxyItem.installed));
+  const cfgOk = nodeReady && rtReady;
+  const cfgHero = $('config-hero');
+  cfgHero.className = 'hero ' + (cfgOk ? 'ok' : rtReady || nodeReady ? 'warn' : '');
+  $('cfg-state').textContent = cfgOk ? '配置已就绪' : nodeReady ? '缺运行配置' : rtReady ? '缺身份密钥' : '未配置';
+  const drv = identity.driver || window.__mynetDriver || 'gnb';
+  $('cfg-artifacts').textContent = drv === 'wireguard'
+    ? 'wg → wg0.conf / keys'
+    : 'gnb → address / node / route / keys';
+
+  $('cfg-node').innerHTML = nodeReady ? badge('就绪', 'ok') : badge(hasPub ? '缺私钥' : '未配置', 'warn');
+  $('cfg-sys').innerHTML = rtReady ? badge('已生成', 'ok') : badge('未生成', 'warn');
+  $('cfg-plug').innerHTML = plugReady
+    ? badge(proxyItem && proxyItem.enabled ? '已启用' : '可启用', proxyItem && proxyItem.enabled ? 'ok' : '')
+    : badge('无', '');
+  /* 配置页依赖登录态拉云端配置/节点 */
+  if (!session.logged_in && modeInfo.mode === 'online') {
+    $('cfg-artifacts').textContent = '未登录 · 无法拉取云端配置';
+  }
+
+  $('keys-status').innerHTML = nodeReady
+    ? badge('密钥完整', 'ok') + ' <span class="mono" style="color:var(--mut)">' + esc((kd.public_hex || '').slice(0, 16)) + '…</span>'
+    : badge(hasPub ? '缺少私钥' : '尚未配置', 'warn');
+  const inline = $('keys-status-inline');
+  if (inline) {
+    inline.textContent = nodeReady ? '密钥完整' : hasPub ? '缺私钥' : '未配置';
+    inline.className = 'badge ' + (nodeReady ? 'ok' : 'warn');
+  }
+  $('keys-raw').textContent = JSON.stringify({
+    has_public: kd.has_public,
+    has_private: kd.has_private,
+    public_hex: kd.public_hex ? kd.public_hex.slice(0, 32) + '…' : null,
+    source: kd.source
+  }, null, 2);
+
+  $('rt-status').innerHTML =
+    badge('对端 ' + (rd.peer_count || 0)) +
+    badge('网段 ' + (rd.network_count || 0)) +
+    badge('入口 ' + (rd.endpoint_count || 0));
+  $('rt-raw').textContent = [
+    '=== node.conf ===', rd.node_conf || '—',
+    '=== route.conf ===', rd.route_conf || '—',
+    '=== address.conf ===', rd.address_conf || '—'
+  ].join('\n');
+
+  const proxy = pl.find((x) => x.name === 'proxy') || null;
+  const support = proxy && proxy.installed === true;
+  const enabled = !!(proxy && proxy.enabled);
+  $('plug-status').innerHTML =
+    badge(support ? '支持代理' : '未安装代理支持', support ? 'ok' : 'warn') +
+    badge(enabled ? '已启用' : '未启用', enabled ? 'ok' : '') +
+    '<small class="note" style="display:block;margin-top:8px">支持代理表示这台设备具备能力；只有启用并选择出口设备后，才会实际转发流量。</small>';
+
+  const toggle = $('btn-plug-toggle');
+  toggle.textContent = enabled ? '停用代理' : '启用代理';
+  toggle.className = 'btn ' + (enabled ? 'danger' : 'primary');
+  toggle.disabled = !support;
+  toggle.onclick = () => confirmDlg(
+    enabled ? '停用代理？' : '启用代理？',
+    enabled ? '代理将停止作为其它设备的流量出口。' : '代理会作为流量入口，已选择的对端设备才会参与转发。',
+    enabled ? '停用代理' : '启用代理',
+    async () => {
+      const res = await api('/api/v1/command', 'POST', { argv: ['plugin', enabled ? 'disable' : 'enable', 'proxy'] });
+      logAction(enabled ? '停用代理' : '启用代理', res.success, res.message || '');
+      toast(res.success ? '代理状态已更新' : '操作失败', res.message || res.stderr || '', res.success ? 'ok' : 'err');
+      loadSettings();
+    }
+  );
+
+  const sel = $('plug-peer');
+  if (sel && !sel.dataset.ready) {
+    sel.innerHTML = '<option value="">选择一个对端设备</option>' +
+      peers.filter((x) => !x.is_self).map((x) =>
+        '<option value="' + esc(x.node_id) + '">' + esc(x.node_name || x.node_id) + ' · ' + esc(x.overlay || '') + '</option>'
+      ).join('');
+    sel.dataset.ready = '1';
+  }
+
+  $('plug-raw').textContent = JSON.stringify(pl, null, 2);
+  $('plug-exits').innerHTML = pl.length
+    ? pl.map((x) => badge(x.name + ' · ' + (x.enabled ? '已启用' : '未启用'), x.enabled ? 'ok' : '')).join(' ')
+    : '';
+}
+
+/** loadParity 对等配置（zip/crypto 等）—— 与对端必须一致。 */
+async function loadParity() {
+  const box = $('parity-box');
+  if (!box) return;
+  box.innerHTML = '<div class="placeholder">检查对等配置…</div>';
+  const r = await api('/api/v1/command', 'POST', { argv: ['config', 'parity', '--json'] });
+  let data = null;
+  try {
+    const raw = (r.data && r.data.stdout) || r.stdout || '';
+    data = JSON.parse(raw);
+  } catch (_) {}
+  if (!data || !Array.isArray(data.items)) {
+    box.innerHTML = '<div class="placeholder">对等检查不可用' +
+      (r.message ? '：' + esc(r.message) : '') + '</div>';
+    return;
+  }
+  const rows = data.items.map((it) => {
+    const ok = it.match;
+    const kind = ok ? 'ok' : it.critical ? 'bad' : 'warn';
+    return '<tr><td class="mono">' + esc(it.key) + '</td>' +
+      '<td class="mono">' + esc(it.local || '—') + '</td>' +
+      '<td class="mono">' + esc(it.remote || '—') + '</td>' +
+      '<td>' + badge(ok ? '一致' : it.critical ? '不一致' : '建议对齐', kind) +
+      (it.hint ? '<div style="color:var(--mut);font-size:11px;margin-top:3px">' + esc(it.hint) + '</div>' : '') +
+      '</td></tr>';
+  }).join('');
+  box.innerHTML =
+    '<div class="cardhead"><h3>对等配置</h3>' +
+    badge(data.ok ? '全部一致' : '存在差异', data.ok ? 'ok' : 'warn') + '</div>' +
+    '<p class="note">zip / 加密等必须与对端一致，否则大包、SSH、HTTP 可能静默不通。' +
+    '「期望」列为工作基线（对端 180 实测），云端 bundle 若不下发则按此对齐。</p>' +
+    '<div class="table-scroll"><table class="grid-table"><thead><tr>' +
+    '<th>项</th><th>本机</th><th>对端/期望</th><th>结果</th></tr></thead><tbody>' +
+    rows + '</tbody></table></div>';
+  if (!data.ok && (data.critical_miss || []).length) {
+    toast('对等配置不一致', '请检查：' + data.critical_miss.join('、'), 'warn');
+  }
+}
+$('btn-parity-refresh').onclick = (e) => busy(e.currentTarget, loadParity);
+function bindApply(btn) {
+  if (!btn) return;
+  btn.onclick = () => confirmDlg(
+    '应用新的网络配置？',
+    '将生成运行配置、重新连接网络，并更新系统路由和防火墙。连接会短暂中断。',
+    '开始应用',
+    async () => {
+      const back = document.createElement('div');
+      back.className = 'modalbg';
+      back.innerHTML =
+        '<div class="modal"><h3>正在应用配置</h3><p class="note">请保持页面打开。</p>' +
+        '<div class="apply-steps"><div class="check"><span class="checki off">○</span><div><b>生成运行配置</b></div></div>' +
+        '<div class="check"><span class="checki off">○</span><div><b>重新连接网络</b></div></div>' +
+        '<div class="check"><span class="checki off">○</span><div><b>应用系统路由和防火墙</b></div></div></div></div>';
+      document.body.appendChild(back);
+      const r = await api('/api/v1/config/apply', 'POST', { start: true });
+      logAction('应用配置', r.success, r.message || r.warning || '');
+      const steps = Array.isArray(r.steps) ? r.steps : [];
+      back.querySelector('.apply-steps').innerHTML = steps.length
+        ? steps.map((s) => {
+            const st = s.state === 'done' ? '' : 'off';
+            const mark = s.state === 'done' ? '✓' : s.state === 'failed' ? '×' : '○';
+            return '<div class="check"><span class="checki ' + st + '">' + mark + '</span><div><b>' + esc(s.name) + '</b></div></div>';
+          }).join('')
+        : '<div class="check"><span class="checki ' + (r.success ? '' : 'off') + '">' + (r.success ? '✓' : '×') +
+          '</span><div><b>' + esc(r.message || (r.success ? '配置已应用' : '应用失败')) + '</b></div></div>';
+      back.querySelector('.note').textContent = r.success ? '配置已经生效。' : (r.message || '应用失败');
+      const close = document.createElement('button');
+      close.textContent = '关闭';
+      close.className = 'btn ' + (r.success ? 'primary' : 'danger');
+      close.onclick = () => { back.remove(); refresh(); loadSettings(); };
+      back.querySelector('.modal').appendChild(close);
+    }
+  );
+}
+bindApply($('btn-rt-apply-2'));
+$('btn-cfg-reload').onclick = (e) => busy(e.currentTarget, async () => {
+  await refresh();
+  await loadSettings();
+  logAction('重新加载配置', true, '');
+  toast('已重新加载', '', '');
+});
+
+/* ── 按钮绑定 ── */
+$('btn-refresh').onclick = (e) => busy(e.currentTarget, refresh);
+$('btn-recheck-sys').onclick = (e) => busy(e.currentTarget, refresh);
+$('btn-diag-recheck').onclick = (e) => busy(e.currentTarget, async () => { await refresh(); await loadSystemRaw(); });
+$('btn-fix-routes').onclick = (e) => doAction(e.currentTarget, '修复路由', ['apply', '--auto']);
+$('btn-clear-log').onclick = () => { actionLog.length = 0; renderLog(); };
+$('btn-reload-logs').onclick = (e) => busy(e.currentTarget, loadRuntimeLogs);
+
+/* ── 节点配置：2×2 选卡 → 展开操作 ── */
+function selectKeyOp(op) {
+  const grid = $('key-grid');
+  grid.querySelectorAll('.key-card').forEach((c) => {
+    c.classList.toggle('on', c.dataset.keyOp === op);
+  });
+  grid.classList.toggle('has-on', !!op);
+  ['import', 'generate', 'sync', 'backup'].forEach((k) => {
+    const el = $('key-op-' + k);
+    if (el) el.classList.toggle('hidden', k !== op);
+  });
+  if (op === 'backup') loadBackupList();
+}
+document.querySelectorAll('.key-card').forEach((c) => {
+  c.onclick = () => {
+    const op = c.dataset.keyOp;
+    selectKeyOp(c.classList.contains('on') ? '' : op);
+  };
+});
+document.querySelectorAll('[data-key-cancel]').forEach((b) => {
+  b.onclick = () => selectKeyOp('');
+});
+
+/* 从文本/文件内容提取 hex 密钥（64 hex = ed25519 公钥或私钥前半） */
+function extractHexKeys(text) {
+  const hexes = (String(text || '').match(/\b[0-9a-fA-F]{32,128}\b/g) || []);
+  const cleaned = hexes.map((h) => h.toLowerCase());
+  // 128 hex 常为 seed||pub 或 clamp 私钥；64 hex 为公钥
+  let pub = '', priv = '';
+  for (const h of cleaned) {
+    if (h.length >= 128 && !priv) priv = h;
+    else if (h.length === 64 && !pub) pub = h;
+    else if (h.length === 128 && !priv) priv = h;
+  }
+  if (!priv && cleaned.length >= 2) {
+    // 取最长为私钥
+    const sorted = cleaned.slice().sort((a, b) => b.length - a.length);
+    priv = sorted[0];
+    pub = pub || (sorted.find((x) => x !== priv) || '');
+  }
+  return { pub: pub.slice(0, 128), priv: priv.slice(0, 128) };
+}
+
+$('key-file').onchange = async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  try {
+    const buf = await f.arrayBuffer();
+    let text = '';
+    if (/\.gz$/i.test(f.name) || /\.tgz$/i.test(f.name)) {
+      // gzip：浏览器里先当二进制扫 printable
+      const bytes = new Uint8Array(buf);
+      text = Array.from(bytes).map((c) => (c >= 32 && c < 127 ? String.fromCharCode(c) : '\n')).join('');
+      $('key-file-hint').textContent = '已扫描压缩包二进制中的 hex；若未识别请解开后粘贴。';
+    } else {
+      text = new TextDecoder().decode(buf);
+    }
+    const k = extractHexKeys(text);
+    if (k.pub) $('key-pub').value = k.pub;
+    if (k.priv) $('key-priv').value = k.priv;
+    $('key-file-hint').textContent =
+      (k.pub || k.priv) ? '已识别：公钥 ' + (k.pub ? '✓' : '✗') + ' 私钥 ' + (k.priv ? '✓' : '✗') + '。确认后点「写入密钥」。'
+        : '未能从文件识别出 hex 密钥，请手动粘贴。';
+  } catch (err) {
+    $('key-file-hint').textContent = '读取文件失败：' + err.message;
+  }
+};
+
+$('btn-key-save').onclick = (e) => busy(e.currentTarget, async () => {
+  const pub = $('key-pub').value.trim();
+  const priv = $('key-priv').value.trim();
+  if (!pub && !priv) return toast('请填写或上传密钥', '至少要有公钥或私钥', 'warn');
+  const r = await api('/api/v1/config/keys', 'POST', {
+    private_hex: priv,
+    public_hex: pub
+  });
+  $('key-priv').value = ''; $('key-pub').value = '';
+  logAction('导入密钥', r.success, r.message || '');
+  toast(r.success ? '密钥已写入' : '写入失败', r.message || '', r.success ? 'ok' : 'err');
+  if (r.success) selectKeyOp('');
+  loadSettings();
+});
+
+async function loadBackupList() {
+  const body = $('backup-rows');
+  if (!body) return;
+  body.innerHTML = '<tr><td colspan="5" class="placeholder" style="border:0">读取中…</td></tr>';
+  const r = await api('/api/v1/command', 'POST', { argv: ['config', 'backups', '--json'] });
+  let list = [];
+  try {
+    const raw = (r.data && r.data.stdout) || r.stdout || '[]';
+    list = JSON.parse(raw);
+    if (!Array.isArray(list)) list = [];
+  } catch (_) { list = []; }
+  if (!list.length) {
+    body.innerHTML = '<tr><td colspan="5" class="placeholder" style="border:0"><b>暂无备份</b>点「导出当前配置为备份」创建一份。</td></tr>';
+    return;
+  }
+  body.innerHTML = list.map((b, i) =>
+    '<tr><td class="mono">' + esc((b.mod_time || '').replace('T', ' ').slice(0, 19)) + '</td>' +
+    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis">' + esc(b.name) + '</td>' +
+    '<td>' + esc(Math.round((b.size || 0) / 1024) + ' KB') + '</td>' +
+    '<td>' + esc(b.files != null ? b.files : '—') + '</td>' +
+    '<td><button class="btn" data-restore="' + i + '">恢复此备份</button></td></tr>'
+  ).join('');
+  body.querySelectorAll('[data-restore]').forEach((btn) => {
+    btn.onclick = () => {
+      const b = list[+btn.dataset.restore];
+      confirmDlg('恢复此备份？',
+        '将从 ' + (b.name || '') + '（' + (b.mod_time || '') + '）恢复身份与配置。恢复前自动快照现状。',
+        '恢复',
+        async () => {
+          const res = await api('/api/v1/command', 'POST', {
+            argv: ['config', 'import', b.file || ('/var/lib/mynet/backups/' + b.name)]
+          });
+          const msg = ((res.data && res.data.stderr) || res.stderr || res.message || '').trim();
+          logAction('恢复备份', res.success, msg);
+          toast(res.success ? '已恢复' : '恢复失败', msg, res.success ? 'ok' : 'err');
+          refresh();
+          loadSettings();
+          loadBackupList();
+        });
+    };
+  });
+}
+$('btn-backup-refresh').onclick = (e) => busy(e.currentTarget, loadBackupList);
+$('btn-key-gen').onclick = () => confirmDlg(
+  '生成并同步新密钥？',
+  '这会替换当前设备身份并短暂中断连接。云端模式会上传新公钥并重新发布配置。',
+  '生成并同步',
+  async () => {
+    const made = await api('/api/v1/config/keys', 'POST', { generate: true });
+    if (!made.success) {
+      logAction('生成密钥', false, made.message || '');
+      return toast('生成失败', made.message || '', 'err');
+    }
+    const synced = await api('/api/v1/command', 'POST', { argv: ['config', 'keys', 'sync', '--json'] });
+    logAction('生成并同步密钥', synced.success, synced.message || '');
+    toast(synced.success ? '新密钥已生成并同步' : '密钥已生成，但同步失败',
+      synced.message || synced.stderr || '', synced.success ? 'ok' : 'err');
+    refresh();
+    loadSettings();
+    selectKeyOp('');
+  }
+);
+$('btn-key-upload').onclick = () => confirmDlg(
+  '同步现有公钥？',
+  '不会生成新密钥，只上传当前公钥并重新发布云端配置。私钥不会离开本机。',
+  '同步公钥',
+  async () => {
+    const r = await api('/api/v1/command', 'POST', { argv: ['config', 'keys', 'sync', '--json'] });
+    logAction('同步公钥', r.success, r.message || '');
+    toast(r.success ? '公钥已同步' : '同步失败', r.message || r.stderr || '', r.success ? 'ok' : 'err');
+    selectKeyOp('');
+  }
+);
+$('btn-key-export').onclick = (e) => busy(e.currentTarget, async () => {
+  const r = await api('/api/v1/command', 'POST', { argv: ['config', 'export'] });
+  const msg = ((r.data && r.data.stdout) || r.stdout || r.message || '').trim();
+  logAction('导出备份', r.success, msg);
+  toast(r.success ? '备份已导出' : '导出失败', msg, r.success ? 'ok' : 'err');
+  loadBackupList();
+});
+
+$('btn-rt-pull').onclick = () => confirmDlg(
+  '从 MyNet 云端更新配置？',
+  '将下载当前网络的最新设备、路由和连接信息。下载完成后还需要「应用配置」。',
+  '更新配置',
+  async () => {
+    const state = await api('/api/v1/wizard/state');
+    if (state.data && state.data.logged_in === false) return openWizard();
+    const r = await api('/api/v1/command', 'POST', { argv: ['config', 'pull', '--json'] });
+    logAction('从云端更新配置', r.success, r.message || '');
+    toast(r.success ? '云端配置已更新' : '更新失败', r.message || r.stderr || '', r.success ? 'ok' : 'err');
+    loadSettings();
+  }
+);
+
+document.querySelectorAll('[data-goto-config]').forEach((b) => {
+  b.onclick = () => goPage('config');
+});
+
+$('btn-plug-add').onclick = () => {
+  $('plug-form').classList.remove('hidden');
+  $('plug-peer').dataset.ready = '';
+  loadSettings();
+};
+$('btn-plug-cancel').onclick = () => $('plug-form').classList.add('hidden');
+$('btn-plug-save').onclick = (e) => busy(e.currentTarget, async () => {
+  const id = $('plug-peer').value;
+  if (!id) return toast('请选择出口设备', '出口必须来自当前对端设备列表。', 'warn');
+  const r = await api('/api/v1/command', 'POST', {
+    argv: ['plugin', 'exits', 'add', id, '--weight', $('plug-weight').value || '10', '--order', $('plug-order').value || '1']
+  });
+  logAction('添加出口设备', r.success, r.message || '');
+  toast(r.success ? '出口设备已加入' : '添加失败', r.message || r.stderr || '', r.success ? 'ok' : 'err');
+  $('plug-form').classList.add('hidden');
+  loadSettings();
+});
+
+/* 网络空间 */
+function ensureConsole() {
+  const f = $('console-frame');
+  if (f && !f.getAttribute('src')) {
+    f.src = '/gui/';
+  }
+  /* 主卡片：登录态 + 三格（来自 session：credential + identity） */
+  const logged = !!session.logged_in;
+  const spaceHero = $('space-hero');
+  spaceHero.className = 'hero ' + (logged ? 'ok' : 'warn');
+  $('space-state').textContent = logged ? '已登录' : '未登录';
+  $('btn-space-login').disabled = logged;
+  $('btn-space-logout').disabled = !logged;
+  $('sp-tenant').textContent = session.tenant_name || session.tenant_id || '—';
+  $('sp-user').textContent = session.user_email || '—';
+  $('sp-node').textContent = session.node_name || session.node_id || status.node_id || '—';
+
+  /* 连接 Tab */
+  $('c-gateway').innerHTML = badge(session.gateway ? session.gateway : '本机转发', logged ? 'ok' : '');
+  $('c-relay').textContent = session.api_base || '本机 /gui/';
+  $('c-last').textContent = logged ? (session.user_id ? 'uid ' + session.user_id : nowHM()) : '—';
+}
+function openLoginModal() {
+  const m = $('login-modal');
+  m.classList.remove('hidden');
+  if (!$('login-email').value && session.user_email) $('login-email').value = session.user_email;
+  setTimeout(() => $('login-email').focus(), 30);
+}
+window.openLoginModal = openLoginModal;
+
+$('login-close').onclick = () => $('login-modal').classList.add('hidden');
+$('login-cancel').onclick = () => $('login-modal').classList.add('hidden');
+$('login-submit').onclick = (e) => busy(e.currentTarget, async () => {
+  const r = await api('/api/v1/wizard/login', 'POST', {
+    email: $('login-email').value.trim(),
+    password: $('login-pass').value
+  });
+  $('login-pass').value = '';
+  logAction('登录 MyNet', r.success, r.message || '');
+  toast(r.success ? '登录成功' : '登录失败', r.message || '', r.success ? '' : 'err');
+  if (r.success) {
+    $('login-modal').classList.add('hidden');
+    await loadSession();
+    refresh();
+    ensureConsole();
+  }
+});
+
+$('btn-space-login').onclick = () => openLoginModal();
+$('login-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'login-modal') $('login-modal').classList.add('hidden');
+});
+$('btn-space-logout').onclick = () => confirmDlg(
+  '退出登录？', '退出后无法访问云端空间，需要重新登录。', '退出',
+  async () => {
+    const r = await api('/api/v1/wizard/logout', 'POST', {});
+    logAction('退出登录', r.success, r.message || '');
+    toast(r.success ? '已退出' : '退出失败', r.message || '', r.success ? '' : 'err');
+    await loadSession();
+    refresh();
+    ensureConsole();
+  }
+);
+
+/* 向导 */
+function openWizard() {
+  $('wizard').classList.remove('hidden');
+  wizStep(1);
+}
+window.openWizard = openWizard;
+function wizStep(n) {
+  document.querySelectorAll('.wiz').forEach((x) => x.classList.toggle('on', +x.dataset.wiz === n));
+}
+$('wiz-finish').onclick = () => $('wizard').classList.add('hidden');
+$('wiz-skip').onclick = () => $('wizard').classList.add('hidden');
+$('wiz-skip2').onclick = () => $('wizard').classList.add('hidden');
+$('wiz-online').onclick = () => {
+  if ($('wiz-api') && !$('wiz-api').value) $('wiz-api').value = 'https://api.mynet.club';
+  wizStep(2);
+};
+$('wiz-local').onclick = async () => {
+  const r = await api('/api/v1/config/mode', 'POST', { mode: 'local' });
+  logAction('切换自主管理', r.success, r.message || '');
+  toast(r.success ? '已切换到自主管理模式' : '切换失败', r.message || '', r.success ? '' : 'err');
+  wizStep(2);
+};
+$('wiz-login').onclick = (e) => busy(e.currentTarget, async () => {
+  const r = await api('/api/v1/wizard/login', 'POST', {
+    api_base_url: $('wiz-api').value.trim(),
+    email: $('wiz-email').value.trim(),
+    password: $('wiz-pass').value
+  });
+  $('wiz-pass').value = '';
+  logAction('登录 MyNet', r.success, r.message || '');
+  toast(r.success ? '登录成功' : '登录失败', r.message || '', r.success ? '' : 'err');
+  if (r.success) {
+    await loadSession();
+    refresh();
+    const gen = $('wiz-key-gen');
+    const mk = $('wiz-rt-make');
+    if (gen) gen.disabled = false;
+    if (mk) mk.disabled = false;
+    wizStep(3);
+  }
+});
+$('wiz-key-gen').onclick = (e) => busy(e.currentTarget, async () => {
+  const r = await api('/api/v1/config/keys', 'POST', { generate: true });
+  logAction('生成密钥', r.success, r.message || '');
+  toast(r.success ? '密钥已生成' : '生成失败', r.message || '', r.success ? '' : 'err');
+});
+$('wiz-rt-make').onclick = (e) => busy(e.currentTarget, async () => {
+  const r = await api('/api/v1/config/apply', 'POST', { start: false });
+  logAction('生成运行配置', r.success, r.message || '');
+  toast(r.success ? '配置已生成' : '生成失败', r.message || '', r.success ? '' : 'err');
+  if (r.success) wizStep(3);
+});
+$('wiz-start').onclick = (e) => doAction(e.currentTarget, '启动网络', ['service', 'start', window.__mynetDriver || 'gnb']);
+
+/* 模式切换入口（由 webui-context.js 增强） */
+function openContext() {
+  if (typeof window.openContextModal === 'function') window.openContextModal();
+  else toast('切换面板不可用', '请刷新页面后重试', 'warn');
+}
+$('btn-context').onclick = openContext;
+
+/* 启动 */
+renderLog();
+parseHash();
+refresh();
+loadSystemRaw();
+</script>
+<script src="webui-context.js?v=20260927-3"></script>
+</body>
+</html>

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
 
 // 节点面（node ↔ back）签名与命令结果上行帧。
@@ -25,7 +25,7 @@ const (
 	resultPathFmt = "/api/v1/monitor/commands/%s/result"
 )
 
-// nodeIdentity 节点身份：从 mynet.conf 读出的 node_id + 节点面签名器。
+// nodeIdentity 节点身份：从配置树 v2 的 keys/ 读出的 node_id + 节点面签名器。
 type nodeIdentity struct {
 	nodeID string
 	signer *keys.NodeFaceSigner
@@ -47,62 +47,87 @@ type resultFrame struct {
 	Sig    string `json:"sig"`
 }
 
-// mynetConfPath 返回 $MYNET_HOME/conf/mynet.conf。
-//
-// ⚠️ 必须与 `mynet/cmd_setup.go:79-84` 的 confDir() 保持一致——那是写入方。
-// 注意 `shared/utils.ConfigDir()` 是**另一套约定**（MYNET_CONFIG_HOME / .mynet），
-// 用它找不到 setup 写出的文件。两套约定并存已登记为待收敛项。
-func mynetConfPath() string {
-	if v := os.Getenv("MYNET_HOME"); v != "" {
-		return filepath.Join(v, "conf", "mynet.conf")
+// nodeKeysDir 密钥挂**节点**：conf/{local|online/t}/nodes/{node_id}/keys
+// 旧布局 conf/**/keys 由 ResolveKeysDir 回退读取。
+func nodeKeysDir() (string, error) {
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = "."
 	}
-	return filepath.Join("conf", "mynet.conf")
+	nodeID := ""
+	space := filepath.Join(home, "conf", "local")
+	if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+		var mode struct {
+			Mode   string `json:"mode"`
+			Active struct {
+				TenantID string `json:"tenant_id"`
+				NodeID   string `json:"node_id"`
+			} `json:"active"`
+		}
+		if json.Unmarshal(raw, &mode) == nil {
+			nodeID = mode.Active.NodeID
+			if mode.Mode == "online" && mode.Active.TenantID != "" {
+				space = filepath.Join(home, "conf", "online", mode.Active.TenantID)
+			}
+		}
+	}
+	return utils.ResolveKeysDir(space, nodeID), nil
 }
 
-// loadNodeIdentity 读 mynet.conf 并构造签名器。
+// loadNodeIdentity 读 keys/ 并构造签名器。
 //
 // 缺文件或缺字段一律**明确报错**，不静默降级：静默降级会导致「结果发出去了但
 // back 验签失败」，症状是命令永远停在「已下发」，极难定位。
-func loadNodeIdentity(path string) (*nodeIdentity, error) {
-	f, err := os.Open(path)
+func loadNodeIdentity(_ string) (*nodeIdentity, error) {
+	dir, err := nodeKeysDir()
 	if err != nil {
-		return nil, fmt.Errorf("读节点配置失败（先运行 mynet setup）: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-
-	kv := map[string]string{}
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	// 节点面只需私钥；公钥可缺（LoadNodePrivateKey 认两套文件名）
+	priv, err := keys.LoadNodePrivateKey(dir)
+	if err != nil {
+		return nil, fmt.Errorf("读节点密钥失败（先 mynet setup --local|--online）: %w", err)
+	}
+	nodeID := ""
+	backPub := ""
+	if metaB, err := os.ReadFile(filepath.Join(dir, "meta.json")); err == nil {
+		var meta struct {
+			NodeID     string `json:"node_id"`
+			BackPubHex string `json:"back_pub_hex"`
 		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
+		if json.Unmarshal(metaB, &meta) == nil {
+			nodeID = meta.NodeID
+			backPub = meta.BackPubHex
 		}
-		kv[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("解析 %s: %w", path, err)
+	if nodeID == "" {
+		// 退回 mode.json 的 active.node_id
+		if home := os.Getenv("MYNET_HOME"); home != "" {
+			if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+				var m struct {
+					Active struct {
+						NodeID string `json:"node_id"`
+					} `json:"active"`
+				}
+				if json.Unmarshal(raw, &m) == nil {
+					nodeID = m.Active.NodeID
+				}
+			}
+		}
 	}
-
-	nodeID := kv["NODE_ID"]
-	priv := kv["NODE_PRIV_HEX"]
-	backPub := kv["BACK_PUB_HEX"]
 
 	var missing []string
 	if nodeID == "" {
-		missing = append(missing, "NODE_ID")
+		missing = append(missing, "node_id")
 	}
 	if priv == "" {
-		missing = append(missing, "NODE_PRIV_HEX")
+		missing = append(missing, "node.private")
 	}
 	if backPub == "" {
-		missing = append(missing, "BACK_PUB_HEX")
+		missing = append(missing, "back_pub_hex")
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("%s 缺少字段: %s", path, strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%s 缺少: %s", dir, strings.Join(missing, ", "))
 	}
 
 	signer, err := keys.NewNodeFaceSigner(priv, backPub)
