@@ -102,8 +102,9 @@ jobs:
           fi
           go build -ldflags "$LDFLAGS" -o "${OUT}/mynet_gateway${EXT}" ./cmd/mynet_gateway
 
-          # sanity：proxy 符号必须在（「带 proxy 的」）
-          if ! go tool nm "${OUT}/mynet${EXT}" | grep -q 'mynet.ApplyProxy'; then
+          # sanity：proxy 能力必须在（「带 proxy 的」）
+          # -s -w 会剥符号表，不能用 go tool nm；改查运行时类型名/字符串面
+          if ! strings "${OUT}/mynet${EXT}" | grep -q 'mynet.ApplyProxy'; then
             echo "ERROR: mynet 产物缺少 proxy 能力（ApplyProxy*）" >&2
             exit 1
           fi
