@@ -9,24 +9,21 @@ import (
 	"strings"
 )
 
-// cmdInstall — 把 mynet 装成系统服务。
+// cmdInstall — **服务安装**（不是安装包安装）。
 //
 //	mynet install [--prefix DIR] [--home DIR] [--gateways URL[,URL]]
 //	               [--gnb-bin PATH] [--no-enable] [--dry-run]
 //
-// ⚠️ 此前这里只复制二进制，然后打印一句
+// 职责边界（全平台一致）：
+//   - **文件落地**（mynet/mynetd/gnb 二进制、LuCI、默认单元）归**安装包**
+//     （OpenWrt ipk · deb/rpm · macOS pkg · Windows MSI · dist 包解压）。
+//   - **服务装配**归 `mynet install`：写 env、写服务单元、enable/start。
 //
-//	service unit: /etc/systemd/system/mynetd.service
-//	enable: 请按平台执行 systemctl/launchctl
+// 为什么不 copy 二进制：包管理器负责放置/校验/卸载；install 再 copy 一份会
+// 和包打架（覆盖、双份、卸载残留）。缺二进制时明确报错，让人去装包。
 //
-// 就返回 0 —— 单元文件本身**没有被安装**。所以一台新机器上只拿到二进制时，
-// `mynet install` 装完仍是「没有服务、重启就没了」，而它还报成功。
-// 我在两台验证机上装服务时那一步是**手工做的**（cp 单元 + daemon-reload +
-// enable --now），等于把 install 该干的活自己干了一遍 —— 这个洞就是那时发现的。
-//
-// 现在它做完整条链：写二进制 → 建 $home → 写 /etc/mynet/mynetd.env →
-// 写单元（内嵌在二进制里，见 units.go）→ daemon-reload → enable --now。
-// 需要 root（要写 /etc/systemd/system 与 /etc/mynet）。
+// 历史坑：早期 install 只写二进制不写单元，报成功但服务不存在；后补全单元时
+// 又把 copy 混进来。现在两条线分开：包放文件，install 装服务。
 func cmdInstall(args []string) int {
 	prefix := defaultPrefix()
 	home := ""
@@ -80,17 +77,24 @@ func cmdInstall(args []string) int {
 	if runtime.GOOS == "windows" {
 		return installWindows(prefix, home, gateways, gnbBin, enable, dry)
 	}
+	// OpenWrt 走 procd（E-1）：写 /etc/init.d/{mynetd,mynet}，不用 systemd
+	if isOpenWrt() {
+		return installOpenWrt(prefix, home, gateways, gnbBin, enable, dry)
+	}
 	if err := assertUnitsEmbedded(); err != nil {
 		fmt.Fprintln(os.Stderr, "内嵌单元异常：", err)
 		return 1
 	}
 
-	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
 	binDir := filepath.Join(prefix, "bin")
 	envPath := "/etc/mynet/mynetd.env"
-	unitDir := "/etc/systemd/system"
 	if runtime.GOOS == "darwin" {
 		envPath = filepath.Join(prefix, "etc", "mynetd.env") // 仅作文档，launchd 用 EnvironmentVariables
+	}
+
+	fmt.Println("将执行以下动作（服务安装，--dry-run 只看不做）：")
+	unitDir := "/etc/systemd/system"
+	if runtime.GOOS == "darwin" {
 		unitDir = launchdPlistDir
 		fmt.Printf("  写 %s/%s.plist\n", unitDir, LabelMynetd)
 		fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
@@ -99,10 +103,10 @@ func cmdInstall(args []string) int {
 			fmt.Printf("  写 %s/%s\n", unitDir, unitFileName(u))
 		}
 	}
+	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
 	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
 		envPath, home, gateways, binDir)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
-	fmt.Printf("  装二进制到 %s/{mynet,mynetd}\n", binDir)
 	if enable {
 		if runtime.GOOS == "darwin" {
 			fmt.Println("  launchctl bootstrap system（com.mynet.mynetd；gnb 由 mynetd 拉起）")
@@ -127,35 +131,27 @@ func cmdInstall(args []string) int {
 		return 1
 	}
 
-	// 0) 先停服务再覆盖二进制。不先停的话 mynetd 正在被占用 →
-	// `open …: text file busy`，而 install 已经复制完了 mynet、
-	// 失败在 mynetd 上 —— 留下一个**装了一半**的状态（实测踩过）。
-	// 单元可能本来就不存在（首次安装），失败不致命，故只告警。
+	// 0) 二进制必须已由安装包放好。缺了就去装包，不在这里 copy。
+	mynetPath := filepath.Join(binDir, "mynet")
+	mynetdPath := filepath.Join(binDir, "mynetd")
+	if runtime.GOOS == "windows" {
+		mynetPath += ".exe"
+		mynetdPath += ".exe"
+	}
+	for _, bin := range []string{mynetPath, mynetdPath} {
+		if !fileExists(bin) {
+			fmt.Fprintf(os.Stderr, "✗ 缺二进制 %s\n", bin)
+			fmt.Fprintln(os.Stderr, "  文件落地归安装包（deb/rpm/pkg/MSI/dist），mynet install 只装服务")
+			return 1
+		}
+	}
+
+	// 1) 先停服务（改 env/单元时旧进程不能占着文件）
 	if runtime.GOOS == "darwin" {
 		_, _ = launchctl("bootout", "system/"+LabelMynetd)
 		_, _ = launchctl("bootout", "system/"+LabelGNB)
 	} else if out, err := runSystemctl("stop", "mynetd", "mynet_gnb"); err != nil {
 		fmt.Fprintf(os.Stderr, "  systemctl stop（首次安装可忽略）: %v %s\n", err, strings.TrimSpace(string(out)))
-	}
-
-	// 1) 二进制 —— 升级时**只覆盖 bin/**，conf 与身份目录绝不动
-	//    （UpgradePreserve 契约，port_owner.go）
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	self, _ := os.Executable()
-	if err := copyFile(self, filepath.Join(binDir, "mynet"), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "install mynet: %v\n", err)
-		return 1
-	}
-	if src := filepath.Join(filepath.Dir(self), "mynetd"); fileExists(src) {
-		if err := copyFile(src, filepath.Join(binDir, "mynetd"), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "install mynetd: %v\n", err)
-			return 1
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "⚠️ 找不到同目录的 mynetd（%s），只装了 mynet —— 节点守护进程会缺失\n", src)
 	}
 
 	// 2) MYNET_HOME 目录

@@ -87,11 +87,11 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 			return fmt.Errorf("decode bundle: %w", err)
 		}
 	}
-	if env == nil || env.Gnb == nil {
-		// wireguard 路径后续接 WriteIntent(Wg)；先只落 gnb
-		if env != nil && env.WireGuard != nil {
-			return fmt.Errorf("wireguard 投影尚未接 WriteIntent（driver/wireguard），先用 gnb")
-		}
+	if env == nil {
+		return fmt.Errorf("bundle 无驱动 intent")
+	}
+	// 双驱动：Envelope 互斥（A-8）——gnb 段与 wireguard 段只会有一个。
+	if env.Gnb == nil && env.WireGuard == nil {
 		return fmt.Errorf("bundle 无驱动 intent")
 	}
 	if mode.Active.NodeID != "" && env.Node.ID != "" && mode.Active.NodeID != env.Node.ID {
@@ -102,6 +102,21 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 		mode.Active.NodeID = env.Node.ID
 		store.SaveMode(mode)
 	}
+
+	// wireguard 投影（A-5）：WriteIntent → /etc/wireguard/<iface>.conf
+	if env.WireGuard != nil {
+		if dry {
+			fmt.Printf("dry-run: 将写入 wireguard conf（iface=%s）\n",
+				env.Node.Interface)
+			return nil
+		}
+		if err := writeWgProjection(env, dry); err != nil {
+			return err
+		}
+		fmt.Println("✓ driver 投影 wireguard")
+		return nil
+	}
+
 	// 服务端不存 private —— 从本机 keys/ 注入，否则 security/ 只有 public、gnb 起不来
 	kd := utils.ResolveKeysDir(src, env.Node.ID)
 	if priv, pub, _, _, err := keys.LoadNodeKeys(kd); err == nil && priv != "" {
@@ -165,14 +180,12 @@ func LocalToGnbIntent(li *domain.LocalIntent, privHex, pubHex, algorithm string)
 			if g.Discovery == nil {
 				g.Discovery = &domain.GnbDiscovery{}
 			}
-			role := ""
-			if p.Relay {
-				role = "f"
-			}
+			// 不写 f 角色：address.conf 一律默认 n。proxy/relay 语义由
+			// node.conf 与业务意图表达，不在 address.conf 打 f（与 spec/proxy-split.md 一致）。
 			g.Discovery.StaticNodes = append(g.Discovery.StaticNodes, domain.GnbEndpointHint{
 				NodeID:   p.ID,
 				Endpoint: p.Endpoint,
-				Role:     role,
+				Role:     "",
 			})
 		}
 	}
@@ -215,7 +228,7 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 	if nodeID == "" {
 		return fmt.Errorf("intent 缺 node id")
 	}
-	// proxy 插件启用时：标 f 出口 + 打开 proxy on，并准备写 proxy.conf
+	// proxy 插件启用时：写出口对端 + 打开 proxy on，并准备写 proxy.conf
 	pp := enrichIntentWithProxy(gi)
 	if dry {
 		fmt.Printf("dry-run: 将写入 driver/gnb/conf/%s/（node/route/address/keys）\n", nodeID)
@@ -237,6 +250,35 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 		_ = copyDirFiles(d.ConfDir, snap)
 	}
 	fmt.Printf("✓ driver 投影 %s\n", d.ConfDir)
+	return nil
+}
+
+// writeWgProjection — wireguard 投影（A-5）。
+// conf 落 /etc/wireguard/<iface>.conf（wg-quick 原生位）；
+// 同步一份到 $MYNET_HOME/var/wg.conf 供 init 回退查找。
+func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
+	if env.WireGuard == nil {
+		return fmt.Errorf("bundle 无 wireguard intent")
+	}
+	iface := env.Node.Interface
+	if iface == "" {
+		iface = "wg0"
+	}
+	d := driver.NewWireGuardDriver(iface, 0)
+	if dry {
+		fmt.Printf("dry-run: 将写入 /etc/wireguard/%s.conf\n", iface)
+		return nil
+	}
+	if err := d.WriteIntent(env.WireGuard); err != nil {
+		return fmt.Errorf("WriteIntent: %w", err)
+	}
+	// 变量树副本：OpenWrt init 的 wg_conf_path 回退位
+	if varConf := filepath.Join(varDir(), "wg.conf"); varConf != d.ConfPath {
+		if b, err := os.ReadFile(d.ConfPath); err == nil {
+			_ = os.WriteFile(varConf, b, 0o600)
+		}
+	}
+	fmt.Printf("✓ driver 投影 %s\n", d.ConfPath)
 	return nil
 }
 

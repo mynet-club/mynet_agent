@@ -3,7 +3,6 @@ package mynet
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
@@ -252,7 +251,12 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 		return d, nil
 	case domain.DriverTypeWireGuard:
 		d := driver.NewWireGuardDriver(env.Node.Interface, 0)
-		d.ConfPath = filepath.Join(varDir(), "wg.conf")
+		// 路径对齐 wg-quick 原生位（见 wireguard.go WriteIntent 默认值）。
+		// 此前写 var/wg.conf 而 wg-quick 只读 /etc/wireguard/，Start 必失败。
+		if d.Interface == "" {
+			d.Interface = "wg0"
+		}
+		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
 
 		return d, nil
 	default:

@@ -21,7 +21,8 @@ var AllowedPathPrefixes = []string{
 	"/api/v1/nodes",
 	"/api/v1/routes",
 	"/api/v1/route/",
-	"/api/v1/monitor",
+	"/api/v1/node",
+	"/api/v1/monitor", // 旧链兼容，新码勿加
 	"/api/v1/heartbeat",
 	// gui 控制台：IP 池 / 服务 / 社交 / 租户 / 用户
 	"/api/v1/ippools",

@@ -7,9 +7,9 @@
       "method": "POST",
       "name": "heartbeat",
       "node_priv_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-      "path": "/api/v1/monitor/heartbeat",
+      "path": "/api/v1/node/heartbeat",
       "shared_hex": "9502af7a4b678841b839429623a09a23f6cc551836e48a52c0e4faf4b9d3b06e",
-      "signature": "8JzMnfrCaUEBikZurTQn4xOlPQiyYlB1HKTcTLaiU3M=",
+      "signature": "r7kuWKmn/LNYF4CRVS7XWFyEIHSs5VoJgml6m80qxo4=",
       "ts": "1700000000"
     }
   ],

@@ -8,7 +8,9 @@ import (
 	"strings"
 )
 
-// installWindows — Windows 安装（V5-2 / T5-1）。
+// installWindows — Windows **服务安装**（V5-2 / T5-1）。
+//
+// 职责与其它平台一致：文件落地归安装包（MSI / dist 解压），本函数只装配服务。
 //
 // 与 linux/darwin 的差异：
 //   - 可执行文件是 mynet.exe / mynetd.exe；
@@ -22,12 +24,14 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 	binDir := filepath.Join(prefix, "bin")
 	envPath := filepath.Join(home, "mynetd.env")
+	mynetExe := filepath.Join(binDir, "mynet.exe")
+	mynetdExe := filepath.Join(binDir, "mynetd.exe")
 
-	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
-	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s\\mynet.exe)\n",
-		envPath, home, gateways, binDir)
+	fmt.Println("将执行以下动作（Windows 服务安装，--dry-run 只看不做）：")
+	fmt.Printf("  检查二进制已在位（安装包负责）: %s\\{mynet.exe,mynetd.exe}\n", binDir)
+	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s)\n",
+		envPath, home, gateways, mynetExe)
 	fmt.Printf("  建 %s\\{conf,var}\n", home)
-	fmt.Printf("  装二进制到 %s\\{mynet.exe,mynetd.exe}\n", binDir)
 	if enable {
 		fmt.Println("  注册 Windows 服务 mynetd（SCM，start= auto）")
 		fmt.Println("  （gnb 不单独立服务：由 mynetd auto_restore_tunnel 拉起）")
@@ -37,35 +41,18 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		return 0
 	}
 
-	// 0) 停掉可能在跑的 mynetd/mynet，避免覆盖被占用的 exe
-	// taskkill 失败可忽略（可能本来就没在跑）
-	_ = execCommand("taskkill", "/F", "/IM", "mynetd.exe")
-	_ = execCommand("taskkill", "/F", "/IM", "mynet.exe")
-	_ = execCommand("sc", "stop", "mynetd")
-
-	// 1) 二进制（带 .exe）
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	self, err := os.Executable()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "定位自身可执行文件:", err)
-		return 1
-	}
-	if err := copyFile(self, filepath.Join(binDir, "mynet.exe"), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "install mynet.exe: %v\n", err)
-		return 1
-	}
-	src := filepath.Join(filepath.Dir(self), "mynetd.exe")
-	if fileExists(src) {
-		if err := copyFile(src, filepath.Join(binDir, "mynetd.exe"), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "install mynetd.exe: %v\n", err)
+	// 0) 二进制必须已由安装包放好
+	for _, bin := range []string{mynetExe, mynetdExe} {
+		if !fileExists(bin) {
+			fmt.Fprintf(os.Stderr, "✗ 缺二进制 %s\n", bin)
+			fmt.Fprintln(os.Stderr, "  文件落地归安装包（MSI/dist），mynet install 只装服务")
 			return 1
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "⚠️ 找不到同目录的 mynetd.exe（%s），只装了 mynet.exe —— 节点守护进程会缺失\n", src)
 	}
+
+	// 1) 停掉可能在跑的 mynetd（服务安装要改 env/注册服务）
+	// taskkill 失败可忽略（可能本来就没在跑）
+	_ = execCommand("sc", "stop", "mynetd")
 
 	// 2) MYNET_HOME 目录
 	for _, sub := range []string{"conf", "var"} {
@@ -75,7 +62,7 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		}
 	}
 
-	// 3) 环境文件（Windows 服务/计划任务以后读它）
+	// 3) 环境文件（Windows 服务/计划任务读它）
 	if err := writeEnvFile(envPath, home, gateways, binDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -83,45 +70,32 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	// writeEnvFile 写的 MYNET_BIN 不带 .exe，这里补上
 	if b, err := os.ReadFile(envPath); err == nil {
 		body := string(b)
-		body = replaceEnvValue(body, "MYNET_BIN", filepath.Join(binDir, "mynet.exe"))
+		body = replaceEnvValue(body, "MYNET_BIN", mynetExe)
 		_ = os.WriteFile(envPath, []byte(body), 0o600)
 	}
 	fmt.Println("installed", envPath)
-	fmt.Println("installed", filepath.Join(binDir, "mynet.exe"))
-	if fileExists(filepath.Join(binDir, "mynetd.exe")) {
-		fmt.Println("installed", filepath.Join(binDir, "mynetd.exe"))
-	}
 
-	// gnb 归位到 driver/gnb/bin（与 conf 投影同树，resolveGNBBinary 第一优先）。
-	// gnb-win 手装目录不作为长期布局。wintun.dll 必须同目录 —— 缺了 gnb 起来即退。
-	if gnbBin != "" && fileExists(gnbBin) {
-		dst := filepath.Join(home, "driver", "gnb", "bin", "gnb.exe")
-		_ = os.MkdirAll(filepath.Dir(dst), 0o755)
-		if err := copyFile(gnbBin, dst, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "install gnb.exe: %v\n", err)
-		} else {
-			fmt.Println("installed", dst)
-			// 依赖 DLL 与工具：与 gnb.exe 同目录
-			srcDir := filepath.Dir(gnbBin)
-			for _, extra := range []string{"wintun.dll", "gnb_ctl.exe", "gnb_es.exe", "gnb_crypto.exe"} {
-				s := filepath.Join(srcDir, extra)
-				if fileExists(s) {
-					_ = copyFile(s, filepath.Join(filepath.Dir(dst), extra), 0o755)
-				}
-			}
-			// 环境覆盖也指向标准位
-			if b, err := os.ReadFile(envPath); err == nil {
-				body := replaceEnvValue(string(b), "MYNET_GNB_BIN", dst)
-				_ = os.WriteFile(envPath, []byte(body), 0o600)
-			}
-		}
+	// gnb 二进制归 gnb 安装包（mynet_gnb / MSI），这里只校验并写路径。
+	// 标准位：driver/gnb/bin/gnb.exe（与 conf 投影同树，resolveGNBBinary 第一优先）。
+	gnbDst := filepath.Join(home, "driver", "gnb", "bin", "gnb.exe")
+	if gnbBin != "" && fileExists(gnbBin) && gnbBin != gnbDst {
+		fmt.Fprintf(os.Stderr, "⚠️ gnb 在 %s，标准位是 %s\n", gnbBin, gnbDst)
+		fmt.Fprintln(os.Stderr, "  归位由 gnb 安装包负责；请安装后重跑 mynet install")
+	}
+	if !fileExists(gnbDst) && !fileExists(gnbBin) {
+		fmt.Fprintf(os.Stderr, "⚠️ 未找到 gnb.exe（期望 %s）—— mynet 服务起隧道会失败\n", gnbDst)
+	}
+	// 环境指向标准位或用户指定路径
+	if b, err := os.ReadFile(envPath); err == nil {
+		body := replaceEnvValue(string(b), "MYNET_GNB_BIN", gnbDst)
+		_ = os.WriteFile(envPath, []byte(body), 0o600)
 	}
 
 	fmt.Println("\n下一步（节点身份，install 不代劳）：")
 	fmt.Printf("  %s\\mynet.exe setup …\n", binDir)
 
 	if enable {
-		if rc := registerWindowsService(home, filepath.Join(binDir, "mynetd.exe")); rc != 0 {
+		if rc := registerWindowsService(home, mynetdExe); rc != 0 {
 			return rc
 		}
 	} else {

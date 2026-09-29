@@ -29,7 +29,7 @@ import (
 //	· 下载配置走**用户凭证**的 GET /nodes/{id}/bundle
 //	  （NodeConfigController::getBundle，api.php:108 注释明说
 //	   「供 ctl 安装包等用户凭证场景」）—— 这一步解鸡生蛋：
-//	  节点签名通道（/monitor/node/bundle）需要先有 mynet.conf，而 mynet.conf
+//	  节点签名通道（/node/bundle）需要先有 mynet.conf，而 mynet.conf
 //	  正是 claim 要写的。所以**向导阶段用用户 token，运行期用节点签名**。
 func cmdTenants(args []string) int {
 	cred := requireCred()

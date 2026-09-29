@@ -78,7 +78,7 @@ func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	bc := &backClient{relayBase: srv.URL + "/v1/relay", id: ident, hc: srv.Client()}
 
 	body := []byte(`{"foo":"bar"}`)
-	code, resp, err := bc.do(context.Background(), http.MethodPost, "/api/v1/monitor/heartbeat", body)
+	code, resp, err := bc.do(context.Background(), http.MethodPost, "/api/v1/node/heartbeat", body)
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
@@ -92,8 +92,8 @@ func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	if gotPath != "/v1/relay" {
 		t.Errorf("应打到 /v1/relay，实际 %q", gotPath)
 	}
-	if gotQuery != "/api/v1/monitor/heartbeat" {
-		t.Errorf("path query = %q, want /api/v1/monitor/heartbeat", gotQuery)
+	if gotQuery != "/api/v1/node/heartbeat" {
+		t.Errorf("path query = %q, want /api/v1/node/heartbeat", gotQuery)
 	}
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %q, want POST", gotMethod)
@@ -114,7 +114,7 @@ func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !verifier.Verify(http.MethodPost, "/api/v1/monitor/heartbeat", gotTS, gotBody, gotSig) {
+	if !verifier.Verify(http.MethodPost, "/api/v1/node/heartbeat", gotTS, gotBody, gotSig) {
 		t.Error("签名验不过 —— back 会 401")
 	}
 	// 反面：用不带前导斜杠的 path 验签必须失败，证明斜杠真的进了签名
@@ -265,7 +265,7 @@ func TestReportHeartbeatSignsBodyWithoutNodeMonitor(t *testing.T) {
 	if gotMethod != http.MethodPost {
 		t.Errorf("method = %s，期望 POST", gotMethod)
 	}
-	if gotPath != "/api/v1/monitor/heartbeat" {
+	if gotPath != "/api/v1/node/heartbeat" {
 		t.Errorf("path = %q（差一个斜杠就会全 401）", gotPath)
 	}
 	if gotTS == "" || gotSig == "" {

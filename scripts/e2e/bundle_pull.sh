@@ -108,12 +108,12 @@ class H(BaseHTTPRequestHandler):
             path, "有" if self.headers.get("X-Node-Signature") else "无",
             self.headers.get("If-None-Match")))
         sys.stderr.flush()
-        if path.startswith("/api/v1/monitor/node/bundle"):
+        if path.startswith("/api/v1/node/bundle"):
             if self.headers.get("If-None-Match") == ETAG:
                 self._send(304, b"", {"ETag": ETAG, "Cache-Control": "private, no-cache"})
             else:
                 self._send(200, ENVELOPE, {"ETag": ETAG, "Cache-Control": "private, no-cache"})
-        elif path.startswith("/api/v1/monitor/commands"):
+        elif path.startswith("/api/v1/node/commands"):
             self._send(200, {"success": True, "node_id": 1245816621804034, "commands": []})
         else:
             self._send(404, {"success": False, "error": "not found"})

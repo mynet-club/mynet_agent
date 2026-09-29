@@ -152,7 +152,7 @@ func TestEncodeResultFrameIsSignedAndShaped(t *testing.T) {
 	if f.Method != "PATCH" {
 		t.Errorf("method = %q, want PATCH（back 的路由是 PATCH）", f.Method)
 	}
-	wantPath := "/api/v1/monitor/commands/cmd-777/result"
+	wantPath := "/api/v1/node/commands/cmd-777/result"
 	if f.Path != wantPath {
 		t.Errorf("path = %q, want %q", f.Path, wantPath)
 	}

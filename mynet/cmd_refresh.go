@@ -3,6 +3,7 @@ package mynet
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -181,7 +182,55 @@ func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
 	// 把本机 overlay 地址带上，执行期才能反查真实接口（见 resolveDevice）。
 	plan.LocalAddresses = append(plan.LocalAddresses, env.Network.Addresses...)
 
+	// 代理分流（主线⑦）：back 解算好的 ProxyPolicy → L6 计划。
+	if p := env.Network.Proxy; p != nil && p.Enabled {
+		rt := ProxyRuntime{
+			TunDevice: env.Node.Interface,
+		}
+		if ex := firstEnabledExit(p); ex != nil {
+			rt.ExitVia = resolveExitVia(env, ex)
+		}
+		if p.Split != nil && p.Split.IPList != nil {
+			// 缓存路径由 source 决定；URL 在执行期 FetchProxyIPList 使用
+			src := p.Split.IPList.Source
+			if src == "" {
+				src = p.Split.ListSource
+			}
+			rt.IPSetFile = ProxyListCachePath(filepath.Join(varDir(), "proxy-lists"), src)
+		}
+		plan.Proxy = planProxy(p, rt)
+	}
+
 	return plan
+}
+
+func firstEnabledExit(p *domain.ProxyPolicy) *domain.ProxyExit {
+	for i := range p.Exits {
+		if p.Exits[i].Enabled && p.Exits[i].NodeID != "" {
+			return &p.Exits[i]
+		}
+	}
+	return nil
+}
+
+// resolveExitVia 出口 VIP：优先 ProxyExit.Via，否则查 gnb.nodes 的 tun_address 主机位。
+func resolveExitVia(env *domain.BundleEnvelope, ex *domain.ProxyExit) string {
+	if ex.Via != "" {
+		return ex.Via
+	}
+	if env.Gnb == nil {
+		return ""
+	}
+	for _, n := range env.Gnb.Nodes {
+		if n.NodeID != ex.NodeID || n.TunAddress == "" {
+			continue
+		}
+		if ip, _, err := net.ParseCIDR(n.TunAddress); err == nil {
+			return ip.String()
+		}
+		return n.TunAddress
+	}
+	return ""
 }
 
 func refreshAddress(env *domain.BundleEnvelope) int {
@@ -196,7 +245,11 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 	switch env.Driver {
 	case domain.DriverTypeWireGuard:
 		d := driver.NewWireGuardDriver(env.Node.Interface, 0)
-		d.ConfPath = filepath.Join(varDir(), "wg.conf")
+		if d.Interface == "" {
+			d.Interface = "wg0"
+		}
+		// 与 WriteIntent / wg-quick 同位（见 wireguard.go）
+		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
 		if err := d.WriteIntent(env.WireGuard); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

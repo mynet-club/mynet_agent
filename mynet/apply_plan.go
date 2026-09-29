@@ -23,7 +23,9 @@ type ApplyPlan struct {
 	Routes     []RouteOp    `json:"routes,omitempty"`
 	Firewall   []FirewallOp `json:"firewall,omitempty"`
 	Interfaces []IfaceOp    `json:"interfaces,omitempty"`
-	ExtraExec  []ExecOp     `json:"extra_exec,omitempty"` // 兜底；优先结构化字段
+	// Proxy 代理分流（主线⑦）。非 nil 时 executeApply 追加策略路由/DNS 命令。
+	Proxy     *ProxyApplyPlan `json:"proxy,omitempty"`
+	ExtraExec []ExecOp        `json:"extra_exec,omitempty"` // 兜底；优先结构化字段
 	// LocalAddresses 本机 overlay 地址（如 10.0.0.15/32）。
 	// 用途只有一个：bundle 里的 Device 是**逻辑名**（gnb_tun），而 darwin 的 gnb
 	// 会拿到内核分配的 utunN（gnb_drv_darwin.c:249-252 把 ifname 覆盖成
@@ -148,6 +150,82 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			fmt.Fprintf(os.Stderr, "iface %s %s: %v\n", i.Action, i.Name, err)
 			log.Error("接口操作失败", "action", i.Action, "name", i.Name, "err", err)
 			fail = 1
+		}
+	}
+	if plan.Proxy != nil {
+		// 代理分流（L6）：先取 IP 列表并生成 set 片段，再跑策略路由/DNS
+		rt := plan.Proxy.Runtime
+		rt.TunDevice = resolveDevice(rt.TunDevice, plan.LocalAddresses)
+		if ref := proxyIPListRef(plan.Proxy.Policy); ref != nil && rt.IPSetFile != "" {
+			if _, err := FetchProxyIPList(ref, rt.IPSetFile, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "proxy ip list: %v\n", err)
+				log.Error("IP 列表获取失败", "err", err)
+				fail = 1
+			} else {
+				if snap.Capabilities["nft"] {
+					if err := WriteNftSetFragment(rt.IPSetFile); err != nil {
+						fmt.Fprintf(os.Stderr, "proxy nft fragment: %v\n", err)
+						fail = 1
+					}
+				} else if snap.Capabilities["iptables"] {
+					if err := WriteIPSetRestore(rt.IPSetFile); err != nil {
+						fmt.Fprintf(os.Stderr, "proxy ipset restore: %v\n", err)
+						fail = 1
+					}
+				}
+				for _, c := range LoadIPSetFileCmds(snap, rt.IPSetFile) {
+					if err := runOp(dry, c.argv); err != nil {
+						if c.optional {
+							continue
+						}
+						fmt.Fprintf(os.Stderr, "proxy load set %v: %v\n", c.argv, err)
+						fail = 1
+					}
+				}
+			}
+		}
+		// P0-b：写 DNS 产物（网关 dnsmasq 片段 / PC resolv）
+		dnsForm := DNSFormGateway
+		if plan.Proxy.Policy.DNS != nil && plan.Proxy.Policy.DNS.Hijack == "local" {
+			// 只劫本机时按 PC 形态配上游
+			dnsForm = DNSFormPC
+		}
+		if plan.Proxy.Policy.DomainRules != nil || (plan.Proxy.Policy.DNS != nil && plan.Proxy.Policy.DNS.Hijack != "" && plan.Proxy.Policy.DNS.Hijack != "off") {
+			reloads, derr := ApplyProxyDNSFiles(plan.Proxy.Policy, dnsForm, rt.IPSetFile+".dnsmasq.conf", "")
+			if derr != nil {
+				fmt.Fprintf(os.Stderr, "proxy dns files: %v\n", derr)
+				fail = 1
+			}
+			for _, rc := range reloads {
+				_ = runOp(dry, rc) // reload 失败不阻断 apply
+			}
+		}
+		// P0-c：动态 ipset（DNS 回答钩子写入的文件）增量入集
+		if dyn, err := LoadDynamicIPSetFile(DynamicIPSetFilePath("")); err == nil && len(dyn) > 0 {
+			for _, c := range DynamicIPSetCmds(snap, dyn, "", "", "") {
+				if err := runOp(dry, c.argv); err != nil && !c.optional {
+					fail = 1
+				}
+			}
+		}
+		pcmds := proxyAllCmds(snap, plan.Proxy.Policy, rt)
+		log.Info("proxy apply", "cmds", len(pcmds),
+			"role", plan.Proxy.Policy.Role,
+			"match", func() string {
+				if plan.Proxy.Policy.Split != nil {
+					return plan.Proxy.Policy.Split.MatchMode
+				}
+				return ""
+			}())
+		for _, c := range pcmds {
+			if err := runOp(dry, c.argv); err != nil {
+				if c.optional {
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "proxy %v: %v\n", c.argv, err)
+				log.Error("proxy 命令失败", "argv", strings.Join(c.argv, " "), "err", err)
+				fail = 1
+			}
 		}
 	}
 	for _, e := range plan.ExtraExec {

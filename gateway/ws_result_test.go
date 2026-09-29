@@ -87,9 +87,9 @@ func sendResultFrame(t *testing.T, gwURL, nodeID string, f nodeResultFrame) {
 
 func TestAllowedNodeUpstream(t *testing.T) {
 	allow := []struct{ method, path string }{
-		{http.MethodPatch, "/api/v1/monitor/commands/1234/result"},
-		{http.MethodPatch, "/api/v1/monitor/commands/cmd-abc_DEF/result"},
-		{http.MethodPost, "/api/v1/monitor/heartbeat"},
+		{http.MethodPatch, "/api/v1/node/commands/1234/result"},
+		{http.MethodPatch, "/api/v1/node/commands/cmd-abc_DEF/result"},
+		{http.MethodPost, "/api/v1/node/heartbeat"},
 	}
 	for _, c := range allow {
 		if !allowedNodeUpstream(c.method, c.path) {
@@ -98,15 +98,15 @@ func TestAllowedNodeUpstream(t *testing.T) {
 	}
 
 	deny := []struct{ method, path, why string }{
-		{http.MethodPatch, "/api/v1/monitor/commands/12/result/../../nodes", "路径穿越"},
-		{http.MethodPatch, "/api/v1/monitor/commands//result", "空 id"},
-		{http.MethodPatch, "/api/v1/monitor/commands/12%2Fresult", "含 % 一律拒"},
-		{http.MethodPost, "/api/v1/monitor/commands/12/result", "method 不匹配"},
+		{http.MethodPatch, "/api/v1/node/commands/12/result/../../nodes", "路径穿越"},
+		{http.MethodPatch, "/api/v1/node/commands//result", "空 id"},
+		{http.MethodPatch, "/api/v1/node/commands/12%2Fresult", "含 % 一律拒"},
+		{http.MethodPost, "/api/v1/node/commands/12/result", "method 不匹配"},
 		{http.MethodPatch, "/api/v1/nodes", "用户面路径不属节点面"},
-		{http.MethodGet, "/api/v1/monitor/heartbeat", "method 不匹配"},
+		{http.MethodGet, "/api/v1/node/heartbeat", "method 不匹配"},
 		{http.MethodPatch, "/admin/dashboard", "管理面"},
-		{http.MethodPatch, "//evil.com/api/v1/monitor/heartbeat", "协议相对 URL 逃逸"},
-		{http.MethodDelete, "/api/v1/monitor/commands/12/result", "method 不在白名单"},
+		{http.MethodPatch, "//evil.com/api/v1/node/heartbeat", "协议相对 URL 逃逸"},
+		{http.MethodDelete, "/api/v1/node/commands/12/result", "method 不在白名单"},
 	}
 	for _, c := range deny {
 		if allowedNodeUpstream(c.method, c.path) {
@@ -130,7 +130,7 @@ func TestResultFrameForwardedVerbatim(t *testing.T) {
 	sendResultFrame(t, ts.URL, "node-1", nodeResultFrame{
 		T: "result", NodeID: "node-1",
 		Method: http.MethodPatch,
-		Path:   "/api/v1/monitor/commands/cmd-42/result",
+		Path:   "/api/v1/node/commands/cmd-42/result",
 		Body:   body, TS: "1700000000", Sig: sig,
 	})
 
@@ -140,7 +140,7 @@ func TestResultFrameForwardedVerbatim(t *testing.T) {
 	if sink.method != http.MethodPatch {
 		t.Errorf("上游收到 method = %q, want PATCH", sink.method)
 	}
-	if sink.path != "/api/v1/monitor/commands/cmd-42/result" {
+	if sink.path != "/api/v1/node/commands/cmd-42/result" {
 		t.Errorf("上游收到 path = %q", sink.path)
 	}
 	if sink.body != body {
@@ -167,7 +167,7 @@ func TestResultFrameNodeIDMismatchDropped(t *testing.T) {
 
 	sendResultFrame(t, ts.URL, "node-real", nodeResultFrame{
 		T: "result", NodeID: "node-impersonated",
-		Method: http.MethodPatch, Path: "/api/v1/monitor/commands/c1/result",
+		Method: http.MethodPatch, Path: "/api/v1/node/commands/c1/result",
 		Body: `{"success":true}`, TS: "1", Sig: "x",
 	})
 	sink.waitNoHit(t)
@@ -197,7 +197,7 @@ func TestResultFrameMissingSignatureDropped(t *testing.T) {
 
 	sendResultFrame(t, ts.URL, "node-1", nodeResultFrame{
 		T: "result", NodeID: "node-1",
-		Method: http.MethodPatch, Path: "/api/v1/monitor/commands/c1/result",
+		Method: http.MethodPatch, Path: "/api/v1/node/commands/c1/result",
 		Body: `{"success":true}`, TS: "1700000000", Sig: "", // 缺签名
 	})
 	sink.waitNoHit(t)
@@ -211,7 +211,7 @@ func TestResultFrameWithoutUpstreamIsDropped(t *testing.T) {
 
 	sendResultFrame(t, ts.URL, "node-1", nodeResultFrame{
 		T: "result", NodeID: "node-1",
-		Method: http.MethodPatch, Path: "/api/v1/monitor/commands/c1/result",
+		Method: http.MethodPatch, Path: "/api/v1/node/commands/c1/result",
 		Body: `{"success":true}`, TS: "1", Sig: "x",
 	})
 	// 没有上游可打；只要连接还活着、进程没崩就算过
@@ -234,7 +234,7 @@ func TestResultFrameUpstreamErrorKeepsConnAlive(t *testing.T) {
 
 	raw, _ := json.Marshal(nodeResultFrame{
 		T: "result", NodeID: "node-1",
-		Method: http.MethodPatch, Path: "/api/v1/monitor/commands/c1/result",
+		Method: http.MethodPatch, Path: "/api/v1/node/commands/c1/result",
 		Body: `{"success":true}`, TS: "1", Sig: "bad",
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

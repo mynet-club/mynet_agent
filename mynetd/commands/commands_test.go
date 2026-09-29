@@ -36,9 +36,40 @@ func TestPlanFiveBinMynetChains(t *testing.T) {
 	}
 }
 
-func TestProxyOpsAreGone(t *testing.T) {
-	if _, ok := Plan(Request{Op: "plugin.proxy.start"}, ""); ok {
-		t.Fatal("plugin.proxy.* 已下架，不得规划")
+func TestPluginProxyOpsPlanToExecutor(t *testing.T) {
+	// 新线 plugin.proxy.* 必须译成执行器 argv（mynetd 不自己动系统）
+	cases := []struct {
+		op   string
+		want []string
+	}{
+		{OpPluginProxyStart, []string{"plugin", "enable", "proxy"}},
+		{OpPluginProxyStop, []string{"plugin", "disable", "proxy"}},
+		{OpPluginProxyRestart, []string{"plugin", "apply", "proxy"}},
+		{OpPluginProxyStatus, []string{"plugin", "status", "proxy"}},
+	}
+	for _, c := range cases {
+		got, ok := Plan(Request{Op: c.op}, "")
+		if !ok {
+			t.Fatalf("%s not planned", c.op)
+		}
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: %v want %v", c.op, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: %v want %v", c.op, got, c.want)
+			}
+		}
+	}
+}
+
+func TestDeprecatedProxyReloadStillRejected(t *testing.T) {
+	// 旧 mynet_proxy 域的 plugin.proxy.reload 仍拒——它是 CPI-4 残留，不是新线 Op
+	if _, ok := Plan(Request{Op: "plugin.proxy.reload"}, ""); ok {
+		t.Fatal("plugin.proxy.reload 是已下架 mynet_proxy 域，不得规划")
+	}
+	if _, ok := OpFromBackCommand("mynet.plugin.proxy.reload"); ok {
+		t.Fatal("mynet.plugin.proxy.reload 不得映射")
 	}
 }
 

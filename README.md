@@ -24,6 +24,22 @@ make guard           # 安全/结构/产物红线（秒级）
 make check           # guard + lint + test
 ```
 
+### WebUI：三种加载（发布只许 embed）
+
+| 构建 | 命令 | 用途 |
+|---|---|---|
+| **embed** | `go build -tags embed` | **发布**（Makefile `pack` 就是这个） |
+| **dev** | `go build -tags dev` | **仅开发**：从 `MYNET_WEBUI_DIR` 或 `mynetd/localapi/webui` 读盘，改前端不用重编 |
+| **none** | `go build`（无 tag） | OpenWrt / 瘦构建，WebUI 不进包（LuCI 托管） |
+
+```bash
+# 开发热更新前端
+go run -tags dev ./cmd/mynetd -listen 127.0.0.1:8096
+# 打开 http://127.0.0.1:8096/ui/ ，直接改 mynetd/localapi/webui/ 即生效
+```
+
+⚠️ **`-tags dev` 不得进发布包**；`scripts/pack.sh` / Makefile `pack` 固定 `-tags embed`。
+
 ## 文档
 
 - 规则：`mynet_ctl/docs/knowledge-base/AGENTS.md`

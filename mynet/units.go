@@ -23,6 +23,15 @@ var unitMynetd string
 //go:embed units/mynet_gnb.service
 var unitMynetGNB string
 
+// OpenWrt procd init 脚本（E-1：procd 托管 gnb / mynetd）。
+// 与 systemd 单元同一套 embed 原则：装机二进制自带，不依赖 deploy/ 副本。
+//
+//go:embed units/openwrt_mynetd.init
+var initMynetd string
+
+//go:embed units/openwrt_mynet.init
+var initMynet string
+
 // systemdUnit 按名字取单元正文。名字与 install/uninstall 的参数一致。
 func systemdUnit(name string) (string, bool) {
 	switch name {
@@ -47,6 +56,21 @@ func unitFileName(name string) string {
 // SystemdUnitNames mynet install 会写的两个单元（顺序即启动顺序）。
 var SystemdUnitNames = []string{"mynetd", "mynet_gnb"}
 
+// OpenWrtInitNames procd init 脚本名（落到 /etc/init.d/）。
+var OpenWrtInitNames = []string{"mynetd", "mynet"}
+
+// openWrtInit 按名字取 procd init 正文。
+func openWrtInit(name string) (string, bool) {
+	switch name {
+	case "mynetd":
+		return initMynetd, true
+	case "mynet":
+		return initMynet, true
+	default:
+		return "", false
+	}
+}
+
 // assertUnitsEmbedded 防呆：单元正文一旦被改得缺了关键指令，
 // install 会装出一个**装得上但起不来**的服务，那种故障最难查。
 func assertUnitsEmbedded() error {
@@ -62,7 +86,18 @@ func assertUnitsEmbedded() error {
 			return fmt.Errorf("单元 %s 缺 [Service] 段", n)
 		}
 	}
-
+	for _, n := range OpenWrtInitNames {
+		body, ok := openWrtInit(n)
+		if !ok {
+			return fmt.Errorf("procd init %s 未嵌入", n)
+		}
+		if !containsLine(body, "USE_PROCD=1") {
+			return fmt.Errorf("procd init %s 缺 USE_PROCD=1", n)
+		}
+		if !containsLine(body, "start_service()") {
+			return fmt.Errorf("procd init %s 缺 start_service()", n)
+		}
+	}
 	return nil
 }
 

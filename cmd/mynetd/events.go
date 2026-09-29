@@ -20,7 +20,7 @@ const commandPullTimeout = 2 * time.Minute
 //
 //	route_changed  → mynet refresh-routes --auto（拓扑/路由变化，就地可完成）
 //	bundle_changed → mynet refresh-config --auto（配置包 generation 变更，就地可完成）
-//	command_queued → **pull 模型**：回 back 拉 GET /api/v1/monitor/commands，
+//	command_queued → **pull 模型**：回 back 拉 GET /api/v1/node/commands，
 //	                 逐条执行并回报（见 runCommandPull）
 //
 // 前两类映射到既有的 commands.Plan argv，避免重抄一份命令表。
@@ -173,7 +173,7 @@ func (d *eventDispatcher) runBundleLifecycle() {
 // runCommandPull 收到 command_queued 后回 back 拉命令、执行、回报结果。
 //
 // 这是 pull 模型：back 的 GatewayNotifier 只发「有新命令待执行」的通知，
-// 命令内容要节点自己取（`GET /api/v1/monitor/commands`，back 侧 docblock 明写
+// 命令内容要节点自己取（`GET /api/v1/node/commands`，back 侧 docblock 明写
 // 「供控制面长连接在收到 command_queued 事件后调用」）。
 func (d *eventDispatcher) runCommandPull(commandID string) {
 	if d.pull == nil || d.report == nil {

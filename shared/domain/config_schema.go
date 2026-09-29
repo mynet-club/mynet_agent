@@ -115,7 +115,7 @@ type LocalNode struct {
 }
 
 // LocalListen 监听与节点级开关。
-// Proxy 是 GNB `proxy on`（未登记目的走 f 节点），**不是** proxy 插件。
+// Proxy 是 GNB `proxy on`（未登记目的送出口对端=下一跳），**不是** proxy 插件。
 type LocalListen struct {
 	UDPPort int  `json:"udp_port,omitempty"`
 	Forward bool `json:"forward,omitempty"`
@@ -252,16 +252,18 @@ func (p *PluginConfig) Validate() error {
 // PluginProxyConfig proxy 插件意图（只在 PluginConfig.Config 里）。
 //
 // 这是 proxy 的**唯一配置入口**：用户是否启用、从哪些 peer 出去、权重/顺序。
-// apply 时投影到驱动侧（gnb → driver/gnb/conf/<id>/proxy.conf + address.conf 的 f 角色）。
+// apply 时投影到驱动侧（gnb → driver/gnb/conf/<id>/proxy.conf；address.conf 不写 f）。
 // 与 node.conf 的 `proxy on` 是同一件事的两层：插件决定「开不开、走谁」，
 // 驱动投影决定「怎么写进 gnb」。
 type PluginProxyConfig struct {
+	// Role 明确节点角色：client、server 或 both。
+	Role     string              `json:"role,omitempty"`
 	Core     string              `json:"core,omitempty"` // mihomo 等（本地代理核，可选）
 	Listen   PluginProxyListen   `json:"listen"`
 	Outbound PluginProxyOutbound `json:"outbound"`
 	Rules    []string            `json:"rules,omitempty"`
 	// Exits 出站 peer 列表：选谁、几个、权重、顺序。
-	// gnb 侧会标成 address.conf 的 f 角色（forward/exit）。
+	// gnb 侧：出口对端 = 数据目标 / 下一跳（不写 address.conf / ForwardNodes）。
 	Exits []ProxyExit `json:"exits,omitempty"`
 	// MaxExits 最多同时启用几个出口（0=不限）。权重加权选点时的上限。
 	MaxExits int `json:"max_exits,omitempty"`
@@ -270,6 +272,8 @@ type PluginProxyConfig struct {
 // ProxyExit 一个出站 peer。
 type ProxyExit struct {
 	NodeID string `json:"node_id"`
+	// Via 出口节点的 overlay VIP（策略路由 default via）。可空 → 由对端 tun_address 解析。
+	Via string `json:"via,omitempty"`
 	// Weight 1–100，越大越优先；默认 10。
 	Weight int `json:"weight,omitempty"`
 	// Order 1-based 展示/尝试顺序；0 表示跟在后面。
@@ -430,4 +434,9 @@ func TenantDirName(tenantID string) (string, error) {
 		return "", fmt.Errorf("tenant_id 含非法字符: %q", tenantID)
 	}
 	return t, nil
+}
+
+// EncodePluginProxyBody PluginProxyConfig → PluginConfig.Config。
+func EncodePluginProxyBody(c *PluginProxyConfig) (json.RawMessage, error) {
+	return json.Marshal(c)
 }

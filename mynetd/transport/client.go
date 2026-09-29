@@ -202,10 +202,10 @@ func (c *Client) SetDialer(d Dialer) {
 // ⚠️ 网关下发的是**事件信封** `{event, data}`，不是命令本身。back 的
 // GatewayNotifier 只发三类事件（command_queued / bundle_changed / route_changed），
 // 且 `data` 仅带定位信息（如 command_id）；真正的命令要节点自己回 back 拉
-// （`GET /api/v1/monitor/commands`）。
+// （`GET /api/v1/node/commands`）。
 //
 // 此前这里把**每一帧**都当 commands.Request 解析，于是 id/op 全空、
-// 执行结果恒为 `unknown op: `、回报路径变成 `/api/v1/monitor/commands//result`
+// 执行结果恒为 `unknown op: `、回报路径变成 `/api/v1/node/commands//result`
 // ——命令链从未真通过。现在按信封优先分派，并保留裸命令帧的兼容路径。
 func (c *Client) HandleFrame(ctx context.Context, raw []byte) ([]byte, error) {
 	var envelope struct {

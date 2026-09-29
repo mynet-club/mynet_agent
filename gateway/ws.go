@@ -159,8 +159,8 @@ var nodeUpstreamPatterns = []struct {
 	method string
 	re     *regexp.Regexp
 }{
-	{http.MethodPatch, regexp.MustCompile(`^/api/v1/monitor/commands/[0-9A-Za-z_-]+/result$`)},
-	{http.MethodPost, regexp.MustCompile(`^/api/v1/monitor/heartbeat$`)},
+	{http.MethodPatch, regexp.MustCompile(`^/api/v1/node/commands/[0-9A-Za-z_-]+/result$`)},
+	{http.MethodPost, regexp.MustCompile(`^/api/v1/node/heartbeat$`)},
 }
 
 func allowedNodeUpstream(method, path string) bool {

@@ -110,6 +110,34 @@ func fetchRemoteTenants(cred *Credential) []remoteTenant {
 }
 
 // pickDefaultTenant 用户裁定：默认租户是 ID 最大的那条。
+// fetchRemoteNodeName 从云端节点清单取显示名（/api/v1/nodes 分页）。
+func fetchRemoteNodeName(cred *Credential, nodeID string) string {
+	if cred == nil || nodeID == "" {
+		return ""
+	}
+	rows, err := allCloudNodes(newBackClientFor(cred))
+	if err != nil {
+		return ""
+	}
+	for _, it := range rows {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		id := anyToStr(m["node_id"])
+		if id == "" {
+			id = anyToStr(m["id"])
+		}
+		if id != nodeID {
+			continue
+		}
+		if n := firstStr(m, "node_name", "name"); n != "" {
+			return n
+		}
+	}
+	return ""
+}
+
 func pickDefaultTenant(list []remoteTenant) (remoteTenant, bool) {
 	var best remoteTenant
 	found := false
@@ -504,6 +532,21 @@ func configFaceIdentity() int {
 			out["node_name"] = p.NodeName
 			if p.APIBase != "" {
 				out["api_base"] = p.APIBase
+			}
+		}
+	}
+	// 节点名为空时从云端补：profile 在 claim/迁移时常只写 node_id。
+	if name, _ := out["node_id"].(string); name != "" {
+		if cur, _ := out["node_name"].(string); cur == "" {
+			if remote := fetchRemoteNodeName(LoadCredential(), name); remote != "" {
+				out["node_name"] = remote
+				// 回写 profile，下次不必再打云端
+				if tid, _ := out["tenant_id"].(string); tid != "" {
+					if p, err := store.LoadOnlineProfile(tid); err == nil && p != nil {
+						p.NodeName = remote
+						_ = store.SaveOnlineProfile(p)
+					}
+				}
 			}
 		}
 	}

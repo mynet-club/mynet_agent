@@ -12,7 +12,7 @@ package mynet
 // enable 后 apply 会：
 //   1. 探测 gnb 是否支持 proxy（P2）—— 不支持则高声提醒、不写配置
 //   2. 写 driver/gnb/conf/<id>/proxy.conf（选点/权重/顺序投影）
-//   3. 把出口标成 address.conf 的 f 角色 + node.conf `proxy on`
+//   3. 出口对端进投影 + node.conf `proxy on`（不写 address.conf 角色）
 //
 // 与「intent.listen.proxy」的关系：插件是用户开关；listen.proxy 是意图里的
 // 节点级位，插件 enable 时会被强制为 true。
@@ -41,7 +41,7 @@ type PluginPackage struct {
 
 func cmdPlugin(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet plugin list|enable|disable|install|status|exits …")
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin list|enable|disable|install|status|apply|exits …")
 		return 2
 	}
 	switch args[0] {
@@ -55,12 +55,34 @@ func cmdPlugin(args []string) int {
 		return pluginInstall(args[1:])
 	case "status":
 		return pluginStatus(args[1:])
+	case "apply":
+		// plugin apply [name] —— 重投影已启用插件（proxy → proxy.conf + proxy on；出口=下一跳）
+		return pluginApply(args[1:])
 	case "exits":
 		return pluginExits(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "未知 plugin 子命令 %q\n", args[0])
 		return 2
 	}
+}
+
+// pluginApply 重跑插件投影。name 为空则全部；proxy 会走 enrichIntentWithProxy + writeProxyProjection。
+func pluginApply(args []string) int {
+	name := ""
+	if len(args) > 0 {
+		name = args[0]
+	}
+	if name != "" && name != domain.PluginNameProxy {
+		fmt.Fprintf(os.Stderr, "plugin apply 暂只支持 proxy，收到 %q\n", name)
+		return 2
+	}
+	EnsurePluginSynced()
+	if err := ApplyPlugins(false); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("✓ plugin apply 完成")
+	return 0
 }
 
 // pluginExits proxy 出站选点：list | add | rm | weight
@@ -185,6 +207,11 @@ func pluginExits(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	// 双轨合一：出口写入 intent
+	if err := SetProxyExits(pp.Exits); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	fmt.Printf("✓ 已更新 %s/proxy.json（%d 个出口）\n", base, len(pp.Exits))
 	return 0
 }
@@ -240,6 +267,15 @@ func pluginSetEnabled(args []string, on bool) int {
 		return 2
 	}
 	name := args[0]
+	// proxy：写双控意图 + 投影插件壳（双轨合一）
+	if name == domain.PluginNameProxy {
+		if err := SetProxyEnabled(on); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("✓ %s → %s（intent 已同步）\n", name, map[bool]string{true: "enabled", false: "disabled"}[on])
+		return 0
+	}
 	base, store, err := activePluginBase()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -345,6 +381,7 @@ func pluginStatus(args []string) int {
 	}
 	fmt.Printf("plugin=%s enabled=%v autostart=%v\n", pc.Plugin, pc.Enabled, pc.Autostart)
 	if name == domain.PluginNameProxy {
+		fmt.Printf("  intent: %s\n", DescribeProxyUnified())
 		if c, err := domain.DecodePluginProxy(pc); err == nil {
 			fmt.Printf("  listen.mixed=%s mode=%s via=%s\n", c.Listen.Mixed, c.Outbound.Mode, c.Outbound.Via)
 		}

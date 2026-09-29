@@ -40,12 +40,15 @@ type NodeRef struct {
 
 // NetworkIntent 操作系统网络状态意图（地址 / FIB / rule / firewall / NAT）。
 // 不包含 GNB route.conf 语义，也不包含 WG AllowedIPs。
+//
+// Proxy 是节点级分流意图（主线⑦）；L6 把它翻译成 fwmark/ipset/DNS 等系统写入。
 type NetworkIntent struct {
-	Addresses []string  `json:"addresses,omitempty"`
-	Routes    []OsRoute `json:"routes,omitempty"`
-	Rules     []any     `json:"rules,omitempty"`
-	Firewall  []any     `json:"firewall,omitempty"`
-	NAT       []any     `json:"nat,omitempty"`
+	Addresses []string     `json:"addresses,omitempty"`
+	Routes    []OsRoute    `json:"routes,omitempty"`
+	Rules     []any        `json:"rules,omitempty"`
+	Firewall  []any        `json:"firewall,omitempty"`
+	NAT       []any        `json:"nat,omitempty"`
+	Proxy     *ProxyPolicy `json:"proxy,omitempty"`
 }
 
 // OsRoute 一条 OS FIB 路由。
@@ -153,7 +156,7 @@ type GnbRoute struct {
 type GnbDiscovery struct {
 	IndexServers []string          `json:"index_servers,omitempty"`
 	StaticNodes  []GnbEndpointHint `json:"static_nodes,omitempty"`
-	ForwardNodes []string          `json:"forward_nodes,omitempty"`
+	ForwardNodes []string          `json:"forward_nodes,omitempty"` // 旧 mesh f 列表；proxy 插件不用（出口=下一跳）
 }
 
 // GnbEndpointHint address.conf 角色 + 初始 endpoint。运行时 learned endpoint 只进 Status。

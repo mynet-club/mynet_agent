@@ -73,6 +73,10 @@ var knownOps = []string{
 	OpServiceStart,
 	OpServiceStop,
 	OpServiceReload,
+	OpPluginProxyStart,
+	OpPluginProxyStop,
+	OpPluginProxyRestart,
+	OpPluginProxyStatus,
 }
 
 // IsKnownOp 报告 op 是否能被 Plan() 翻译。

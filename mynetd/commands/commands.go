@@ -39,7 +39,15 @@ const (
 	OpServiceReload     = "service.reload"
 )
 
-// plugin.proxy.* 已下架（mynet_proxy deprecated），不进 Op 面。
+// plugin.proxy.* —— 新线代理插件（取代已下架的 mynet_proxy CLI）。
+// mynetd 只翻译成执行器 argv（`mynet plugin proxy …`）；系统能力在执行器。
+// 旧 `plugin.proxy.reload`（mynet_proxy 域）仍拒，勿与本组混淆。
+const (
+	OpPluginProxyStart   = "plugin.proxy.start"   // plugin enable proxy
+	OpPluginProxyStop    = "plugin.proxy.stop"    // plugin disable proxy
+	OpPluginProxyRestart = "plugin.proxy.restart" // plugin apply proxy
+	OpPluginProxyStatus  = "plugin.proxy.status"  // plugin status proxy
+)
 
 // Executor 执行器接口：桌面 exec mynet；OpenWrt 装配时换 lua。
 type Executor func(argv []string) (stdout, stderr string, err error)
@@ -106,6 +114,14 @@ func Plan(req Request, nodeID string) ([]string, bool) {
 		return serviceArgv("stop", req.Args["name"]), true
 	case OpServiceReload:
 		return serviceArgv("reload", req.Args["name"]), true
+	case OpPluginProxyStart:
+		return []string{"plugin", "enable", "proxy"}, true
+	case OpPluginProxyStop:
+		return []string{"plugin", "disable", "proxy"}, true
+	case OpPluginProxyRestart:
+		return []string{"plugin", "apply", "proxy"}, true
+	case OpPluginProxyStatus:
+		return []string{"plugin", "status", "proxy"}, true
 	default:
 		return nil, false
 	}

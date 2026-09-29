@@ -19,7 +19,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	method, path, ts, body := "POST", "/api/v1/monitor/heartbeat", "1700000000", `{"ok":1}`
+	method, path, ts, body := "POST", "/api/v1/node/heartbeat", "1700000000", `{"ok":1}`
 	out := map[string]any{
 		"comment": "C-2 双端联测向量：Go/PHP 必须同签名",
 		"cases": []map[string]string{{

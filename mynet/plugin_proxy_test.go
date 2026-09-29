@@ -39,7 +39,8 @@ func TestRenderGnbProxyConf(t *testing.T) {
 		},
 	}
 	s := RenderGnbProxyConf(c)
-	for _, want := range []string{"enabled on", "exit 1|3002|20", "via tun"} {
+	// gnb p2-route-proxy 认 proxy.conf 的 `proxy on`（与 node.conf 同语义）
+	for _, want := range []string{"proxy on", "exit 1|3002|20", "via tun"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("proxy.conf 缺 %q:\n%s", want, s)
 		}
@@ -109,8 +110,15 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 	if !strings.Contains(string(b), "3002") {
 		t.Fatalf("proxy.conf 应含出口 3002:\n%s", b)
 	}
-	// address.conf 应把 3002 标成 f（需要有 endpoint 才进 StaticNodes；
-	// 无 endpoint 时进 ForwardNodes，node.conf 仍应 proxy on）
+	// address.conf **不得**把出口标成 f（出口=数据目标，非 mesh 转发）
+	acPath := filepath.Join(root, "driver", "gnb", "conf", "3001", "address.conf")
+	if ac, err := os.ReadFile(acPath); err == nil {
+		for _, line := range strings.Split(string(ac), "\n") {
+			if strings.HasPrefix(line, "f|") {
+				t.Fatalf("address.conf 不得写 f 角色:\n%s", ac)
+			}
+		}
+	}
 	nc, _ := os.ReadFile(filepath.Join(root, "driver", "gnb", "conf", "3001", "node.conf"))
 	if !strings.Contains(string(nc), "proxy on") {
 		t.Fatalf("启用 proxy 插件后 node.conf 应有 proxy on:\n%s", nc)

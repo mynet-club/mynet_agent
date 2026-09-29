@@ -122,11 +122,11 @@ case "$CODE" in
 esac
 
 # 0.3 心跳端点在（0→1 的「心跳有数据」全靠它）
-req GET "$API/api/v1/monitor/node/info"
+req GET "$API/api/v1/node/bundle"
 case "$CODE" in
-  401|422|400) ok "节点面端点在（/api/v1/monitor/node/info → ${CODE}，未签名被拒是预期）" ;;
+  401|422|400) ok "节点面端点在（/api/v1/node/bundle → ${CODE}，未签名被拒是预期）" ;;
   404) bad "/api/v1/monitor/* 404 —— Monitor 域没部署（CPI-47 的表/路由缺失）"; die "Monitor 域缺失" ;;
-  *)   bad "/api/v1/monitor/node/info 返回 ${CODE}（期望 401/422）"; die "节点面端点异常" ;;
+  *)   bad "/api/v1/node/bundle 返回 ${CODE}（期望 401/422）"; die "节点面端点异常" ;;
 esac
 
 # 0.4 gateway 是**真的 gateway**，不是泛解析打到了 back。

@@ -19,10 +19,10 @@ import (
 // 同时依赖两棵树本就是它的职责所在。
 
 // resultMethod / resultPathFmt 对应 back 的
-// `PATCH /api/v1/monitor/commands/{id}/result`（NodeHeartbeatController::reportResult）。
+// `PATCH /api/v1/node/commands/{id}/result`（NodeHeartbeatController::reportResult）。
 const (
 	resultMethod  = "PATCH"
-	resultPathFmt = "/api/v1/monitor/commands/%s/result"
+	resultPathFmt = "/api/v1/node/commands/%s/result"
 )
 
 // nodeIdentity 节点身份：从配置树 v2 的 keys/ 读出的 node_id + 节点面签名器。

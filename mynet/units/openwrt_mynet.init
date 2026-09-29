@@ -1,0 +1,208 @@
+#!/bin/sh /etc/rc.common
+# mynet — 隧道服务（procd 托管，E-1）· 双驱动 gnb | wireguard
+# 由 `mynet install` 写入 /etc/init.d/mynet（OpenWrt 分支）。
+#
+# 驱动分支由 mynet.conf 的 VPN_TYPE 决定（gnb | wireguard）：
+#   gnb       — 常驻进程，procd instance + respawn（E-1）
+#   wireguard — 内核接口，无守护进程；start 装接口，stop 拆接口
+#
+# 路由唯一写入者仍是 `mynet apply`（route-apply-unification）。
+# 安全红线：不按名字杀进程。
+USE_PROCD=1
+START=99
+STOP=10
+
+CONFIG_FILE="${MYNET_CONFIG_FILE:-/etc/mynet/conf/mynet.conf}"
+MYNET_HOME="${MYNET_HOME:-/etc/mynet}"
+
+log() { logger -t mynet "$*"; echo "[MyNet] $*"; }
+
+load_config() {
+	[ -f "$CONFIG_FILE" ] || { log "ERROR: Config not found: $CONFIG_FILE"; return 1; }
+	. "$CONFIG_FILE"
+	VPN_TYPE="${MYNET_VPN_TYPE:-${VPN_TYPE:-gnb}}"
+	VPN_INTERFACE="${MYNET_VPN_INTERFACE:-${VPN_INTERFACE:-}}"
+	case "$VPN_TYPE" in
+		gnb|wireguard|wg) ;;
+		*) log "ERROR: unknown VPN_TYPE=$VPN_TYPE (want gnb|wireguard)"; return 1 ;;
+	esac
+	# wg 旧名归一
+	[ "$VPN_TYPE" = "wg" ] && VPN_TYPE=wireguard
+	[ -n "$VPN_INTERFACE" ] || {
+		if [ "$VPN_TYPE" = "wireguard" ]; then VPN_INTERFACE=wg0
+		else log "ERROR: VPN_INTERFACE not configured"; return 1
+		fi
+	}
+	ROUTE_CONFIG="${MYNET_ROUTE_CONFIG:-${ROUTE_CONFIG:-$MYNET_HOME/conf/route.conf}}"
+	return 0
+}
+
+get_node_id_from_conf() {
+	if [ -n "$NODE_ID" ]; then echo "$NODE_ID"; return; fi
+	sed -n 's/^NODE_ID=//p' "$CONFIG_FILE" 2>/dev/null | head -1
+}
+
+run_plugin_hooks() {
+	local hook_name="$1"
+	local plugin_dir="$MYNET_HOME/scripts/plugin"
+	[ -d "$plugin_dir" ] || return 0
+	for plugin_path in "$plugin_dir"/*; do
+		[ -d "$plugin_path" ] || continue
+		local hook_script="$plugin_path/${hook_name}.sh"
+		if [ -f "$hook_script" ] && [ -x "$hook_script" ]; then
+			MYNET_HOME="$MYNET_HOME" "$hook_script" || \
+				log "WARNING: hook $hook_script failed"
+		fi
+	done
+}
+
+# ── gnb：procd 常驻实例 ────────────────────────────────────────
+start_gnb_instance() {
+	local nid confdir bin
+	nid=$(get_node_id_from_conf)
+	confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
+	bin="${MYNET_HOME}/driver/gnb/bin/gnb"
+	[ -x "$bin" ] || bin="$(command -v gnb)"
+	if [ -z "$nid" ] || [ ! -d "$confdir" ] || [ -z "$bin" ]; then
+		log "ERROR: gnb not ready (nid=$nid conf=$confdir bin=$bin)"
+		return 1
+	fi
+	# E-2：daemon off，交给 procd 前台
+	if [ -f "$confdir/node.conf" ]; then
+		sed -i 's/^daemon on$/daemon off/' "$confdir/node.conf" 2>/dev/null || true
+	fi
+	log "procd gnb: $bin -c $confdir"
+	procd_open_instance gnb
+	procd_set_param command "$bin" -c "$confdir"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file "$confdir/node.conf"
+	procd_close_instance
+}
+
+stop_gnb_instance() {
+	# procd 精确停实例（不按名字杀进程）
+	procd_kill mynet gnb 2>/dev/null || true
+	sleep 1
+	# gnb_es 孤儿：按 exe 路径 / PPID=1 精确清理
+	local es_bin="${MYNET_HOME}/driver/gnb/bin/gnb_es"
+	local pids pid exe ppid
+	pids=$(pidof gnb_es 2>/dev/null) || true
+	for pid in $pids; do
+		exe=$(readlink "/proc/${pid}/exe" 2>/dev/null) || true
+		ppid=$(awk '{print $4}' "/proc/${pid}/stat" 2>/dev/null) || true
+		if [ "$exe" = "$es_bin" ] || [ "$ppid" = "1" ]; then
+			kill "$pid" 2>/dev/null || true
+			sleep 1
+			kill -9 "$pid" 2>/dev/null || true
+			log "cleaned gnb_es pid=$pid"
+		fi
+	done
+}
+
+# ── wireguard：内核接口（无常驻进程）─────────────────────────
+# conf 约定（与 WireGuardDriver.WriteIntent 对齐）：
+#   /etc/wireguard/<iface>.conf  或  $MYNET_HOME/var/wg.conf
+wg_conf_path() {
+	if [ -f "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
+		echo "/etc/wireguard/${VPN_INTERFACE}.conf"
+	elif [ -f "$MYNET_HOME/var/wg.conf" ]; then
+		echo "$MYNET_HOME/var/wg.conf"
+	else
+		return 1
+	fi
+}
+
+start_wg_interface() {
+	local conf
+	conf=$(wg_conf_path) || {
+		log "ERROR: wireguard conf not found (want /etc/wireguard/${VPN_INTERFACE}.conf or $MYNET_HOME/var/wg.conf)"
+		return 1
+	}
+	if command -v wg-quick >/dev/null 2>&1; then
+		log "wg-quick up ($conf)"
+		# wg-quick 认接口名时读 /etc/wireguard/<if>.conf；
+		# 非标准路径时传 conf 文件本身。
+		case "$conf" in
+			"/etc/wireguard/${VPN_INTERFACE}.conf")
+				wg-quick up "$VPN_INTERFACE" || return 1
+				;;
+			*)
+				wg-quick up "$conf" || return 1
+				;;
+		esac
+		return 0
+	fi
+	# 无 wg-quick 时用 ip + wg 最小集（OpenWrt 精简环境）
+	log "ip+wg setup ($conf)"
+	ip link add dev "$VPN_INTERFACE" type wireguard 2>/dev/null || true
+	wg setconf "$VPN_INTERFACE" "$conf" || return 1
+	# 地址在 conf 的 [Interface] Address= 里，wg-quick 会读；纯 wg 不会
+	local addr
+	addr=$(sed -n 's/^Address[[:space:]]*=[[:space:]]*//p' "$conf" | head -1 | cut -d, -f1)
+	[ -n "$addr" ] && ip address add "$addr" dev "$VPN_INTERFACE" 2>/dev/null || true
+	ip link set up dev "$VPN_INTERFACE" || return 1
+	return 0
+}
+
+stop_wg_interface() {
+	if command -v wg-quick >/dev/null 2>&1; then
+		case "$(wg_conf_path 2>/dev/null)" in
+			"/etc/wireguard/${VPN_INTERFACE}.conf")
+				wg-quick down "$VPN_INTERFACE" 2>/dev/null || true
+				;;
+			*)
+				wg-quick down "/etc/wireguard/${VPN_INTERFACE}.conf" 2>/dev/null || true
+				;;
+		esac
+	fi
+	ip link del dev "$VPN_INTERFACE" 2>/dev/null || true
+}
+
+# ── start / stop ───────────────────────────────────────────────
+start_service() {
+	load_config || return 1
+	log "Starting MyNet (procd) type=$VPN_TYPE..."
+	run_plugin_hooks "pre_start"
+
+	case "$VPN_TYPE" in
+		gnb)       start_gnb_instance || return 1 ;;
+		wireguard) start_wg_interface || return 1 ;;
+	esac
+
+	# 路由：唯一写入者 = mynet apply
+	if [ -x /usr/sbin/mynet ] || command -v mynet >/dev/null 2>&1; then
+		MYNET_HOME="$MYNET_HOME" mynet apply --auto || \
+			log "WARNING: mynet apply --auto failed"
+	fi
+	if [ -f "$MYNET_HOME/scripts/firewall.mynet" ]; then
+		MYNET_HOME="$MYNET_HOME" sh "$MYNET_HOME/scripts/firewall.mynet" \
+			start --interface "$VPN_INTERFACE" || log "WARNING: firewall failed"
+	fi
+
+	run_plugin_hooks "post_start"
+	log "MyNet started ($VPN_TYPE)"
+}
+
+stop_service() {
+	log "Stopping MyNet (procd)..."
+	load_config || true
+	run_plugin_hooks "stop"
+
+	case "${VPN_TYPE:-gnb}" in
+		gnb)       stop_gnb_instance ;;
+		wireguard) stop_wg_interface ;;
+		*)
+			# 配置缺失时两边都收，保证不留半套
+			stop_gnb_instance
+			VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
+			stop_wg_interface
+			;;
+	esac
+
+	if [ -x /usr/sbin/mynet ]; then
+		MYNET_HOME="$MYNET_HOME" /usr/sbin/mynet apply --clear 2>/dev/null || true
+	fi
+	log "MyNet stopped"
+}

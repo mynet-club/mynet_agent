@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mynet-club/mynet_agent-V2/shared/domain"
 	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 )
 
@@ -29,6 +30,8 @@ type Config struct {
 	AllowedHosts []string
 	// Token 本地 token；空则首次 GET / 时生成并 Set-Cookie。
 	Token string
+	// ProxyConfDir 双控状态目录（proxy_intent.json）。空则 conf/local。
+	ProxyConfDir string
 }
 
 type Server struct {
@@ -47,6 +50,12 @@ type Server struct {
 	// argv 会进 `ps`，任何本机进程都看得见。与 Ops 同为可注入，
 	// 为的是让「口令不进 argv」这条安全性质**可测**，而不是靠肉眼看代码确认。
 	ExecStdin func(argv []string, stdin string) (map[string]any, error)
+	// ProxyWriteback 本地改 proxy 后回写云端（node-face → gateway → back）。
+	ProxyWriteback ProxyWritebackFunc
+	// Proxy 意图读写 / 插件投影（组合根注入，localapi 不 import shared/config / mynet —— B2）
+	ProxyLoad       ProxyIntentLoader
+	ProxySave       ProxyIntentSaver
+	ProxySyncPlugin func(p *domain.ProxyPolicy) error
 	// sessions R5-1 多节点并行会话
 	sessions *SessionTable
 	// OnResult E-4：执行结果回调（经 WS 上报）
@@ -78,6 +87,7 @@ func (s *Server) routes() {
 	// 没有内嵌 webui 的构建（D-11 的 OpenWrt 形态）照样要能被 LuCI/脚本调用。
 	s.registerWizardRoutes()
 	s.registerConfigRoutes()
+	s.registerProxyRoutes()
 	if hasWebUI {
 		uiFiles := http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS())))
 		s.mux.Handle("/ui/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

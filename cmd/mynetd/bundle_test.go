@@ -228,8 +228,8 @@ func TestFetchBundleSignsPathAndForwardsConditional(t *testing.T) {
 	if gotMethod != http.MethodGet {
 		t.Errorf("method = %s，期望 GET", gotMethod)
 	}
-	if gotPath != "/api/v1/monitor/node/bundle" {
-		t.Errorf("path = %q，期望 /api/v1/monitor/node/bundle（差一个斜杠就全 401）", gotPath)
+	if gotPath != "/api/v1/node/bundle" {
+		t.Errorf("path = %q，期望 /api/v1/node/bundle（差一个斜杠就全 401）", gotPath)
 	}
 	if gotNode != ident.nodeID {
 		t.Errorf("X-Node-Id = %q，期望 %q", gotNode, ident.nodeID)

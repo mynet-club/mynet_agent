@@ -16,14 +16,14 @@ import (
 //
 // ── 为什么走 relay 而不是直连 back ────────────────────────────────
 // 「back 对节点不可达，gateway 是节点面唯一入口」（mynet-overview.md §15）。
-// 而 relay 白名单**已经**包含 `/api/v1/monitor` 与 `/api/v1/heartbeat`
+// 而 relay 白名单包含 `/api/v1/node` 与 `/api/v1/heartbeat`
 // （gateway/relaypolicy/relaypolicy.go:19-20，注释即「含节点自身通道」），
 // 且 ReverseProxy 会逐字转发请求头——所以节点面签名请求可以直接复用这条通路，
 // 不需要给 gateway 增加新的面。
 //
 // ── 签名口径 ────────────────────────────────────────────────────
 // back 的 NodeHeartbeatAuthMiddleware::signedPath() 返回 `'/'.$request->path()`，
-// 即带前导斜杠的完整路径（如 `/api/v1/monitor/commands`）。
+// 即带前导斜杠的完整路径（如 `/api/v1/node/commands`）。
 // 消息是 `METHOD\npath\nts\nsha256(body)`（两端算法一致：
 // mynet/keys/node_face.go:66 ↔ NodeFaceAuthService.php:62）。
 // ⚠️ path 差一个斜杠就全 401，且症状是「鉴权失败」而非「路径写错」，极难定位。
@@ -129,7 +129,7 @@ func (c *backClient) doSignedFull(
 // sendBody 是完整请求体，signBody 是去掉 node_monitor 的那份 —— 两者的区别
 // 见 doSigned 的注释。这里不自己拼 JSON，组装在 heartbeat.go。
 func (c *backClient) reportHeartbeat(ctx context.Context, sendBody, signBody []byte) error {
-	code, raw, err := c.doSigned(ctx, http.MethodPost, "/api/v1/monitor/heartbeat", sendBody, signBody)
+	code, raw, err := c.doSigned(ctx, http.MethodPost, "/api/v1/node/heartbeat", sendBody, signBody)
 	if err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ type pendingCommandsResponse struct {
 // back 每次只返回 1 条并立即标记为「执行中」（selectPendingCommands:209-215），
 // 所以调用方应在执行完后再次拉取，直到返回空。
 func (c *backClient) pullPendingCommands(ctx context.Context) (*pendingCommandsResponse, error) {
-	code, raw, err := c.do(ctx, http.MethodGet, "/api/v1/monitor/commands", nil)
+	code, raw, err := c.do(ctx, http.MethodGet, "/api/v1/node/commands", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func (c *backClient) pullPendingCommands(ctx context.Context) (*pendingCommandsR
 //
 // ⚠️ 路径必须带前导斜杠，且要与 back 的 signedPath() 完全一致 ——
 // 差一个斜杠就全 401，而症状是「鉴权失败」不是「路径写错」（见本文件顶部注释）。
-const bundlePath = "/api/v1/monitor/node/bundle"
+const bundlePath = "/api/v1/node/bundle"
 
 // fetchBundle 拉取本节点的配置包。
 //
@@ -219,4 +219,40 @@ func truncateBytes(b []byte, n int) string {
 		return string(b)
 	}
 	return string(b[:n]) + "…"
+}
+
+// writeProxyConfig 本地 proxy 意图回写云端（T8）。
+// 路径在 /api/v1/node/ 下（节点面业务），relay 白名单已含。
+// body 只含业务意图，不含 L6 投影。
+func (c *backClient) writeProxyConfig(ctx context.Context, policy map[string]any, revision int64) (int64, error) {
+	payload := map[string]any{
+		"proxy":    policy,
+		"revision": revision,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+	code, body, err := c.do(ctx, http.MethodPut, "/api/v1/node/proxy", raw)
+	if err != nil {
+		return 0, err
+	}
+	if code < 200 || code >= 300 {
+		return 0, fmt.Errorf("回写 proxy-config HTTP %d: %s", code, truncateBytes(body, 200))
+	}
+	var resp struct {
+		Data struct {
+			Revision int64 `json:"revision"`
+		} `json:"data"`
+		Revision int64 `json:"revision"`
+	}
+	_ = json.Unmarshal(body, &resp)
+	rev := resp.Data.Revision
+	if rev == 0 {
+		rev = resp.Revision
+	}
+	if rev == 0 {
+		rev = revision
+	}
+	return rev, nil
 }

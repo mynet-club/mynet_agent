@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -20,11 +21,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mynet-club/mynet_agent-V2/mynet"
 	"github.com/mynet-club/mynet_agent-V2/mynetd"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
 	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
 	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent-V2/shared/config"
+	"github.com/mynet-club/mynet_agent-V2/shared/domain"
 	"github.com/mynet-club/mynet_agent-V2/shared/logger"
 	"github.com/mynet-club/mynet_agent-V2/shared/utils"
 )
@@ -97,15 +101,72 @@ func main() {
 
 // runAgent 常驻主体：localapi + 心跳 + WS + 隧道恢复。
 // ctx 取消时记录隧道状态并收尾 —— Windows 服务 Stop 与 SIGTERM 共用这条。
+
+// parseHostList 逗号分隔的 Allowed Host 白名单（反代域名）。
+func parseHostList(s string) []string {
+	var out []string
+	for _, h := range strings.Split(s, ",") {
+		h = strings.TrimSpace(h)
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 func runAgent(ctx context.Context) {
-	api := localapi.NewServer(localapi.Config{Listen: *flagListen})
+	api := localapi.NewServer(localapi.Config{
+		Listen: *flagListen,
+		// 反代场景（如 gnb.mynet.club → 本机 8096/8097）需白名单 Host
+		AllowedHosts: parseHostList(os.Getenv("MYNET_ALLOWED_HOSTS")),
+	})
+	// 执行器装配：默认 exec mynet（桌面）；OpenWrt 设 MYNET_EXECUTOR=lua 走 lua -e。
+	execStd := selectExecutor()
 	api.Ops = execMynet
+	if executorKind() == "lua" {
+		api.Ops = func(argv []string) (any, error) { return execLua(argv) }
+	}
+	// B2：proxy 状态读写经注入，localapi 不 import shared/config / mynet
+	api.ProxyLoad = config.LoadProxyIntent
+	api.ProxySave = config.SaveProxyIntent
+	api.ProxySyncPlugin = func(p *domain.ProxyPolicy) error {
+		return mynet.SyncPluginProxyFromPolicy(p)
+	}
 
 	if err := api.Start(); err != nil {
 		logger.Error("localapi 启动失败", "err", err)
 		os.Exit(1)
 	}
 	logger.Info("localapi 已启动", "addr", api.Addr())
+
+	// 双轨/回写：即使未设 MYNET_GATEWAYS，也按 conf/agent.json 装配 ProxyWriteback，
+	// 否则 WebUI 改 proxy 永远 dirty（回写回调为 nil）。
+	if api.ProxyWriteback == nil {
+		if id, idErr := loadNodeIdentity(""); idErr == nil {
+			gwURL := os.Getenv("MYNET_GATEWAYS")
+			if gwURL == "" {
+				gwURL = utils.LoadAgentCfg().Gateway
+			}
+			if c, cErr := newBackClient(gwURL, id); cErr == nil {
+				api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
+					raw, err := json.Marshal(policy)
+					if err != nil {
+						return 0, err
+					}
+					var m map[string]any
+					if err := json.Unmarshal(raw, &m); err != nil {
+						return 0, err
+					}
+					return c.writeProxyConfig(context.Background(), m, revision)
+				}
+				logger.Info("proxy 回写已装配（agent.json gateway）", "gw", gwURL)
+			} else {
+				logger.Warn("proxy 回写未装配：backClient", "err", cErr)
+			}
+		} else {
+			logger.Warn("proxy 回写未装配：无节点身份", "err", idErr)
+		}
+	}
 
 	if *flagConsole {
 		// D-12：平台态经 gateway /v1/relay；无 WS、无驱动密钥
@@ -115,11 +176,11 @@ func runAgent(ctx context.Context) {
 	}
 
 	// S3-1：心跳组装 + 命令分派 + WS 长连接。
-	// ops 用 execMynetStd（直接给 stdout 字符串），省掉在 beat 里再拆 map。
+	// ops 用 selectExecutor()（直接给 stdout 字符串），省掉在 beat 里再拆 map。
 	// ⚠️ 这里只**创建**不启动 —— 启动放在下面节点面客户端装配完之后，
 	// 否则 `--once`（专门用来调试上报的模式）会在 reporter 还没绑上时就跑完，
 	// 表现为「采了但没上报」，而这恰恰是最难查的一种静默失败。
-	hb := &heartbeatLoop{ops: execMynetStd}
+	hb := &heartbeatLoop{ops: execStd}
 
 	// 启动拉取 bundle 的完成信号，给 `-once` 用（理由见下面 -once 分支）。
 	// 声明在函数级：拉取在 MYNET_GATEWAYS 块内，而 -once 分支在块外。
@@ -165,8 +226,20 @@ func runAgent(ctx context.Context) {
 					return resp.Commands, nil
 				}
 				// V4-2：心跳走**同一条**节点面通路（签名 + gateway /v1/relay）。
-				// relay 白名单本来就含 /api/v1/monitor，不需要给 gateway 加新面。
+				// relay 白名单含 /api/v1/node（节点面业务），不需要给 gateway 加新面。
 				hb.setReporter(id.nodeID, c.reportHeartbeat)
+				// T8：WebUI 改 proxy 后回写云端权威（同一签名通路）
+				api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
+					raw, err := json.Marshal(policy)
+					if err != nil {
+						return 0, err
+					}
+					var m map[string]any
+					if err := json.Unmarshal(raw, &m); err != nil {
+						return 0, err
+					}
+					return c.writeProxyConfig(context.Background(), m, revision)
+				}
 			}
 			logger.Info("节点面签名就绪", "node_id", id.nodeID, "keys", "conf/**/keys")
 		}
@@ -189,7 +262,11 @@ func runAgent(ctx context.Context) {
 			}
 		}
 
-		dispatcher := newEventDispatcher(nodeID, execMynetStd, pull, report)
+		dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
+
+		// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
+		// 才能经 WS 上报 back。此前这里没接，结果进了 mynetd 就被丢掉。
+		api.OnResult = localResultReporter(report)
 
 		// bundle 拉取（V1-10①）：mynetd 负责**拉并落盘**，执行器 mynet 只负责读。
 		// 两边路径口径都是 shared.VarDir()，见 bundle.go 的注释。
@@ -235,7 +312,7 @@ func runAgent(ctx context.Context) {
 			NodeID:   nodeID,
 		}, transport.Handlers{
 			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
-				return commands.Run(execMynetStd, req, nodeID)
+				return commands.Run(execStd, req, nodeID)
 			},
 			OnEvent:  dispatcher.Handle,
 			OnResult: onResult,

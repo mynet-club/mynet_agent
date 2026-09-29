@@ -276,11 +276,11 @@ done
 phase "心跳与监控数据（0→1 的最后一项）"
 for spec in "A:$A_ID" "B:$B_ID"; do
   _l=${spec%%:*}; _id=${spec#*:}
-  _r=$(curl -sS -m 20 "$API/api/v1/monitor/node/info" -H "X-Node-Id: $_id" 2>/dev/null | head -c 200)
+  _r=$(curl -sS -m 20 "$API/api/v1/node/bundle" -H "X-Node-Id: $_id" 2>/dev/null | head -c 200)
   # 节点面端点要签名，这里只看它不是 404/500 —— 真正的判据在 back 侧的库与 Redis，
   # 那需要服务器权限，本脚本不假设能登 back，所以只给出提示而不假装验过。
-  case "$_r" in *'"success"'*) ok "$_l: /monitor/node/info 有响应" ;;
-    *) printf '  ⚠ %s: /monitor/node/info 需要节点面签名，本脚本未验（%s）\n' "$_l" "$(printf '%s' "$_r" | head -c 80)" ;;
+  case "$_r" in *'"success"'*) ok "$_l: /node/bundle 有响应" ;;
+    *) printf '  ⚠ %s: /node/bundle 需要节点面签名，本脚本未验（%s）\n' "$_l" "$(printf '%s' "$_r" | head -c 80)" ;;
   esac
 done
 cat <<'NOTE'
