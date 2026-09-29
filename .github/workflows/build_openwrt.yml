@@ -1,0 +1,135 @@
+name: build-openwrt-sdk
+
+# OpenWrt 产物：官方 SDK 24.10 编 ipk（对齐 mynet_gnb/build_openwrt.yml + 0.32 本地 SDK 用法）
+#
+# 交付形态：opkg 用的 ipk —— 不是 linux tgz
+#   luci-app-mynet_*.ipk   Lua 壳（all）
+#   mynet-agent_*_*.ipk    mynetd + mynet（架构相关；mynetd 瘦，无 embed）
+#
+# Go 侧 CGO_ENABLED=0 静态编译（musl 运行时可跑）；ipk 元数据/架构由 SDK 打出。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  SDK_VERSION: "24.10.0"
+  SDK_GCC: "13.3.0"
+
+jobs:
+  ipk:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 192.168.0.2 = ImmortalWrt 24.10 x86_64 → x86/64
+          - { arch: amd64,  goarch: amd64,  sdk_target: x86/64,        sdk_name: x86-64,        sdk_libc: musl }
+          - { arch: arm64,  goarch: arm64,  sdk_target: armsr/armv8,   sdk_name: armsr-armv8,   sdk_libc: musl }
+          - { arch: mipsel, goarch: mipsle, sdk_target: ramips/mt7621, sdk_name: ramips-mt7621, sdk_libc: musl, gomips: softfloat }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Resolve version
+        id: ver
+        run: |
+          SHA=$(git describe --tags --always --dirty)
+          case "$SHA" in
+            v*) V="$SHA" ;;
+            *)  V="v0.0.0-$SHA" ;;
+          esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential wget zstd file
+
+      - name: Cache OpenWrt SDK
+        id: sdk_cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
+          key: openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}-gcc${{ env.SDK_GCC }}-v1
+
+      - name: Download OpenWrt SDK
+        if: steps.sdk_cache.outputs.cache-hit != 'true'
+        run: |
+          SDK_FILE="openwrt-sdk-${{ env.SDK_VERSION }}-${{ matrix.sdk_name }}_gcc-${{ env.SDK_GCC }}_${{ matrix.sdk_libc }}.Linux-x86_64.tar.zst"
+          SDK_URL="https://downloads.openwrt.org/releases/${{ env.SDK_VERSION }}/targets/${{ matrix.sdk_target }}/${SDK_FILE}"
+          echo "Downloading $SDK_URL"
+          wget -q -O /tmp/sdk.tar.zst "$SDK_URL"
+          mkdir -p /opt/openwrt-sdk/${{ env.SDK_VERSION }}
+          cd /opt/openwrt-sdk/${{ env.SDK_VERSION }}
+          tar --use-compress-program=unzstd -xf /tmp/sdk.tar.zst
+          EXTRACTED=$(ls -d openwrt-sdk-* | head -1)
+          mv "$EXTRACTED" "${{ matrix.sdk_name }}"
+
+      - name: Build Go binaries
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: '0'
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent-V2/mynet.Version=${VER} -X main.version=${VER}"
+          # mynet：默认编入 proxy
+          go build -ldflags "$LDFLAGS" -o mynet_openwrt/files/mynet ./cmd/mynet
+          # mynetd：OpenWrt 瘦（无 embed）
+          go build -ldflags "$LDFLAGS" -o mynet_openwrt/files/mynetd ./cmd/mynetd
+          file mynet_openwrt/files/mynet mynet_openwrt/files/mynetd
+          strings mynet_openwrt/files/mynet | grep -q 'mynet.ApplyProxy' \
+            || { echo "ERROR: 缺 proxy 能力"; exit 1; }
+
+      - name: Package via OpenWrt SDK (ipk)
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          SDK=/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
+          ln -sfn "$GITHUB_WORKSPACE/mynet_openwrt" "$SDK/package/mynet_openwrt"
+          cd "$SDK"
+
+          # mynet-agent 只依赖 libc —— 可不拉 feeds 先出 agent 包
+          # luci-app-mynet 依赖 luci-base 等：feeds 之后再编
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          cat >> .config <<EOF
+          CONFIG_PACKAGE_mynet-agent=y
+          CONFIG_PACKAGE_luci-app-mynet=y
+          EOF
+          make defconfig
+
+          make package/mynet_openwrt/compile V=s
+
+          mkdir -p "$GITHUB_WORKSPACE/dist-ipk"
+          find bin/packages -name '*.ipk' -exec cp -v {} "$GITHUB_WORKSPACE/dist-ipk/" \;
+          ls -la "$GITHUB_WORKSPACE/dist-ipk/"
+
+      - name: Upload ipk
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-ipk-${{ matrix.arch }}
+          path: dist-ipk/*
+          if-no-files-found: error
+
+  summary:
+    needs: ipk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: List ipk
+        run: |
+          echo "## OpenWrt ipk（SDK 24.10）" >> "$GITHUB_STEP_SUMMARY"
+          find artifacts -type f | tee -a "$GITHUB_STEP_SUMMARY"
