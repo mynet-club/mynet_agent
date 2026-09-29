@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "generation": "rev-20260922-002",
+  "checksum": "sha256:f83b6b91cb0b1e1b04b19d072282fa0d24ed71c5f6fd10c42a17d83d2bcb171d",
+  "generated_at": "2026-09-22T08:05:00Z",
+  "min_agent_version": "0.9.0",
+  "node": {
+    "id": "1001",
+    "interface": "gnb_tun_1001",
+    "mtu": 1450,
+    "listen_port": 9016
+  },
+  "driver": "gnb",
+  "network": {
+    "addresses": [
+      "10.20.0.1/24"
+    ],
+    "routes": [
+      {
+        "prefix": "10.20.0.0/24",
+        "dev": "gnb_tun_1001",
+        "table": "main",
+        "metric": 0,
+        "type": "unicast",
+        "source": "overlay"
+      }
+    ],
+    "rules": [],
+    "firewall": [],
+    "nat": []
+  },
+  "gnb": {
+    "identity": {
+      "node_id": "1001",
+      "key_algorithm": "ed25519",
+      "private_key": "9566fc5be6485b5fb979054a3a58be928ce5cded4ac8a0f4753dbe2bb2f0b250",
+      "public_key": "183d75491fa58190c7d9bbc3215560b8da6d83c7f258cafa11708aeb37ee77e5",
+      "peer_public_keys": {
+        "1002": "9074ba29748083cd5e9b47451c7c13c7281317aa756b938472fec22f613707a6",
+        "1003": "bfbf0d326472c789ca2d64445bfc147182c645298db12801ae56ea5cf2eddead"
+      }
+    },
+    "listeners": [
+      "0.0.0.0:9016"
+    ],
+    "nodes": [
+      {
+        "node_id": "1002",
+        "public_key": "9074ba29748083cd5e9b47451c7c13c7281317aa756b938472fec22f613707a6",
+        "tun_address": "10.20.0.2/24"
+      },
+      {
+        "node_id": "1003",
+        "public_key": "bfbf0d326472c789ca2d64445bfc147182c645298db12801ae56ea5cf2eddead",
+        "tun_address": "10.20.0.3/24"
+      }
+    ],
+    "routes": [
+      {
+        "node_id": "1002",
+        "prefix": "192.168.20.0/24",
+        "source": "lan"
+      },
+      {
+        "node_id": "1003",
+        "prefix": "192.168.30.0/24",
+        "source": "lan"
+      }
+    ],
+    "discovery": {
+      "index_servers": [
+        "52.221.22.241:9016",
+        "idx.example.com"
+      ],
+      "static_nodes": [],
+      "forward_nodes": []
+    },
+    "forwarding": {
+      "direct": true,
+      "standard": true,
+      "unified": "auto",
+      "proxy": false,
+      "relay_routes": []
+    },
+    "options": {
+      "multi_socket": true,
+      "safe_index": true,
+      "mtu": 1450,
+      "ifname": "gnb_tun_1001"
+    }
+  },
+  "wireguard": null
+}

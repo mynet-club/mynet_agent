@@ -1,0 +1,100 @@
+{
+  "schema_version": 2,
+  "generation": "rev-20260922-005",
+  "checksum": "sha256:06711afd3949d97d81430b3b49e2c6dfb6e6a1360d6ee1553e079830b86aa6ab",
+  "generated_at": "2026-09-22T08:20:00Z",
+  "min_agent_version": "0.9.0",
+  "node": {
+    "id": "2001",
+    "interface": "wg0",
+    "mtu": 1420,
+    "listen_port": 51820
+  },
+  "driver": "wireguard",
+  "network": {
+    "addresses": [
+      "10.20.0.1/24",
+      "fd00:20::1/64"
+    ],
+    "routes": [
+      {
+        "prefix": "192.168.10.0/24",
+        "via": "10.20.0.2",
+        "dev": "wg0",
+        "table": 51820,
+        "metric": 100,
+        "type": "unicast",
+        "source": "lan"
+      }
+    ],
+    "rules": [],
+    "firewall": [],
+    "nat": []
+  },
+  "gnb": null,
+  "wireguard": {
+    "interface": {
+      "private_key": "dMOaQsOSHnfVak9JG5EyGEkGUaVwKIN3m/jq7xyNqD4=",
+      "public_key": "dMOaQsOSHnfVak9JG5EyGEkGUaVwKIN3m/jq7xyNqD4=",
+      "key_algorithm": "curve25519",
+      "listen_port": 51820,
+      "fwmark": null,
+      "dns": [
+        "10.20.0.1"
+      ]
+    },
+    "peers": [
+      {
+        "id": "conn-2002",
+        "business_node_id": "2002",
+        "public_key": "ScMN3omq/ga4mRw7eTKn3Sf0gXwQA3ACd0OeVewb8gs=",
+        "preshared_key": "QMPb8yNVE8E0DKxbVx1v3NlcLwPvGHCoys9D3minMvc=",
+        "bootstrap_endpoint": "203.0.113.2:51820",
+        "allowed_ips": [
+          "10.20.0.2/32",
+          "192.168.10.0/24"
+        ],
+        "persistent_keepalive_seconds": 25
+      },
+      {
+        "id": "conn-2003",
+        "business_node_id": "2003",
+        "public_key": "YCWL6UtB5US3jrzxuxUS0/jWdz7oJr6P2148Vre736U=",
+        "preshared_key": null,
+        "bootstrap_endpoint": "vpn.example.com:51820",
+        "allowed_ips": [
+          "10.20.0.3/32",
+          "fd00:20::3/128"
+        ],
+        "persistent_keepalive_seconds": 0
+      },
+      {
+        "id": "conn-2004",
+        "business_node_id": "2004",
+        "public_key": "GQCshQY7B89OpcmvI3O0VIckuvudxd1yl8w9B0BHuhQ=",
+        "preshared_key": null,
+        "bootstrap_endpoint": null,
+        "allowed_ips": [
+          "10.20.0.4/32"
+        ],
+        "persistent_keepalive_seconds": 25
+      }
+    ],
+    "routing": {
+      "mode": "managed",
+      "table": 51820
+    }
+  },
+  "connections": [
+    {
+      "connection_id": 201,
+      "target_node_id": "2002",
+      "transport_mode": "direct",
+      "transport_policy": {
+        "allow_direct": true,
+        "fallback_to_proxy": false,
+        "keepalive_seconds": 25
+      }
+    }
+  ]
+}

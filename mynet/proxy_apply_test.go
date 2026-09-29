@@ -207,8 +207,19 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 // DecodeBundleEnvelope → planFromBundle → proxyAllCmds。
 // 这是 D2 意义上的「打真数据路径」，不是读 fixture skip。
 func TestProxyFromFixtureEndToEnd(t *testing.T) {
-	dir := filepath.Join("..", "..", "mynet_ctl", "docs", "knowledge-base", "spec", "fixtures", "bundle-envelope-v2")
-	raw, err := os.ReadFile(filepath.Join(dir, "gnb-proxy-split.json"))
+	// CI 自包含：仓内 testdata 优先；monorepo 再回退 mynet_ctl SSOT
+	var raw []byte
+	var err error
+	for _, dir := range []string{
+		filepath.Join("testdata", "bundle-envelope-v2"),
+		filepath.Join("..", "testdata", "bundle-envelope-v2"),
+		filepath.Join("..", "..", "mynet_ctl", "docs", "knowledge-base", "spec", "fixtures", "bundle-envelope-v2"),
+	} {
+		raw, err = os.ReadFile(filepath.Join(dir, "gnb-proxy-split.json"))
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		t.Fatalf("读 fixture: %v", err)
 	}

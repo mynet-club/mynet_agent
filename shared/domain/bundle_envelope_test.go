@@ -8,14 +8,16 @@ import (
 	"testing"
 )
 
-// fixtureDir 解析共享 fixtures 目录（ctl SSOT）。
-// 覆盖顺序：环境变量 → 从本包向上找 mynet_ctl。
+// fixtureDir 解析共享 fixtures 目录。
+// 覆盖顺序：环境变量 → 仓内 testdata（CI 自包含）→ 向上找 mynet_ctl（monorepo SSOT）。
 func fixtureDir(t *testing.T) string {
 	t.Helper()
 	if p := os.Getenv("MYNET_BUNDLE_FIXTURES"); p != "" {
 		return p
 	}
 	candidates := []string{
+		filepath.Join("..", "..", "testdata", "bundle-envelope-v2"),
+		filepath.Join("testdata", "bundle-envelope-v2"),
 		filepath.Join("..", "..", "..", "mynet_ctl", "docs", "knowledge-base", "spec", "fixtures", "bundle-envelope-v2"),
 		filepath.Join("..", "..", "..", "..", "mynet_ctl", "docs", "knowledge-base", "spec", "fixtures", "bundle-envelope-v2"),
 	}

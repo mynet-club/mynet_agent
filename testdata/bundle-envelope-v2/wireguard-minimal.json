@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "generation": "rev-20260922-004",
+  "checksum": "sha256:1d42a5e5a19bee89cd0650b6ddeca554d693b3b8164122bfeb44a9bd37cd4e16",
+  "generated_at": "2026-09-22T08:15:00Z",
+  "min_agent_version": "0.9.0",
+  "node": {
+    "id": "2001",
+    "interface": "wg0",
+    "mtu": 1420,
+    "listen_port": 51820
+  },
+  "driver": "wireguard",
+  "network": {
+    "addresses": [
+      "10.20.0.1/24"
+    ],
+    "routes": [],
+    "rules": [],
+    "firewall": [],
+    "nat": []
+  },
+  "gnb": null,
+  "wireguard": {
+    "interface": {
+      "private_key": "dMOaQsOSHnfVak9JG5EyGEkGUaVwKIN3m/jq7xyNqD4=",
+      "public_key": "dMOaQsOSHnfVak9JG5EyGEkGUaVwKIN3m/jq7xyNqD4=",
+      "key_algorithm": "curve25519",
+      "listen_port": 51820,
+      "fwmark": null,
+      "dns": []
+    },
+    "peers": [
+      {
+        "id": "conn-2002",
+        "business_node_id": "2002",
+        "public_key": "ScMN3omq/ga4mRw7eTKn3Sf0gXwQA3ACd0OeVewb8gs=",
+        "preshared_key": null,
+        "bootstrap_endpoint": "203.0.113.2:51820",
+        "allowed_ips": [
+          "10.20.0.2/32"
+        ],
+        "persistent_keepalive_seconds": 25
+      }
+    ],
+    "routing": {
+      "mode": "managed",
+      "table": "auto"
+    }
+  }
+}

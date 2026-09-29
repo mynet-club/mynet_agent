@@ -1,0 +1,93 @@
+{
+    "schema_version": 2,
+    "generation": "rev-20260927-001",
+    "generated_at": "2026-09-27T12:00:00Z",
+    "min_agent_version": "0.9.0",
+    "node": {
+        "id": "1001",
+        "interface": "gnb_tun_1001",
+        "mtu": 1450,
+        "listen_port": 9016
+    },
+    "driver": "gnb",
+    "network": {
+        "addresses": [
+            "10.20.0.1/24"
+        ],
+        "routes": [],
+        "rules": [],
+        "firewall": [],
+        "nat": [],
+        "proxy": {
+            "enabled": true,
+            "role": "client",
+            "region": "domestic",
+            "policy": "whitelist",
+            "split": {
+                "list_source": "international",
+                "match_mode": "normal",
+                "ip_list": {
+                    "source": "international",
+                    "url": "https://cdn.mynet.club/proxy-lists/interip.txt",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                    "bytes": 123456
+                }
+            },
+            "exits": [
+                {
+                    "node_id": "9001",
+                    "weight": 20,
+                    "order": 1,
+                    "enabled": true
+                }
+            ],
+            "dns": {
+                "mode": "split",
+                "server": "8.8.8.8",
+                "domestic_servers": [
+                    "223.5.5.5",
+                    "119.29.29.29"
+                ]
+            },
+            "foreign_dns_route": true,
+            "fwmark": 200,
+            "table": 200
+        }
+    },
+    "gnb": {
+        "identity": {
+            "node_id": "1001",
+            "key_algorithm": "ed25519",
+            "private_key": "9566fc5be6485b5fb979054a3a58be928ce5cded4ac8a0f4753dbe2bb2f0b250",
+            "public_key": "183d75491fa58190c7d9bbc3215560b8da6d83c7f258cafa11708aeb37ee77e5",
+            "peer_public_keys": []
+        },
+        "listeners": [
+            "0.0.0.0:9016"
+        ],
+        "nodes": [],
+        "routes": [],
+        "discovery": {
+            "index_servers": [
+                "52.221.22.241:9016"
+            ],
+            "static_nodes": [],
+            "forward_nodes": []
+        },
+        "forwarding": {
+            "direct": true,
+            "standard": true,
+            "unified": "auto",
+            "proxy": false,
+            "relay_routes": []
+        },
+        "options": {
+            "multi_socket": true,
+            "safe_index": true,
+            "mtu": 1450,
+            "ifname": "gnb_tun_1001"
+        }
+    },
+    "wireguard": null,
+    "checksum": "sha256:76913a76e0b423a5b526d22d1751e672915a77c08d731c2b90c140cbaf5f348e"
+}

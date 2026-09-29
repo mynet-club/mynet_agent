@@ -1,0 +1,116 @@
+{
+  "schema_version": 2,
+  "generation": "rev-20260922-003",
+  "checksum": "sha256:eef7ffd2daebb440426f4ce532a8f47e3fd7f6b407e0aad392b5de27e1aa16f7",
+  "generated_at": "2026-09-22T08:10:00Z",
+  "min_agent_version": "0.9.0",
+  "node": {
+    "id": "1001",
+    "interface": "gnb_tun_1001",
+    "mtu": 1450,
+    "listen_port": 9016
+  },
+  "driver": "gnb",
+  "network": {
+    "addresses": [
+      "10.20.0.1/24"
+    ],
+    "routes": [],
+    "rules": [],
+    "firewall": [],
+    "nat": []
+  },
+  "gnb": {
+    "identity": {
+      "node_id": "1001",
+      "key_algorithm": "ed25519",
+      "private_key": "9566fc5be6485b5fb979054a3a58be928ce5cded4ac8a0f4753dbe2bb2f0b250",
+      "public_key": "183d75491fa58190c7d9bbc3215560b8da6d83c7f258cafa11708aeb37ee77e5",
+      "peer_public_keys": {
+        "1002": "9074ba29748083cd5e9b47451c7c13c7281317aa756b938472fec22f613707a6",
+        "9001": "584b87535d9b5c0a0577274e9faae2d2984b7dc3951a206e28e92bc05ffdb212"
+      }
+    },
+    "listeners": [
+      "0.0.0.0:9016"
+    ],
+    "nodes": [
+      {
+        "node_id": "1002",
+        "public_key": "9074ba29748083cd5e9b47451c7c13c7281317aa756b938472fec22f613707a6",
+        "tun_address": "10.20.0.2/24"
+      },
+      {
+        "node_id": "9001",
+        "public_key": "584b87535d9b5c0a0577274e9faae2d2984b7dc3951a206e28e92bc05ffdb212",
+        "tun_address": "10.20.0.250/24"
+      }
+    ],
+    "routes": [
+      {
+        "node_id": "1002",
+        "prefix": "192.168.20.0/24",
+        "source": "lan"
+      },
+      {
+        "node_id": "9001",
+        "prefix": "0.0.0.0/0",
+        "source": "proxy",
+        "proxy_fallback": true
+      },
+      {
+        "node_id": "1002",
+        "prefix": "10.30.0.0/24",
+        "source": "lan",
+        "via_node_id": "9001"
+      }
+    ],
+    "discovery": {
+      "index_servers": [
+        "52.221.22.241:9016"
+      ],
+      "static_nodes": [
+        {
+          "node_id": "9001",
+          "endpoint": "203.0.113.10:9016",
+          "role": "f"
+        }
+      ],
+      "forward_nodes": [
+        "9001"
+      ]
+    },
+    "forwarding": {
+      "direct": true,
+      "standard": true,
+      "unified": "auto",
+      "proxy": true,
+      "relay_routes": [
+        {
+          "via_node_id": "9001",
+          "prefix": "10.30.0.0/24"
+        }
+      ]
+    },
+    "options": {
+      "multi_socket": true,
+      "safe_index": true,
+      "mtu": 1450,
+      "ifname": "gnb_tun_1001"
+    }
+  },
+  "wireguard": null,
+  "connections": [
+    {
+      "connection_id": 123,
+      "target_node_id": "1002",
+      "transport_mode": "auto",
+      "transport_policy": {
+        "allow_direct": true,
+        "fallback_to_proxy": true,
+        "proxy_node_id": "9001",
+        "keepalive_seconds": 25
+      }
+    }
+  ]
+}
