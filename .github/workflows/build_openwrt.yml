@@ -32,6 +32,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 包 Makefile / LuCI 壳在 mynet_openwrt 仓（ipk 的 install 面）
+      - uses: actions/checkout@v4
+        with:
+          repository: mynet-club/mynet_openwrt-V2
+          path: mynet_openwrt
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -81,6 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent-V2/mynet.Version=${VER} -X main.version=${VER}"
+          mkdir -p mynet_openwrt/files
           # mynet：默认编入 proxy
           go build -ldflags "$LDFLAGS" -o mynet_openwrt/files/mynet ./cmd/mynet
           # mynetd：OpenWrt 瘦（无 embed）
@@ -96,17 +104,16 @@ jobs:
           set -euo pipefail
           SDK=/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
           ln -sfn "$GITHUB_WORKSPACE/mynet_openwrt" "$SDK/package/mynet_openwrt"
+          ls -la "$SDK/package/mynet_openwrt/Makefile"
           cd "$SDK"
 
-          # mynet-agent 只依赖 libc —— 可不拉 feeds 先出 agent 包
-          # luci-app-mynet 依赖 luci-base 等：feeds 之后再编
+          # feeds：luci-app-mynet 依赖 luci-base 等
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          cat >> .config <<EOF
-          CONFIG_PACKAGE_mynet-agent=y
-          CONFIG_PACKAGE_luci-app-mynet=y
-          EOF
+          printf '%s\n' \
+            'CONFIG_PACKAGE_mynet-agent=y' \
+            'CONFIG_PACKAGE_luci-app-mynet=y' >> .config
           make defconfig
 
           make package/mynet_openwrt/compile V=s
