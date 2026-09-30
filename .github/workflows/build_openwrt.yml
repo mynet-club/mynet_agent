@@ -115,8 +115,13 @@ jobs:
           make package/mynet_openwrt/compile V=s
 
           mkdir -p "$GITHUB_WORKSPACE/dist-ipk"
-          find bin/packages -name '*.ipk' -exec cp -v {} "$GITHUB_WORKSPACE/dist-ipk/" \;
+          # 只收我们自己的包，不带 feeds 全量（firmware/luci-base 等）
+          find bin/packages \( -name 'mynet-agent_*.ipk' -o -name 'luci-app-mynet_*.ipk' \) \
+            -exec cp -v {} "$GITHUB_WORKSPACE/dist-ipk/" \;
+          echo "=== dist-ipk ==="
           ls -la "$GITHUB_WORKSPACE/dist-ipk/"
+          # 空目录即失败
+          [ "$(find "$GITHUB_WORKSPACE/dist-ipk" -name '*.ipk' | wc -l)" -ge 2 ]
 
       - name: Upload ipk
         uses: actions/upload-artifact@v4
