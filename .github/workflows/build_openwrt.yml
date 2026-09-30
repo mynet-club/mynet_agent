@@ -32,13 +32,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 包树在 mynet_openwrt-V2（私有）。
-      # token 用本仓 workflow 身份；若 404 再换成 secrets.GH_PAT。
+      # 包树在 mynet_openwrt-V2（私有）—— 用与建仓相同的账号 token（repo secret GH_PAT）
       - uses: actions/checkout@v4
         with:
           repository: mynet-club/mynet_openwrt-V2
           path: mynet_openwrt
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
         with:
