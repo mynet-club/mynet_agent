@@ -1,0 +1,102 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+
+<h2><%:Log%></h2>
+
+<%
+local api_base = luci.dispatcher.build_url('admin/services/mynet/api')
+local log_url  = luci.dispatcher.build_url('admin/services/mynet/log')
+%>
+
+<div class="cbi-section">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:.8rem 1.25rem">
+        <h3 style="margin:0;padding:0"><%:Recent Log%> <span class="mn-muted mn-small">(<%=pcdata(log_path or "")%>)</span></h3>
+        <div style="display:flex;gap:6px;align-items:center">
+            <select id="mn-log-lines" class="cbi-input-select" style="width:auto" onchange="location.href='<%=log_url%>?lines='+this.value">
+                <option value="100" <%=lines==100 and 'selected' or ''%>>100</option>
+                <option value="200" <%=lines==200 and 'selected' or ''%>>200</option>
+                <option value="500" <%=lines==500 and 'selected' or ''%>>500</option>
+                <option value="1000" <%=lines==1000 and 'selected' or ''%>>1000</option>
+            </select>
+            <span class="mn-muted mn-small"><%:lines%></span>
+            <a href="<%=log_url%>?lines=<%=lines%>" class="cbi-button">&#8635; <%:Refresh%></a>
+            <button id="mn-log-auto-btn" class="cbi-button cbi-button-action" onclick="mnLogToggleAuto(this)"><%:Auto (30s)%></button>
+        </div>
+    </div>
+    <div class="mn-section-body">
+        <% if log_content and log_content ~= "" then %>
+        <pre id="mn-log-content" class="mn-terminal" style="max-height:600px"><%=pcdata(log_content)%></pre>
+        <% else %>
+        <div class="alert-message notice"><%:No log content available.%></div>
+        <% end %>
+    </div>
+</div>
+
+<div class="cbi-page-actions">
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>" class="cbi-button">
+        &#8592; <%:Dashboard%>
+    </a>
+</div>
+
+<div id="mn-toast" class="mn-toast mn-hidden"></div>
+<%+mynet/_i18n_js%>
+<script src="<%=resource%>/mynet/js/mynet.js"></script>
+<script>
+(function(){
+    var _autoTimer = null;
+    var _enabled = false;
+    var _countdown = 30;
+    var base = '<%=api_base%>/';
+
+    window.mnLogToggleAuto = function(btn) {
+        _enabled = !_enabled;
+        btn.textContent = _enabled ? _t('Auto ON') + ' (30s)' : '<%:Auto (30s)%>';
+        if (_enabled) {
+            _countdown = 30;
+            _startCountdown();
+        } else {
+            clearInterval(_autoTimer);
+        }
+    };
+
+    function _startCountdown() {
+        clearInterval(_autoTimer);
+        _autoTimer = setInterval(function(){
+            _countdown--;
+            if (_countdown <= 0) {
+                clearInterval(_autoTimer);
+                _doRefresh();
+            }
+        }, 1000);
+    }
+
+    function _doRefresh() {
+        var lines = document.getElementById('mn-log-lines').value || 200;
+        fetch(base + 'logs_tail', {
+            method: 'POST',
+            headers: {'Content-Type':'application/x-www-form-urlencoded'},
+            body: 'lines=' + lines
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+            if (data.log !== undefined) {
+                var el = document.getElementById('mn-log-content');
+                if (el) {
+                    el.textContent = data.log || '(empty)';
+                    el.scrollTop = el.scrollHeight;
+                }
+            }
+            if (_enabled) {
+                _countdown = 30;
+                _startCountdown();
+            }
+        })
+        .catch(function(err){ console.error('log refresh:', err); });
+    }
+
+    // Scroll to bottom on load
+    var logEl = document.getElementById('mn-log-content');
+    if (logEl) logEl.scrollTop = logEl.scrollHeight;
+})();
+</script>
+<%+footer%>

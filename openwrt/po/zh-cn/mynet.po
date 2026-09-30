@@ -1,0 +1,1924 @@
+# Chinese (Simplified) translation for luci-app-mynet
+# Copyright (C) 2025
+# This file is distributed under the same license as the luci-app-mynet package.
+#
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: luci-app-mynet\n"
+"POT-Creation-Date: 2025-01-01 00:00+0000\n"
+"PO-Revision-Date: 2025-01-01 00:00+0000\n"
+"Last-Translator: \n"
+"Language-Team: Chinese (Simplified)\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: controller/mynet.lua
+msgid "Config"
+msgstr "配置"
+
+#: controller/mynet.lua
+msgid "Dashboard"
+msgstr "仪表盘"
+
+#: controller/mynet.lua
+msgid "Log"
+msgstr "日志"
+
+#: controller/mynet.lua
+msgid "Manager"
+msgstr "管理"
+
+#: controller/mynet.lua
+msgid "MyNet"
+msgstr "MyNet"
+
+#: controller/mynet.lua
+msgid "Node"
+msgstr "节点"
+
+#: controller/mynet.lua
+msgid "Operations"
+msgstr "运维"
+
+#: controller/mynet.lua
+msgid "Plugins"
+msgstr "插件"
+
+#: controller/mynet.lua
+msgid "Settings"
+msgstr "设置"
+
+#: controller/mynet.lua
+msgid "Status"
+msgstr "状态"
+
+#: view/mynet/index.htm
+msgid "Account"
+msgstr "账户"
+
+#: view/mynet/index.htm
+msgid "Auto-Install"
+msgstr "自动安装"
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Change Group"
+msgstr "切换网络组"
+
+#: view/mynet/index.htm
+msgid "Config sync across nodes"
+msgstr "节点间配置同步"
+
+#: view/mynet/index.htm
+msgid "Cross-platform client support"
+msgstr "跨平台客户端支持"
+
+#: view/mynet/index.htm
+msgid "Deps"
+msgstr "依赖"
+
+#: view/mynet/index.htm
+msgid "Detecting..."
+msgstr "检测中..."
+
+#: view/mynet/index.htm view/mynet/service.htm
+msgid "Firewall"
+msgstr "防火墙"
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "GNB Service"
+msgstr "GNB 服务"
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "Interface"
+msgstr "接口"
+
+#: view/mynet/index.htm view/mynet/proxy.htm
+msgid "Login to MyNet"
+msgstr "登录 MyNet"
+
+#: view/mynet/index.htm view/mynet/settings.htm
+msgid "Logout"
+msgstr "退出登录"
+
+#: view/mynet/index.htm view/mynet/proxy.htm
+msgid "Mode"
+msgstr "模式"
+
+#: view/mynet/index.htm
+msgid "No dependency info"
+msgstr "无依赖信息"
+
+#: view/mynet/index.htm
+msgid "No group selected."
+msgstr "未选择网络组。"
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/node_manager.htm view/mynet/service.htm view/mynet/status.htm view/mynet/wizard.htm
+msgid "Node ID"
+msgstr "节点 ID"
+
+#: view/mynet/index.htm
+msgid "Not configured"
+msgstr "未配置"
+
+#: view/mynet/index.htm
+msgid "Not configured in mynet.conf"
+msgstr "未在 mynet.conf 中配置"
+
+#: view/mynet/index.htm view/mynet/guest.htm
+msgid "Offline Mode"
+msgstr "离线模式"
+
+#: view/mynet/index.htm
+msgid "Local Mode"
+msgstr "本地模式"
+
+#: view/mynet/index.htm
+msgid "Local Node Manager"
+msgstr "本地节点管理"
+
+#: view/mynet/index.htm
+msgid "Offline Node Manager"
+msgstr "离线节点管理"
+
+#: view/mynet/index.htm
+msgid "Proxy plugin (traffic routing)"
+msgstr "代理插件（流量路由）"
+
+#: view/mynet/index.htm
+msgid "Remote monitoring plugin"
+msgstr "远程监控插件"
+
+#: view/mynet/index.htm view/mynet/service.htm
+msgid "Restart"
+msgstr "重启"
+
+#: view/mynet/index.htm
+msgid "Retry"
+msgstr "重试"
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Running"
+msgstr "运行中"
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/wizard.htm
+msgid "Select Group"
+msgstr "选择网络组"
+
+#: view/mynet/index.htm view/mynet/proxy.htm view/mynet/service.htm
+msgid "Start"
+msgstr "启动"
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "State"
+msgstr "状态"
+
+#: view/mynet/index.htm view/mynet/proxy.htm view/mynet/service.htm
+msgid "Stop"
+msgstr "停止"
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Stopped"
+msgstr "已停止"
+
+#: view/mynet/index.htm
+msgid "You are currently in Offline Mode. Login to MyNet for:"
+msgstr "当前处于离线模式。登录 MyNet 可获得："
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/status.htm view/mynet/wizard.htm
+msgid "Group"
+msgstr "网络组"
+
+#: view/mynet/index.htm
+msgid "no forwarding"
+msgstr "无转发"
+
+#: view/mynet/index.htm
+msgid "total"
+msgstr "总计"
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "→ Wizard"
+msgstr "→ 向导"
+
+#: view/mynet/login.htm
+msgid "Credentials are stored in"
+msgstr "凭证存储在"
+
+#: view/mynet/login.htm
+msgid "Don't want to register?"
+msgstr "不想注册？"
+
+#: view/mynet/login.htm view/mynet/wizard.htm
+msgid "Email"
+msgstr "邮箱"
+
+#: view/mynet/login.htm
+msgid "Login"
+msgstr "登录"
+
+#: view/mynet/login.htm
+msgid "No account?"
+msgstr "没有账户？"
+
+#: view/mynet/login.htm
+msgid "Password"
+msgstr "密码"
+
+#: view/mynet/login.htm
+msgid "Register at mynet.club"
+msgstr "在 mynet.club 注册"
+
+#: view/mynet/login.htm
+msgid "Try GNB Offline Mode"
+msgstr "试用 GNB 离线模式"
+
+#: view/mynet/node.htm
+msgid "API error"
+msgstr "API 错误"
+
+#: view/mynet/node.htm
+msgid "Current Node"
+msgstr "当前节点"
+
+#: view/mynet/node.htm
+msgid "Edit"
+msgstr "编辑"
+
+#: view/mynet/node.htm
+msgid "File empty or missing"
+msgstr "文件为空或缺失"
+
+#: view/mynet/node.htm
+msgid "File present"
+msgstr "文件存在"
+
+#: view/mynet/node.htm
+msgid "GNB Configuration Files"
+msgstr "GNB 配置文件"
+
+#: view/mynet/node.htm
+msgid "GNB Crypt Keys"
+msgstr "GNB 加密密钥"
+
+#: view/mynet/node.htm
+msgid "GNB Type"
+msgstr "GNB 类型"
+
+#: view/mynet/node.htm
+msgid "GNB node config"
+msgstr "GNB 节点配置"
+
+#: view/mynet/node.htm
+msgid "GNB routing rules"
+msgstr "GNB 路由规则"
+
+#: view/mynet/node.htm
+msgid "Generate & Upload"
+msgstr "生成并上传"
+
+#: view/mynet/node.htm
+msgid "Generate New"
+msgstr "生成新密钥"
+
+#: view/mynet/node.htm
+msgid "Import"
+msgstr "导入"
+
+#: view/mynet/node.htm
+msgid "Login to sync changes to other nodes"
+msgstr "登录以同步变更到其他节点"
+
+#: view/mynet/node.htm
+msgid "No node configured."
+msgstr "未配置节点。"
+
+#: view/mynet/node.htm
+msgid "No peer keys found in conf directory."
+msgstr "配置目录中未找到对端公钥。"
+
+#: view/mynet/node.htm
+msgid "Node Configuration"
+msgstr "节点配置"
+
+#: view/mynet/node.htm view/mynet/node_manager.htm
+msgid "Node Manager"
+msgstr "节点管理"
+
+#: view/mynet/node.htm view/mynet/wizard.htm
+msgid "Node Name"
+msgstr "节点名称"
+
+#: view/mynet/node.htm
+msgid "Node Status"
+msgstr "节点状态"
+
+#: view/mynet/node.htm
+msgid "Paste Hex"
+msgstr "粘贴十六进制"
+
+#: view/mynet/node.htm
+msgid "Peer ID"
+msgstr "对端 ID"
+
+#: view/mynet/node.htm
+msgid "Peer Public Keys"
+msgstr "对端公钥"
+
+#: view/mynet/node.htm
+msgid "Private Key"
+msgstr "私钥"
+
+#: view/mynet/node.htm
+msgid "Public Key (hex)"
+msgstr "公钥（十六进制）"
+
+#: view/mynet/node.htm
+msgid "Refresh All Configs"
+msgstr "刷新所有配置"
+
+#: view/mynet/node.htm view/mynet/settings.htm
+msgid "Save"
+msgstr "保存"
+
+#: view/mynet/node.htm
+msgid "Service address index"
+msgstr "服务地址索引"
+
+#: view/mynet/node.htm
+msgid "This will replace the existing key. All peers will need to re-exchange public keys."
+msgstr "这将替换现有密钥。所有对端节点需要重新交换公钥。"
+
+#: view/mynet/node.htm
+msgid "Update"
+msgstr "更新"
+
+#: view/mynet/node.htm
+msgid "Upload File"
+msgstr "上传文件"
+
+#: view/mynet/node.htm view/mynet/node_manager.htm view/mynet/wizard.htm view/mynet/guest.htm
+msgid "Virtual IP"
+msgstr "虚拟 IP"
+
+#: view/mynet/node.htm
+msgid "missing"
+msgstr "缺失"
+
+#: view/mynet/node.htm
+msgid "not selected"
+msgstr "未选择"
+
+#: view/mynet/node.htm
+msgid "peers"
+msgstr "对端"
+
+#: view/mynet/node_manager.htm
+msgid "Current"
+msgstr "当前"
+
+#: view/mynet/node_manager.htm view/mynet/guest.htm view/mynet/status.htm
+msgid "Name"
+msgstr "名称"
+
+#: view/mynet/node_manager.htm
+msgid "Next"
+msgstr "下一页"
+
+#: view/mynet/node_manager.htm
+msgid "No nodes found."
+msgstr "未找到节点。"
+
+#: view/mynet/node_manager.htm view/mynet/node.htm
+msgid "Node Config"
+msgstr "节点配置"
+
+#: view/mynet/node_manager.htm
+msgid "Node List"
+msgstr "节点列表"
+
+#: view/mynet/node_manager.htm
+msgid "Prev"
+msgstr "上一页"
+
+#: view/mynet/node_manager.htm
+msgid "Select group first"
+msgstr "请先选择网络组"
+
+#: view/mynet/node_manager.htm
+msgid "Switch"
+msgstr "切换"
+
+#: view/mynet/node_manager.htm view/mynet/status.htm
+msgid "Type"
+msgstr "类型"
+
+#: view/mynet/node_manager.htm
+msgid "nodes"
+msgstr "节点"
+
+#: view/mynet/wizard.htm
+msgid "Account Status"
+msgstr "账户状态"
+
+#: view/mynet/wizard.htm view/mynet/guest.htm
+msgid "Action"
+msgstr "操作"
+
+#: view/mynet/wizard.htm
+msgid "Configured"
+msgstr "已配置"
+
+#: view/mynet/wizard.htm
+msgid "Current node ID"
+msgstr "当前节点 ID"
+
+#: view/mynet/wizard.htm
+msgid "Go to Dashboard"
+msgstr "前往仪表盘"
+
+#: view/mynet/wizard.htm
+msgid "Logged in as"
+msgstr "已登录为"
+
+#: view/mynet/wizard.htm
+msgid "Next: Configure Node"
+msgstr "下一步：配置节点"
+
+#: view/mynet/wizard.htm
+msgid "Next: Select Group"
+msgstr "下一步：选择网络组"
+
+#: view/mynet/wizard.htm
+msgid "No nodes found in this group."
+msgstr "该网络组中未找到节点。"
+
+#: view/mynet/wizard.htm
+msgid "No groups found. Check your connection."
+msgstr "未找到网络组。请检查网络连接。"
+
+#: view/mynet/wizard.htm
+msgid "Please select a group first."
+msgstr "请先选择一个网络组。"
+
+#: view/mynet/wizard.htm
+msgid "Selected"
+msgstr "已选择"
+
+#: view/mynet/wizard.htm
+msgid "Setup Wizard"
+msgstr "配置向导"
+
+#: view/mynet/wizard.htm
+msgid "Token"
+msgstr "令牌"
+
+#: view/mynet/wizard.htm
+msgid "Valid"
+msgstr "有效"
+
+#: view/mynet/wizard.htm
+msgid "Group ID"
+msgstr "网络组 ID"
+
+#: view/mynet/wizard.htm
+msgid "Group Name"
+msgstr "网络组名称"
+
+#: view/mynet/settings.htm
+msgid "API Server"
+msgstr "API 服务器"
+
+#: view/mynet/settings.htm
+msgid "API Server URL"
+msgstr "API 服务器地址"
+
+#: view/mynet/settings.htm
+msgid "Auto-refresh node configs after heartbeat"
+msgstr "心跳后自动刷新节点配置"
+
+#: view/mynet/settings.htm
+msgid "Base URL of the MyNet API server, e.g."
+msgstr "MyNet API 服务器基础地址，例如"
+
+#: view/mynet/settings.htm
+msgid "Base directory containing gnb bin/ and conf/ subdirs, e.g."
+msgstr "包含 gnb bin/ 和 conf/ 子目录的基础目录，例如"
+
+#: view/mynet/settings.htm
+msgid "Bundled GNB Binary"
+msgstr "内置 GNB 程序"
+
+#: view/mynet/settings.htm view/mynet/guest.htm
+msgid "Cancel"
+msgstr "取消"
+
+#: view/mynet/settings.htm
+msgid "Credential Status"
+msgstr "凭证状态"
+
+#: view/mynet/settings.htm
+msgid "Full path to the mynetd daemon binary."
+msgstr "mynetd 守护进程的完整路径。"
+
+#: view/mynet/settings.htm
+msgid "GNB Driver"
+msgstr "GNB 驱动"
+
+#: view/mynet/settings.htm
+msgid "GNB Root Directory"
+msgstr "GNB 根目录"
+
+#: view/mynet/settings.htm
+msgid "Heartbeat Interval (seconds)"
+msgstr "心跳间隔（秒）"
+
+#: view/mynet/settings.htm
+msgid "How often mynetd sends a heartbeat to the server (10–3600 s, default 300)."
+msgstr "mynetd 向服务器发送心跳的频率（10–3600 秒，默认 300）。"
+
+#: view/mynet/settings.htm
+msgid "Log Level"
+msgstr "日志级别"
+
+#: view/mynet/settings.htm
+msgid "Monitor Daemon (mynetd)"
+msgstr "监控守护进程（mynetd）"
+
+#: view/mynet/settings.htm
+msgid "Path to the self-managed gnb binary shipped with mynet."
+msgstr "mynet 自带的 gnb 程序路径。"
+
+#: view/mynet/settings.htm
+msgid "Path to the system-installed gnb binary, e.g. installed via opkg."
+msgstr "系统安装的 gnb 程序路径，例如通过 opkg 安装。"
+
+#: view/mynet/settings.htm
+msgid "Run as daemon (background process)"
+msgstr "以守护进程运行（后台进程）"
+
+#: view/mynet/settings.htm
+msgid "System GNB Binary"
+msgstr "系统 GNB 程序"
+
+#: view/mynet/settings.htm
+msgid "Use system GNB (instead of bundled)"
+msgstr "使用系统 GNB（替代内置版本）"
+
+#: view/mynet/settings.htm
+msgid "Verbosity of mynetd log output."
+msgstr "mynetd 日志输出的详细程度。"
+
+#: view/mynet/settings.htm
+msgid "When checked, the system gnb binary path is used. Uncheck to use the bundled binary."
+msgstr "勾选后使用系统 gnb 程序路径。取消勾选则使用内置程序。"
+
+#: view/mynet/settings.htm
+msgid "When enabled, mynetd will re-download node configs each heartbeat cycle."
+msgstr "启用后，mynetd 将在每个心跳周期重新下载节点配置。"
+
+#: view/mynet/settings.htm
+msgid "mynetd Binary Path"
+msgstr "mynetd 程序路径"
+
+#: view/mynet/status.htm
+msgid "Load Average"
+msgstr "负载均值"
+
+#: view/mynet/status.htm
+msgid "No group selected"
+msgstr "未选择网络组"
+
+#: view/mynet/status.htm view/mynet/service.htm view/mynet/log.htm
+msgid "Refresh"
+msgstr "刷新"
+
+#: view/mynet/status.htm
+msgid "System"
+msgstr "系统"
+
+#: view/mynet/status.htm
+msgid "System Status"
+msgstr "系统状态"
+
+#: view/mynet/status.htm
+msgid "Traffic"
+msgstr "流量"
+
+#: view/mynet/status.htm view/mynet/proxy.htm
+msgid "Uptime"
+msgstr "运行时间"
+
+#: view/mynet/service.htm
+msgid "Addrs"
+msgstr "地址"
+
+#: view/mynet/service.htm
+msgid "Apply firewall.sh"
+msgstr "应用 firewall.sh"
+
+#: view/mynet/service.htm
+msgid "Apply route.sh"
+msgstr "应用 route.sh"
+
+#: view/mynet/service.htm
+msgid "Auto (60s)"
+msgstr "自动（60秒）"
+
+#: view/mynet/service.htm
+msgid "Boot Autostart"
+msgstr "开机自启"
+
+#: view/mynet/service.htm
+msgid "Conn"
+msgstr "连接"
+
+#: view/mynet/service.htm
+msgid "Detect"
+msgstr "检测"
+
+#: view/mynet/service.htm
+msgid "Firewall Rules"
+msgstr "防火墙规则"
+
+#: view/mynet/service.htm
+msgid "Firewall Zones"
+msgstr "防火墙区域"
+
+#: view/mynet/service.htm
+msgid "Remove Firewall Zone"
+msgstr "移除防火墙区域"
+
+#: view/mynet/service.htm
+msgid "Flags"
+msgstr "标志"
+
+#: view/mynet/service.htm
+msgid "GNB Interface"
+msgstr "GNB 接口"
+
+#: view/mynet/service.htm
+msgid "GNB Management"
+msgstr "GNB 管理"
+
+#: view/mynet/service.htm
+msgid "Kernel Routing Table"
+msgstr "内核路由表"
+
+#: view/mynet/service.htm
+msgid "Last refresh:"
+msgstr "上次刷新："
+
+#: view/mynet/service.htm
+msgid "Latency"
+msgstr "延迟"
+
+#: view/mynet/service.htm
+msgid "Link Monitoring"
+msgstr "链路监控"
+
+#: view/mynet/service.htm
+msgid "No GNB peers found. Make sure GNB is running and gnb_ctl is available."
+msgstr "未找到 GNB 对端节点。请确认 GNB 正在运行且 gnb_ctl 可用。"
+
+#: view/mynet/service.htm
+msgid "No firewall rules found."
+msgstr "未找到防火墙规则。"
+
+#: view/mynet/service.htm
+msgid "No route.conf found. Refresh node config from Node page."
+msgstr "未找到 route.conf。请从节点页面刷新配置。"
+
+#: view/mynet/service.htm
+msgid "Raw Output"
+msgstr "原始输出"
+
+#: view/mynet/service.htm
+msgid "Route Management"
+msgstr "路由管理"
+
+#: view/mynet/service.htm
+msgid "Rx"
+msgstr "接收"
+
+#: view/mynet/service.htm
+msgid "Total nodes:"
+msgstr "节点总数："
+
+#: view/mynet/service.htm
+msgid "Tun IPv4"
+msgstr "隧道 IPv4"
+
+#: view/mynet/service.htm
+msgid "Tun IPv6"
+msgstr "隧道 IPv6"
+
+#: view/mynet/service.htm
+msgid "Tx"
+msgstr "发送"
+
+#: view/mynet/service.htm
+msgid "Unable to read firewall zones."
+msgstr "无法读取防火墙区域。"
+
+#: view/mynet/service.htm
+msgid "Unable to read routing table."
+msgstr "无法读取路由表。"
+
+#: view/mynet/service.htm
+msgid "View Logs"
+msgstr "查看日志"
+
+#: view/mynet/service.htm
+msgid "WAN (IPv4:Port)"
+msgstr "WAN (IPv4:端口)"
+
+#: view/mynet/service.htm
+msgid "WAN IPv6"
+msgstr "WAN IPv6"
+
+#: view/mynet/service.htm
+msgid "autostart"
+msgstr "自启动"
+
+#: view/mynet/service.htm
+msgid "fw reload (uci commit)"
+msgstr "防火墙重载 (uci commit)"
+
+#: view/mynet/service.htm
+msgid "mynet (GNB Service)"
+msgstr "mynet（GNB 服务）"
+
+#: view/mynet/service.htm
+msgid "route.conf"
+msgstr "route.conf"
+
+#: view/mynet/log.htm
+msgid "Auto (30s)"
+msgstr "自动（30秒）"
+
+#: view/mynet/log.htm
+msgid "No log content available."
+msgstr "暂无日志内容。"
+
+#: view/mynet/log.htm
+msgid "Recent Log"
+msgstr "最近日志"
+
+#: view/mynet/log.htm
+msgid "lines"
+msgstr "行"
+
+#: view/mynet/guest.htm
+msgid "Add Node"
+msgstr "添加节点"
+
+#: view/mynet/guest.htm
+msgid "Advanced"
+msgstr "高级"
+
+#: view/mynet/guest.htm
+msgid "Already have a MyNet account?"
+msgstr "已有 MyNet 账户？"
+
+#: view/mynet/guest.htm
+msgid "Auto"
+msgstr "自动"
+
+#: view/mynet/guest.htm
+msgid "Click \"Download Config\" for each remote device and extract the tar.gz"
+msgstr "为每个远程设备点击"下载配置"并解压 tar.gz"
+
+#: view/mynet/guest.htm
+msgid "Click \"Start GNB\" above to start the local node"
+msgstr "点击上方"启动 GNB"来启动本地节点"
+
+#: view/mynet/guest.htm
+msgid "Create Local GNB Network"
+msgstr "创建本地 GNB 网络"
+
+#: view/mynet/guest.htm
+msgid "Create Network"
+msgstr "创建网络"
+
+#: view/mynet/guest.htm
+msgid "Delete"
+msgstr "删除"
+
+#: view/mynet/guest.htm
+msgid "Delete this node? Config files will be removed."
+msgstr "删除此节点？配置文件将被移除。"
+
+#: view/mynet/guest.htm
+msgid "Download Config"
+msgstr "下载配置"
+
+#: view/mynet/guest.htm
+msgid "Download the GNB client for your device from"
+msgstr "从以下地址下载设备的 GNB 客户端"
+
+#: view/mynet/guest.htm
+msgid "Edit <code>address.conf</code> — replace <code>&lt;ROUTER_IP&gt;</code> with this router's actual IP address"
+msgstr "编辑 <code>address.conf</code> — 将 <code>&lt;ROUTER_IP&gt;</code> 替换为路由器的实际 IP 地址"
+
+#: view/mynet/guest.htm
+msgid "GNB binary not found. Please install GNB first (Settings → GNB Auto Install)."
+msgstr "未找到 GNB 程序。请先安装 GNB（设置 → GNB 自动安装）。"
+
+#: view/mynet/guest.htm
+msgid "Listen Port"
+msgstr "监听端口"
+
+#: view/mynet/guest.htm
+msgid "Local"
+msgstr "本地"
+
+#: view/mynet/guest.htm
+msgid "Local Node"
+msgstr "本地节点"
+
+#: view/mynet/guest.htm
+msgid "Network Name"
+msgstr "网络名称"
+
+#: view/mynet/guest.htm
+msgid "Network Nodes"
+msgstr "网络节点"
+
+#: view/mynet/guest.htm
+msgid "Node Count"
+msgstr "节点数量"
+
+#: view/mynet/guest.htm
+msgid "Nodes"
+msgstr "节点"
+
+#: view/mynet/guest.htm
+msgid "OK"
+msgstr "确定"
+
+#: view/mynet/guest.htm
+msgid "Offline mode is limited to basic GNB. Register at"
+msgstr "离线模式仅支持基础 GNB 功能。在以下地址注册"
+
+#: view/mynet/guest.htm
+msgid "Offline mode lets you create a private GNB network without a MyNet account."
+msgstr "离线模式允许您在无需 MyNet 账户的情况下创建私有 GNB 网络。"
+
+#: view/mynet/guest.htm
+msgid "Remote"
+msgstr "远程"
+
+#: view/mynet/guest.htm
+msgid "Reset Offline Network"
+msgstr "重置离线网络"
+
+#: view/mynet/guest.htm
+msgid "Role"
+msgstr "角色"
+
+#: view/mynet/guest.htm
+msgid "Run GNB on remote device:"
+msgstr "在远程设备上运行 GNB："
+
+#: view/mynet/guest.htm
+msgid "Setup Guide"
+msgstr "配置指南"
+
+#: view/mynet/guest.htm
+msgid "Start GNB"
+msgstr "启动 GNB"
+
+#: view/mynet/guest.htm
+msgid "Start Node ID"
+msgstr "起始节点 ID"
+
+#: view/mynet/guest.htm
+msgid "Stop GNB"
+msgstr "停止 GNB"
+
+#: view/mynet/guest.htm
+msgid "Subnet"
+msgstr "子网"
+
+#: view/mynet/guest.htm
+msgid "Switch to MyNet User Mode"
+msgstr "切换到 MyNet 用户模式"
+
+#: view/mynet/guest.htm
+msgid "This will delete ALL offline node configs. Continue?"
+msgstr "这将删除所有离线节点配置。是否继续？"
+
+#: view/mynet/guest.htm
+msgid "Upgrade to Full Mode"
+msgstr "升级到完整模式"
+
+#: view/mynet/guest.htm
+msgid "to unlock: automatic node discovery, proxy traffic splitting, remote management, and more."
+msgstr "以解锁：自动节点发现、代理流量分流、远程管理等功能。"
+
+#: view/mynet/proxy.htm
+msgid "Active Layers"
+msgstr "活动层"
+
+#: view/mynet/proxy.htm
+msgid "Available Plugins"
+msgstr "可用插件"
+
+#: view/mynet/proxy.htm
+msgid "Check Route"
+msgstr "检查路由"
+
+#: view/mynet/proxy.htm
+msgid "Configuration"
+msgstr "配置"
+
+#: view/mynet/proxy.htm
+msgid "DNS Intercept"
+msgstr "DNS 拦截"
+
+#: view/mynet/proxy.htm
+msgid "DNS Mode"
+msgstr "DNS 模式"
+
+#: view/mynet/proxy.htm
+msgid "DNS Server"
+msgstr "DNS 服务器"
+
+#: view/mynet/proxy.htm
+msgid "Diagnostics"
+msgstr "诊断"
+
+#: view/mynet/proxy.htm
+msgid "IP Rule Count"
+msgstr "IP 规则数"
+
+#: view/mynet/proxy.htm
+msgid "Login Required"
+msgstr "需要登录"
+
+#: view/mynet/proxy.htm
+msgid "Login to your MyNet account to enable and manage plugins."
+msgstr "登录 MyNet 账户以启用和管理插件。"
+
+#: view/mynet/proxy.htm
+msgid "Policy Routing"
+msgstr "策略路由"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Peers"
+msgstr "代理对端"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Status"
+msgstr "代理状态"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Traffic Split"
+msgstr "代理流量分流"
+
+#: view/mynet/proxy.htm
+msgid "Region"
+msgstr "区域"
+
+#: view/mynet/proxy.htm
+msgid "Reload IP List"
+msgstr "重新加载 IP 列表"
+
+#: view/mynet/proxy.htm
+msgid "Remote Monitoring"
+msgstr "远程监控"
+
+#: view/mynet/proxy.htm
+msgid "Route Inject"
+msgstr "路由注入"
+
+#: view/mynet/proxy.htm
+msgid "Route Table ID"
+msgstr "路由表 ID"
+
+#: view/mynet/proxy.htm
+msgid "Route traffic through GNB peers with policy-based split and DNS interception."
+msgstr "通过 GNB 对端节点进行策略分流和 DNS 拦截来路由流量。"
+
+#: view/mynet/proxy.htm
+msgid "Save Configuration"
+msgstr "保存配置"
+
+#: view/mynet/proxy.htm
+msgid "Statistics"
+msgstr "统计"
+
+#: view/mynet/proxy.htm
+msgid "Monitor node status, traffic, and alerts remotely via MyNet cloud."
+msgstr "通过 MyNet 云端远程监控节点状态、流量和告警。"
+
+#: view/mynet/proxy.htm
+msgid "Auto-start proxy when GNB starts"
+msgstr "GNB 启动时自动启动代理"
+
+#: view/mynet/proxy.htm
+msgid "Both (Client + Server)"
+msgstr "双向（客户端 + 服务端）"
+
+#: view/mynet/proxy.htm
+msgid "Both: client + server, routes injected on this node"
+msgstr "双向模式：客户端+服务端，路由注入到本节点"
+
+#: view/mynet/proxy.htm
+msgid "Client"
+msgstr "客户端"
+
+#: view/mynet/proxy.htm
+msgid "Client mode: forward traffic through proxy peer"
+msgstr "客户端模式：通过代理对端转发流量"
+
+#: view/mynet/proxy.htm
+msgid "Connectivity Check"
+msgstr "连通性检查"
+
+#: view/mynet/proxy.htm
+msgid "Detection failed"
+msgstr "检测失败"
+
+#: view/mynet/proxy.htm
+msgid "Domestic"
+msgstr "国内"
+
+#: view/mynet/proxy.htm
+msgid "Domestic Exit IP"
+msgstr "国内出口 IP"
+
+#: view/mynet/proxy.htm
+msgid "Enable Proxy"
+msgstr "启用代理"
+
+#: view/mynet/proxy.htm
+msgid "Enter IPv4 address"
+msgstr "输入 IPv4 地址"
+
+#: view/mynet/proxy.htm
+msgid "International"
+msgstr "国际"
+
+#: view/mynet/proxy.htm
+msgid "Network Detection"
+msgstr "网络检测"
+
+#: view/mynet/proxy.htm
+msgid "Please select a proxy peer"
+msgstr "请选择代理对端节点"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Configuration"
+msgstr "代理配置"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Exit IP"
+msgstr "代理出口 IP"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Peer"
+msgstr "代理对端"
+
+#: view/mynet/proxy.htm
+msgid "Redirect (DNAT)"
+msgstr "重定向 (DNAT)"
+
+#: view/mynet/proxy.htm
+msgid "Resolv.conf"
+msgstr "Resolv.conf"
+
+#: view/mynet/proxy.htm
+msgid "Save & Apply"
+msgstr "保存并应用"
+
+#: view/mynet/proxy.htm
+msgid "Select a peer node"
+msgstr "选择对端节点"
+
+#: view/mynet/proxy.htm
+msgid "Server"
+msgstr "服务端"
+
+#: view/mynet/proxy.htm
+msgid "Server mode: accept traffic from other nodes (no policy routing)"
+msgstr "服务端模式：接受其他节点的流量（无策略路由）"
+
+#: view/mynet/proxy.htm
+msgid "Traffic will be forwarded through this node"
+msgstr "流量将通过此节点转发"
+
+#: view/mynet/node.htm
+msgid "Public Key"
+msgstr "公钥"
+
+#: view/mynet/index.htm
+msgid "Current group"
+msgstr "当前网络组"
+
+#: view/mynet/service.htm
+msgid "Enable Inbound NAT"
+msgstr "启用入站 NAT"
+
+#: view/mynet/service.htm
+msgid "Enable Outbound NAT"
+msgstr "启用出站 NAT"
+
+#: view/mynet/service.htm
+msgid "NAT Settings"
+msgstr "NAT 设置"
+
+#: view/mynet/service.htm
+msgid "Network Management"
+msgstr "网络管理"
+
+#: view/mynet/diagnose.htm
+msgid "Check Item"
+msgstr "检查项"
+
+#: view/mynet/diagnose.htm
+msgid "Checks file integrity, runtime status and GNB logs for node"
+msgstr "检查节点文件完整性、运行状态和 GNB 日志"
+
+#: view/mynet/diagnose.htm
+msgid "Detail"
+msgstr "详情"
+
+#: view/mynet/diagnose.htm
+msgid "GNB Log (last 30 lines)"
+msgstr "GNB 日志（最近 30 行）"
+
+#: view/mynet/diagnose.htm
+msgid "Result"
+msgstr "结果"
+
+#: view/mynet/diagnose.htm
+msgid "Run Diagnostics"
+msgstr "运行诊断"
+
+#: view/mynet/diagnose.htm
+msgid "System Check"
+msgstr "系统检查"
+
+#: view/mynet/node.htm
+msgid "active"
+msgstr "活跃"
+
+#: view/mynet/node.htm
+msgid "configured"
+msgstr "已配置"
+
+#: view/mynet/node.htm
+msgid "Multi Socket"
+msgstr "多路复用"
+
+#: view/mynet/node.htm
+msgid "NIC"
+msgstr "网卡"
+
+#: view/mynet/node.htm
+msgid "Peers"
+msgstr "对端节点"
+
+#: view/mynet/index.htm
+msgid "Login to MyNet for: remote monitoring, proxy plugin, cross-platform clients, config sync."
+msgstr "登录 MyNet 可获得：远程监控、代理插件、跨平台客户端、配置同步。"
+
+#: view/mynet/index.htm
+msgid "Login for remote monitoring, proxy plugin, cross-platform clients, config sync."
+msgstr "登录后可远程监控、使用代理插件、跨平台客户端、配置同步。"
+
+#: view/mynet/index.htm
+msgid "Path"
+msgstr "路径"
+
+#: view/mynet/index.htm
+msgid "Version"
+msgstr "版本"
+
+#: view/mynet/settings.htm
+msgid "Bundled GNB"
+msgstr "内置 GNB"
+
+#: view/mynet/settings.htm
+msgid "GNB Binary"
+msgstr "GNB 程序"
+
+#: view/mynet/settings.htm
+msgid "System GNB"
+msgstr "系统 GNB"
+
+#: view/mynet/settings.htm
+msgid "Use system GNB instead of bundled driver/gnb"
+msgstr "使用系统 GNB 替代内置 driver/gnb"
+
+#: view/mynet/settings.htm
+msgid "When checked, mynet will use the system-installed gnb binary. Uncheck to use the bundled binary under driver/gnb."
+msgstr "勾选后 mynet 将使用系统安装的 gnb 程序。取消勾选则使用 driver/gnb 下的内置程序。"
+
+#: view/mynet/settings.htm
+msgid "not found"
+msgstr "未找到"
+
+#: view/mynet/service.htm
+msgid "No mynet.conf found. Select a node from Wizard page."
+msgstr "未找到 mynet.conf。请从向导页面选择节点。"
+
+#: view/mynet/wizard.htm
+msgid "Click \"Download Config\" for each remote device and extract the tar.gz"
+msgstr "为每个远程设备点击"下载配置"并解压 tar.gz 压缩包"
+
+#: view/mynet/wizard.htm
+msgid "Click \"Start GNB\" above to start the local node"
+msgstr "点击上方的"启动 GNB"以启动本地节点"
+
+#: view/mynet/wizard.htm
+msgid "Generate &amp; Upload"
+msgstr "生成并上传"
+
+#: view/mynet/*.htm
+msgid "About"
+msgstr "关于"
+
+#: view/mynet/*.htm
+msgid "Advanced: Edit Config Files"
+msgstr "高级：编辑配置文件"
+
+#: view/mynet/*.htm
+msgid "Auto Setup"
+msgstr "自动配置"
+
+#: view/mynet/*.htm
+msgid "Boot"
+msgstr "开机启动"
+
+#: view/mynet/*.htm
+msgid "Bundled GNB"
+msgstr "内置 GNB"
+
+#: view/mynet/*.htm
+msgid "Check Item"
+msgstr "检查项"
+
+#: view/mynet/*.htm
+msgid "Checks file integrity, runtime status and GNB logs for node"
+msgstr "检查节点文件完整性、运行状态和 GNB 日志"
+
+#: view/mynet/*.htm
+msgid "Click "Download Config" for each remote device and extract the tar.gz"
+msgstr "为每个远程设备点击「下载配置」并解压 tar.gz 文件"
+
+#: view/mynet/*.htm
+msgid "Click "Start GNB" above to start the local node"
+msgstr "点击上方「启动 GNB」启动本地节点"
+
+#: view/mynet/*.htm
+msgid "Detail"
+msgstr "详情"
+
+#: view/mynet/*.htm
+msgid "Device Information"
+msgstr "设备信息"
+
+#: view/mynet/*.htm
+msgid "Disabled"
+msgstr "已禁用"
+
+#: view/mynet/*.htm
+msgid "Enable Inbound NAT"
+msgstr "启用入站 NAT"
+
+#: view/mynet/*.htm
+msgid "Enable Outbound NAT"
+msgstr "启用出站 NAT"
+
+#: view/mynet/*.htm
+msgid "Enabled"
+msgstr "已启用"
+
+#: view/mynet/*.htm
+msgid "Firewall Zone"
+msgstr "防火墙区域"
+
+#: view/mynet/*.htm
+msgid "Forwarding"
+msgstr "转发规则"
+
+#: view/mynet/*.htm
+msgid "GNB Binary"
+msgstr "GNB 二进制文件"
+
+#: view/mynet/*.htm
+msgid "GNB Log (last 30 lines)"
+msgstr "GNB 日志（最近 30 行）"
+
+#: view/mynet/*.htm
+msgid "GNB Routes"
+msgstr "GNB 路由"
+
+#: view/mynet/*.htm
+msgid "Generate &amp; Upload"
+msgstr "生成并上传"
+
+#: view/mynet/*.htm
+msgid "Home Path"
+msgstr "主目录"
+
+#: view/mynet/*.htm
+msgid "Init Script"
+msgstr "初始化脚本"
+
+#: view/mynet/*.htm
+msgid "Multi Socket"
+msgstr "多路 Socket"
+
+#: view/mynet/*.htm
+msgid "NAT Settings"
+msgstr "NAT 设置"
+
+#: view/mynet/*.htm
+msgid "NIC"
+msgstr "网卡"
+
+#: view/mynet/*.htm
+msgid "Network Management"
+msgstr "网络管理"
+
+#: view/mynet/*.htm
+msgid "No forwarding rules configured"
+msgstr "未配置转发规则"
+
+#: view/mynet/*.htm
+msgid "Offline mode lets you create a private GNB network without a MyNet account.
+            Generate nodes locally, pick one for this router, and download configs for other devices."
+msgstr "离线模式允许您在没有 MyNet 账户的情况下创建私有 GNB 网络。在本地生成节点，为路由器选择一个，并为其他设备下载配置。"
+
+#: view/mynet/*.htm
+msgid "Peers"
+msgstr "对端节点"
+
+#: view/mynet/*.htm
+msgid "Re-apply Masq"
+msgstr "重新应用 Masq"
+
+#: view/mynet/*.htm
+msgid "Result"
+msgstr "结果"
+
+#: view/mynet/*.htm
+msgid "Run Diagnostics"
+msgstr "运行诊断"
+
+#: view/mynet/*.htm
+msgid "Select"
+msgstr "选择"
+
+#: view/mynet/*.htm
+msgid "Setup Firewall Zone"
+msgstr "创建防火墙区域"
+
+#: view/mynet/*.htm
+msgid "System Check"
+msgstr "系统检查"
+
+#: view/mynet/*.htm
+msgid "System GNB"
+msgstr "系统 GNB"
+
+#: view/mynet/*.htm
+msgid "Version"
+msgstr "版本"
+
+#: view/mynet/*.htm
+msgid "Zone Status"
+msgstr "区域状态"
+
+#: view/mynet/*.htm
+msgid "active"
+msgstr "使用中"
+
+#: view/mynet/*.htm
+msgid "configured"
+msgstr "已配置"
+
+#: view/mynet/*.htm
+msgid "not found"
+msgstr "未找到"
+
+#: view/mynet/node.htm
+msgid "No node configured. Paste your node.conf below to set up this device. The node ID will be extracted automatically."
+msgstr "尚未配置节点。请在下方粘贴 node.conf 内容以初始化本设备，系统将自动提取节点 ID。"
+
+#: view/mynet/node.htm
+msgid "Paste node.conf content and save. The nodeid line will set the current node."
+msgstr "粘贴 node.conf 内容并保存，nodeid 行将设为当前节点。"
+
+#: view/mynet/wizard.htm
+msgid "Welcome to MyNet. Choose how you want to set up this device."
+msgstr "欢迎使用 MyNet。请选择本设备的配置方式。"
+
+#: view/mynet/wizard.htm
+msgid "Online Mode"
+msgstr "在线模式"
+
+#: view/mynet/wizard.htm
+msgid "Sign in with your MyNet account. Select a zone and node from the cloud, configs download automatically."
+msgstr "使用 MyNet 账号登录，从云端选择区域和节点，配置自动下载。"
+
+#: view/mynet/wizard.htm
+msgid "Sign In"
+msgstr "登录"
+
+#: view/mynet/wizard.htm
+msgid "Offline Config Center"
+msgstr "离线配置中心"
+
+#: view/mynet/wizard.htm
+msgid "Import a config package (.tar.gz), or create a new local GNB network. No account needed."
+msgstr "导入配置包(.tar.gz)，或创建本地 GNB 网络。无需账号。"
+
+#: view/mynet/wizard.htm
+msgid "Offline Setup"
+msgstr "离线配置"
+
+#: view/mynet/wizard.htm
+msgid "Manual Config"
+msgstr "手动配置"
+
+#: view/mynet/wizard.htm
+msgid "Manually fill in node.conf, route.conf, address.conf and set up keys step by step."
+msgstr "手动逐步填写 node.conf、route.conf、address.conf 并配置密钥。"
+
+#: view/mynet/wizard.htm
+msgid "Manual Setup"
+msgstr "手动配置"
+
+#: view/mynet/wizard.htm
+msgid "GNB binary not found. Some features require GNB. Go to Settings → GNB Auto Install first."
+msgstr "未找到 GNB 程序。部分功能需要 GNB，请先前往 设置 → GNB 自动安装。"
+
+#: view/mynet/guest.htm
+msgid "Import Config Package"
+msgstr "导入配置包"
+
+#: view/mynet/guest.htm
+msgid "Upload a .tar.gz config package exported from another MyNet device. The archive will be inspected and validated before import."
+msgstr "上传从其他 MyNet 设备导出的 .tar.gz 配置包。系统将自动检查并验证后再导入。"
+
+#: view/mynet/guest.htm
+msgid "Upload & Inspect"
+msgstr "上传并检查"
+
+#: view/mynet/guest.htm
+msgid "Confirm Import"
+msgstr "确认导入"
+
+#: view/mynet/guest.htm
+msgid "Private Key"
+msgstr "私钥"
+
+#: view/mynet/guest.htm
+msgid "Public Key"
+msgstr "公钥"
+
+#: view/mynet/guest.htm
+msgid "Peer Keys"
+msgstr "对端公钥"
+
+#: view/mynet/guest.htm
+msgid "Warning: route.conf first record node ID does not match node.conf"
+msgstr "警告：route.conf 第一条记录的节点 ID 与 node.conf 不匹配"
+
+#: view/mynet/guest.htm
+msgid "Warning: No private key found. You will need to generate or paste one manually."
+msgstr "警告：未找到私钥文件，导入后需要手动生成或粘贴私钥。"
+
+#: view/mynet/guest.htm
+msgid "File too large (max 750KB)"
+msgstr "文件过大（最大 750KB）"
+
+#: view/mynet/guest.htm
+msgid "Uploading..."
+msgstr "上传中..."
+
+#: view/mynet/guest.htm
+msgid "Preview failed"
+msgstr "解析失败"
+
+#: view/mynet/guest.htm
+msgid "File read error"
+msgstr "文件读取失败"
+
+#: view/mynet/guest.htm
+msgid "Import failed"
+msgstr "导入失败"
+
+#: view/mynet/guest.htm
+msgid "Missing"
+msgstr "缺失"
+
+#: view/mynet/guest.htm
+msgid "None"
+msgstr "无"
+
+#: view/mynet/guest.htm
+msgid "Choose Setup Method"
+msgstr "选择配置方式"
+
+#: view/mynet/guest.htm
+msgid "These methods are mutually exclusive. Pick one to continue."
+msgstr "以下方式互斥，请选择其中一种继续。"
+
+#: view/mynet/guest.htm
+msgid "Import Config"
+msgstr "导入配置"
+
+#: view/mynet/guest.htm
+msgid "Upload a .tar.gz config package from another device."
+msgstr "上传从其他设备导出的 .tar.gz 配置包。"
+
+#: view/mynet/guest.htm
+msgid "Create a new local GNB network with auto-generated keys."
+msgstr "创建新的本地 GNB 网络，自动生成密钥。"
+
+#: view/mynet/guest.htm
+msgid "Edit node.conf, route.conf, keys step by step."
+msgstr "逐步编辑 node.conf、route.conf、密钥等文件。"
+
+#: view/mynet/guest.htm
+msgid "Go to the Node page to manually edit node.conf, route.conf, address.conf and manage keys."
+msgstr "前往节点页面手动编辑 node.conf、route.conf、address.conf 并管理密钥。"
+
+#: view/mynet/guest.htm
+msgid "Open Node Config Editor"
+msgstr "打开节点配置编辑器"
+
+#: view/mynet/index.htm
+msgid "Setup Wizard"
+msgstr "配置向导"
+
+#: view/mynet/index.htm
+msgid "GNB Standalone"
+msgstr "GNB 独立运行"
+
+#: view/mynet/guest.htm
+msgid "Tip: Try MyNet Online Mode"
+msgstr "提示：试试 MyNet 在线模式"
+
+#: view/mynet/guest.htm
+msgid "MyNet online mode downloads configs automatically — just login, pick a zone and node, done. Supports remote management, auto key distribution, proxy plugins, and multi-device roaming. No manual editing needed."
+msgstr "MyNet 在线模式可自动下载配置 —— 登录后选择区域和节点即可完成。支持远程管理、自动密钥分发、代理插件、多设备漫游，无需手动编辑配置文件。"
+
+#: view/mynet/guest.htm
+msgid "Login to MyNet"
+msgstr "登录 MyNet"
+
+#: view/mynet/guest.htm
+msgid "Register Free Account"
+msgstr "免费注册"
+
+#: view/mynet/wizard.htm
+msgid "Register"
+msgstr "注册"
+
+#: view/mynet/guest.htm
+msgid "Or: Set Up Offline"
+msgstr "或：离线配置"
+
+#: view/mynet/guest.htm
+msgid "Back to Setup Wizard"
+msgstr "返回配置向导"
+
+#: view/mynet/wizard.htm
+msgid "MyNet Online Mode"
+msgstr "MyNet 在线模式"
+
+#: view/mynet/wizard.htm
+msgid "Recommended"
+msgstr "推荐"
+
+#: view/mynet/wizard.htm
+msgid "Login with MyNet account → select zone & node → config auto-downloads. Supports remote management, auto key exchange, proxy plugins, cross-device roaming. Best for most users."
+msgstr "登录 MyNet 账号 → 选择区域和节点 → 配置自动下载。支持远程管理、自动密钥交换、代理插件、跨设备漫游。推荐大多数用户使用。"
+
+#: view/mynet/wizard.htm
+msgid "Or set up offline (no account needed):"
+msgstr "或离线配置（无需账号）："
+
+#: view/mynet/wizard.htm
+msgid "Import Config"
+msgstr "导入配置"
+
+#: view/mynet/wizard.htm
+msgid "Upload a .tar.gz package exported from another device. Auto-validates and imports."
+msgstr "上传从其他设备导出的 .tar.gz 配置包，自动验证并导入。"
+
+#: view/mynet/wizard.htm
+msgid "Import"
+msgstr "导入"
+
+#: view/mynet/wizard.htm
+msgid "Generate a new local GNB mesh network with auto keys. Download configs for each device."
+msgstr "创建新的本地 GNB 组网并自动生成密钥，为每个设备下载配置。"
+
+#: view/mynet/wizard.htm
+msgid "Create"
+msgstr "创建"
+
+#: view/mynet/wizard.htm
+msgid "Edit node.conf, route.conf, keys step by step. For advanced users."
+msgstr "逐步编辑 node.conf、route.conf、密钥等文件。适合高级用户。"
+
+#: model/mynet/system.lua
+msgid "Go to Setup Wizard or GNB Standalone to configure this device"
+msgstr "前往配置向导或 GNB 独立运行来配置本设备"
+
+#: view/mynet/wizard.htm
+msgid "Continue"
+msgstr "继续"
+
+#: view/mynet/node.htm
+msgid "No peers found in route.conf."
+msgstr "route.conf 中未找到对端节点。"
+
+#: view/mynet/node.htm
+msgid "Configure node first"
+msgstr "请先配置节点"
+
+#: view/mynet/guest.htm
+msgid "Switch local node to this one? Service will need restart."
+msgstr "将本地节点切换为此节点？服务需要重启。"
+
+#: view/mynet/guest.htm
+msgid "Use This Config"
+msgstr "使用此配置"
+
+#: view/mynet/_i18n_js.htm
+msgid "Request in progress, please wait"
+msgstr "请求进行中，请稍候"
+
+#: view/mynet/_i18n_js.htm
+msgid "Operation failed"
+msgstr "操作失败"
+
+#: view/mynet/_i18n_js.htm
+msgid "Network error"
+msgstr "网络错误"
+
+#: view/mynet/_i18n_js.htm
+msgid "Triggering GNB auto-install…"
+msgstr "正在触发 GNB 自动安装…"
+
+#: view/mynet/_i18n_js.htm
+msgid "gnb_ctl installed"
+msgstr "gnb_ctl 已安装"
+
+#: view/mynet/_i18n_js.htm
+msgid "Auto-install failed"
+msgstr "自动安装失败"
+
+#: view/mynet/_i18n_js.htm
+msgid "Installing GNB"
+msgstr "正在安装 GNB"
+
+#: view/mynet/_i18n_js.htm
+msgid "Request failed"
+msgstr "请求失败"
+
+#: view/mynet/_i18n_js.htm
+msgid "GNB install complete"
+msgstr "GNB 安装完成"
+
+#: view/mynet/_i18n_js.htm
+msgid "Install failed, check log"
+msgstr "安装失败，查看日志"
+
+#: view/mynet/_i18n_js.htm
+msgid "Install script finished, refresh to check"
+msgstr "安装脚本已完成，刷新页面检查"
+
+#: view/mynet/_i18n_js.htm
+msgid "Refreshing…"
+msgstr "刷新中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "All configs refreshed"
+msgstr "全部配置已刷新"
+
+#: view/mynet/_i18n_js.htm
+msgid "files"
+msgstr "个文件"
+
+#: view/mynet/_i18n_js.htm
+msgid "Switch to node:"
+msgstr "切换到节点："
+
+#: view/mynet/_i18n_js.htm
+msgid "This will save the new node configuration. Continue?"
+msgstr "这将保存新的节点配置，是否继续？"
+
+#: view/mynet/_i18n_js.htm
+msgid "Switching…"
+msgstr "切换中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "Key is empty"
+msgstr "密钥为空"
+
+#: view/mynet/_i18n_js.htm
+msgid "Must be 128 hex chars"
+msgstr "必须为 128 位十六进制字符"
+
+#: view/mynet/_i18n_js.htm
+msgid "Saving…"
+msgstr "保存中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "Saved"
+msgstr "已保存"
+
+#: view/mynet/_i18n_js.htm
+msgid "No file selected"
+msgstr "未选择文件"
+
+#: view/mynet/_i18n_js.htm
+msgid "No key pasted"
+msgstr "未粘贴密钥"
+
+#: view/mynet/_i18n_js.htm
+msgid "No key provided"
+msgstr "未提供密钥"
+
+#: view/mynet/_i18n_js.htm
+msgid "No node selected"
+msgstr "未选择节点"
+
+#: view/mynet/_i18n_js.htm
+msgid "Warning: Generating a new key pair will replace the current private key."
+msgstr "警告：生成新密钥对将替换当前私钥。"
+
+#: view/mynet/_i18n_js.htm
+msgid "All peer nodes will need to re-fetch public keys before reconnecting."
+msgstr "所有对端节点需要重新获取公钥才能重新连接。"
+
+#: view/mynet/_i18n_js.htm
+msgid "Continue?"
+msgstr "是否继续？"
+
+#: view/mynet/_i18n_js.htm
+msgid "Generating key pair…"
+msgstr "正在生成密钥对…"
+
+#: view/mynet/_i18n_js.htm
+msgid "New key pair generated, public key uploaded."
+msgstr "新密钥对已生成，公钥已上传。"
+
+#: view/mynet/_i18n_js.htm
+msgid "Installing…"
+msgstr "安装中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "Checking…"
+msgstr "检测中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "Check failed"
+msgstr "检查失败"
+
+#: view/mynet/_i18n_js.htm
+msgid "updated"
+msgstr "已更新"
+
+#: view/mynet/_i18n_js.htm
+msgid "Configuring…"
+msgstr "配置中…"
+
+#: view/mynet/_i18n_js.htm
+msgid "next refresh in"
+msgstr "下次刷新倒计时"
+
+#: view/mynet/_i18n_js.htm
+msgid "Auto ON"
+msgstr "自动刷新已开启"
+
+#: view/mynet/node.htm
+msgid "Unsupported format. Please select .tar.gz / .tgz / .gz / .zip"
+msgstr "不支持的格式，请选择 .tar.gz / .tgz / .gz / .zip"
+
+#: view/mynet/node.htm
+msgid "Parsing config package…"
+msgstr "正在解析配置包…"
+
+#: view/mynet/node.htm
+msgid "Parse failed"
+msgstr "解析失败"
+
+#: view/mynet/node.htm
+msgid "Current node is"
+msgstr "当前节点为"
+
+#: view/mynet/node.htm
+msgid "will switch to"
+msgstr "导入后将切换到"
+
+#: view/mynet/node.htm
+msgid "Confirm import?"
+msgstr "确认导入？"
+
+#: view/mynet/node.htm
+msgid "Cancelled"
+msgstr "已取消"
+
+#: view/mynet/node.htm
+msgid "Importing…"
+msgstr "正在导入…"
+
+#: view/mynet/node.htm
+msgid "Config package imported, node"
+msgstr "配置包已导入，节点"
+
+#: view/mynet/node.htm
+msgid "node.conf must contain a nodeid line (e.g. nodeid 1001)"
+msgstr "node.conf 必须包含 nodeid 行（例: nodeid 1001）"
+
+#: view/mynet/node.htm
+msgid "route.conf first record node ID"
+msgstr "route.conf 第一条记录的节点 ID"
+
+#: view/mynet/node.htm
+msgid "does not match current node"
+msgstr "与当前节点不一致"
+
+#: view/mynet/node.htm
+msgid "Save anyway?"
+msgstr "仍然保存？"
+
+#: view/mynet/service.htm
+msgid "Remove mynet firewall zone? VPN traffic forwarding will stop working."
+msgstr "确认移除 mynet 防火墙区域？VPN 流量转发将停止工作。"
+
+#: view/mynet/node.htm
+msgid "node.conf saved, current node set to"
+msgstr "node.conf 已保存，当前节点已设为"
+
+#: view/mynet/proxy.htm
+msgid "Active IP Rules"
+msgstr "活跃 IP 规则"
+
+#: view/mynet/proxy.htm
+msgid "Auto Start"
+msgstr "自动启动"
+
+#: view/mynet/proxy.htm
+msgid "Blacklist (inverted matching)"
+msgstr "黑名单（反转匹配）"
+
+#: view/mynet/proxy.htm
+msgid "Configured CIDRs"
+msgstr "已配置路由段"
+
+#: view/mynet/proxy.htm
+msgid "Foreign DNS Tunnel"
+msgstr "境外 DNS 隧道"
+
+#: view/mynet/proxy.htm
+msgid "Match Policy"
+msgstr "匹配策略"
+
+#: view/mynet/proxy.htm
+msgid "Node Region"
+msgstr "节点区域"
+
+#: view/mynet/proxy.htm
+msgid "Proxy Layers"
+msgstr "代理层状态"
+
+#: view/mynet/proxy.htm
+msgid "Region / DNS Mode"
+msgstr "区域 / DNS 模式"
+
+#: view/mynet/proxy.htm
+msgid "Route Check"
+msgstr "路由检查"
+
+#: view/mynet/proxy.htm
+msgid "Split (GFW list)"
+msgstr "分流（GFW 列表）"
+
+#: view/mynet/proxy.htm
+msgid "Whitelist (forward matching)"
+msgstr "白名单（正向匹配）"
+
+#: view/mynet/proxy.htm
+msgid "Login to your MyNet account to enable and manage plugins."
+msgstr "登录 MyNet 账号以启用和管理插件。"
+
+#: view/mynet/proxy.htm
+msgid "Monitor node status, traffic, and alerts remotely via MyNet cloud."
+msgstr "通过 MyNet 云端远程监控节点状态、流量和告警。"
+
+#: view/mynet/proxy.htm
+msgid "Route traffic through GNB peers with policy-based split and DNS interception."
+msgstr "通过 GNB 对端节点进行基于策略的流量分流和 DNS 拦截。"

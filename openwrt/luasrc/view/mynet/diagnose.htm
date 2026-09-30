@@ -1,0 +1,54 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+<%+mynet/_i18n_js%>
+<script src="<%=resource%>/mynet/js/mynet.js" defer></script>
+
+<h2><%:Diagnostics%></h2>
+
+<%
+local util_m = require("luci.model.mynet.util")
+local nid_fmt = util_m.nid_fmt
+local cur_nid_str = nid_fmt(node_id)
+%>
+
+<div class="cbi-section">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:.8rem 1.25rem">
+        <h3 style="margin:0;padding:0"><%:System Check%></h3>
+        <button class="cbi-button cbi-button-apply" id="mn-diag-btn" onclick="mnRunDiagnose()">&#9654; <%:Run Diagnostics%></button>
+    </div>
+    <p class="mn-muted mn-small" style="padding:0 1.25rem">
+        <%:Checks file integrity, runtime status and GNB logs for node%> <code>#<%=cur_nid_str%></code>
+    </p>
+
+    <!-- 结果表 -->
+    <div id="mn-diag-result" style="display:none;padding:0 1.25rem">
+        <table class="table" id="mn-diag-table" style="width:100%">
+            <thead>
+                <tr class="tr">
+                    <th class="th" style="width:50%"><%:Check Item%></th>
+                    <th class="th" style="width:15%"><%:Result%></th>
+                    <th class="th"><%:Detail%></th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <!-- GNB 日志 -->
+    <div id="mn-diag-log-section" style="display:none;padding:0 1.25rem 1rem">
+        <h4><%:GNB Log (last 30 lines)%></h4>
+        <pre id="mn-diag-log" class="mn-terminal"></pre>
+    </div>
+</div>
+
+<div class="cbi-page-actions">
+    <a class="cbi-button" href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>">&#8592; <%:Dashboard%></a>
+</div>
+
+<div id="mn-toast" class="mn-toast mn-hidden"></div>
+
+<script>
+window.mnCurrentNodeId = "<%=cur_nid_str%>";
+</script>
+
+<%+footer%>

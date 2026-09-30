@@ -1,0 +1,1426 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the luci-app-mynet package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: luci-app-mynet\n"
+"POT-Creation-Date: 2025-01-01 00:00+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#: controller/mynet.lua
+msgid "Config"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Dashboard"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Log"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Manager"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "MyNet"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Node"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Operations"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Plugins"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Settings"
+msgstr ""
+
+#: controller/mynet.lua
+msgid "Status"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Account"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Auto-Install"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Change Group"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Config sync across nodes"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Cross-platform client support"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Deps"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Detecting..."
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/service.htm
+msgid "Firewall"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "GNB Service"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "Interface"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/proxy.htm
+msgid "Login to MyNet"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/settings.htm
+msgid "Logout"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/proxy.htm
+msgid "Mode"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "No dependency info"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "No group selected."
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/node_manager.htm view/mynet/service.htm view/mynet/status.htm view/mynet/wizard.htm
+msgid "Node ID"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Not configured"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Not configured in mynet.conf"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/guest.htm
+msgid "Offline Mode"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Local Mode"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Local Node Manager"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Offline Node Manager"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Login for remote monitoring, proxy plugin, cross-platform clients, config sync."
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Proxy plugin (traffic routing)"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Remote monitoring plugin"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/service.htm
+msgid "Restart"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Retry"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Running"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/wizard.htm
+msgid "Select Group"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/proxy.htm view/mynet/service.htm
+msgid "Start"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/service.htm view/mynet/status.htm
+msgid "State"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/proxy.htm view/mynet/service.htm
+msgid "Stop"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "Stopped"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "You are currently in Offline Mode. Login to MyNet for:"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm view/mynet/status.htm view/mynet/wizard.htm
+msgid "Group"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "no forwarding"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "total"
+msgstr ""
+
+#: view/mynet/index.htm view/mynet/node.htm
+msgid "→ Wizard"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Credentials are stored in"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Don't want to register?"
+msgstr ""
+
+#: view/mynet/login.htm view/mynet/wizard.htm
+msgid "Email"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Login"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "No account?"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Password"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Register at mynet.club"
+msgstr ""
+
+#: view/mynet/login.htm
+msgid "Try GNB Offline Mode"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "API error"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Current Node"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Edit"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "File empty or missing"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "File present"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "GNB Configuration Files"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "GNB Crypt Keys"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "GNB Type"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "GNB node config"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "GNB routing rules"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Generate & Upload"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Generate New"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Import"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Login to sync changes to other nodes"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "No node configured."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "No peer keys found in conf directory."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Node Configuration"
+msgstr ""
+
+#: view/mynet/node.htm view/mynet/node_manager.htm
+msgid "Node Manager"
+msgstr ""
+
+#: view/mynet/node.htm view/mynet/wizard.htm
+msgid "Node Name"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Node Status"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Paste Hex"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Peer ID"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Peer Public Keys"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Private Key"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Public Key (hex)"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Refresh All Configs"
+msgstr ""
+
+#: view/mynet/node.htm view/mynet/settings.htm
+msgid "Save"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Service address index"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "This will replace the existing key. All peers will need to re-exchange public keys."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Update"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Upload File"
+msgstr ""
+
+#: view/mynet/node.htm view/mynet/node_manager.htm view/mynet/wizard.htm view/mynet/guest.htm
+msgid "Virtual IP"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "missing"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "not selected"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "peers"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Current"
+msgstr ""
+
+#: view/mynet/node_manager.htm view/mynet/guest.htm view/mynet/status.htm
+msgid "Name"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Next"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "No nodes found."
+msgstr ""
+
+#: view/mynet/node_manager.htm view/mynet/node.htm
+msgid "Node Config"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Node List"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Prev"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Select group first"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "Switch"
+msgstr ""
+
+#: view/mynet/node_manager.htm view/mynet/status.htm
+msgid "Type"
+msgstr ""
+
+#: view/mynet/node_manager.htm
+msgid "nodes"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Account Status"
+msgstr ""
+
+#: view/mynet/wizard.htm view/mynet/guest.htm
+msgid "Action"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Configured"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Current node ID"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Go to Dashboard"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Logged in as"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Next: Configure Node"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Next: Select Group"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "No nodes found in this group."
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "No groups found. Check your connection."
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Please select a group first."
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Selected"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Setup Wizard"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Token"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Valid"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Group ID"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Group Name"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "API Server"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "API Server URL"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Auto-refresh node configs after heartbeat"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Base URL of the MyNet API server, e.g."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Base directory containing gnb bin/ and conf/ subdirs, e.g."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Bundled GNB Binary"
+msgstr ""
+
+#: view/mynet/settings.htm view/mynet/guest.htm
+msgid "Cancel"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Credential Status"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Full path to the mynetd daemon binary."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "GNB Driver"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "GNB Root Directory"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Heartbeat Interval (seconds)"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "How often mynetd sends a heartbeat to the server (10–3600 s, default 300)."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Log Level"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Monitor Daemon (mynetd)"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Path to the self-managed gnb binary shipped with mynet."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Path to the system-installed gnb binary, e.g. installed via opkg."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Run as daemon (background process)"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "System GNB Binary"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Use system GNB (instead of bundled)"
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "Verbosity of mynetd log output."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "When checked, the system gnb binary path is used. Uncheck to use the bundled binary."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "When enabled, mynetd will re-download node configs each heartbeat cycle."
+msgstr ""
+
+#: view/mynet/settings.htm
+msgid "mynetd Binary Path"
+msgstr ""
+
+#: view/mynet/status.htm
+msgid "Load Average"
+msgstr ""
+
+#: view/mynet/status.htm
+msgid "No group selected"
+msgstr ""
+
+#: view/mynet/status.htm view/mynet/service.htm view/mynet/log.htm
+msgid "Refresh"
+msgstr ""
+
+#: view/mynet/status.htm
+msgid "System"
+msgstr ""
+
+#: view/mynet/status.htm
+msgid "System Status"
+msgstr ""
+
+#: view/mynet/status.htm
+msgid "Traffic"
+msgstr ""
+
+#: view/mynet/status.htm view/mynet/proxy.htm
+msgid "Uptime"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Addrs"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Apply firewall.sh"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Apply route.sh"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Auto (60s)"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Boot Autostart"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Conn"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Detect"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Firewall Rules"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Firewall Zones"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Remove Firewall Zone"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Flags"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "GNB Interface"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "GNB Management"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Kernel Routing Table"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Last refresh:"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Latency"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Link Monitoring"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "No GNB peers found. Make sure GNB is running and gnb_ctl is available."
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "No firewall rules found."
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "No route.conf found. Refresh node config from Node page."
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Raw Output"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Route Management"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Rx"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Total nodes:"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Tun IPv4"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Tun IPv6"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Tx"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Unable to read firewall zones."
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Unable to read routing table."
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "View Logs"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "WAN (IPv4:Port)"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "WAN IPv6"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "autostart"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "fw reload (uci commit)"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "mynet (GNB Service)"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "route.conf"
+msgstr ""
+
+#: view/mynet/log.htm
+msgid "Auto (30s)"
+msgstr ""
+
+#: view/mynet/log.htm
+msgid "No log content available."
+msgstr ""
+
+#: view/mynet/log.htm
+msgid "Recent Log"
+msgstr ""
+
+#: view/mynet/log.htm
+msgid "lines"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Add Node"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Advanced"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Already have a MyNet account?"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Auto"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Click \"Download Config\" for each remote device and extract the tar.gz"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Click \"Start GNB\" above to start the local node"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Create Local GNB Network"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Create Network"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Delete"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Delete this node? Config files will be removed."
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Download Config"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Download the GNB client for your device from"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Edit <code>address.conf</code> — replace <code>&lt;ROUTER_IP&gt;</code> with this router's actual IP address"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "GNB binary not found. Please install GNB first (Settings → GNB Auto Install)."
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Listen Port"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Local"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Local Node"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Network Name"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Network Nodes"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Node Count"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Nodes"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "OK"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Offline mode is limited to basic GNB. Register at"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Offline mode lets you create a private GNB network without a MyNet account."
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Remote"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Reset Offline Network"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Role"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Run GNB on remote device:"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Setup Guide"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Start GNB"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Start Node ID"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Stop GNB"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Subnet"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Switch to MyNet User Mode"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "This will delete ALL offline node configs. Continue?"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Upgrade to Full Mode"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "to unlock: automatic node discovery, proxy traffic splitting, remote management, and more."
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Active Layers"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Available Plugins"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Check Route"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Configuration"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "DNS Intercept"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "DNS Mode"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "DNS Server"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Diagnostics"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "IP Rule Count"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Login Required"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Login to your MyNet account to enable and manage plugins."
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Policy Routing"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Proxy Peers"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Proxy Status"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Proxy Traffic Split"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Region"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Reload IP List"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Remote Monitoring"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Route Inject"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Route Table ID"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Route traffic through GNB peers with policy-based split and DNS interception."
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Save Configuration"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Statistics"
+msgstr ""
+
+#: view/mynet/proxy.htm
+msgid "Monitor node status, traffic, and alerts remotely via MyNet cloud."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Public Key"
+msgstr ""
+
+#: view/mynet/index.htm
+msgid "Current group"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "About"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Advanced: Edit Config Files"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Auto Setup"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Boot"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Bundled GNB"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Check Item"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Checks file integrity, runtime status and GNB logs for node"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Click "Download Config" for each remote device and extract the tar.gz"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Click "Start GNB" above to start the local node"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Detail"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Device Information"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Disabled"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Enable Inbound NAT"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Enable Outbound NAT"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Enabled"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Firewall Zone"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Forwarding"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "GNB Binary"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "GNB Log (last 30 lines)"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "GNB Routes"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Generate &amp; Upload"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Home Path"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Init Script"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Multi Socket"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "NAT Settings"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "NIC"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Network Management"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "No forwarding rules configured"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Offline mode lets you create a private GNB network without a MyNet account.
+            Generate nodes locally, pick one for this router, and download configs for other devices."
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Peers"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Re-apply Masq"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Result"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Run Diagnostics"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Select"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Setup Firewall Zone"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "System Check"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "System GNB"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Version"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "Zone Status"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "active"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "configured"
+msgstr ""
+
+#: view/mynet/*.htm
+msgid "not found"
+msgstr ""
+
+#: view/mynet/wizard.htm
+msgid "Continue"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "No peers found in route.conf."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Configure node first"
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Switch local node to this one? Service will need restart."
+msgstr ""
+
+#: view/mynet/guest.htm
+msgid "Use This Config"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Request in progress, please wait"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Operation failed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Network error"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Triggering GNB auto-install…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "gnb_ctl installed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Auto-install failed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Installing GNB"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Request failed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "GNB install complete"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Install failed, check log"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Install script finished, refresh to check"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Refreshing…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "All configs refreshed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "files"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Switch to node:"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "This will save the new node configuration. Continue?"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Switching…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Key is empty"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Must be 128 hex chars"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Saving…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Saved"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "No file selected"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "No key pasted"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "No key provided"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "No node selected"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Warning: Generating a new key pair will replace the current private key."
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "All peer nodes will need to re-fetch public keys before reconnecting."
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Continue?"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Generating key pair…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "New key pair generated, public key uploaded."
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Installing…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Checking…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Check failed"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "updated"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Configuring…"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "next refresh in"
+msgstr ""
+
+#: view/mynet/_i18n_js.htm
+msgid "Auto ON"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Unsupported format. Please select .tar.gz / .tgz / .gz / .zip"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Parsing config package…"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Parse failed"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Current node is"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "will switch to"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Confirm import?"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Cancelled"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Importing…"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Config package imported, node"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "node.conf must contain a nodeid line (e.g. nodeid 1001)"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "route.conf first record node ID"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "does not match current node"
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "Save anyway?"
+msgstr ""
+
+#: view/mynet/service.htm
+msgid "Remove mynet firewall zone? VPN traffic forwarding will stop working."
+msgstr ""
+
+#: view/mynet/node.htm
+msgid "node.conf saved, current node set to"
+msgstr ""

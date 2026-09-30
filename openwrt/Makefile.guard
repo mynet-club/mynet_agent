@@ -1,0 +1,34 @@
+# MyNet 门禁（独立于本仓构建 Makefile）—— make -f Makefile.guard check
+# 语言：Lua / shell（ipk 构建见 Makefile）
+.PHONY: lint test guard check install-hooks
+
+lint:
+	@echo "▸ lint"
+	@if command -v luac >/dev/null 2>&1; then \
+		ver=$$(luac -v 2>&1 | head -1); \
+		case "$$ver" in \
+			*5.1*) ;; \
+			*) echo "  ⚠️ 本机 luac 不是 5.1（$${ver}），而 OpenWrt 用的是 Lua 5.1："; \
+			   echo "     语法兼容性靠人守 —— 5.2+ 的 // | goto <const> 等本地会放过、OpenWrt 才炸。"; \
+			   echo "     已知本仓代码用 5.1 语义（controller 里 module(..., package.seeall)）。" ;; \
+		esac; \
+		fail=0; for f in $$(find luasrc -name "*.lua" 2>/dev/null); do luac -p "$$f" || fail=1; done; exit $$fail; \
+	else \
+		echo "  ⚠️ 已跳过：缺 luac（装 lua 后启用）。**这不是通过**"; \
+	fi
+
+test:
+	@echo "▸ test"
+	@sh scripts/tools/check_agent_pkg.sh
+
+guard:
+	@echo "▸ guard（安全红线）"
+	@sh .githooks/guard.sh
+
+check: guard lint test
+	@echo "✓ check 通过"
+
+install-hooks:
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/*
+	@echo "✓ hooks 已安装（core.hooksPath = .githooks）"

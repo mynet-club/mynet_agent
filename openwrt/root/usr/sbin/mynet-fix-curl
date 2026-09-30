@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ensure curl TLS dependencies are present.
+# Kept idempotent and non-fatal for minimal runtime environments.
+opkg update >/dev/null 2>&1 || true
+opkg install libcurl-gnutls4 ca-bundle >/dev/null 2>&1 || true
+exit 0
+#!/bin/sh
+# Compatibility helper: keep legacy command available.
+# Newer versions rely on system curl deps handled by installer.
+
+echo "mynet-fix-curl: no-op (curl deps are managed by MyNet installer)" >&2
+exit 0

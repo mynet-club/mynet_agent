@@ -1,0 +1,11 @@
+{
+	"luci-app-mynet": {
+		"description": "Grant access for luci-app-mynet",
+		"read": {
+			"uci": [ "luci", "network", "system" ]
+		},
+		"write": {
+			"uci": [ "luci" ]
+		}
+	}
+}

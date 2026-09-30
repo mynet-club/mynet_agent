@@ -1,0 +1,225 @@
+name: Build & Release IPK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building version: $TAG"
+
+      - name: Build IPK package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PKG_NAME="luci-app-mynet"
+          PKG_FILE="${PKG_NAME}_${VERSION}-1_all.ipk"
+          STAGING="$(mktemp -d)"
+
+          echo "==> Creating package structure..."
+
+          # --- data.tar.gz ---
+          DATA_ROOT="${STAGING}/data"
+          mkdir -p "${DATA_ROOT}"
+
+          # LuCI controller
+          install -Dm644 luasrc/controller/mynet.lua \
+            "${DATA_ROOT}/usr/lib/lua/luci/controller/mynet.lua"
+
+          # LuCI models
+          mkdir -p "${DATA_ROOT}/usr/lib/lua/luci/model/mynet"
+          install -m644 luasrc/model/mynet/*.lua \
+            "${DATA_ROOT}/usr/lib/lua/luci/model/mynet/"
+
+          # LuCI views (only active templates)
+          mkdir -p "${DATA_ROOT}/usr/lib/lua/luci/view/mynet"
+          for f in index wizard login guest node service plugin proxy settings \
+                   status node_manager log diagnose _i18n_js; do
+            if [ -f "luasrc/view/mynet/${f}.htm" ]; then
+              install -m644 "luasrc/view/mynet/${f}.htm" \
+                "${DATA_ROOT}/usr/lib/lua/luci/view/mynet/"
+            fi
+          done
+
+          # Static assets
+          install -Dm644 htdocs/luci-static/resources/mynet/css/mynet.css \
+            "${DATA_ROOT}/www/luci-static/resources/mynet/css/mynet.css"
+          install -Dm644 htdocs/luci-static/resources/mynet/js/mynet.js \
+            "${DATA_ROOT}/www/luci-static/resources/mynet/js/mynet.js"
+
+          # Default config
+          install -Dm644 root/etc/mynet/conf/config.json \
+            "${DATA_ROOT}/etc/mynet/conf/config.json"
+
+          # Init script
+          install -Dm755 scripts/runtime/rc.mynet \
+            "${DATA_ROOT}/etc/init.d/mynet"
+
+          # Runtime scripts
+          install -Dm755 scripts/runtime/route.mynet \
+            "${DATA_ROOT}/etc/mynet/scripts/route.mynet"
+          install -Dm755 scripts/runtime/firewall.mynet \
+            "${DATA_ROOT}/etc/mynet/scripts/firewall.mynet"
+
+          # Proxy scripts
+          mkdir -p "${DATA_ROOT}/etc/mynet/scripts/proxy/hooks"
+          install -m755 scripts/proxy/proxy.sh \
+            "${DATA_ROOT}/etc/mynet/scripts/proxy/"
+          install -m755 scripts/proxy/hooks/*.sh \
+            "${DATA_ROOT}/etc/mynet/scripts/proxy/hooks/"
+          install -m755 scripts/proxy/route_policy.sh \
+            "${DATA_ROOT}/etc/mynet/scripts/proxy/"
+          install -m755 scripts/proxy/dns_split.sh \
+            "${DATA_ROOT}/etc/mynet/scripts/proxy/" 2>/dev/null || true
+
+          # rpcd ACL (必需: 缺少此文件会导致 LuCI 菜单不显示)
+          install -Dm644 root/usr/share/rpcd/acl.d/luci-app-mynet.json \
+            "${DATA_ROOT}/usr/share/rpcd/acl.d/luci-app-mynet.json"
+
+          # LuCI menu.d (ucode 路由注册)
+          install -Dm644 root/usr/share/luci/menu.d/luci-app-mynet.json \
+            "${DATA_ROOT}/usr/share/luci/menu.d/luci-app-mynet.json"
+
+          # Heartbeat cron script
+          install -Dm755 scripts/shell/heartbeat.sh \
+            "${DATA_ROOT}/usr/bin/mynet-heartbeat"
+
+          # Tools
+          mkdir -p "${DATA_ROOT}/etc/mynet/scripts/tools"
+          install -m755 scripts/tools/*.sh \
+            "${DATA_ROOT}/etc/mynet/scripts/tools/"
+
+          # curl fix helper
+          install -Dm755 root/usr/sbin/mynet-fix-curl \
+            "${DATA_ROOT}/usr/sbin/mynet-fix-curl"
+
+          # Logrotate config
+          if [ -f root/etc/logrotate.d/mynet ]; then
+            install -Dm644 root/etc/logrotate.d/mynet \
+              "${DATA_ROOT}/etc/logrotate.d/mynet"
+          fi
+
+          # Runtime directories
+          mkdir -p "${DATA_ROOT}/etc/mynet/logs"
+          mkdir -p "${DATA_ROOT}/etc/mynet/driver/gnb"
+          mkdir -p "${DATA_ROOT}/etc/mynet/conf/proxy/proxy_sources"
+
+          # i18n translations
+          mkdir -p "${DATA_ROOT}/usr/lib/lua/luci/i18n"
+          for pofile in po/*/mynet.po; do
+            lang="$(basename "$(dirname "$pofile")")"
+            if [ "$lang" != "templates" ]; then
+              python3 tools/po2lmo.py "$pofile" \
+                "${DATA_ROOT}/usr/lib/lua/luci/i18n/mynet.${lang}.lmo"
+            fi
+          done
+
+          echo "==> Creating data.tar.gz..."
+          (cd "${DATA_ROOT}" && tar czf "${STAGING}/data.tar.gz" .)
+
+          # --- control.tar.gz ---
+          CTRL_DIR="${STAGING}/control"
+          mkdir -p "${CTRL_DIR}"
+
+          {
+            echo "Package: ${PKG_NAME}"
+            echo "Version: ${VERSION}-1"
+            echo "Depends: luci-base, curl, luci-lib-jsonc, bash, kmod-tun, ucode-mod-lua, luci-lib-base, luci-lib-nixio, luci-lib-ip, liblucihttp-lua, libubus-lua"
+            echo "Section: luci"
+            echo "Architecture: all"
+            echo "Installed-Size: $(du -sk "${DATA_ROOT}" | cut -f1)"
+            echo "Description: MyNet VPN management interface for OpenWrt LuCI"
+          } > "${CTRL_DIR}/control"
+
+          printf '/etc/mynet/conf/config.json\n' > "${CTRL_DIR}/conffiles"
+
+          {
+            echo '#!/bin/sh'
+            echo '[ -n "${IPKG_INSTROOT}" ] && exit 0'
+            echo 'rm -rf /etc/mynet/scripts/_src'
+            echo '# E-1/E-5：mynetd 由 procd 托管（不再 pkill）；与 Makefile postinst 对齐'
+            echo '[ -x /etc/init.d/mynetd ] && /etc/init.d/mynetd enable 2>/dev/null || true'
+            echo '[ -x /etc/init.d/mynetd ] && /etc/init.d/mynetd start 2>/dev/null || true'
+            echo 'modprobe tun 2>/dev/null'
+            echo '# Sync proxy hooks -> plugin/proxy/ (rc.mynet calls scripts/plugin/<plugin>/<hook>.sh)'
+            echo 'mkdir -p /etc/mynet/scripts/plugin/proxy'
+            echo 'for _h in pre_start post_start stop; do'
+            echo '    _src="/etc/mynet/scripts/proxy/hooks/${_h}.sh"'
+            echo '    _dst="/etc/mynet/scripts/plugin/proxy/${_h}.sh"'
+            echo '    [ -f "$_src" ] && cp -f "$_src" "$_dst" && chmod 0755 "$_dst"'
+            echo 'done'
+            echo 'unset _h _src _dst'
+            echo 'MYNET_HOME=/etc/mynet sh /etc/mynet/scripts/firewall.mynet install 2>/dev/null'
+            echo 'rm -rf /tmp/luci-*'
+            echo '/etc/init.d/rpcd restart 2>/dev/null'
+            echo '/etc/init.d/uhttpd restart 2>/dev/null'
+            echo '/etc/init.d/mynet enable 2>/dev/null'
+            echo 'mkdir -p /etc/crontabs'
+            echo 'grep -q mynet-heartbeat /etc/crontabs/root 2>/dev/null || echo "*/5 * * * * /usr/bin/mynet-heartbeat" >> /etc/crontabs/root'
+            echo '/etc/init.d/cron reload 2>/dev/null || true'
+            echo 'exit 0'
+          } > "${CTRL_DIR}/postinst"
+          chmod 755 "${CTRL_DIR}/postinst"
+
+          {
+            echo '#!/bin/sh'
+            echo '[ -n "${IPKG_INSTROOT}" ] && exit 0'
+            echo '/etc/init.d/mynet stop 2>/dev/null'
+            echo '/etc/init.d/mynet disable 2>/dev/null'
+            echo 'exit 0'
+          } > "${CTRL_DIR}/prerm"
+          chmod 755 "${CTRL_DIR}/prerm"
+
+          echo "==> Creating control.tar.gz..."
+          (cd "${CTRL_DIR}" && tar czf "${STAGING}/control.tar.gz" .)
+
+          # --- debian-binary ---
+          echo "2.0" > "${STAGING}/debian-binary"
+
+          # --- Assemble IPK (BSD-format ar archive, opkg-compatible) ---
+          # GNU ar 可能添加符号表/扩展文件名表，导致 opkg 报 Malformed package file
+          # 手动构建 BSD 格式 ar archive，确保与 opkg 解析器兼容
+          echo "==> Assembling ${PKG_FILE} (BSD ar format)..."
+          IPK_PATH="${GITHUB_WORKSPACE}/${PKG_FILE}"
+          printf '!<arch>\n' > "${IPK_PATH}"
+          for _f in debian-binary control.tar.gz data.tar.gz; do
+            _size=$(stat -c %s "${STAGING}/${_f}")
+            # ar header: name(16) date(12) uid(6) gid(6) mode(8) size(10) magic(2)
+            printf '%-16s%-12s%-6s%-6s%-8s%-10s\140\n' "${_f}" "0" "0" "0" "100644" "${_size}" >> "${IPK_PATH}"
+            cat "${STAGING}/${_f}" >> "${IPK_PATH}"
+            # ar 要求每个成员对齐到偶数字节
+            [ $((_size % 2)) -ne 0 ] && printf '\n' >> "${IPK_PATH}"
+          done
+          unset _f _size
+
+          echo "pkg_file=${PKG_FILE}" >> "$GITHUB_OUTPUT"
+          echo "==> Built: ${PKG_FILE} ($(du -h "${GITHUB_WORKSPACE}/${PKG_FILE}" | cut -f1))"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.version.outputs.pkg_file || format('luci-app-mynet_{0}-1_all.ipk', steps.version.outputs.version) }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,353 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+
+<h2><%:Setup Wizard%></h2>
+
+<%
+local active_tab = active_tab or "landing"
+local is_landing = (active_tab == "landing")
+%>
+
+<% if is_landing then %>
+<!-- ═══════════════════════ 模式选择首页 ═══════════════════════ -->
+
+<% if not gnb_installed then %>
+<div class="alert-message error">
+    <%:GNB binary not found. Some features require GNB. Go to Settings → GNB Auto Install first.%>
+</div>
+<% end %>
+
+<div class="cbi-section">
+    <h3><%:Choose Setup Method%></h3>
+    <table class="table" id="mn-wizard-choices">
+        <tr class="tr mn-wizard-row" data-mode="online" onclick="mnWizardSelect(this)" style="cursor:pointer">
+            <td class="td" style="width:2em;text-align:center;vertical-align:middle">
+                <input type="radio" name="wizard_mode" value="online" checked>
+            </td>
+            <th class="th" style="vertical-align:middle">
+                <%:MyNet Online Mode%>
+                <span class="mn-badge mn-badge-ok" style="margin-left:0.5em"><%:Recommended%></span>
+            </th>
+            <td class="td">
+                <%:Login with MyNet account → select zone & node → config auto-downloads. Supports remote management, auto key exchange, proxy plugins, cross-device roaming. Best for most users.%>
+            </td>
+        </tr>
+        <tr class="tr mn-wizard-row" data-mode="import" onclick="mnWizardSelect(this)" style="cursor:pointer">
+            <td class="td" style="width:2em;text-align:center;vertical-align:middle">
+                <input type="radio" name="wizard_mode" value="import">
+            </td>
+            <th class="th" style="vertical-align:middle"><%:Import Config%></th>
+            <td class="td">
+                <%:Upload a .tar.gz package exported from another device. Auto-validates and imports.%>
+            </td>
+        </tr>
+        <tr class="tr mn-wizard-row" data-mode="create" onclick="mnWizardSelect(this)" style="cursor:pointer">
+            <td class="td" style="width:2em;text-align:center;vertical-align:middle">
+                <input type="radio" name="wizard_mode" value="create">
+            </td>
+            <th class="th" style="vertical-align:middle"><%:Create Network%></th>
+            <td class="td">
+                <%:Generate a new local GNB mesh network with auto keys. Download configs for each device.%>
+            </td>
+        </tr>
+        <tr class="tr mn-wizard-row" data-mode="manual" onclick="mnWizardSelect(this)" style="cursor:pointer">
+            <td class="td" style="width:2em;text-align:center;vertical-align:middle">
+                <input type="radio" name="wizard_mode" value="manual">
+            </td>
+            <th class="th" style="vertical-align:middle"><%:Manual Config%></th>
+            <td class="td">
+                <%:Edit node.conf, route.conf, keys step by step. For advanced users.%>
+            </td>
+        </tr>
+    </table>
+
+    <div style="margin-top:1em;text-align:right">
+        <span style="margin-right:1em;color:#666">
+            <a href="https://my.mynet.club/auth/register" target="_blank" rel="noopener" style="font-size:90%"><%:Register%></a>
+        </span>
+        <button class="cbi-button cbi-button-apply" onclick="mnWizardGo()" id="mn-wizard-go"><%:Continue%> &rarr;</button>
+    </div>
+</div>
+
+<script>
+var _wizardUrls = {
+    online:  '<%=luci.dispatcher.build_url("admin/services/mynet/login")%>',
+    import:  '<%=luci.dispatcher.build_url("admin/services/mynet/guest")%>?mode=import',
+    create:  '<%=luci.dispatcher.build_url("admin/services/mynet/guest")%>?mode=create',
+    manual:  '<%=luci.dispatcher.build_url("admin/services/mynet/node")%>?tab=config'
+};
+function mnWizardSelect(row) {
+    var radio = row.querySelector('input[type=radio]');
+    if (radio) radio.checked = true;
+    var rows = document.querySelectorAll('.mn-wizard-row');
+    for (var i = 0; i < rows.length; i++) {
+        rows[i].style.background = (rows[i] === row) ? '#f0f4ff' : '';
+    }
+}
+function mnWizardGo() {
+    var sel = document.querySelector('input[name=wizard_mode]:checked');
+    if (sel && _wizardUrls[sel.value]) {
+        window.location.href = _wizardUrls[sel.value];
+    }
+}
+(function() {
+    var first = document.querySelector('.mn-wizard-row');
+    if (first) mnWizardSelect(first);
+})();
+</script>
+
+<% else %>
+<!-- ═══════════════════════ 在线模式 Wizard（已登录）═══════════════════════ -->
+
+<p class="mn-muted">
+    <%:Logged in as%> <strong><%=pcdata(user_email or "")%></strong>
+    &nbsp;·&nbsp;
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/logout')%>"><%:Logout%></a>
+    &nbsp;·&nbsp;
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>"><%:Dashboard%></a>
+</p>
+
+<%
+if active_tab ~= "account" and active_tab ~= "zone" and active_tab ~= "node" then
+    active_tab = "account"
+end
+local base_url = luci.dispatcher.build_url('admin/services/mynet/wizard')
+local has_zone = zone and tostring(zone.zone_id) ~= "0"
+local has_node = (node_id ~= nil)
+%>
+
+<ul class="tabs">
+    <li<%= active_tab=='account' and ' class="active"' or '' %>>
+        <a href="<%=base_url%>?tab=account"><%:Account%> &#10003;</a>
+    </li>
+    <li<%= active_tab=='zone' and ' class="active"' or '' %>>
+        <a href="<%=base_url%>?tab=zone"><%:Group%> <%=has_zone and '&#10003;' or '&#9675;'%></a>
+    </li>
+    <li<%= active_tab=='node' and ' class="active"' or '' %>>
+        <a href="<%=base_url%>?tab=node"><%:Node%> <%=has_node and '&#10003;' or '&#9675;'%></a>
+    </li>
+</ul>
+
+<% if active_tab == 'account' then %>
+<!-- Account Tab -->
+<div class="cbi-section">
+    <h3><%:Account Status%></h3>
+    <table class="table" style="width:100%">
+        <tr class="tr"><th class="th" style="width:10em"><%:Email%></th><td class="td"><strong><%=pcdata(user_email or "")%></strong></td></tr>
+        <tr class="tr"><th class="th"><%:Token%></th><td class="td"><span class="mn-badge mn-badge-ok"><%:Valid%></span></td></tr>
+    </table>
+    <div class="cbi-page-actions">
+        <a href="<%=luci.dispatcher.build_url('admin/services/mynet/logout')%>" class="cbi-button"><%:Logout%></a>
+        <a href="<%=base_url%>?tab=zone" class="cbi-button cbi-button-apply"><%:Next: Select Group%> &rarr;</a>
+    </div>
+</div>
+
+<% elseif active_tab == 'zone' then %>
+<!-- Zone Tab -->
+<%
+if zone_fetch_error then
+%>
+<div class="alert-message error"><%=pcdata(zone_fetch_error)%></div>
+<%
+end
+if has_zone then
+%>
+<div class="alert-message notice">
+    <%:Current group%>: <strong><%=pcdata(zone.zone_name or "")%></strong>
+    &nbsp;<span class="mn-muted">(ID: <%=pcdata(tostring(zone.zone_id))%>)</span>
+</div>
+<%
+end
+if zones and #zones > 0 then
+%>
+<div class="cbi-section" style="overflow-x:auto">
+    <table class="table" style="width:100%">
+        <tr class="tr">
+            <th class="th"><%:Group Name%></th>
+            <th class="th"><%:Group ID%></th>
+            <th class="th"><%:Action%></th>
+        </tr>
+<%
+    for _, z in ipairs(zones) do
+        local zid = z.zone_id or z.id or 0
+        local zname = z.zone_name or z.name or ""
+        local zid_str = type(zid)=="number" and string.format("%.0f",zid) or tostring(zid)
+        local cur_zid = zone and tostring(zone.zone_id) or "0"
+        local is_cur = zid_str == cur_zid and cur_zid ~= "0"
+%>
+        <tr class="tr <%=is_cur and 'mn-row-active' or ''%>">
+            <td class="td">
+                <strong><%=pcdata(zname)%></strong>
+<%
+        if is_cur then
+%>
+                <span class="mn-badge mn-badge-ok">&#10003; <%:Selected%></span>
+<%
+        end
+%>
+            </td>
+            <td class="td mn-muted"><code><%=zid_str%></code></td>
+            <td class="td">
+                <form method="post" action="<%=luci.dispatcher.build_url('admin/services/mynet/zones/select')%>" style="display:inline">
+                    <input type="hidden" name="zone_id"     value="<%=zid_str%>">
+                    <input type="hidden" name="zone_name"   value="<%=pcdata(zname)%>">
+                    <input type="hidden" name="redirect_to" value="<%=base_url%>?tab=node">
+                    <button type="submit" class="cbi-button<%=is_cur and '' or ' cbi-button-apply'%>">
+                        <%=is_cur and "Selected" or "Select"%>
+                    </button>
+                </form>
+            </td>
+        </tr>
+<%
+    end
+%>
+    </table>
+</div>
+<%
+else
+%>
+<div class="cbi-section">
+    <p class="mn-muted" style="padding:1rem"><%:No groups found. Check your connection.%></p>
+</div>
+<%
+end
+%>
+<div class="cbi-page-actions">
+    <a href="<%=base_url%>?tab=account" class="cbi-button">&larr; <%:Account%></a>
+<%
+if has_zone then
+%>
+    <a href="<%=base_url%>?tab=node" class="cbi-button cbi-button-apply"><%:Next: Configure Node%> &rarr;</a>
+<%
+end
+%>
+</div>
+
+<% elseif active_tab == 'node' then %>
+<!-- Node Tab -->
+<%
+if not has_zone then
+%>
+<div class="alert-message warning">
+    <%:Please select a group first.%>
+    <a href="<%=base_url%>?tab=zone"><%:Select Group%></a>
+</div>
+<%
+else
+    if node_fetch_error then
+%>
+<div class="alert-message error"><%=pcdata(node_fetch_error)%></div>
+<%
+    end
+    if has_node then
+%>
+<div class="alert-message notice">
+    <%:Current node ID%>: <strong><%=type(node_id)=="number" and string.format("%.0f",node_id) or tostring(node_id)%></strong>
+</div>
+<%
+    end
+    local node_list = nodes_data and nodes_data.data or {}
+    if #node_list > 0 then
+%>
+<div class="cbi-section" style="overflow-x:auto">
+    <table class="table" style="width:100%">
+        <tr class="tr">
+            <th class="th"><%:Node Name%></th>
+            <th class="th"><%:Node ID%></th>
+            <th class="th"><%:Virtual IP%></th>
+            <th class="th"><%:Status%></th>
+            <th class="th"><%:Action%></th>
+        </tr>
+<%
+        for _, n in ipairs(node_list) do
+            local nid = n.node_id or n.id or 0
+            local nname = n.node_name or n.name or ""
+            local vip   = n.virtual_ip or ""
+            local nst   = n.status or tostring(n.node_status or "")
+            local nid_str = type(nid)=="number" and string.format("%.0f",nid) or tostring(nid)
+            local cid_str = type(node_id)=="number" and string.format("%.0f",node_id) or tostring(node_id or "")
+            local is_cur = nid_str == cid_str and cid_str ~= "" and cid_str ~= "0"
+            local online = (nst == "online" or n.is_active)
+%>
+        <tr class="tr <%=is_cur and 'mn-row-active' or ''%>">
+            <td class="td">
+                <strong><%=pcdata(nname)%></strong>
+<%
+            if is_cur then
+%>
+                <span class="mn-badge"><%:Configured%></span>
+<%
+            end
+%>
+            </td>
+            <td class="td mn-muted"><code><%=nid_str%></code></td>
+            <td class="td"><code><%=pcdata(vip)%></code></td>
+            <td class="td">
+                <span class="mn-dot <%=online and 'mn-dot-green' or 'mn-dot-gray'%>"></span>
+                <%=pcdata(nst)%>
+            </td>
+            <td class="td">
+                <form method="post" action="<%=luci.dispatcher.build_url('admin/services/mynet/wizard/select_node')%>" style="display:inline">
+                    <input type="hidden" name="node_id" value="<%=nid_str%>">
+                    <% if is_cur then %>
+                    <button type="submit" class="cbi-button"><%:Reconfigure%></button>
+                    <% else %>
+                    <button type="submit" class="cbi-button cbi-button-apply"
+                        onclick="return confirm('<%:Switching nodes will stop the current node and activate the new one. Continue?%>')"><%:Use This Node%></button>
+                    <% end %>
+                </form>
+            </td>
+        </tr>
+<%
+        end
+%>
+    </table>
+</div>
+<%
+        local last_pg = (nodes_data and nodes_data.last_page)    or 1
+        local cur_pg  = (nodes_data and nodes_data.current_page) or 1
+        if last_pg > 1 then
+%>
+<div style="display:flex;align-items:center;gap:8px;justify-content:center;margin:12px 0">
+<%
+            if cur_pg > 1 then
+%>
+    <a class="cbi-button" href="<%=base_url%>?tab=node&page=<%=cur_pg-1%>">&#8249;</a>
+<%
+            end
+%>
+    <span class="mn-muted"><%=cur_pg%> / <%=last_pg%></span>
+<%
+            if cur_pg < last_pg then
+%>
+    <a class="cbi-button" href="<%=base_url%>?tab=node&page=<%=cur_pg+1%>">&#8250;</a>
+<%
+            end
+%>
+</div>
+<%
+        end
+    else
+%>
+<div class="cbi-section">
+    <p class="mn-muted" style="padding:1rem"><%:No nodes found in this group.%></p>
+</div>
+<%
+    end
+end
+%>
+<div class="cbi-page-actions">
+    <a href="<%=base_url%>?tab=zone" class="cbi-button">&larr; <%:Group%></a>
+<%
+if has_node then
+%>
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>" class="cbi-button cbi-button-apply"><%:Go to Dashboard%> &rarr;</a>
+<%
+end
+%>
+</div>
+<% end %> <!-- tab -->
+
+<% end %> <!-- is_landing / else -->
+
+<%+footer%>

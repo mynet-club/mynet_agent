@@ -1,0 +1,678 @@
+{
+	"admin/services/mynet": {
+		"title": "MyNet",
+		"order": 60,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-mynet" ]
+		}
+	},
+
+	"admin/services/mynet/index": {
+		"title": "Dashboard",
+		"order": 10,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_index"
+		}
+	},
+
+	"admin/services/mynet/login": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_login"
+		}
+	},
+
+	"admin/services/mynet/logout": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_logout"
+		}
+	},
+
+	"admin/services/mynet/zones": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_zones"
+		}
+	},
+
+	"admin/services/mynet/zones/select": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_zones_select"
+		}
+	},
+
+	"admin/services/mynet/node": {
+		"title": "Node",
+		"order": 30,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_node"
+		}
+	},
+
+	"admin/services/mynet/node/config": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_node"
+		}
+	},
+
+	"admin/services/mynet/node/manager": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_node_manager"
+		}
+	},
+
+	"admin/services/mynet/nodes": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_nodes"
+		}
+	},
+
+	"admin/services/mynet/status": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_status"
+		}
+	},
+
+	"admin/services/mynet/log": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_log"
+		}
+	},
+
+	"admin/services/mynet/wizard": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_wizard"
+		}
+	},
+
+	"admin/services/mynet/wizard/select_node": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_wizard_select_node"
+		}
+	},
+
+	"admin/services/mynet/settings": {
+		"title": "Settings",
+		"order": 50,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_settings"
+		}
+	},
+
+	"admin/services/mynet/settings/save": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_settings_save"
+		}
+	},
+
+	"admin/services/mynet/diagnose": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_diagnose"
+		}
+	},
+
+	"admin/services/mynet/service": {
+		"title": "Operations",
+		"order": 45,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_service"
+		}
+	},
+
+	"admin/services/mynet/service/op": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_service_op"
+		}
+	},
+
+	"admin/services/mynet/network": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_network"
+		}
+	},
+
+	"admin/services/mynet/gnb": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_gnb_monitor"
+		}
+	},
+
+	"admin/services/mynet/plugin": {
+		"title": "Plugins",
+		"order": 56,
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_plugin"
+		}
+	},
+
+	"admin/services/mynet/proxy": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_proxy"
+		}
+	},
+
+	"admin/services/mynet/guest": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "action_guest"
+		}
+	},
+
+	"admin/services/mynet/api/status": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_get_status"
+		}
+	},
+
+	"admin/services/mynet/api/node_info": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_get_node_info"
+		}
+	},
+
+	"admin/services/mynet/api/nodes": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_get_nodes"
+		}
+	},
+
+	"admin/services/mynet/api/zones": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_get_zones"
+		}
+	},
+
+	"admin/services/mynet/api/vpn_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_vpn_start"
+		}
+	},
+
+	"admin/services/mynet/api/vpn_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_vpn_stop"
+		}
+	},
+
+	"admin/services/mynet/api/vpn_restart": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_vpn_restart"
+		}
+	},
+
+	"admin/services/mynet/api/node_config": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_refresh_config"
+		}
+	},
+
+	"admin/services/mynet/api/node_save_key": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_save_key"
+		}
+	},
+
+	"admin/services/mynet/api/node_switch": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_switch"
+		}
+	},
+
+	"admin/services/mynet/api/node_gen_key": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_gen_key"
+		}
+	},
+
+	"admin/services/mynet/api/node_save_conf": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_save_config"
+		}
+	},
+
+	"admin/services/mynet/api/node_import": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_node_import_config"
+		}
+	},
+
+	"admin/services/mynet/api/svc_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_svc_start"
+		}
+	},
+
+	"admin/services/mynet/api/svc_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_svc_stop"
+		}
+	},
+
+	"admin/services/mynet/api/svc_restart": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_svc_restart"
+		}
+	},
+
+	"admin/services/mynet/api/mynetd_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_mynetd_start"
+		}
+	},
+
+	"admin/services/mynet/api/mynetd_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_mynetd_stop"
+		}
+	},
+
+	"admin/services/mynet/api/mynetd_restart": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_mynetd_restart"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_nodes": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_monitor_data"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_auto_install": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_auto_install"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_install_status": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_install_status"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_start"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_stop"
+		}
+	},
+
+	"admin/services/mynet/api/gnb_restart": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_gnb_restart"
+		}
+	},
+
+	"admin/services/mynet/api/preflight": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_preflight"
+		}
+	},
+
+	"admin/services/mynet/api/svc_state": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_svc_state"
+		}
+	},
+
+	"admin/services/mynet/api/heartbeat": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_heartbeat"
+		}
+	},
+
+	"admin/services/mynet/api/dashboard_stats": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_dashboard_stats"
+		}
+	},
+
+	"admin/services/mynet/api/service_detail": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_service_detail"
+		}
+	},
+
+	"admin/services/mynet/api/logs_tail": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_logs_tail"
+		}
+	},
+
+	"admin/services/mynet/api/validate_config": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_validate_config"
+		}
+	},
+
+	"admin/services/mynet/api/auto_repair": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_auto_repair"
+		}
+	},
+
+	"admin/services/mynet/api/install_system_deps": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_install_system_deps"
+		}
+	},
+
+	"admin/services/mynet/api/fw_setup": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_fw_setup"
+		}
+	},
+
+	"admin/services/mynet/api/fw_teardown": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_fw_teardown"
+		}
+	},
+
+	"admin/services/mynet/api/fw_apply_masq": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_fw_apply_masq"
+		}
+	},
+
+	"admin/services/mynet/api/diagnose": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_diagnose"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_status": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_status"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_start"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_stop"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_reload": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_reload"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_diagnose": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_diagnose"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_config": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_config"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_enable": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_enable"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_disable": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_disable"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_net_detect": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_net_detect"
+		}
+	},
+
+	"admin/services/mynet/api/proxy_net_check": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_proxy_net_check"
+		}
+	},
+
+	"admin/services/mynet/api/guest_init": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_init"
+		}
+	},
+
+	"admin/services/mynet/api/guest_nodes": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_nodes"
+		}
+	},
+
+	"admin/services/mynet/api/guest_add": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_add_node"
+		}
+	},
+
+	"admin/services/mynet/api/guest_delete": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_delete"
+		}
+	},
+
+	"admin/services/mynet/api/guest_export": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_export"
+		}
+	},
+
+	"admin/services/mynet/api/guest_use": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_use"
+		}
+	},
+
+	"admin/services/mynet/api/guest_start": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_start"
+		}
+	},
+
+	"admin/services/mynet/api/guest_stop": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_stop"
+		}
+	},
+
+	"admin/services/mynet/api/guest_reset": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_reset"
+		}
+	},
+
+	"admin/services/mynet/api/guest_import": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_guest_import"
+		}
+	},
+
+	"admin/services/mynet/api/set_mode": {
+		"action": {
+			"type": "call",
+			"module": "luci.controller.mynet",
+			"function": "api_set_mode"
+		}
+	}
+}

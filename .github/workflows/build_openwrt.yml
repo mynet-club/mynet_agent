@@ -32,13 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 包 Makefile / LuCI 壳在 mynet_openwrt 仓（ipk 的 install 面）
-      - uses: actions/checkout@v4
-        with:
-          repository: mynet-club/mynet_openwrt-V2
-          path: mynet_openwrt
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -88,26 +81,23 @@ jobs:
         run: |
           set -euo pipefail
           LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent-V2/mynet.Version=${VER} -X main.version=${VER}"
-          mkdir -p mynet_openwrt/files
-          # mynet：默认编入 proxy
-          go build -ldflags "$LDFLAGS" -o mynet_openwrt/files/mynet ./cmd/mynet
-          # mynetd：OpenWrt 瘦（无 embed）
-          go build -ldflags "$LDFLAGS" -o mynet_openwrt/files/mynetd ./cmd/mynetd
-          file mynet_openwrt/files/mynet mynet_openwrt/files/mynetd
-          strings mynet_openwrt/files/mynet | grep -q 'mynet.ApplyProxy' \
+          # 包树：openwrt/（与 mynet_openwrt 同构；私有仓 CI token 跨仓不可用，故自包含）
+          PKG=openwrt
+          mkdir -p "$PKG/files"
+          go build -ldflags "$LDFLAGS" -o "$PKG/files/mynet" ./cmd/mynet
+          go build -ldflags "$LDFLAGS" -o "$PKG/files/mynetd" ./cmd/mynetd
+          file "$PKG/files/mynet" "$PKG/files/mynetd"
+          strings "$PKG/files/mynet" | grep -q 'mynet.ApplyProxy' \
             || { echo "ERROR: 缺 proxy 能力"; exit 1; }
 
       - name: Package via OpenWrt SDK (ipk)
-        env:
-          VER: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           SDK=/opt/openwrt-sdk/${{ env.SDK_VERSION }}/${{ matrix.sdk_name }}
-          ln -sfn "$GITHUB_WORKSPACE/mynet_openwrt" "$SDK/package/mynet_openwrt"
+          ln -sfn "$GITHUB_WORKSPACE/openwrt" "$SDK/package/mynet_openwrt"
           ls -la "$SDK/package/mynet_openwrt/Makefile"
           cd "$SDK"
 
-          # feeds：luci-app-mynet 依赖 luci-base 等
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 

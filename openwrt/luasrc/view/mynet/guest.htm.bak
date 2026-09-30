@@ -1,0 +1,592 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+<script src="<%=resource%>/mynet/js/mynet.js"></script>
+
+<h2>GNB <%:Offline Mode%></h2>
+
+<%
+local api_base = luci.dispatcher.build_url('admin/services/mynet/api')
+local g        = guest or {}
+local nodes    = g.nodes or {}
+local is_init  = initialized
+local util_m   = require("luci.model.mynet.util")
+local nid_fmt  = util_m.nid_fmt
+%>
+
+<script>
+var _gBase = '<%=api_base%>/';
+
+function mnGuestFetch(action, method, body, cb) {
+    var opts = { method: method || 'GET', credentials: 'same-origin' };
+    if (body && method === 'POST') {
+        var fd = new FormData();
+        for (var k in body) fd.append(k, body[k]);
+        opts.body = fd;
+    }
+    fetch(_gBase + action, opts)
+        .then(function(r) { return r.json(); })
+        .then(function(d) { cb && cb(d); })
+        .catch(function(e) { cb && cb({ success: false, message: e.toString() }); });
+}
+
+function mnGuestInit() {
+    var btn = document.getElementById('mn-gi-btn');
+    var errEl = document.getElementById('mn-guest-err');
+    if (!btn || !errEl) return;
+    btn.disabled = true; btn.textContent = '...';
+    errEl.style.display = 'none';
+
+    mnGuestFetch('guest_init', 'POST', {
+        network_name: document.getElementById('mn-gi-name').value,
+        subnet:       document.getElementById('mn-gi-subnet').value,
+        listen_port:  document.getElementById('mn-gi-port').value,
+        node_count:   document.getElementById('mn-gi-count').value,
+        start_id:     (document.getElementById('mn-gi-startid') || {}).value || '1001',
+        index_addr:   (document.getElementById('mn-gi-index') || {}).value || '',
+        local_index:  '1'
+    }, function(d) {
+        if (d && d.success) {
+            location.reload();
+        } else {
+            errEl.textContent = (d && d.message) || 'Failed';
+            errEl.style.display = '';
+            btn.disabled = false; btn.textContent = '<%:Create Network%>';
+        }
+    });
+    return false;
+}
+
+function mnGuestStart(btn) {
+    btn.disabled = true; btn.textContent = '...';
+    mnGuestFetch('guest_start', 'POST', {}, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Start failed'); btn.disabled = false; btn.textContent = '<%:Start GNB%>'; }
+    });
+}
+
+function mnGuestStop(btn) {
+    btn.disabled = true; btn.textContent = '...';
+    mnGuestFetch('guest_stop', 'POST', {}, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Stop failed'); btn.disabled = false; btn.textContent = '<%:Stop GNB%>'; }
+    });
+}
+
+function mnGuestExport(nodeId) {
+    window.location.href = _gBase + 'guest_export?node_id=' + nodeId;
+}
+
+function mnGuestUse(nodeId, btn) {
+    if (!confirm('<%:Switch local node to this one? Service will need restart.%>')) return;
+    btn.disabled = true; btn.textContent = '...';
+    mnGuestFetch('guest_use', 'POST', { node_id: nodeId }, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Switch failed'); btn.disabled = false; btn.textContent = '<%:Use This Config%>'; }
+    });
+}
+
+function mnGuestAddNode() {
+    var tbody = document.querySelector('#mn-guest-nodes-tbl tbody');
+    if (document.getElementById('mn-add-row')) return;
+    var tr = document.createElement('tr');
+    tr.id = 'mn-add-row';
+    tr.className = 'tr';
+    tr.style.background = '#f8f9fa';
+    tr.innerHTML = '<td class="td mn-muted"><%:Auto%></td>'
+        + '<td class="td"><input type="text" id="mn-add-name" class="cbi-input-text" placeholder="<%:Name%>" maxlength="32" style="width:100px"></td>'
+        + '<td class="td mn-muted"><%:Auto%></td>'
+        + '<td class="td mn-muted">Remote</td>'
+        + '<td class="td">'
+        + '<button class="cbi-button cbi-button-positive" onclick="mnGuestSubmitAdd(this)"><%:OK%></button> '
+        + '<button class="cbi-button" onclick="mnGuestCancelAdd()"><%:Cancel%></button>'
+        + '</td>';
+    tbody.appendChild(tr);
+    document.getElementById('mn-add-name').focus();
+}
+
+function mnGuestSubmitAdd(btn) {
+    var name = document.getElementById('mn-add-name').value;
+    btn.disabled = true; btn.textContent = '...';
+    mnGuestFetch('guest_add', 'POST', { name: name }, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Add failed'); btn.disabled = false; btn.textContent = '<%:OK%>'; }
+    });
+}
+
+function mnGuestCancelAdd() {
+    var row = document.getElementById('mn-add-row');
+    if (row) row.remove();
+}
+
+function mnGuestDeleteNode(nodeId, btn) {
+    if (!confirm('<%:Delete this node? Config files will be removed.%>')) return;
+    btn.disabled = true;
+    mnGuestFetch('guest_delete', 'POST', { node_id: nodeId }, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Delete failed'); btn.disabled = false; }
+    });
+}
+
+function mnGuestReset() {
+    if (!confirm('<%:This will delete ALL offline node configs. Continue?%>')) return;
+    mnGuestFetch('guest_reset', 'POST', {}, function(d) {
+        if (d && d.success) { location.reload(); }
+        else { alert((d && d.message) || 'Reset failed'); }
+    });
+}
+
+function mnSetMode(m) {
+    mnGuestFetch('set_mode', 'POST', { mode: m }, function(d) {
+        if (m === 'mynet') {
+            window.location.href = '<%=luci.dispatcher.build_url("admin/services/mynet/login")%>';
+        } else {
+            window.location.href = '<%=luci.dispatcher.build_url("admin/services/mynet/guest")%>';
+        }
+    });
+}
+
+// ── 模式选择 ──────────────────────────────────────────────
+function mnPickMode(mode) {
+    var panels = ['mn-panel-import', 'mn-panel-create', 'mn-panel-manual'];
+    var cards  = ['mn-card-import', 'mn-card-create', 'mn-card-manual'];
+    for (var i = 0; i < panels.length; i++) {
+        var p = document.getElementById(panels[i]);
+        var c = document.getElementById(cards[i]);
+        if (!p) continue;
+        var active = (panels[i] === 'mn-panel-' + mode);
+        p.style.display = active ? '' : 'none';
+        if (c) c.style.background = active ? '#f0f4ff' : '';
+    }
+}
+
+// ── 导入配置包 ──────────────────────────────────────────────
+var _importData = null;
+
+function mnImportFileChanged() {
+    var fi = document.getElementById('mn-import-file');
+    var btn = document.getElementById('mn-import-btn');
+    btn.disabled = !fi.files.length;
+    document.getElementById('mn-import-preview').style.display = 'none';
+    document.getElementById('mn-import-err').style.display = 'none';
+    _importData = null;
+}
+
+function mnImportPreview() {
+    var fi = document.getElementById('mn-import-file');
+    var btn = document.getElementById('mn-import-btn');
+    var status = document.getElementById('mn-import-status');
+    var errEl = document.getElementById('mn-import-err');
+    if (!fi.files.length) return;
+
+    var file = fi.files[0];
+    if (file.size > 786432) { // ~750KB
+        errEl.textContent = '<%:File too large (max 750KB)%>';
+        errEl.style.display = '';
+        return;
+    }
+
+    btn.disabled = true;
+    status.textContent = '<%:Uploading...%>';
+    errEl.style.display = 'none';
+
+    var reader = new FileReader();
+    reader.onload = function() {
+        var b64 = reader.result.split(',')[1] || '';
+        mnGuestFetch('guest_import', 'POST', { step: 'preview', file_data: b64, filename: file.name }, function(d) {
+            btn.disabled = false;
+            status.textContent = '';
+            if (!d || !d.success) {
+                errEl.textContent = (d && d.message) || '<%:Preview failed%>';
+                errEl.style.display = '';
+                return;
+            }
+            _importData = d;
+            mnShowImportPreview(d);
+        });
+    };
+    reader.onerror = function() {
+        btn.disabled = false;
+        status.textContent = '';
+        errEl.textContent = '<%:File read error%>';
+        errEl.style.display = '';
+    };
+    reader.readAsDataURL(file);
+}
+
+function mnShowImportPreview(d) {
+    document.getElementById('mn-ip-nodeid').textContent = '#' + d.node_id;
+    document.getElementById('mn-ip-port').textContent = (d.listen_port || '—') + ' UDP';
+    document.getElementById('mn-ip-route').innerHTML = d.has_route
+        ? '<span class="mn-badge mn-badge-ok">&#10003;</span> ' + (d.route_peers ? d.route_peers.length + ' <%:nodes%>' : '')
+        : '<span class="mn-badge mn-badge-warn">&mdash;</span> <%:Missing%>';
+    document.getElementById('mn-ip-addr').innerHTML = d.has_address
+        ? '<span class="mn-badge mn-badge-ok">&#10003;</span>'
+        : '<span class="mn-badge mn-badge-warn">&mdash;</span> <%:Missing%>';
+    document.getElementById('mn-ip-priv').innerHTML = d.has_private_key
+        ? '<span class="mn-badge mn-badge-ok">&#10003;</span> <code class="mn-muted">' + (d.priv_fingerprint || '') + '</code>'
+        : '<span class="mn-badge mn-badge-warn">&mdash;</span> <%:Missing%>';
+    document.getElementById('mn-ip-pub').innerHTML = d.has_public_key
+        ? '<span class="mn-badge mn-badge-ok">&#10003;</span> <code class="mn-muted">' + (d.pub_fingerprint || '') + '</code>'
+        : '<span class="mn-badge mn-badge-warn">&mdash;</span> <%:Missing%>';
+
+    var peersHtml = '';
+    if (d.peer_keys && d.peer_keys.length > 0) {
+        peersHtml = d.peer_keys.length + ' <%:peers%>: ';
+        for (var i = 0; i < d.peer_keys.length; i++) {
+            if (i > 0) peersHtml += ', ';
+            peersHtml += '#' + d.peer_keys[i].peer_id;
+        }
+    } else {
+        peersHtml = '<span class="mn-muted"><%:None%></span>';
+    }
+    document.getElementById('mn-ip-peers').innerHTML = peersHtml;
+
+    // 警告
+    var warns = '';
+    if (!d.route_match) {
+        warns += '<div class="alert-message warning"><%:Warning: route.conf first record node ID does not match node.conf%></div>';
+    }
+    if (!d.has_private_key) {
+        warns += '<div class="alert-message warning"><%:Warning: No private key found. You will need to generate or paste one manually.%></div>';
+    }
+    document.getElementById('mn-ip-warnings').innerHTML = warns;
+
+    document.getElementById('mn-import-preview').style.display = '';
+}
+
+function mnImportConfirm() {
+    if (!_importData) return;
+    var errEl = document.getElementById('mn-import-err');
+    errEl.style.display = 'none';
+
+    mnGuestFetch('guest_import', 'POST', {
+        step: 'apply',
+        tmp_dir: _importData.tmp_dir,
+        node_id: _importData.node_id,
+        tar_path: _importData.tar_path
+    }, function(d) {
+        if (d && d.success) {
+            location.reload();
+        } else {
+            errEl.textContent = (d && d.message) || '<%:Import failed%>';
+            errEl.style.display = '';
+        }
+    });
+}
+
+function mnImportCancel() {
+    document.getElementById('mn-import-preview').style.display = 'none';
+    document.getElementById('mn-import-file').value = '';
+    document.getElementById('mn-import-btn').disabled = true;
+    _importData = null;
+}
+</script>
+
+<% if not is_init then %>
+<!-- ═══════ 初始化：先选模式，再展开对应面板 ═══════ -->
+<script>
+(function() {
+    var m = new URLSearchParams(location.search).get('mode');
+    if (m === 'import' || m === 'create') {
+        document.addEventListener('DOMContentLoaded', function() { mnPickMode(m); });
+    }
+})();
+</script>
+
+<!-- MyNet 推荐提示 -->
+<div class="alert-message notice">
+    <strong><%:Tip: Try MyNet Online Mode%></strong> —
+    <%:MyNet online mode downloads configs automatically — just login, pick a zone and node, done. Supports remote management, auto key distribution, proxy plugins, and multi-device roaming. No manual editing needed.%>
+    &nbsp;
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/login')%>"
+       onclick="mnSetMode('mynet');return true;"><%:Login to MyNet%> &rarr;</a>
+    &nbsp;|&nbsp;
+    <a href="https://my.mynet.club/auth/register" target="_blank" rel="noopener"><%:Register Free Account%></a>
+</div>
+
+<!-- 模式选择 -->
+<div class="cbi-section">
+    <h3><%:Or: Set Up Offline%></h3>
+    <p class="mn-muted" style="padding:0 1.25rem"><%:These methods are mutually exclusive. Pick one to continue.%></p>
+    <table class="table">
+        <tr class="tr" id="mn-card-import" onclick="mnPickMode('import')" style="cursor:pointer">
+            <th class="th" style="width:10em"><%:Import Config%></th>
+            <td class="td"><%:Upload a .tar.gz config package from another device.%></td>
+        </tr>
+        <tr class="tr" id="mn-card-create" onclick="mnPickMode('create')" style="cursor:pointer">
+            <th class="th"><%:Create Network%></th>
+            <td class="td"><%:Create a new local GNB network with auto-generated keys.%></td>
+        </tr>
+        <tr class="tr" id="mn-card-manual" onclick="mnPickMode('manual')" style="cursor:pointer">
+            <th class="th"><%:Manual Config%></th>
+            <td class="td"><%:Edit node.conf, route.conf, keys step by step.%></td>
+        </tr>
+    </table>
+</div>
+
+<!-- ── 面板 A: 导入配置包 ── -->
+<div id="mn-panel-import" class="cbi-section" style="display:none">
+    <h3>&#128230; <%:Import Config Package%></h3>
+    <div style="padding:0 1.25rem">
+        <p class="mn-muted">
+            <%:Upload a .tar.gz config package exported from another MyNet device. The archive will be inspected and validated before import.%>
+        </p>
+
+        <div id="mn-import-err" class="alert-message error" style="display:none"></div>
+
+        <div id="mn-import-upload" style="margin-top:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <input type="file" id="mn-import-file" accept=".tar.gz,.tgz,.gz,.zip"
+                       style="max-width:300px" onchange="mnImportFileChanged()">
+                <button id="mn-import-btn" class="cbi-button cbi-button-apply"
+                        onclick="mnImportPreview()" disabled>
+                    <%:Upload & Inspect%>
+                </button>
+                <span id="mn-import-status" class="mn-muted mn-small"></span>
+            </div>
+        </div>
+
+        <div id="mn-import-preview" style="display:none;margin-top:12px">
+            <table class="table" style="width:100%">
+                <tr class="tr"><th class="th" style="width:10em"><%:Node ID%></th><td class="td" id="mn-ip-nodeid"></td></tr>
+                <tr class="tr"><th class="th"><%:Listen Port%></th><td class="td" id="mn-ip-port"></td></tr>
+                <tr class="tr"><th class="th">node.conf</th><td class="td"><span class="mn-badge mn-badge-ok">&#10003;</span></td></tr>
+                <tr class="tr"><th class="th">route.conf</th><td class="td" id="mn-ip-route"></td></tr>
+                <tr class="tr"><th class="th">address.conf</th><td class="td" id="mn-ip-addr"></td></tr>
+                <tr class="tr"><th class="th"><%:Private Key%></th><td class="td" id="mn-ip-priv"></td></tr>
+                <tr class="tr"><th class="th"><%:Public Key%></th><td class="td" id="mn-ip-pub"></td></tr>
+                <tr class="tr"><th class="th"><%:Peer Keys%></th><td class="td" id="mn-ip-peers"></td></tr>
+            </table>
+            <div id="mn-ip-warnings" style="margin-top:8px"></div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="cbi-button cbi-button-apply" onclick="mnImportConfirm()">
+                    &#10003; <%:Confirm Import%>
+                </button>
+                <button class="cbi-button" onclick="mnImportCancel()">
+                    <%:Cancel%>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── 面板 B: 创建新网络 ── -->
+<div id="mn-panel-create" class="cbi-section" style="display:none">
+    <h3><%:Create Local GNB Network%></h3>
+    <div style="padding:0 1.25rem">
+        <p class="mn-muted">
+            <%:Offline mode lets you create a private GNB network without a MyNet account.
+            Generate nodes locally, pick one for this router, and download configs for other devices.%>
+        </p>
+
+        <% if not gnb_installed then %>
+        <div class="alert-message error">
+            <%:GNB binary not found. Please install GNB first (Settings → GNB Auto Install).%>
+        </div>
+        <% end %>
+
+        <div id="mn-guest-err" class="alert-message error" style="display:none"></div>
+
+        <div style="margin-top:12px">
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Network Name%></label>
+                <div class="cbi-value-field">
+                    <input type="text" id="mn-gi-name" class="cbi-input-text" value="MyNetwork" maxlength="32" placeholder="MyNetwork" style="max-width:220px">
+                </div>
+            </div>
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Subnet%></label>
+                <div class="cbi-value-field" style="display:flex;align-items:center;gap:4px">
+                    <input type="text" id="mn-gi-subnet" class="cbi-input-text" value="10.1.0" maxlength="11" style="width:120px"
+                           pattern="\d{1,3}\.\d{1,3}\.\d{1,3}" placeholder="10.1.0">
+                    <span class="mn-muted">.0/24</span>
+                </div>
+            </div>
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Listen Port%></label>
+                <div class="cbi-value-field">
+                    <input type="number" id="mn-gi-port" class="cbi-input-text" value="9001" min="1024" max="65535" style="max-width:120px">
+                </div>
+            </div>
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Start Node ID%></label>
+                <div class="cbi-value-field">
+                    <input type="number" id="mn-gi-startid" class="cbi-input-text" value="1001" min="1" max="65535" style="max-width:120px">
+                </div>
+            </div>
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Node Count%> (2-10)</label>
+                <div class="cbi-value-field">
+                    <input type="number" id="mn-gi-count" class="cbi-input-text" value="3" min="2" max="10" style="max-width:80px">
+                </div>
+            </div>
+            <div class="cbi-value">
+                <label class="cbi-value-title"><%:Index Address%></label>
+                <div class="cbi-value-field" style="display:flex;align-items:center;gap:4px">
+                    <input type="text" id="mn-gi-index" class="cbi-input-text" maxlength="64"
+                           value="idx.mynet.club:9016" style="max-width:240px"
+                           placeholder="idx.mynet.club:9016">
+                    <span class="mn-muted mn-small"><%:IP or domain:port%></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="cbi-page-actions">
+        <button type="button" id="mn-gi-btn" class="cbi-button cbi-button-apply" onclick="mnGuestInit()"
+                <%=gnb_installed and '' or 'disabled'%>>
+            <%:Create Network%>
+        </button>
+    </div>
+</div>
+
+<!-- ── 面板 C: 手动配置 ── -->
+<div id="mn-panel-manual" class="cbi-section" style="display:none">
+    <h3>&#9997;&#65039; <%:Manual Config%></h3>
+    <div style="padding:0 1.25rem 1rem">
+        <p class="mn-muted">
+            <%:Go to the Node page to manually edit node.conf, route.conf, address.conf and manage keys.%>
+        </p>
+        <a href="<%=luci.dispatcher.build_url('admin/services/mynet/node')%>?tab=config"
+           class="cbi-button cbi-button-apply">
+            <%:Open Node Config Editor%> &rarr;
+        </a>
+    </div>
+</div>
+
+<p class="mn-muted" style="padding:0 1.25rem 1rem">
+    <%:Already have a MyNet account?%>
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/login')%>"
+       onclick="mnSetMode('mynet');return true;">
+        <%:Switch to MyNet User Mode%> &rarr;
+    </a>
+    &nbsp;|&nbsp;
+    <a href="<%=luci.dispatcher.build_url('admin/services/mynet/wizard')%>">
+        <%:Back to Setup Wizard%>
+    </a>
+</p>
+
+<%+footer%>
+
+<% else %>
+<!-- ═══════ Guest 控制台 ═══════ -->
+
+<!-- 状态卡片 -->
+<div class="cbi-section">
+    <h3><%=pcdata(g.network_name or "MyNetwork")%></h3>
+    <table class="table" style="width:100%">
+        <tr class="tr">
+            <th class="th" style="width:10em"><%:Status%></th>
+            <td class="td">
+                <span id="mn-guest-dot" class="mn-dot <%=vpn_running and 'mn-dot-green' or 'mn-dot-gray'%>"></span>
+                <span id="mn-guest-state"><%=vpn_running and "Running" or "Stopped"%></span>
+            </td>
+        </tr>
+        <tr class="tr"><th class="th"><%:Local Node%></th><td class="td"><%=nid_fmt(g.local_node_id)%></td></tr>
+        <tr class="tr"><th class="th"><%:Subnet%></th><td class="td"><%=pcdata(g.subnet or "")%>.0/24</td></tr>
+        <tr class="tr"><th class="th"><%:Listen Port%></th><td class="td"><%=g.listen_port or 9001%> UDP</td></tr>
+        <tr class="tr"><th class="th"><%:Nodes%></th><td class="td"><%=#nodes%></td></tr>
+    </table>
+
+    <div style="padding:.5rem 1.25rem 1rem;display:flex;gap:6px">
+        <button id="mn-guest-start-btn" class="cbi-button cbi-button-apply" onclick="mnGuestStart(this)">
+            <%:Start GNB%>
+        </button>
+        <button id="mn-guest-stop-btn" class="cbi-button cbi-button-remove" onclick="mnGuestStop(this)">
+            <%:Stop GNB%>
+        </button>
+    </div>
+</div>
+
+<!-- 节点列表 -->
+<div class="cbi-section">
+    <h3><%:Network Nodes%></h3>
+    <div style="overflow-x:auto">
+        <table class="table" id="mn-guest-nodes-tbl" style="width:100%">
+            <thead>
+                <tr class="tr">
+                    <th class="th"><%:Node ID%></th>
+                    <th class="th"><%:Name%></th>
+                    <th class="th"><%:Virtual IP%></th>
+                    <th class="th"><%:Role%></th>
+                    <th class="th"><%:Action%></th>
+                </tr>
+            </thead>
+            <tbody>
+                <% for _, n in ipairs(nodes) do %>
+                <tr class="tr<%= n.is_local and ' mn-row-active' or '' %>">
+                    <td class="td"><%=nid_fmt(n.node_id)%></td>
+                    <td class="td"><%=pcdata(n.name or "")%></td>
+                    <td class="td"><%=pcdata(n.virtual_ip or "")%></td>
+                    <td class="td">
+                        <% if n.is_local then %>
+                            <strong><%:Local%></strong>
+                        <% else %>
+                            <%:Remote%>
+                        <% end %>
+                    </td>
+                    <td class="td">
+                        <% if n.is_local then %>
+                            <span class="mn-badge mn-badge-ok"><%:Current%></span>
+                        <% else %>
+                            <button class="cbi-button cbi-button-apply"
+                                onclick="mnGuestUse(<%=nid_fmt(n.node_id)%>, this)">
+                                <%:Use This Config%>
+                            </button>
+                            <button class="cbi-button"
+                                onclick="mnGuestExport(<%=nid_fmt(n.node_id)%>)">
+                                <%:Download Config%>
+                            </button>
+                            <button class="cbi-button cbi-button-remove"
+                                onclick="mnGuestDeleteNode(<%=nid_fmt(n.node_id)%>, this)">
+                                <%:Delete%>
+                            </button>
+                        <% end %>
+                    </td>
+                </tr>
+                <% end %>
+            </tbody>
+        </table>
+    </div>
+
+    <div style="padding:.5rem 1.25rem 1rem">
+        <button class="cbi-button cbi-button-add" onclick="mnGuestAddNode()">+ <%:Add Node%></button>
+    </div>
+</div>
+
+<!-- 提示 -->
+<div class="cbi-section">
+    <h3><%:Setup Guide%></h3>
+    <div class="mn-section-body">
+        <ol style="margin:0;padding-left:20px;line-height:1.8">
+            <li><%:Download the GNB client for your device from%>
+                <a href="https://mynet.club" target="_blank" rel="noopener"><strong>mynet.club</strong></a>
+            </li>
+            <li><%:Click "Download Config" for each remote device and extract the tar.gz%></li>
+            <li><%:Edit <code>address.conf</code> — replace <code>&lt;ROUTER_IP&gt;</code> with this router's actual IP address%></li>
+            <li><%:Run GNB on remote device:%> <code>gnb -c /path/to/config/</code></li>
+            <li><%:Click "Start GNB" above to start the local node%></li>
+        </ol>
+
+        <div class="alert-message notice" style="margin-top:12px">
+            <strong>💡 <%:Upgrade to Full Mode%></strong><br>
+            <%:Offline mode is limited to basic GNB. Register at%>
+            <a href="https://my.mynet.club/auth/register" target="_blank" rel="noopener"><strong>mynet.club</strong></a>
+            <%:to unlock: automatic node discovery, proxy traffic splitting, remote management, and more.%>
+        </div>
+    </div>
+</div>
+
+<!-- 高级操作 -->
+<div class="cbi-section">
+    <h3><%:Advanced%></h3>
+    <div style="padding:0 1.25rem 1rem;display:flex;gap:8px">
+        <button class="cbi-button"
+            onclick="mnSetMode('mynet')"><%:Switch to MyNet User Mode%></button>
+        <button class="cbi-button cbi-button-remove"
+            onclick="mnGuestReset()"><%:Reset Offline Network%></button>
+    </div>
+</div>
+
+<%+footer%>
+
+<% end %>

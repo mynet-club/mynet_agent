@@ -1,0 +1,4 @@
+#!/bin/sh
+# pre-commit：轻量守护（安全红线 + 文件名），秒级
+# 理由：全量测试放 pre-push，否则拖垮提交体验
+exec sh "$(dirname "$0")/guard.sh"

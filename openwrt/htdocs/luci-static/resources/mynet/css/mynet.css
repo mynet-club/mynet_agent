@@ -1,0 +1,350 @@
+/* mynet.css — MyNet LuCI app-specific styles */
+/* Standard component styling (cards, buttons, tables, forms, alerts, tabs) */
+/* is handled by the Argon theme via cbi-* / table / alert-message classes. */
+/* Only app-specific elements that have no Argon equivalent are styled here. */
+
+/* ─── Variables ───────────────────────────────────────────── */
+/* Aliases to Argon theme vars with safe fallbacks */
+:root {
+    --mn-primary: var(--primary, #5e72e4);
+    --mn-green: var(--success, #2dce89);
+    --mn-red: var(--danger, #f5365c);
+    --mn-yellow: var(--orange, #fb6340);
+    --mn-gray: var(--gray, #8898aa);
+    --mn-text: var(--gray-dark, #32325d);
+    --mn-text-muted: var(--gray, #8898aa);
+    --mn-bg: var(--background-color, #f8f9fe);
+    --mn-card-bg: #ffffff;
+    --mn-border: var(--lighter, #e9ecef);
+    --mn-header-bg: #f6f9fc;
+    --mn-radius: 6px;
+    --mn-mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+    --mn-pre-bg: #f6f9fc;
+    --mn-pre-color: #525f7f;
+}
+
+/* ─── Grid layout (dashboard) ─────────────────────────────── */
+/* Removed: .mn-grid card layout — dashboard now uses full-width table rows */
+
+/* ─── Ensure all mynet tables are full-width ─────────────── */
+.cbi-section .table { width: 100%; }
+
+/* ─── Status indicator dots ──────────────────────────────── */
+.mn-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.mn-dot-green  { background: var(--mn-green); box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+.mn-dot-red    { background: var(--mn-red);   box-shadow: 0 0 0 3px rgba(239,68,68,.2); }
+.mn-dot-gray   { background: var(--mn-gray); }
+.mn-dot-yellow { background: var(--mn-yellow); }
+
+/* ─── Status text colors ─────────────────────────────────── */
+.mn-running { color: var(--mn-green); font-weight: 600; }
+.mn-stopped { color: var(--mn-red);   font-weight: 600; }
+.mn-warn    { color: var(--mn-yellow); font-weight: 600; }
+.mn-muted   { color: var(--mn-text-muted); }
+.mn-small   { font-size: small; }
+.mn-hint    { margin: 2px 0; color: var(--mn-text-muted); font-size: small; }
+
+/* ─── Utility ────────────────────────────────────────────── */
+.mn-hidden { display: none !important; }
+
+/* ─── Pre-formatted blocks ───────────────────────────────── */
+.mn-pre {
+    background: var(--mn-pre-bg);
+    padding: 1rem;
+    border-radius: .25rem;
+    font-size: .8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow: auto;
+    max-height: 400px;
+}
+.mn-terminal {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 1rem;
+    border-radius: .25rem;
+    font-size: .8rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 400px;
+    overflow: auto;
+}
+
+/* ─── Section layout helpers ─────────────────────────────── */
+.mn-section-body    { padding: 0 1.25rem 1rem; }
+.mn-section-actions { padding: .5rem 1.25rem 1rem; display: flex; gap: 6px; }
+
+/* ─── Proxy page table layout ────────────────────────────── */
+.mn-proxy-table .th { width: 30%; }
+.mn-proxy-table .td { width: 70%; text-align: left; }
+.mn-proxy-table .td .mn-hint-inline { margin-left: 0.5em; }
+
+/* ─── Small action button (inline within tables) ─────────── */
+.mn-btn-sm { padding: 2px 10px; font-size: 0.85em; }
+
+/* ─── Button/form group helpers ──────────────────────────── */
+.mn-btn-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.mn-inline-form { display: flex; gap: 8px; align-items: center; }
+
+/* ─── Badges ─────────────────────────────────────────────── */
+.mn-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    background: var(--mn-border);
+    color: var(--mn-text);
+}
+.mn-badge-ok {
+    background: rgba(45,206,137,.15);
+    color: #1aae6f;
+}
+.mn-badge-warn {
+    background: rgba(251,99,64,.15);
+    color: #fb6340;
+}
+.mn-badge-info {
+    background: rgba(94,114,228,.15);
+    color: #5e72e4;
+}
+.mn-badge-local {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--mn-primary);
+    color: #fff;
+    font-size: 0.75em;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+/* ─── Info tag / bypass ──────────────────────────────────── */
+.mn-info-bypass { color: #fb6340; font-weight: 600; }
+.mn-info-tag {
+    display: inline-block;
+    font-size: 0.78em;
+    font-weight: 600;
+    color: var(--mn-text-muted);
+    background: var(--mn-border);
+    padding: 0 6px;
+    border-radius: 3px;
+    vertical-align: middle;
+}
+
+/* ─── Dependency list ────────────────────────────────────── */
+.mn-dep-list { display: flex; flex-wrap: wrap; gap: 4px 10px; justify-content: center; }
+.mn-dep-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.85em;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+.mn-dep-ok   { color: #1aae6f; background: rgba(45,206,137,.12); }
+.mn-dep-fail { color: #f5365c; background: rgba(245,54,92,.12); }
+.mn-dep-hint { font-weight: 400; opacity: 0.8; font-style: italic; }
+
+/* ─── Firewall rule tag ──────────────────────────────────── */
+.mn-fw-rule {
+    background: rgba(94,114,228,.1);
+    color: #5e72e4;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.83em;
+}
+
+/* ─── GNB auto-install panel ─────────────────────────────── */
+.mn-gnb-install-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0 4px;
+    border-top: 1px dashed var(--mn-border);
+    margin-top: 4px;
+    font-size: 0.88em;
+}
+.mn-gnb-spin {
+    display: inline-block;
+    animation: mn-spin 1.2s linear infinite;
+    color: var(--mn-primary);
+    font-size: 1.1em;
+}
+@keyframes mn-spin { to { transform: rotate(360deg); } }
+.mn-gnb-install-log {
+    margin-top: 4px;
+    font-family: var(--mn-mono);
+    font-size: 0.78em;
+    background: var(--mn-pre-bg);
+    color: var(--mn-pre-color);
+    padding: 6px 12px;
+    border-radius: 4px;
+    max-height: 80px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    width: 100%;
+}
+
+/* ─── GNB peer table local row highlight ─────────────────── */
+.mn-gnb-local td,
+.mn-gnb-local .td,
+.tr.mn-gnb-local .td {
+    background: rgba(45,206,137,.06);
+}
+
+/* ─── Active row highlight (wizard/node-manager tables) ──── */
+.tr.mn-row-active .td {
+    background: rgba(94,114,228,.06);
+}
+
+/* ─── Node page: config blocks ───────────────────────────── */
+.mn-config-block {
+    background: var(--mn-card-bg);
+    border: 1px solid var(--mn-border);
+    border-radius: var(--mn-radius);
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+.mn-config-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: var(--mn-header-bg);
+    border-bottom: 1px solid var(--mn-border);
+    flex-wrap: wrap;
+}
+.mn-config-name   { font-weight: 600; font-size: 0.92em; color: var(--mn-text); min-width: 110px; }
+.mn-config-status { font-size: 0.80em; }
+.mn-flex-gap { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-wrap: wrap; }
+
+/* ─── Toast notification ─────────────────────────────────── */
+.mn-toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 9999;
+    padding: 14px 24px;
+    border-radius: var(--mn-radius);
+    background: #172b4d;
+    color: #f1f5f9;
+    font-size: 13px;
+    font-weight: 600;
+    max-width: 480px;
+    box-shadow: 0 15px 35px rgba(50,50,93,.1), 0 5px 15px rgba(0,0,0,.07);
+    animation: mnFadeIn .2s ease;
+}
+.mn-toast-error { background: #f5365c; }
+.mn-toast-success { background: #2dce89; color: #fff; }
+.mn-toast-msg { line-height: 1.5; }
+.mn-toast-detail {
+    margin-top: 6px;
+    font-size: 11px;
+    font-weight: 400;
+    opacity: .85;
+    line-height: 1.4;
+    word-break: break-word;
+}
+@keyframes mnFadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Button loading spinner ─────────────────────────────── */
+.mn-btn-loading { position: relative; pointer-events: none; opacity: .75; }
+.mn-btn-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255,255,255,.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: mnSpin .6s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+}
+/* dark bg buttons (cbi-button-apply/remove/action) get white spinner */
+.cbi-button-apply .mn-btn-spinner,
+.cbi-button-remove .mn-btn-spinner,
+.cbi-button-action .mn-btn-spinner { border-color: rgba(255,255,255,.3); border-top-color: #fff; }
+/* light bg buttons get dark spinner */
+.cbi-button .mn-btn-spinner { border-color: rgba(0,0,0,.15); border-top-color: #333; }
+@keyframes mnSpin { to { transform: rotate(360deg); } }
+
+/* ─── Login page (special layout, not cbi-based) ─────────── */
+.mn-login-wrap {
+    display: flex;
+    justify-content: center;
+    padding: 48px 16px;
+}
+.mn-login-box {
+    width: 100%;
+    max-width: 380px;
+    background: var(--mn-card-bg);
+    border: 1px solid var(--mn-border);
+    border-radius: var(--mn-radius);
+    padding: 36px 32px;
+    box-shadow: 0 0 2rem 0 rgba(136,152,170,.15);
+}
+.mn-login-logo {
+    text-align: center;
+    margin-bottom: 28px;
+}
+.mn-login-logo h2 {
+    margin: 0 0 4px;
+    color: var(--mn-text);
+}
+
+/* ─── JS-used active button marker ───────────────────────── */
+.mn-btn-active {
+    background: var(--mn-primary) !important;
+    color: #fff !important;
+    border-color: var(--mn-primary) !important;
+}
+
+/* ─── Responsive table wrapper ──────────────────────────── */
+.mn-table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ─── Mobile responsive layout ──────────────────────────── */
+@media (max-width: 768px) {
+    /* Stack config status summary */
+    .mn-config-header {
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    /* Shrink terminal/pre blocks */
+    .mn-terminal, .mn-pre {
+        font-size: .75em;
+        max-height: 300px;
+    }
+    /* Tabs wrap */
+    .tabs {
+        flex-wrap: wrap;
+    }
+    .tabs li a {
+        font-size: .85em;
+        padding: 6px 10px;
+    }
+    /* Page action buttons stack */
+    .cbi-page-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+}

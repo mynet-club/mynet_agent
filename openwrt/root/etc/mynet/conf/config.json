@@ -1,0 +1,17 @@
+{
+  "mode": "online",
+  "server_config": {
+    "api_base_url": "https://api.mynet.club/api/v2",
+    "timeout": 30,
+    "retry_count": 3
+  },
+  "gnb": {
+    "use_system_gnb": false,
+    "gnb_bin_path": "/etc/mynet/driver/gnb/bin/gnb",
+    "gnb_root": "/etc/mynet/driver/gnb",
+    "system_gnb_path": "/usr/sbin/gnb"
+  },
+  "downloads": {
+    "apps_index_url": "https://ctl.mynet.club/d/apps.json"
+  }
+}

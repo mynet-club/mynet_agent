@@ -1,0 +1,127 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+
+<h2><%:System Status%></h2>
+
+<% local util_m = require("luci.model.mynet.util")
+local fmt_bytes = util_m.fmt_bytes %>
+<% local function fmt_uptime(secs)
+    local s = tonumber(secs) or 0
+    local d = math.floor(s / 86400)
+    local h = math.floor((s % 86400) / 3600)
+    local m = math.floor((s % 3600) / 60)
+    if d > 0 then return string.format("%dd %dh %dm", d, h, m) end
+    if h > 0 then return string.format("%dh %dm", h, m) end
+    return string.format("%dm", m)
+end %>
+
+<div>
+
+    <!-- GNB 状态 -->
+    <div class="cbi-section">
+        <h3><span class="mn-dot <%=vpn_status=='running' and 'mn-dot-green' or 'mn-dot-red'%>"></span> <%:GNB Service%></h3>
+        <table class="table" style="width:100%">
+            <tr class="tr">
+                <th class="th" style="width:8em"><%:Status%></th>
+                <td class="td"><strong><%=pcdata(vpn_status)%></strong></td>
+            </tr>
+            <tr class="tr">
+                <th class="th"><%:Type%></th>
+                <td class="td"><code><%=pcdata(vpn_type or "")%></code></td>
+            </tr>
+            <% if node_id then %>
+            <tr class="tr">
+                <th class="th"><%:Node ID%></th>
+                <td class="td"><code><%= type(node_id)=="number" and string.format("%.0f",node_id) or tostring(node_id or "") %></code></td>
+            </tr>
+            <% end %>
+            <% if vpn_iface then %>
+            <tr class="tr">
+                <th class="th"><%:Interface%></th>
+                <td class="td"><code><%=pcdata(vpn_iface.interface)%></code></td>
+            </tr>
+            <tr class="tr">
+                <th class="th"><%:State%></th>
+                <td class="td"><%=pcdata(vpn_iface.state)%></td>
+            </tr>
+            <% if vpn_iface.mtu then %>
+            <tr class="tr">
+                <th class="th">MTU</th>
+                <td class="td"><%=vpn_iface.mtu%></td>
+            </tr>
+            <% end %>
+            <% end %>
+        </table>
+    </div>
+
+    <!-- 流量统计 -->
+    <div class="cbi-section">
+        <h3><%:Traffic%></h3>
+        <table class="table" style="width:100%">
+            <tr class="tr">
+                <th class="th" style="width:8em">RX</th>
+                <td class="td"><%=fmt_bytes(rx_bytes)%></td>
+            </tr>
+            <tr class="tr">
+                <th class="th">TX</th>
+                <td class="td"><%=fmt_bytes(tx_bytes)%></td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- 系统信息 -->
+    <div class="cbi-section">
+        <h3><%:System%></h3>
+        <table class="table" style="width:100%">
+            <% if uptime and uptime ~="" then %>
+            <tr class="tr">
+                <th class="th" style="width:8em"><%:Uptime%></th>
+                <td class="td"><%=fmt_uptime(uptime)%></td>
+            </tr>
+            <% end %>
+            <% if loadavg and loadavg ~="" then %>
+            <tr class="tr">
+                <th class="th"><%:Load Average%></th>
+                <td class="td"><%=pcdata(loadavg)%></td>
+            </tr>
+            <% end %>
+        </table>
+    </div>
+
+    <!-- 当前区域 -->
+    <% if not is_guest then %>
+    <div class="cbi-section">
+        <h3><%:Group%></h3>
+        <% if zone and zone.zone_id and tostring(zone.zone_id) ~= "0" then %>
+        <table class="table" style="width:100%">
+            <tr class="tr">
+                <th class="th" style="width:8em"><%:Name%></th>
+                <td class="td"><strong><%=pcdata(zone.zone_name)%></strong></td>
+            </tr>
+            <tr class="tr">
+                <th class="th">ID</th>
+                <td class="td"><code><%= type(zone.zone_id)=="number" and string.format("%.0f",zone.zone_id) or tostring(zone.zone_id) %></code></td>
+            </tr>
+        </table>
+        <% else %>
+        <p class="mn-muted" style="padding:0 1rem"><%:No group selected%></p>
+        <% end %>
+    </div>
+    <% end %>
+
+</div>
+
+<div class="cbi-page-actions">
+    <a class="cbi-button" href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>">
+        ← <%:Dashboard%>
+    </a>
+    <button class="cbi-button cbi-button-action" onclick="location.reload()">
+        <%:Refresh%>
+    </button>
+</div>
+
+<div id="mn-toast" class="mn-toast mn-hidden"></div>
+
+<%+mynet/_i18n_js%>
+<script src="<%=resource%>/mynet/js/mynet.js"></script>
+<%+footer%>

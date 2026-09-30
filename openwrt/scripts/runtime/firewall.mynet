@@ -1,0 +1,954 @@
+#!/bin/sh
+# firewall.mynet - Modular OpenWrt Firewall Configuration for MyNet VPN
+# 
+# 新架构说明:
+# - install/uninstall: 管理 network.mynet, zone, forwarding rules, include 脚本
+# - start: 仅管理 NAT masq 规则(幂等,检查后添加)
+# - stop: 不删除 masq(保持配置)
+#
+# 调用方式:
+#   firewall.mynet install                                                     # ipk postinst 调用（不需要 --interface）
+#   firewall.mynet uninstall                                                   # 卸载时调用
+#   firewall.mynet start --interface <device> --mynet-home /path/to/mynet      # 启动时调用(管理masq)
+#   firewall.mynet stop --mynet-home /path/to/mynet                            # 停止时调用(不删除masq)
+#   firewall.mynet status --mynet-home /path/to/mynet                          # 查看状态
+#
+# 生命周期:
+#   install:  创建 network.mynet(proto=none) + zone + forwarding + 注册 include
+#             此时不知道物理设备名，只创建逻辑网络结构
+#   start:    绑定 network.mynet.device + 写入 include 脚本 + 添加 masq 规则
+#   stop:     不删除 masq（保持配置）
+#   uninstall: 清理所有防火墙配置
+#
+# 说明:
+#   - 必须通过 --mynet-home 参数或 MYNET_HOME 环境变量指定安装目录
+
+# ============================================
+# 核心检查: MYNET_HOME 必须存在
+# ============================================
+if [ -z "${MYNET_HOME:-}" ]; then
+    echo "[firewall.mynet] FATAL: MYNET_HOME not set" >&2
+    echo "[firewall.mynet] MYNET_HOME must be provided via:" >&2
+    echo "[firewall.mynet]   1. Environment variable: export MYNET_HOME=/path/to/mynet" >&2
+    echo "[firewall.mynet]   2. Command parameter: --mynet-home /path/to/mynet" >&2
+    exit 1
+fi
+
+if [ ! -d "$MYNET_HOME" ]; then
+    echo "[firewall.mynet] FATAL: MYNET_HOME directory does not exist: $MYNET_HOME" >&2
+    exit 1
+fi
+
+# Default configuration (can be overridden by parameters)
+VPN_ZONE_NAME="mynet"
+NETWORK_NAME="mynet"
+ROUTER_MODE=""  # bypass=旁路由模式（无WAN），gateway=网关模式（有WAN），auto=自动检测
+VPN_INTERFACES=""  # 运行时传入的VPN接口名称（必需）
+INCLUDE_SCRIPT="$MYNET_HOME/scripts/firewall.mynet.include"  # firewall include 脚本路径
+
+# Parse command line arguments
+parse_arguments() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --interface|--vpn-interface|--vpn-interfaces)
+                # 兼容多种参数名称
+                VPN_INTERFACES="$2"
+                shift 2
+                ;;
+            --router-mode)
+                # 保留以便手动指定，但通常使用自动检测
+                ROUTER_MODE="$2"
+                shift 2
+                ;;
+            --mynet-home)
+                MYNET_HOME="$2"
+                shift 2
+                ;;
+            *)
+                # Keep non-option arguments for main command
+                break
+                ;;
+        esac
+    done
+}
+
+# Logging
+LOGFILE="$MYNET_HOME/var/logs/firewall.mynet.log"
+log() {
+    mkdir -p "$(dirname "$LOGFILE")" 2>/dev/null
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOGFILE"
+    logger -t "firewall.mynet" "$*"
+}
+
+# Auto-detect router mode
+detect_router_mode() {
+    if [ -n "$ROUTER_MODE" ] && [ "$ROUTER_MODE" != "auto" ]; then
+        log "Using configured router mode: $ROUTER_MODE"
+        return 0
+    fi
+    
+    log "Auto-detecting router mode..."
+    
+    # Check for WAN interface
+    local wan_device=$(uci get network.wan.device 2>/dev/null || uci get network.wan.ifname 2>/dev/null)
+    local wan_proto=$(uci get network.wan.proto 2>/dev/null)
+    
+    if [ -n "$wan_device" ] && [ "$wan_proto" != "none" ]; then
+        ROUTER_MODE="gateway"
+        log "Detected router mode: Gateway (WAN interface: $wan_device)"
+    else
+        ROUTER_MODE="bypass" 
+        log "Detected router mode: Bypass (no WAN interface)"
+    fi
+}
+
+# Detect firewall version
+detect_fw_version() {
+    if command -v fw4 >/dev/null 2>&1 && fw4 check >/dev/null 2>&1; then
+        echo "fw4"
+    else
+        echo "fw3"
+    fi
+}
+
+# Get VPN interfaces - must be passed as parameter
+get_vpn_interfaces() {
+    if [ -n "$VPN_INTERFACES" ]; then
+        echo "$VPN_INTERFACES"
+        return 0
+    fi
+    
+    log "ERROR: VPN interface not specified. Use --interface parameter."
+    return 1
+}
+
+# 检查 nft masq 规则是否存在
+# 参数: $1=chain名称, $2=接口名称, $3=方向(iifname/oifname)
+check_masq_rule_exists() {
+    local chain="$1"
+    local interface="$2"
+    local direction="$3"  # iifname 或 oifname
+    
+    # 获取 chain 的规则
+    local rules=$(nft list chain inet fw4 "$chain" 2>/dev/null)
+    
+    # 检查是否存在指定的 masq 规则
+    # 例如: oifname "gnb_tun" masquerade comment "!fw4: MyNet masquerade"
+    if echo "$rules" | grep -q "$direction \"$interface\" masquerade"; then
+        return 0  # 规则存在
+    else
+        return 1  # 规则不存在
+    fi
+}
+
+# 添加 NAT masq 规则(幂等,检查后添加)
+# 为什么需要动态添加 masq:
+#   - UCI zone 的 masq=1 有时会失效(系统重启防火墙时)
+#   - 使用 nft 直接添加规则更可靠
+#   - include 脚本确保防火墙重启后自动恢复
+add_masq_rules() {
+    local vpn_device=$(get_vpn_interfaces)
+    if [ -z "$vpn_device" ]; then
+        log "ERROR: No VPN device specified for masq rules"
+        return 1
+    fi
+    
+    log "Managing NAT masq rules for $vpn_device..."
+    local fw_version=$(detect_fw_version)
+    
+    if [ "$fw_version" = "fw4" ]; then
+        # fw4 使用 nft
+        log "Using nftables (fw4) for masq rules"
+        
+        # 规则1: lan → mynet (oifname masq)
+        # 含义: 从 LAN 发往 mynet 的流量进行源地址转换
+        if ! check_masq_rule_exists "srcnat" "$vpn_device" "oifname"; then
+            log "Adding masq rule: lan → mynet (oifname)"
+            nft add rule inet fw4 srcnat oifname "$vpn_device" masquerade comment '"!fw4: MyNet LAN->VPN masq"'
+            log "✓ Masq rule added: oifname $vpn_device"
+        else
+            log "✓ Masq rule already exists: oifname $vpn_device"
+        fi
+
+        # 规则2: mynet → lan (iifname masq)
+        # conntrack 对已建立连接自动处理 DNAT，iifname masq 只对 NEW 包生效，实际无害
+        if ! check_masq_rule_exists "srcnat" "$vpn_device" "iifname"; then
+            log "Adding masq rule: mynet → lan (iifname)"
+            nft add rule inet fw4 srcnat iifname "$vpn_device" masquerade comment '"!fw4: MyNet VPN->LAN masq"'
+            log "✓ Masq rule added: iifname $vpn_device"
+        else
+            log "✓ Masq rule already exists: iifname $vpn_device"
+        fi
+        
+    else
+        # fw3 使用 iptables 直接添加规则(使用 -s 源地址匹配)
+        log "Using iptables masq rules (fw3)"
+        
+        # 获取 VPN 设备的 IP 地址和网络 (使用 BusyBox 兼容的方式)
+        local vpn_ip=$(ip -4 addr show "$vpn_device" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+        local vpn_network=""
+        
+        if [ -n "$vpn_ip" ]; then
+            # 从 IP 地址推导网络段(假设 /24)
+            vpn_network="${vpn_ip%.*}.0/24"
+            log "Detected VPN network: $vpn_network (from IP: $vpn_ip)"
+        else
+            log "WARNING: Could not detect VPN IP, trying to get from routing table..."
+            # 尝试从路由表获取 (使用 BusyBox 兼容的方式)
+            vpn_network=$(ip route show dev "$vpn_device" 2>/dev/null | grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/[0-9]\{1,2\}' | head -n1)
+            if [ -z "$vpn_network" ]; then
+                log "ERROR: Could not detect VPN network for device $vpn_device"
+                return 1
+            fi
+            log "Detected VPN network from routing: $vpn_network"
+        fi
+        
+        # 规则1: LAN → VPN (POSTROUTING -o)
+        if ! iptables -t nat -C POSTROUTING -o "$vpn_device" -j MASQUERADE 2>/dev/null; then
+            log "Adding iptables masq rule: -o $vpn_device"
+            iptables -t nat -A POSTROUTING -o "$vpn_device" -j MASQUERADE -m comment --comment "MyNet LAN->VPN masq"
+            log "✓ Masq rule added: -o $vpn_device"
+        else
+            log "✓ Masq rule already exists: -o $vpn_device"
+        fi
+        
+        # 规则2: VPN → LAN (POSTROUTING -s, 匹配源地址)
+        # 假设: VPN 侧流量已经过 masq, 源地址为 VPN 网络
+        if ! iptables -t nat -C POSTROUTING -s "$vpn_network" -j MASQUERADE 2>/dev/null; then
+            log "Adding iptables masq rule: -s $vpn_network (VPN->LAN)"
+            iptables -t nat -A POSTROUTING -s "$vpn_network" -j MASQUERADE -m comment --comment "MyNet VPN->LAN masq"
+            log "✓ Masq rule added: -s $vpn_network"
+        else
+            log "✓ Masq rule already exists: -s $vpn_network"
+        fi
+
+        # MSS clamping: 防止经 VPN 隧道的大 TCP 报文被分片/丢弃（gnb_tun MTU < 1500）
+        if ! iptables -t mangle -C FORWARD -o "$vpn_device" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+            log "Adding TCPMSS clamping rule for $vpn_device"
+            iptables -t mangle -A FORWARD -o "$vpn_device" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+            log "✓ TCPMSS clamping added for $vpn_device"
+        else
+            log "✓ TCPMSS clamping already exists for $vpn_device"
+        fi
+    fi
+    
+    log "NAT masq rules configured successfully"
+    return 0
+}
+
+# 创建 firewall include 脚本
+# 目的: 防止系统重启防火墙时 masq 规则丢失
+# 时机: install 时创建, uninstall 时删除
+create_include_script() {
+    local vpn_device=$(get_vpn_interfaces)
+    if [ -z "$vpn_device" ]; then
+        log "ERROR: No VPN device specified for include script"
+        return 1
+    fi
+    
+    local fw_version=$(detect_fw_version)
+    log "Creating firewall include script for $fw_version: $INCLUDE_SCRIPT"
+    
+    if [ "$fw_version" = "fw4" ]; then
+        # fw4 使用 nftables
+        cat > "$INCLUDE_SCRIPT" << EOF
+#!/bin/sh
+# MyNet Firewall Include Script (fw4/nftables)
+# Auto-generated by firewall.mynet
+# Purpose: Restore NAT masq rules after firewall restart
+# Device: $vpn_device
+
+# 检查设备是否存在
+if ! ip link show "$vpn_device" >/dev/null 2>&1; then
+    logger -t "firewall.mynet.include" "Device $vpn_device not found, skipping masq rules"
+    exit 0
+fi
+
+# 检查规则是否存在的函数
+check_masq_exists() {
+    local chain="\$1"
+    local interface="\$2"
+    local direction="\$3"
+    nft list chain inet fw4 "\$chain" 2>/dev/null | grep -q "\$direction \"\$interface\" masquerade"
+}
+
+# 添加 masq 规则
+logger -t "firewall.mynet.include" "Restoring NAT masq rules for $vpn_device (fw4)"
+
+# lan → mynet (oifname)
+if ! check_masq_exists "srcnat" "$vpn_device" "oifname"; then
+    nft add rule inet fw4 srcnat oifname "$vpn_device" masquerade comment '"!fw4: MyNet LAN->VPN masq"'
+    logger -t "firewall.mynet.include" "Added masq rule: oifname $vpn_device"
+fi
+
+# mynet → lan (iifname)
+if ! check_masq_exists "srcnat" "$vpn_device" "iifname"; then
+    nft add rule inet fw4 srcnat iifname "$vpn_device" masquerade comment '"!fw4: MyNet VPN->LAN masq"'
+    logger -t "firewall.mynet.include" "Added masq rule: iifname $vpn_device"
+fi
+
+logger -t "firewall.mynet.include" "NAT masq rules restored (fw4)"
+exit 0
+EOF
+    else
+        # fw3 include script: 使用 -s 源地址匹配方案
+        cat > "$INCLUDE_SCRIPT" << 'EOF'
+#!/bin/sh
+# MyNet Firewall Include Script (fw3)
+# Auto-generated by firewall.mynet
+# Purpose: Ensure iptables masq rules exist after firewall restart
+# Strategy: Use -s source address matching for VPN->LAN masq
+
+VPN_DEVICE="VPN_DEVICE_PLACEHOLDER"
+
+# 检查设备是否存在
+if ! ip link show "$VPN_DEVICE" >/dev/null 2>&1; then
+    logger -t "firewall.mynet.include" "Device $VPN_DEVICE not found, skipping"
+    exit 0
+fi
+
+logger -t "firewall.mynet.include" "Checking NAT masq rules for $VPN_DEVICE"
+
+# 获取 VPN 网络地址 (使用 BusyBox 兼容的方式)
+VPN_IP=$(ip -4 addr show "$VPN_DEVICE" 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n1)
+VPN_NETWORK=""
+
+if [ -n "$VPN_IP" ]; then
+    # 从 IP 推导网络段(假设 /24)
+    VPN_NETWORK="${VPN_IP%.*}.0/24"
+    logger -t "firewall.mynet.include" "Detected VPN network: $VPN_NETWORK (from IP: $VPN_IP)"
+else
+    # 从路由表获取 (使用 BusyBox 兼容的方式)
+    VPN_NETWORK=$(ip route show dev "$VPN_DEVICE" 2>/dev/null | grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/[0-9]\{1,2\}' | head -n1)
+    if [ -z "$VPN_NETWORK" ]; then
+        logger -t "firewall.mynet.include" "ERROR: Could not detect VPN network"
+        exit 1
+    fi
+    logger -t "firewall.mynet.include" "Detected VPN network from routing: $VPN_NETWORK"
+fi
+
+# 规则1: LAN → VPN (POSTROUTING -o)
+if ! iptables -t nat -C POSTROUTING -o "$VPN_DEVICE" -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -o "$VPN_DEVICE" -j MASQUERADE -m comment --comment "MyNet LAN->VPN masq"
+    logger -t "firewall.mynet.include" "Added: -o $VPN_DEVICE MASQUERADE"
+fi
+
+# 规则2: VPN → LAN (POSTROUTING -s, 源地址匹配)
+if ! iptables -t nat -C POSTROUTING -s "$VPN_NETWORK" -j MASQUERADE 2>/dev/null; then
+    iptables -t nat -A POSTROUTING -s "$VPN_NETWORK" -j MASQUERADE -m comment --comment "MyNet VPN->LAN masq"
+    logger -t "firewall.mynet.include" "Added: -s $VPN_NETWORK MASQUERADE"
+fi
+
+# MSS clamping: 防止 VPN 隧道的大 TCP 报文被分片丢弃
+if ! iptables -t mangle -C FORWARD -o "$VPN_DEVICE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; then
+    iptables -t mangle -A FORWARD -o "$VPN_DEVICE" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+    logger -t "firewall.mynet.include" "Added TCPMSS clamping for $VPN_DEVICE"
+fi
+
+logger -t "firewall.mynet.include" "NAT masq rules restored successfully"
+exit 0
+EOF
+        # Replace placeholder with actual device name
+        sed "s/VPN_DEVICE_PLACEHOLDER/$vpn_device/g" "$INCLUDE_SCRIPT" > "$INCLUDE_SCRIPT.tmp"
+        mv "$INCLUDE_SCRIPT.tmp" "$INCLUDE_SCRIPT"
+    fi
+    
+    chmod +x "$INCLUDE_SCRIPT"
+    log "✓ Include script created for $fw_version: $INCLUDE_SCRIPT"
+    
+    # 注册到 firewall 配置中
+    if ! uci get firewall.mynet_include >/dev/null 2>&1; then
+        log "Registering include script in firewall config..."
+        uci set firewall.mynet_include=include
+        uci set firewall.mynet_include.type=script
+        uci set firewall.mynet_include.path="$INCLUDE_SCRIPT"
+        if [ "$fw_version" = "fw3" ]; then
+            # fw3 支持 reload 选项
+            uci set firewall.mynet_include.reload=1
+        fi
+        # 注意: fw4 不支持 reload 选项,脚本会在防火墙重启时自动执行
+        uci commit firewall
+        log "✓ Include script registered in firewall config"
+    else
+        log "Include script already registered in firewall config"
+    fi
+    
+    return 0
+}
+
+# 删除 firewall include 脚本
+remove_include_script() {
+    log "Removing firewall include script..."
+    
+    # 从 firewall 配置中删除
+    if uci get firewall.mynet_include >/dev/null 2>&1; then
+        uci delete firewall.mynet_include
+        uci commit firewall
+        log "✓ Include script unregistered from firewall config"
+    fi
+    
+    # 删除脚本文件
+    if [ -f "$INCLUDE_SCRIPT" ]; then
+        rm -f "$INCLUDE_SCRIPT"
+        log "✓ Include script file removed: $INCLUDE_SCRIPT"
+    fi
+    
+    return 0
+}
+
+# Create VPN zone
+create_vpn_zone() {
+    local fw_version="$1"
+    log "Creating VPN zone: $VPN_ZONE_NAME (using $fw_version)"
+    
+    # Network interface name (logical interface in /etc/config/network)
+    # install 阶段已创建 network.mynet
+    local network_interface="mynet"
+    
+    # 验证网络接口是否存在（应由 install_firewall() 预先创建）
+    if ! uci get "network.$network_interface" >/dev/null 2>&1; then
+        log "WARNING: Network interface '$network_interface' not found, creating..."
+        uci set "network.$network_interface=interface"
+        uci set "network.$network_interface.proto=none"
+        uci commit network
+    fi
+    
+    log "✓ Network interface '$network_interface' exists"
+    
+    # Check if zone already exists
+    local zone_exists=0
+    local zone_index=""
+    local i=0
+    
+    while uci get "firewall.@zone[$i]" >/dev/null 2>&1; do
+        local zone_name=$(uci get "firewall.@zone[$i].name" 2>/dev/null)
+        if [ "$zone_name" = "$VPN_ZONE_NAME" ]; then
+            zone_exists=1
+            zone_index=$i
+            log "Zone $VPN_ZONE_NAME already exists at index $zone_index"
+            break
+        fi
+        i=$((i + 1))
+    done
+    
+    if [ $zone_exists -eq 0 ]; then
+        # Create new zone
+        log "Creating new VPN zone: $VPN_ZONE_NAME"
+        uci add firewall zone
+        zone_index=$(uci show firewall | grep "=zone" | wc -l)
+        zone_index=$((zone_index - 1))
+        
+        uci set "firewall.@zone[$zone_index].name=$VPN_ZONE_NAME"
+        uci set "firewall.@zone[$zone_index].input=ACCEPT"
+        uci set "firewall.@zone[$zone_index].output=ACCEPT"
+        uci set "firewall.@zone[$zone_index].forward=ACCEPT"
+        uci set "firewall.@zone[$zone_index].masq=1"
+        
+        log "Created zone $VPN_ZONE_NAME"
+    fi
+    
+    # Add network to zone (check if already exists to avoid duplicates)
+    local network_exists=0
+    
+    # 使用 uci show 获取该 zone 的所有 network 配置
+    local existing_networks=$(uci show "firewall.@zone[$zone_index]" 2>/dev/null | grep "\.network=" | cut -d= -f2 | tr -d "'")
+    
+    # 检查网络接口是否已经在列表中
+    for net in $existing_networks; do
+        if [ "$net" = "$network_interface" ]; then
+            network_exists=1
+            log "Network $network_interface already in zone $VPN_ZONE_NAME"
+            break
+        fi
+    done
+    
+    if [ $network_exists -eq 0 ]; then
+        uci add_list "firewall.@zone[$zone_index].network=$network_interface"
+        log "Added network $network_interface to zone $VPN_ZONE_NAME"
+    fi
+    
+    # 提交防火墙配置
+    uci commit firewall
+}
+
+# Configure firewall forwarding rules
+configure_firewall_forwarding() {
+    log "Configuring firewall forwarding rules for $ROUTER_MODE mode"
+    
+    # Remove existing forwarding rules for this zone
+    local i=0
+    while uci get "firewall.@forwarding[$i]" >/dev/null 2>&1; do
+        local src=$(uci get "firewall.@forwarding[$i].src" 2>/dev/null)
+        local dest=$(uci get "firewall.@forwarding[$i].dest" 2>/dev/null)
+        
+        if [ "$src" = "$VPN_ZONE_NAME" ] || [ "$dest" = "$VPN_ZONE_NAME" ]; then
+            log "Removing existing forwarding rule: $src -> $dest"
+            uci delete "firewall.@forwarding[$i]"
+            i=$((i - 1))
+        fi
+        i=$((i + 1))
+    done
+    
+    # Add LAN <-> VPN forwarding (both modes need this)
+    uci add firewall forwarding
+    uci set "firewall.@forwarding[-1].src=lan"
+    uci set "firewall.@forwarding[-1].dest=$VPN_ZONE_NAME"
+    
+    uci add firewall forwarding
+    uci set "firewall.@forwarding[-1].src=$VPN_ZONE_NAME"
+    uci set "firewall.@forwarding[-1].dest=lan"
+    
+    log "Added LAN <-> VPN forwarding rules"
+    
+    # Add WAN <-> VPN forwarding only for gateway mode
+    if [ "$ROUTER_MODE" = "gateway" ]; then
+        uci add firewall forwarding
+        uci set "firewall.@forwarding[-1].src=wan"
+        uci set "firewall.@forwarding[-1].dest=$VPN_ZONE_NAME"
+        
+        uci add firewall forwarding
+        uci set "firewall.@forwarding[-1].src=$VPN_ZONE_NAME"
+        uci set "firewall.@forwarding[-1].dest=wan"
+        
+        log "Added WAN <-> VPN forwarding rules (gateway mode)"
+    else
+        log "Skipped WAN forwarding rules (bypass mode)"
+    fi
+}
+
+# Install firewall configuration (called during installation)
+# 安装阶段: 创建 zone, forwarding rules, include script
+# NOTE: network.mynet 接口必须由 service-manager.sh 在调用此函数前创建
+install_firewall() {
+    log "Installing MyNet firewall configuration..."
+    
+    # Auto-detect router mode
+    detect_router_mode
+    
+    local fw_version=$(detect_fw_version)
+    log "Detected firewall version: $fw_version"
+    
+    # Step 1: 创建 network.mynet 逻辑接口（幂等）
+    # 安装阶段不知道物理设备名，只创建逻辑网络
+    # device 绑定由 start 阶段（服务启动时）更新
+    log "Step 1: Ensuring network interface '$NETWORK_NAME' exists"
+    if ! uci get "network.$NETWORK_NAME" >/dev/null 2>&1; then
+        uci set "network.$NETWORK_NAME=interface"
+        uci set "network.$NETWORK_NAME.proto=none"
+        uci commit network
+        log "✓ Created network interface '$NETWORK_NAME' (proto=none, no device yet)"
+    else
+        log "✓ Network interface '$NETWORK_NAME' already exists"
+    fi
+    
+    # Step 2: Create VPN zone
+    log "Step 2: Creating firewall zone '$VPN_ZONE_NAME'"
+    create_vpn_zone "$fw_version"
+    
+    # Step 3: Configure forwarding rules
+    log "Step 3: Configuring forwarding rules"
+    configure_firewall_forwarding
+    
+    # Step 4: 注册 include 脚本占位（实际内容由 start 阶段写入）
+    log "Step 4: Registering firewall include entry"
+    if ! uci get firewall.mynet_include >/dev/null 2>&1; then
+        uci set firewall.mynet_include=include
+        uci set firewall.mynet_include.type=script
+        uci set firewall.mynet_include.path="$INCLUDE_SCRIPT"
+        log "✓ Include entry registered"
+    else
+        log "✓ Include entry already registered"
+    fi
+    
+    # Commit and restart firewall
+    uci commit firewall
+    log "Restarting firewall service..."
+    /etc/init.d/firewall restart
+    
+    log "✓ MyNet firewall installation completed successfully"
+    log "NOTE: NAT masq rules + include script will be created when service starts (firewall.mynet start)"
+    return 0
+}
+
+# Uninstall firewall configuration (called during uninstallation)
+# 卸载阶段: 精细化删除,只删除 MyNet 相关配置
+uninstall_firewall() {
+    log "Uninstalling MyNet firewall configuration..."
+    
+    # Step 1: Remove include script and its registration
+    log "Step 1: Removing firewall include script"
+    remove_include_script
+    
+    # Step 2: Remove network interface from zone (not delete zone)
+    log "Step 2: Removing network interface from zone"
+    local zone_index=""
+    local i=0
+    
+    # 找到 MyNet zone
+    while uci get "firewall.@zone[$i]" >/dev/null 2>&1; do
+        local zone_name=$(uci get "firewall.@zone[$i].name" 2>/dev/null)
+        if [ "$zone_name" = "$VPN_ZONE_NAME" ]; then
+            zone_index=$i
+            log "Found zone $VPN_ZONE_NAME at index $zone_index"
+            break
+        fi
+        i=$((i + 1))
+    done
+    
+    if [ -n "$zone_index" ]; then
+        # 从 zone 中移除 network.mynet
+        log "Removing network '$NETWORK_NAME' from zone '$VPN_ZONE_NAME'"
+        
+        # 获取 zone 中所有的 network
+        local n=0
+        local found=0
+        while true; do
+            local existing_net=$(uci get "firewall.@zone[$zone_index].network[$n]" 2>/dev/null)
+            if [ -z "$existing_net" ]; then
+                break
+            fi
+            if [ "$existing_net" = "$NETWORK_NAME" ]; then
+                # 使用 uci del_list 删除指定的 network
+                uci del_list "firewall.@zone[$zone_index].network=$NETWORK_NAME"
+                log "✓ Removed network '$NETWORK_NAME' from zone"
+                found=1
+                break
+            fi
+            n=$((n + 1))
+        done
+        
+        if [ $found -eq 0 ]; then
+            log "Network '$NETWORK_NAME' not found in zone"
+        fi
+        
+        # 检查 zone 中是否还有其他 network
+        local remaining_networks=$(uci get "firewall.@zone[$zone_index].network" 2>/dev/null)
+        if [ -z "$remaining_networks" ]; then
+            log "Zone '$VPN_ZONE_NAME' has no networks left, removing zone..."
+            uci delete "firewall.@zone[$zone_index]"
+            log "✓ Zone $VPN_ZONE_NAME removed (no networks remaining)"
+            
+            # 删除 forwarding rules (只有删除 zone 时才删除)
+            log "Removing forwarding rules..."
+            local i=0
+            while uci get "firewall.@forwarding[$i]" >/dev/null 2>&1; do
+                local src=$(uci get "firewall.@forwarding[$i].src" 2>/dev/null)
+                local dest=$(uci get "firewall.@forwarding[$i].dest" 2>/dev/null)
+                
+                if [ "$src" = "$VPN_ZONE_NAME" ] || [ "$dest" = "$VPN_ZONE_NAME" ]; then
+                    log "Removing forwarding rule: $src -> $dest"
+                    uci delete "firewall.@forwarding[$i]"
+                    continue
+                fi
+                i=$((i + 1))
+            done
+            log "✓ Forwarding rules removed"
+        else
+            log "✓ Zone '$VPN_ZONE_NAME' preserved (still has networks: $remaining_networks)"
+        fi
+    else
+        log "Zone $VPN_ZONE_NAME not found, nothing to remove"
+    fi
+    
+    # Commit firewall changes and restart
+    uci commit firewall
+    log "Restarting firewall service..."
+    /etc/init.d/firewall restart
+    
+    log "✓ MyNet firewall uninstallation completed successfully"
+    log "NOTE: Zone preserved if other networks exist, only removed mynet interface from zone"
+    log "NOTE: Network interface should be removed by service-manager.sh"
+    return 0
+}
+
+# Start firewall (called when service starts)
+# 启动阶段: 仅管理 NAT masq 规则
+start_firewall() {
+    log "Starting MyNet firewall (managing NAT masq rules)..."
+    
+    # Check if VPN device exists
+    local vpn_device=$(get_vpn_interfaces)
+    if [ -z "$vpn_device" ]; then
+        log "ERROR: No VPN device specified. Use --interface parameter."
+        return 1
+    fi
+    
+    # 检查设备是否存在
+    if ! ip link show "$vpn_device" >/dev/null 2>&1; then
+        log "ERROR: VPN device $vpn_device not found. Make sure VPN is started first."
+        return 1
+    fi
+    
+    # 更新 network.mynet.device 绑定（节点切换可能改变接口名）
+    local cur_dev=$(uci get "network.$NETWORK_NAME.device" 2>/dev/null)
+    if [ "$cur_dev" != "$vpn_device" ]; then
+        uci set "network.$NETWORK_NAME.device=$vpn_device"
+        uci commit network
+        log "✓ Updated network.$NETWORK_NAME.device: ${cur_dev:-<none>} → $vpn_device"
+    fi
+    
+    # 创建/更新 include 脚本（使用实际设备名）
+    create_include_script
+    
+    # 添加 masq 规则(幂等)
+    add_masq_rules
+
+    # Reload fw4 使 mynet zone 的 forward/input 分发规则生效
+    # 原因: install 阶段 GNB 隧道接口尚不存在，fw4 跳过了 forward/input
+    # 主链中 iifname "gnb_tun_*" jump forward_mynet 的生成
+    # 此处设备已就绪，reload 后 fw4 会补全分发规则
+    # include 脚本会在 reload 过程中自动恢复 masq 规则
+    log "Reloading fw4 to activate mynet zone dispatching rules..."
+    /etc/init.d/firewall reload 2>/dev/null || true
+
+    log "✓ MyNet firewall start completed (masq rules configured, fw4 reloaded)"
+    return 0
+}
+
+# Stop firewall (called when service stops)
+# 停止阶段: 不删除 masq 规则(保持配置)
+stop_firewall() {
+    log "Stopping MyNet firewall (keeping configuration)..."
+    log "NOTE: Masq rules and zone configuration are preserved"
+    log "To completely remove MyNet firewall config, use 'uninstall' command"
+    return 0
+}
+
+# Legacy stop_firewall function (for compatibility, now moved to uninstall)
+# This was the old stop_firewall implementation
+legacy_stop_firewall() {
+    log "Stopping MyNet firewall configuration"
+    
+    # Network interface name (logical interface)
+    local network_interface="mynet"
+    
+    # Find MyNet zone
+    local zone_index=""
+    local i=0
+    
+    log "Searching for zone $VPN_ZONE_NAME..."
+    while uci get "firewall.@zone[$i]" >/dev/null 2>&1; do
+        local zone_name=$(uci get "firewall.@zone[$i].name" 2>/dev/null)
+        log "  Zone[$i]: name='$zone_name'"
+        if [ "$zone_name" = "$VPN_ZONE_NAME" ]; then
+            zone_index=$i
+            log "Found zone $VPN_ZONE_NAME at index $zone_index"
+            break
+        fi
+        i=$((i + 1))
+    done
+    
+    if [ -z "$zone_index" ]; then
+        log "Zone $VPN_ZONE_NAME not found, nothing to remove"
+    else
+        # Remove network from zone
+        log "Removing network $network_interface from zone"
+        
+        # Get all networks as space-separated string
+        local all_networks=$(uci get "firewall.@zone[$zone_index].network" 2>/dev/null)
+        log "Current networks in zone: '$all_networks'"
+        
+        # Check if our network is in the list
+        local network_removed=0
+        local found_in_list=0
+        
+        for net in $all_networks; do
+            if [ "$net" = "$network_interface" ]; then
+                found_in_list=1
+                log "Found network '$network_interface' in zone"
+                break
+            fi
+        done
+        
+        if [ $found_in_list -eq 0 ]; then
+            log "Network $network_interface not found in zone (may have been manually removed or using legacy config)"
+            log "Skipping zone cleanup to preserve other networks"
+        else
+            # Remove the network from the list using uci del_list
+            log "Removing network '$network_interface' from zone using uci del_list"
+            uci del_list "firewall.@zone[$zone_index].network=$network_interface"
+            local delete_result=$?
+            
+            if [ $delete_result -eq 0 ]; then
+                network_removed=1
+                log "Successfully removed network $network_interface from zone (uci result: $delete_result)"
+            else
+                log "Failed to remove network $network_interface (uci result: $delete_result)"
+            fi
+        fi
+        
+        if [ $network_removed -eq 0 ]; then
+            log "Network $network_interface not found or failed to remove"
+            log "Skipping zone cleanup to preserve other networks"
+            # Don't delete the zone if we didn't remove our network
+            # This preserves legacy configurations
+        else
+            log "Successfully removed network $network_interface, checking if zone should be deleted"
+            
+            # Re-check remaining networks after removal
+            local remaining_networks=$(uci get "firewall.@zone[$zone_index].network" 2>/dev/null)
+            local remaining_devices=$(uci get "firewall.@zone[$zone_index].device" 2>/dev/null)
+            
+            log "Remaining networks: '$remaining_networks'"
+            log "Remaining devices: '$remaining_devices'"
+            
+            # If no networks or devices remain, delete the zone
+            if [ -z "$remaining_networks" ] && [ -z "$remaining_devices" ]; then
+                log "No networks or devices remain, removing zone $VPN_ZONE_NAME"
+                uci delete "firewall.@zone[$zone_index]"
+                
+                # Remove forwarding rules
+                local i=0
+                while uci get "firewall.@forwarding[$i]" >/dev/null 2>&1; do
+                    local src=$(uci get "firewall.@forwarding[$i].src" 2>/dev/null)
+                    local dest=$(uci get "firewall.@forwarding[$i].dest" 2>/dev/null)
+                    
+                    if [ "$src" = "$VPN_ZONE_NAME" ] || [ "$dest" = "$VPN_ZONE_NAME" ]; then
+                        log "Removing forwarding rule: $src -> $dest"
+                        uci delete "firewall.@forwarding[$i]"
+                        # Don't increment i, index shifts after delete
+                        continue
+                    fi
+                    i=$((i + 1))
+                done
+                
+                log "Zone and forwarding rules removed"
+            else
+                log "Zone $VPN_ZONE_NAME kept (still has networks or devices)"
+            fi
+        fi
+    fi
+    
+    # NAT rules are handled by zone, no separate cleanup needed
+    log "Zone removal will automatically clean up NAT rules"
+    
+    # Commit and restart firewall
+    uci commit firewall
+    
+    # 重启防火墙
+    # 注意：会显示其他插件的警告（passwall、openclash 等），这些警告是无害的
+    /etc/init.d/firewall restart
+    
+    log "MyNet firewall configuration removed successfully"
+}
+
+# Show status
+show_status() {
+    echo "=== MyNet Firewall Status ==="
+    echo "Router Mode: $([ -n "$ROUTER_MODE" ] && echo "$ROUTER_MODE" || echo "auto-detect")"
+    echo "VPN Zone: $VPN_ZONE_NAME"
+    echo "Firewall Version: $(detect_fw_version)"
+    echo "VPN Interfaces: ${VPN_INTERFACES:-not specified}"
+    echo
+    
+    # Check if zone exists
+    local zone_found=0
+    local i=0
+    while uci get "firewall.@zone[$i]" >/dev/null 2>&1; do
+        local zone_name=$(uci get "firewall.@zone[$i].name" 2>/dev/null)
+        if [ "$zone_name" = "$VPN_ZONE_NAME" ]; then
+            zone_found=1
+            echo "VPN Zone Status: ACTIVE"
+            echo "  Input: $(uci get firewall.@zone[$i].input 2>/dev/null)"
+            echo "  Output: $(uci get firewall.@zone[$i].output 2>/dev/null)" 
+            echo "  Forward: $(uci get firewall.@zone[$i].forward 2>/dev/null)"
+            echo "  Masquerading: $(uci get firewall.@zone[$i].masq 2>/dev/null)"
+            break
+        fi
+        i=$((i + 1))
+    done
+    
+    if [ $zone_found -eq 0 ]; then
+        echo "VPN Zone Status: NOT CONFIGURED"
+    fi
+    
+    echo
+    echo "Recent log entries:"
+    tail -5 "$LOGFILE" 2>/dev/null || echo "No log file found"
+}
+
+# Main function
+# Get the command (first argument)
+COMMAND="$1"
+shift
+
+# Parse remaining arguments
+parse_arguments "$@"
+
+case "$COMMAND" in
+    install)
+        install_firewall
+        ;;
+    uninstall)
+        uninstall_firewall
+        ;;
+    start)
+        start_firewall
+        ;;
+    stop)
+        stop_firewall
+        ;;
+    restart)
+        stop_firewall
+        sleep 1
+        start_firewall
+        ;;
+    status)
+        show_status
+        ;;
+    *)
+        cat << 'EOF'
+Usage: $0 {install|uninstall|start|stop|restart|status} [OPTIONS]
+
+COMMANDS:
+  install   - Install MyNet firewall (zone, network, forwarding, include script)
+              Called during: MyNet installation
+              
+  uninstall - Uninstall MyNet firewall (remove all configurations)
+              Called during: MyNet uninstallation
+              
+  start     - Start MyNet firewall (configure NAT masq rules)
+              Called during: MyNet service start
+              
+  stop      - Stop MyNet firewall (keep configuration, do nothing)
+              Called during: MyNet service stop
+              
+  restart   - Restart MyNet firewall (stop + start)
+              
+  status    - Show MyNet firewall status
+
+OPTIONS:
+  --interface NAME       VPN device name (required, e.g., gnb_tun, wg0)
+  --router-mode MODE     Router mode (bypass, gateway, auto) [optional]
+
+EXAMPLES:
+  # Installation phase (ipk postinst, no --interface needed)
+  $0 install
+  
+  # Service start phase (needs actual device name)
+  $0 start --interface gnb_tun
+  
+  # Service stop phase
+  $0 stop
+  
+  # Uninstallation phase
+  $0 uninstall
+
+ARCHITECTURE:
+  Install:   Creates network.mynet (proto=none), zone, forwarding, registers include
+             Does NOT need --interface (device unknown at install time)
+  Start:     Binds network.mynet.device, writes include script, adds NAT masq rules
+  Stop:      Preserves all configuration
+  Uninstall: Removes all MyNet firewall components
+
+NOTES:
+  - Router mode is auto-detected if not specified
+  - NAT masq uses both iifname and oifname for reliability
+  - Include script ensures masq rules survive firewall restarts
+  - Configuration is preserved across service start/stop
+EOF
+        exit 1
+        ;;
+esac
+
+exit $?

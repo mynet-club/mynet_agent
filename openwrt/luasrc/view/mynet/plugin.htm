@@ -1,0 +1,51 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+
+<h2><%:Plugins%></h2>
+
+<%
+local is_guest = is_guest or false
+local proxy_url = luci.dispatcher.build_url('admin/services/mynet/proxy')
+local login_url = luci.dispatcher.build_url('admin/services/mynet/login')
+%>
+
+<div class="cbi-section">
+    <h3><%:Available Plugins%></h3>
+    <% if is_guest then %>
+    <p class="mn-muted" style="padding:0 1.25rem 0.5rem"><%:Login to your MyNet account to enable and manage plugins.%></p>
+    <% end %>
+
+    <div class="mn-section-body">
+        <!-- Proxy Traffic Split -->
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #eee">
+            <span style="font-size:1.5em">&#128256;</span>
+            <div style="flex:1">
+                <strong><%:Proxy Traffic Split%></strong>
+                <p class="mn-hint" style="margin-bottom:0"><%:Route traffic through GNB peers with policy-based split and DNS interception.%></p>
+            </div>
+            <% if is_guest then %>
+            <span class="mn-badge mn-badge-warn"><%:Login Required%></span>
+            <% else %>
+            <a class="cbi-button cbi-button-action" href="<%=proxy_url%>"><%:Configure%></a>
+            <% end %>
+        </div>
+
+        <!-- Remote Monitoring (placeholder) -->
+        <div style="display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #eee">
+            <span style="font-size:1.5em">&#128225;</span>
+            <div style="flex:1">
+                <strong><%:Remote Monitoring%></strong>
+                <p class="mn-hint" style="margin-bottom:0"><%:Monitor node status, traffic, and alerts remotely via MyNet cloud.%></p>
+            </div>
+            <span class="mn-badge mn-badge-warn"><%:Coming Soon%></span>
+        </div>
+    </div>
+
+    <% if is_guest then %>
+    <div class="cbi-page-actions">
+        <a class="cbi-button cbi-button-apply" href="<%=login_url%>"><%:Login to MyNet%></a>
+    </div>
+    <% end %>
+</div>
+
+<%+footer%>

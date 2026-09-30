@@ -1,0 +1,80 @@
+<%+header%>
+<link rel="stylesheet" href="<%=resource%>/mynet/css/mynet.css">
+
+<h2><%:Settings%></h2>
+
+<form method="post" action="<%=luci.dispatcher.build_url('admin/services/mynet/settings/save')%>">
+
+    <div class="cbi-section">
+        <h3><%:GNB Binary%></h3>
+        <table class="table" style="width:100%">
+            <tr class="tr">
+                <th class="th" style="width:10em"><%:Select%></th>
+                <td class="td">
+                    <label style="display:inline-flex;align-items:center;gap:6px;margin-right:20px;cursor:pointer">
+                        <input type="radio" name="use_system_gnb" value="0"
+                            <% if not use_system_gnb then %> checked<% end %>>
+                        <%:Bundled GNB%>
+                    </label>
+                    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+                        <input type="radio" name="use_system_gnb" value="1"
+                            <% if use_system_gnb then %> checked<% end %>>
+                        <%:System GNB%>
+                    </label>
+                </td>
+            </tr>
+            <tr class="tr">
+                <th class="th"><%:Bundled GNB%></th>
+                <td class="td">
+                    <code><%=pcdata(gnb_bin_path or "—")%></code>
+                    <% if bundled_gnb_exists then %>
+                    <span class="mn-badge mn-badge-ok">✓</span>
+                    <% if bundled_gnb_version and bundled_gnb_version ~= "" then %>&nbsp;<span class="mn-muted mn-small"><%=pcdata(bundled_gnb_version)%></span><% end %>
+                    <% else %>
+                    <span class="mn-badge mn-badge-warn"><%:not found%></span>
+                    <% end %>
+                    <% if not use_system_gnb then %>&nbsp;<span class="mn-badge"><%:active%></span><% end %>
+                </td>
+            </tr>
+            <tr class="tr">
+                <th class="th"><%:System GNB%></th>
+                <td class="td">
+                    <code><%=pcdata(system_gnb_path or "—")%></code>
+                    <% if system_gnb_exists then %>
+                    <span class="mn-badge mn-badge-ok">✓</span>
+                    <% if system_gnb_version and system_gnb_version ~= "" then %>&nbsp;<span class="mn-muted mn-small"><%=pcdata(system_gnb_version)%></span><% end %>
+                    <% else %>
+                    <span class="mn-badge mn-badge-warn"><%:not found%></span>
+                    <% end %>
+                    <% if use_system_gnb then %>&nbsp;<span class="mn-badge"><%:active%></span><% end %>
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="cbi-page-actions">
+        <button type="submit" class="cbi-button cbi-button-save"><%:Save%></button>
+        <a class="cbi-button" href="<%=luci.dispatcher.build_url('admin/services/mynet/index')%>">
+            <%:Cancel%>
+        </a>
+    </div>
+
+</form>
+
+<div id="mn-toast" class="mn-toast mn-hidden"></div>
+
+<div class="cbi-section">
+    <h3><%:About%></h3>
+    <table class="table" style="width:100%">
+        <tr class="tr">
+            <th class="th" style="width:10em"><%:Version%></th>
+            <td class="td"><code><%=pcdata(app_version or "—")%></code></td>
+        </tr>
+        <tr class="tr">
+            <th class="th"><%:Home Path%></th>
+            <td class="td"><code><%=pcdata(mynet_home or "—")%></code></td>
+        </tr>
+    </table>
+</div>
+
+<%+footer%>
