@@ -12,7 +12,11 @@ PROG=/usr/sbin/mynetd
 start_service() {
 	procd_open_instance mynetd
 	procd_set_param command "$PROG" -listen 127.0.0.1:8096
-	# OpenWrt 执行器 = lua -e（SSOT：桌面 exec mynet / OpenWrt lua -e）
+	# 服务安装写入的 env（HOME/GATEWAYS/EXECUTOR）整份带上；
+	# 不加载则 mynetd 只有 EXECUTOR，拉 bundle/心跳会丢 HOME。
+	if [ -f /etc/mynet/mynetd.env ]; then
+		procd_set_param env $(grep -v '^#' /etc/mynet/mynetd.env | xargs)
+	fi
 	procd_set_param env MYNET_EXECUTOR=lua
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1

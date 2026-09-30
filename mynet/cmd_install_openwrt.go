@@ -174,7 +174,9 @@ func writeOpenWrtEnv(path, home, gateways, binDir string) error {
 func setupOpenWrtNetworkZone(home string) error {
 	script := filepath.Join(home, "scripts", "firewall.mynet")
 	if fileExists(script) {
-		out, err := exec.Command("sh", script, "install").CombinedOutput()
+		cmd := exec.Command("sh", script, "install")
+		cmd.Env = append(os.Environ(), "MYNET_HOME="+home)
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("firewall.mynet install: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
