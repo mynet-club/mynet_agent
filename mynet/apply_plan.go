@@ -88,7 +88,10 @@ type routeCmd struct {
 // 路由三道闸（对齐 openwrt node.lua:clear_routes / route_policy.sh）：
 //  1. 滤掉与本机直连网段冲突的条目（防路由劫持）
 //  2. **只删自己装的**：replace 的「先删后加」前先查目的地现挂在谁的设备上，
-//     不是我们的隧道口就整条跳过 —— 系统直连/别人的静态路由碰都不碰
+//     不是我们的隧道口就整条跳过 —— 系统直连/别人的静态路由碰都不碰。
+//     查的是 FIB 里**前缀完全相等**那条（destOwnerDev），不是路由查询结果：
+//     隧道路由被清空后默认路由会替任何目的地答一个物理口，那不算别人占有，
+//     否则我们自己的路由永远装不回去（见 apply_osroute_unix.go）
 //  3. 网关被隧道盖住时才钉回物理口（fix_wan_gateway_route 同款，先查再钉）
 func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 	log := logger.Comp("apply")
@@ -622,8 +625,11 @@ func pinDefaultGateway(snap *shared.SystemSnapshot, dry bool) error {
 }
 
 // gatewayHijacked 默认网关当前是否被路由进隧道口。
+//
+// 这里要的是**转发路径**（最长前缀 + 默认路由兜底），不是所有权：网关一般
+// 没有自己的 /32，只有覆盖路由能暴露它被隧道盖住了。
 func gatewayHijacked(gw string) bool {
-	dev := destOwnerDev(gw)
+	dev := routeLookupDev(gw)
 	if dev == "" {
 		return false
 	}

@@ -44,6 +44,12 @@ func destOwnerDev(dest string) string {
 	return ""
 }
 
+// routeLookupDev Windows 没有 route get 那样的查询命令，
+// 网关是否被隧道盖住按 FIB 现挂的接口判（语义同 destOwnerDev）。
+func routeLookupDev(dest string) string {
+	return destOwnerDev(dest)
+}
+
 // routesOnDevice 列出 dev 上的 IPv4 目的地。Windows：route print 扫 Interface 列。
 func routesOnDevice(dev string) []string {
 	out, _ := exec.Command("route", "print", "-4").Output()
