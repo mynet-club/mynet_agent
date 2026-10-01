@@ -4,9 +4,8 @@
 # Called by rc.mynet when GNB stops.
 # Only tears down nftables/ip rules (proxy.stop).
 #
-# NOTE: route.conf marker injection is NOT cleaned here.
-#       Cleaning markers is exclusively the job of proxy.disable().
-#       This ensures GNB restarts preserve proxy route injection.
+# NOTE: route.conf 的写入方是 Go agent（全量渲染）。本 hook 经 proxy.stop()
+#       只做一件事：幂等剔除历史 Lua 注入的 proxy 策略段，不再追加任何内容。
 #
 
 log_proxy() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [proxy/stop] $1"; }

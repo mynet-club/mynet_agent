@@ -200,18 +200,11 @@ local function apply_local_config_side_effects(node_id, config_type)
     end
 
     if config_type == "route" then
+        -- 只做 OS 侧派生；不再回调 proxy 往驱动 route.conf 追加注入段
+        -- （route.conf 唯一写入方 = Go agent，代理出口走 gnb proxy.conf）
         local _, route_err = M.generate_route_conf(node_id)
         if route_err then
             return false, route_err
-        end
-
-        local proxy_m = require("luci.model.mynet.proxy")
-        local pcfg = proxy_m.load_config()
-        if pcfg.proxy_enabled then
-            local _, inject_err = proxy_m.route_inject()
-            if inject_err and inject_err ~= "no proxy peers configured" then
-                util.log_warn("route.conf post-write hook: " .. inject_err)
-            end
         end
     end
 
@@ -1072,18 +1065,17 @@ local function build_route_table(entries, self_nid)
         end
     end
 
-    local peer_routes = {} -- cross-zone /32 via selfVpnIp
+    local peer_routes = {} -- overlay /32 host routes（含同网段）
     local gw_routes = {}   -- subnet via peerVpnIp
 
     for _, nid_key in ipairs(node_order) do
         local node_entries = by_node[nid_key]
         local peer_vpn_ip = node_entries[1].network
 
-        -- 同子网判断
-        local in_same_subnet = self_vpn_ip and
-            (math.floor(ip_to_int(peer_vpn_ip) / 256) * 256 == vpn_net)
-
-        if not in_same_subnet and self_vpn_ip then
+        -- overlay 一律 /32（node-connectivity-checklist：绝不发对端整个 /24）。
+        -- tun 自身是 /32，同网段 peer **没有** 连通 /24 可依，
+        -- 必须与跨网段一样写 /32，否则 180/188 这类同段出口不可达。
+        if self_vpn_ip then
             peer_routes[#peer_routes + 1] = {
                 node_id = nid_key,
                 network = peer_vpn_ip,
@@ -1126,9 +1118,9 @@ function M.generate_route_conf(node_id)
         return nil, "route.conf is empty"
     end
 
-    -- 剔除 proxy 注入段（route_inject 已将策略路由追加到此文件，
-    -- 必须在生成 OS 级 route.conf 前移除，否则 /8、/16 大段路由
-    -- 会被误认为子网路由写入 conf/route.conf 并由 route.mynet 添加）
+    -- 剔除历史 proxy 注入段（老版本 Lua 会把 /8、/16 策略段追加到本文件；
+    -- 注入已废弃，这里保留兜底过滤，否则残留大段会被误认成子网路由写入
+    -- conf/route.conf 并由 route.mynet 添加）
     local proxy_m = require("luci.model.mynet.proxy")
     route_content = proxy_m.strip_route_injections(route_content)
 

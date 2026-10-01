@@ -212,7 +212,7 @@ local cur_nid = cur_node_id
         <tr class="tr">
             <th class="th"><%:Proxy Layers%></th>
             <td class="td" id="mn-proxy-layers"><%
-                lbadge(lyr.route_inject,       translate("Route Inject"))
+                lbadge(lyr.exit_policy,        translate("Exit Policy"))
                 lbadge(lyr.policy_routing,     translate("Policy Routing"))
                 lbadge(lyr.dns_intercept,      translate("DNS Intercept"))
                 lbadge(lyr.foreign_dns_routed, translate("Foreign DNS Tunnel"))
@@ -480,7 +480,7 @@ local cur_nid = cur_node_id
                     var layerEl = document.getElementById('mn-proxy-layers');
                     if (layerEl) {
                         var ldef = [
-                            ['route_inject',       '<%:Route Inject%>'],
+                            ['exit_policy',        '<%:Exit Policy%>'],
                             ['policy_routing',     '<%:Policy Routing%>'],
                             ['dns_intercept',      '<%:DNS Intercept%>'],
                             ['foreign_dns_routed', '<%:Foreign DNS Tunnel%>']

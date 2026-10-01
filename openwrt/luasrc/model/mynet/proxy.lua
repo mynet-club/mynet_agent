@@ -207,8 +207,11 @@ function M.get_status()
         route_conf_count = tonumber(cnt_out) or 0
     end
 
-    -- route 注入状态（从 route.conf marker 推断，而非硬编码 false）
-    local inj_status = M.route_inject_status() or {}
+    -- 出口策略（gnb proxy.conf）：代理转发路径的声明来源
+    local exit_policy = M.exit_policy_status()
+
+    -- 历史 Lua 注入残留条数：期望恒为 0，非 0 说明 route.conf 还没交还 agent
+    local legacy_route_inject = M.route_conf_legacy_count()
 
     -- 国外 DNS 是否已被引入 GNB 隧道（检测首个服务器作为样本）
     local foreign_dns_routed = false
@@ -233,19 +236,22 @@ function M.get_status()
         match_mode      = match_mode,
         dns_mode        = cfg.dns_mode,
         layers          = {
-            route_inject       = inj_status.injected and true or false,
+            exit_policy        = M.exit_policy_ok(exit_policy),
             policy_routing     = running,
             dns_intercept      = cfg.dns_mode ~= "none" and running,
             foreign_dns_routed = foreign_dns_routed,
         },
         stats           = {
-            ipset_count      = ipset_count,
-            nft_count        = nft_count,
-            route_conf_count = route_conf_count,
-            route_table_id   = route_table_id,
-            peer_count       = peer_count,
-            uptime_seconds   = uptime_sec,
-            has_rule         = has_rule,
+            ipset_count        = ipset_count,
+            nft_count          = nft_count,
+            route_conf_count   = route_conf_count,
+            route_table_id     = route_table_id,
+            peer_count         = peer_count,
+            uptime_seconds     = uptime_sec,
+            has_rule           = has_rule,
+            exit_count         = #exit_policy.exits,
+            exit_role          = exit_policy.role,
+            legacy_route_inject = legacy_route_inject,
         },
     }
 end
@@ -295,7 +301,7 @@ function M.disable()
         M.stop()
     end
 
-    -- 删除 GNB route.conf 中的注入段
+    -- 清理 GNB route.conf 中的历史注入段
     M.route_restore()
 
     -- 设 PROXY_ENABLED=0
@@ -374,10 +380,18 @@ function M.start(opts)
         return nil, "route_policy.sh not found: " .. ROUTE_POLICY_SH
     end
 
-    -- Route inject (Lua): 在 proxy.sh 之前注入 GNB 数据层路由
-    local inj_ok, inj_msg = M.route_inject()
-    if not inj_ok then
-        util.log_warn("route_inject skipped: " .. (inj_msg or ""))
+    -- route.conf 交还 agent：清理历史注入残留（现网存量节点一次性收敛）
+    M.route_restore()
+
+    -- 转发策略由 gnb proxy.conf 承载（Go agent 投影），Lua 侧只验证在场
+    local ep = M.exit_policy_status()
+    local proxy_warn = nil
+    if not M.exit_policy_ok(ep) then
+        proxy_warn = ep.present
+            and "proxy.conf 已存在但出口策略不可用（proxy on / exit 缺失）"
+            or  ("缺少 proxy.conf（" .. (ep.path or "未知路径")
+                 .. "），gnb 数据层无出口策略，需带 P2 补丁的 gnb")
+        util.log_warn("proxy start: " .. proxy_warn)
     end
 
     local gen_out, gen_code = util.exec_status(
@@ -459,12 +473,14 @@ function M.start(opts)
         -- dns_split 失败不影响路由核心，记录警告并返回部分成功
         util.log_warn("proxy start partial: " .. util.trim(out or ""))
         return true, "started (dns split warning: " .. util.trim(out or "") .. ")"
+            .. (proxy_warn and ("；" .. proxy_warn) or "")
     end
 
     -- 注册防火墙 include（防火墙重启后恢复策略路由）
     M.register_firewall_include()
 
     return true, util.trim(out or "started")
+        .. (proxy_warn and ("；" .. proxy_warn) or "")
 end
 
 -- ─────────────────────────────────────────────────────────────
@@ -650,24 +666,25 @@ function M.diagnose_ip(ip)
 end
 
 -- ─────────────────────────────────────────────────────────────
--- Route Inject — 向 GNB route.conf 注入 proxy 路由
+-- route.conf 所有权：唯一写入方是 Go agent（mynet apply / 投影）
 --
--- GNB 数据层需要 route.conf 声明才会转发对应网段的流量，缺失则丢包。
--- 注入使用 GNB pipe 格式: peer_nid|network|netmask
--- OS 层路由由 route_policy.sh 独立路由表 + fwmark 处理，此处不触发 sync_top_route_conf
+-- gnb 的 route.conf 是 **L5 地址声明**（哪个 peer 认领哪个网段），
+-- 不承担转发策略。代理分流的转发路径由两处负责：
+--   · gnb 数据层出口：driver/gnb/conf/<nid>/proxy.conf（P2 补丁，
+--     role client|server|both / proxy on / [default] exit <nid> w=<n>），
+--     由 Go 的 plugin_proxy.go:ApplyProxyToGnb 投影写入；
+--   · OS 层：bundle.network.routes → mynet apply（策略路由 / IP 集合 / DNS）。
 --
--- 两段注入结构（mode=server/both 时）：
---   #----proxy-server start/end----  : 自身 nodeId 路由，告知 GNB 放行入站转发包
---   #----proxy start/end----         : peer nodeId 路由，本机出站流量走 proxy peer
+-- 所以 Lua 不再向 route.conf 注入 /8、/16 大段。历史上的注入有两条硬伤：
+--   1) gnb 里 route.conf 命中**优先于** proxy 策略，注入的几百条公网段
+--      会把「未登记目的地」死绑到某个 peer，exit 权重与降级完全失效；
+--   2) 注入段由 Lua 追加、Go 不知道它的存在，重启与重投影都清不掉，
+--      现网表现为一个 14 行的 route.conf 被灌成上千行。
+-- 参见 spec/route-apply-unification.md：route.conf 不装路由，
+-- OpenWrt 也禁止再从 route.conf 反推 OS 路由。
 --
--- GNB 路由优先级规则：
---   - 不同前缀长度：更精确（更长）的优先（/16 > /8）
---   - 相同前缀长度：后面的条目生效（last-match）
---
--- 172.x.x.x 冲突解决：
---   proxy-server 段为绕开 172.16.0.0/12 私有段，必须用 /16 粒度（240 条）
---   proxy client 段同样用 /16，且追加在后 → 相同前缀 last-match → peer 路由生效
---   其余公网段用 /8，两段相同前缀，proxy client 在后 → peer 路由生效
+-- 本模块只保留**清理**能力：识别并剔除历史注入段（marker 段），
+-- 供 start / disable / stop / pre_start 以及 node.lua 生成系统路由前调用。
 -- ─────────────────────────────────────────────────────────────
 
 -- Marker（与 scripts/proxy/hooks/stop.sh 统一）
@@ -676,54 +693,20 @@ M.INJECT_MARKER_END          = "#----proxy end----"
 local INJECT_SERVER_MARKER_BEGIN = "#----proxy-server start----"
 local INJECT_SERVER_MARKER_END   = "#----proxy-server end----"
 
--- /8 段排除表：172 和 192 单独用 /16 处理；0/10/127/224+ 不路由
--- 注意：172.x.x.x 和 192.x.x.x 均含有公网 IP，不能整体排除
-local function is_reserved_block(first_octet)
-    if first_octet == 0 or first_octet == 10 or first_octet == 127 then return true end
-    if first_octet == 172 or first_octet == 192 then return true end
-    if first_octet >= 224 then return true end
-    return false
-end
-
--- 生成单个 nodeId 的完整公网路由条目，追加到 lines 表
--- 172.x：/16 粒度，跳过 172.16-172.31（172.16.0.0/12 私有段）→ 240 条
--- 192.x：/16 粒度，跳过 192.168（192.168.0.0/16 私有段）→ 255 条
--- 其余公网 /8 段（1-223 排除 10/127/172/192）→ 219 条
--- 合计：714 条
-local function append_public_routes(lines, node_nid)
-    local count = 0
-    -- /8 段（172.x 和 192.x 单独处理）
-    for octet = 1, 223 do
-        if not is_reserved_block(octet) then
-            lines[#lines + 1] = string.format("%s|%d.0.0.0|255.0.0.0", node_nid, octet)
-            count = count + 1
-        end
-    end
-    -- 172.x 段：/16，跳过 172.16-172.31（172.16.0.0/12 私有段）
-    for sub = 0, 255 do
-        if sub < 16 or sub > 31 then
-            lines[#lines + 1] = string.format("%s|172.%d.0.0|255.255.0.0", node_nid, sub)
-            count = count + 1
-        end
-    end
-    -- 192.x 段：/16，跳过 192.168（192.168.0.0/16 私有段）
-    for sub = 0, 255 do
-        if sub ~= 168 then
-            lines[#lines + 1] = string.format("%s|192.%d.0.0|255.255.0.0", node_nid, sub)
-            count = count + 1
-        end
-    end
-    return count
-end
-
--- 获取 GNB route.conf 路径（driver/gnb/conf/{nid}/route.conf）
-local function get_route_conf_path()
+-- 驱动 conf 目录：driver/gnb/conf/{nid}，route.conf 与 proxy.conf 同处一地
+local function get_driver_conf_dir()
     local cfg_m = require("luci.model.mynet.config")
     local node_id = cfg_m.get_node_id()
     if not node_id then return nil, "node_id not configured" end
     local nid_str = util.int_str(node_id)
-    local conf_root = cfg_m.get_gnb_conf_root()
-    return conf_root .. "/" .. nid_str .. "/route.conf", nid_str
+    return cfg_m.get_gnb_conf_root() .. "/" .. nid_str, nid_str
+end
+
+-- 获取 GNB route.conf 路径（driver/gnb/conf/{nid}/route.conf）
+local function get_route_conf_path()
+    local conf_dir, nid_str = get_driver_conf_dir()
+    if not conf_dir then return nil, nid_str end
+    return conf_dir .. "/route.conf", nid_str
 end
 
 -- 从文件内容中移除两个 proxy marker 段（含 marker 行本身）
@@ -767,102 +750,84 @@ end
 -- 导出给 node.lua 使用：生成系统路由前剔除 proxy 注入段
 M.strip_route_injections = strip_marker_section
 
--- 注入 proxy 路由到 GNB route.conf（幂等：先清旧段再追加）
-function M.route_inject()
-    local route_conf, nid_str = get_route_conf_path()
-    if not route_conf then return nil, nid_str end
-
-    if not util.file_exists(route_conf) then
-        return nil, "route.conf not found: " .. route_conf
-    end
-
-    local cfg = M.load_config()
-    local proxy_peers = cfg.proxy_peers or ""
-    if proxy_peers == "" then
-        return nil, "no proxy peers configured"
-    end
-
-    -- 读取并清除旧注入段
-    local orig = util.read_file(route_conf) or ""
-    local clean = strip_marker_section(orig)
-
-    local lines = {}
-    local total = 0
-    local mode = cfg.proxy_mode or "client"
-
-    -- ── proxy-server 段（mode=server/both）──────────────────────
-    -- GNB 数据层必须声明才能放行入站转发包；使用相同 /8+/16 结构
-    -- 置于 proxy client 段之前，相同前缀 last-match → client 段（peer）生效
-    if mode == "server" or mode == "both" then
-        lines[#lines + 1] = INJECT_SERVER_MARKER_BEGIN
-        lines[#lines + 1] = "# Injected at: " .. os.date("%Y-%m-%d %H:%M:%S")
-        lines[#lines + 1] = "# Self: " .. nid_str
-        total = total + append_public_routes(lines, nid_str)
-        lines[#lines + 1] = INJECT_SERVER_MARKER_END
-    end
-
-    -- ── proxy client 段（peer 出站路由）────────────────────────
-    lines[#lines + 1] = M.INJECT_MARKER_BEGIN
-    lines[#lines + 1] = "# Injected at: " .. os.date("%Y-%m-%d %H:%M:%S")
-
-    for peer_nid in proxy_peers:gmatch("[^,]+") do
-        peer_nid = util.trim(peer_nid)
-        if peer_nid ~= "" then
-            lines[#lines + 1] = "# Peer: " .. peer_nid
-            total = total + append_public_routes(lines, peer_nid)
-        end
-    end
-    lines[#lines + 1] = M.INJECT_MARKER_END
-
-    -- 追加到 route.conf（不触发 sync_top_route_conf）
-    util.write_file(route_conf, clean .. table.concat(lines, "\n") .. "\n")
-
-    util.log_info("route_inject: injected " .. total .. " pipe routes for node " .. nid_str)
-    return { injected = total }
-end
-
--- 从 GNB route.conf 移除 proxy 注入段
+-- 剔除 GNB route.conf 中的历史 proxy 注入段（幂等）
+-- 注入本身已废弃（见上方所有权说明），这里只负责存量清理：
+-- marker 段一旦被清掉，本函数永久 no-op，route.conf 交还给 Go agent。
 function M.route_restore()
     local route_conf = get_route_conf_path()
     if not route_conf then return nil, "node_id not configured" end
 
     local content = util.read_file(route_conf) or ""
-    if not content:find(M.INJECT_MARKER_BEGIN, 1, true) then
+    if not content:find("proxy start", 1, true) then
         return true, "nothing to restore"
     end
 
-    local clean = strip_marker_section(content)
-    util.write_file(route_conf, clean)
-    util.log_info("route_restore: removed proxy marker section")
+    util.write_file(route_conf, strip_marker_section(content))
+    util.log_info("route_restore: removed legacy proxy injection from " .. route_conf)
     return true, "removed injected section"
 end
 
--- 注入状态查询
-function M.route_inject_status()
+-- 历史注入残留条数（诊断用，不是健康指标：期望恒为 0）
+function M.route_conf_legacy_count()
     local route_conf = get_route_conf_path()
-    if not route_conf then return { injected = false, error = "node_id not configured" } end
-    if not util.file_exists(route_conf) then
-        return { injected = false, error = "route.conf not found" }
-    end
+    if not route_conf or not util.file_exists(route_conf) then return 0 end
 
     local content = util.read_file(route_conf) or ""
-    local has_marker = content:find(M.INJECT_MARKER_BEGIN, 1, true) ~= nil
+    if not content:find("proxy start", 1, true) then return 0 end
+
     local count = 0
-    if has_marker then
-        for line in content:gmatch("[^\n]+") do
-            -- 匹配三种 CIDR：/8 (255.0.0.0)、/16 (255.255.0.0)、/24 (255.255.255.0)
-            if line:match("^%d+|%d+%.0%.0%.0|255%.0%.0%.0$")
-                or line:match("^%d+|%d+%.%d+%.0%.0|255%.255%.0%.0$")
-                or line:match("^%d+|%d+%.%d+%.%d+%.0|255%.255%.255%.0$") then
-                count = count + 1
-            end
+    for line in content:gmatch("[^\n]+") do
+        -- 匹配三种 CIDR：/8 (255.0.0.0)、/16 (255.255.0.0)、/24 (255.255.255.0)
+        if line:match("^%d+|%d+%.0%.0%.0|255%.0%.0%.0$")
+            or line:match("^%d+|%d+%.%d+%.0%.0|255%.255%.0%.0$")
+            or line:match("^%d+|%d+%.%d+%.%d+%.0|255%.255%.255%.0$") then
+            count = count + 1
         end
     end
+    return count
+end
 
-    return {
-        injected    = has_marker,
-        route_count = count,
+-- ─────────────────────────────────────────────────────────────
+-- 出口策略 —— gnb proxy.conf（P2 补丁）状态读取
+--
+-- proxy.conf 由 Go agent 投影（mynet/plugin_proxy.go:ApplyProxyToGnb），
+-- Lua 只读不写：这是 route.conf 注入废弃后代理转发语义的接替者。
+-- ─────────────────────────────────────────────────────────────
+
+function M.exit_policy_status()
+    local conf_dir, nid_str = get_driver_conf_dir()
+    local res = {
+        present   = false,
+        path      = nil,
+        node_id   = nid_str,
+        role      = nil,
+        proxy_on  = false,
+        exits     = {},
     }
+    if not conf_dir then
+        res.error = "node_id not configured"
+        return res
+    end
+    res.path = conf_dir .. "/proxy.conf"
+    res.present = util.file_exists(res.path)
+    if not res.present then return res end
+
+    for line in ((util.read_file(res.path) or "") .. "\n"):gmatch("([^\n]*)\n") do
+        local v = line:match("^%s*role%s+(%S+)")
+        if v then res.role = v end
+        if line:match("^%s*proxy%s+on%s*$") then res.proxy_on = true end
+        v = line:match("^%s*exit%s+(%d+)")
+        if v then res.exits[#res.exits + 1] = v end
+    end
+    return res
+end
+
+-- 出口策略是否可用：server/both 只需 proxy on（准入由 ingress_open 负责），
+-- client 必须 proxy on 且至少一个出口，否则未登记目的地直接丢包。
+function M.exit_policy_ok(st)
+    if not st or not st.present or not st.proxy_on then return false end
+    if st.role == "server" then return true end
+    return #st.exits > 0
 end
 
 -- ─────────────────────────────────────────────────────────────
