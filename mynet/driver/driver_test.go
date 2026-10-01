@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func TestWGCapsNoDiscoveryNoProxy(t *testing.T) {
@@ -262,5 +262,43 @@ func TestRenderGNBNodeConf(t *testing.T) {
 	// gnb_conf_file.c:458），保持前台。daemon off 会让 Start() 永远挂住。
 	if !strings.Contains(text, "daemon on") {
 		t.Fatalf("应为 daemon on: text=%s", text)
+	}
+}
+
+// 渲染器对 listen 的**形态**必须原样透传，因为 gnb 按形态决定绑哪个地址族：
+//
+//	check_listen_string()（gnb_conf.c:71-81）：纯数字返 0 / 含 ':' 返 4 / '[' 开头返 6
+//	分发（gnb_conf_file.c:300-333）：0 → 同时设 [:::port] 与 0.0.0.0:port（双栈同端口）
+//	                                  4 → 只设 IPv4，IPv6 留在出厂默认 9001
+//	                                  6 → 只设 IPv6
+//
+// back 一度下发 `0.0.0.0:9016`，网关 182 的实测后果就是 v4 在 9016、v6 在 9001
+// （map 因此叫 /tmp/gnb.9001.map），而全网对它的 index/对端宣告都写 9016 ——
+// IPv6 侧的发现与打洞全打在没人听的端口上。2026-10-01 起 back 只发裸端口，
+// 这条把「裸端口 → listen 9016（没有 host 前缀）」钉在 agent 侧。
+func TestRenderGNBNodeConfListenFormBarePortDualStack(t *testing.T) {
+	g := &domain.GnbIntent{
+		Identity:  domain.GnbIdentity{NodeID: "1001", KeyAlgorithm: "ed25519"},
+		Listeners: []string{"9180"},
+	}
+	text := RenderGNBNodeConf(g)
+
+	if !strings.Contains(text, "\nlisten 9180\n") && !strings.HasPrefix(text, "listen 9180\n") {
+		t.Fatalf("裸端口该原样落成 `listen 9180`，text=%s", text)
+	}
+	for _, bad := range []string{"0.0.0.0:9180", "[::]:9180"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("渲染器不该改写 listen 形态成 %q（改了就单方面放弃一个地址族）: text=%s", bad, text)
+		}
+	}
+
+	// 空白项不该产出一行 `listen `（gnb sscanf 拿不到值 → 未定义行为）
+	g.Listeners = []string{"", "  ", "9016"}
+	trimmed := RenderGNBNodeConf(g)
+	if strings.Contains(trimmed, "listen \n") || strings.Contains(trimmed, "listen  \n") {
+		t.Fatalf("空 listen 项不该落成行: text=%s", trimmed)
+	}
+	if strings.Count(trimmed, "listen ") != 1 {
+		t.Fatalf("应当只有一行 listen，text=%s", trimmed)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
@@ -169,7 +170,12 @@ func LocalToGnbIntent(li *domain.LocalIntent, privHex, pubHex, algorithm string)
 	}
 	if li.Listen != nil {
 		if li.Listen.UDPPort > 0 {
-			g.Listeners = []string{fmt.Sprintf("0.0.0.0:%d", li.Listen.UDPPort)}
+			// **裸端口**，不是 `0.0.0.0:<port>`：gnb 按 listen 值的形态决定绑哪个地址族
+			// （gnb_conf.c:71-81 check_listen_string + gnb_conf_file.c:300-333）——
+			// 纯数字同时设 [:::port] 和 0.0.0.0:port，含 ':' 只设 IPv4（IPv6 留在出厂
+			// 默认 9001），'[' 开头只设 IPv6。写死 v4 前缀等于单方面放弃 IPv6 侧的
+			// 发现与打洞，而 back 下发的 index/对端地址都是同一个端口号。
+			g.Listeners = []string{strconv.Itoa(li.Listen.UDPPort)}
 		}
 		g.Forwarding = &domain.GnbForwarding{
 			Direct: true,

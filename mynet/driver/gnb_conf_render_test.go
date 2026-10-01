@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // realIntent 取自 staging 上 back 真实下发的 envelope（节点 2132596500330640，
@@ -27,6 +27,10 @@ func realIntent() *domain.GnbIntent {
 			PublicKey:      "a97298cb67045eafdfc6edbfd2666e703472056ec826720cd03713924b107f25",
 			PeerPublicKeys: map[string]string{"1005272783125838": "d34082e6f120fa28d4263394438475816bd796cb045380fc12924b4d452afa7f"},
 		},
+		// back 现在发的是**裸端口**（2026-10-01 起）。留这条而不是换成裸端口：
+		// 现网存量节点（网关 182 在内）的 node.conf 就是这个旧形态，渲染器必须
+		// 继续原样透传 —— 见 TestRenderGNBNodeConfListenFormBarePortDualStack，
+		// 新形态那条钉的是「纯数字才双栈」这个 gnb 解析器事实。
 		Listeners: []string{"0.0.0.0:9016"},
 		Nodes: []domain.GnbNode{
 			{NodeID: "2132596500330640", PublicKey: "a97298cb…", TunAddress: "10.0.0.10/32"},

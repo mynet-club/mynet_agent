@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func TestApplyFromActiveLocalProjectsGnb(t *testing.T) {
@@ -18,6 +18,10 @@ func TestApplyFromActiveLocalProjectsGnb(t *testing.T) {
 
 	if rc := cmdSetupV2([]string{"--local", "--node-id", "3001", "--overlay", "10.182.236.1/32"}); rc != 0 {
 		t.Fatalf("setup rc=%d", rc)
+	}
+	// setup 不生成密钥 —— 显式 generate（或 keys set 导入）
+	if rc := configFaceKeysGenerate([]string{"--vpn", "gnb", "--node-id", "3001"}); rc != 0 {
+		t.Fatalf("keys generate rc=%d", rc)
 	}
 	// 加一个对端，便于 route/address 非空
 	store := &config.Store{Root: root}
@@ -53,6 +57,15 @@ func TestApplyFromActiveLocalProjectsGnb(t *testing.T) {
 	if !strings.Contains(string(nc), "proxy on") {
 		t.Fatalf("listen.proxy 应投影为 proxy on:\n%s", nc)
 	}
+	// listen 必须是**裸端口**：gnb 按形态分流（gnb_conf.c:71-81 +
+	// gnb_conf_file.c:300-333），纯数字才 v4+v6 同端口，写成 `0.0.0.0:9000`
+	// 会只设 IPv4、把 IPv6 留在出厂 9001 —— 现网网关 182 就是这么单侧的。
+	if !strings.Contains(string(nc), "listen 9000") {
+		t.Fatalf("node.conf 应含 `listen 9000`（裸端口）:\n%s", nc)
+	}
+	if strings.Contains(string(nc), "0.0.0.0:9000") {
+		t.Fatalf("node.conf 的 listen 不该带 v4 前缀（等于放弃 IPv6）:\n%s", nc)
+	}
 	rc, _ := os.ReadFile(filepath.Join(confDir, "route.conf"))
 	if !strings.Contains(string(rc), "3001") || !strings.Contains(string(rc), "3002") {
 		t.Fatalf("route.conf 应含本节点与对端:\n%s", rc)
@@ -69,6 +82,9 @@ func TestApplyFromActiveDryWritesNothing(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MYNET_HOME", root)
 	if rc := cmdSetupV2([]string{"--local", "--node-id", "1"}); rc != 0 {
+		t.Fatal(rc)
+	}
+	if rc := configFaceKeysGenerate([]string{"--vpn", "gnb", "--node-id", "1"}); rc != 0 {
 		t.Fatal(rc)
 	}
 	if err := ApplyFromActive(true); err != nil {
