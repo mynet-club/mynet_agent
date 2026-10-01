@@ -5,8 +5,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // probeWireGuard / probeGNB 都**调 driver 包**，不再自己解析。
@@ -103,8 +103,9 @@ func probeGNB() []VPNDriverMetrics {
 //
 // 为什么从 bundle 取而不是问 gnb_ctl：`gnb_ctl -b … -c -s` 的输出里
 // **没有接口名**（只有 conf_dir / node_num / wan*_port 与每个 node 的 tun_ipv4），
-// 而读 ctl block 又要 root。bundle 里的 gnb.options.ifname 正是我们渲染进
-// node.conf 的那个值，是权威来源，且读它不需要任何特权。
+// 而读 ctl block 又要 root。bundle 的 node.interface 是 back 侧唯一权威
+// （= node_configs.config.ifname，见 domain.BundleEnvelope.TunDevice），
+// 也正是我们渲染进 node.conf 的那个值，读它不需要任何特权。
 //
 // 存在性与 UP 用 net.InterfaceByName 判 —— 标准库、跨平台、不 exec、不要 root
 // （对照 detectWGInterface 要 shell 出 wg）。
@@ -132,16 +133,22 @@ func detectGNBInterface() (string, []string) {
 }
 
 // gnbIfnameFromBundle 从 $MYNET_HOME/var/bundle.json 取 gnb 的接口名。
+//
+// 与投影/路由同一解析（env.TunDevice，权威=node.interface），**不再优先读
+// gnb.options.ifname**：三处读两个字段的话，back 一旦只发权威字段，这里就会报
+// 「没有接口」而 apply 那边照着新名字装 —— 展示与事实分叉比展示缺失更坏。
+// 解析失败时返回空（宁可这一项不报，也不报一个猜出来的名字）。
 func gnbIfnameFromBundle() string {
 	env, err := loadBundleEnvelope()
 	if err != nil || env.Gnb == nil {
 		return ""
 	}
-	if env.Gnb.Options != nil && env.Gnb.Options.Ifname != "" {
-		return env.Gnb.Options.Ifname
+	name, derr := env.TunDevice()
+	if derr != nil {
+		return ""
 	}
 
-	return env.Node.Interface
+	return name
 }
 
 // projectPeers 把 driver 的 peer 列表投影成统一视图。

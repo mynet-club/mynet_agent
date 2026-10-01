@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // WireGuardDriver 只读 + 生命周期。解析 `wg show`。
@@ -17,10 +17,13 @@ type WireGuardDriver struct {
 	Exec      func(name string, args ...string) ([]byte, error)
 }
 
+// NewWireGuardDriver 不猜接口名。
+//
+// 曾经这里 `iface == "" → "wg0"`：接口名决定流量进哪条隧道，属于阻断性配置，
+// 兜底出来的名字在多 zone 共存的机器上往往是**别人的接口**，而 wg 侧只要名字能
+// 建起来就不报错。名字的权威是 bundle 的 node.interface，由 domain.BundleEnvelope.TunDevice()
+// 解析并校验；解析不出来应当在调用方报错退出，而不是在这里造一个默认名。
 func NewWireGuardDriver(iface string, nodeID int64) *WireGuardDriver {
-	if iface == "" {
-		iface = "wg0"
-	}
 	return &WireGuardDriver{
 		Interface: iface,
 		NodeID:    nodeID,

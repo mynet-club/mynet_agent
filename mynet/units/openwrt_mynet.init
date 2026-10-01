@@ -17,6 +17,27 @@ MYNET_HOME="${MYNET_HOME:-/etc/mynet}"
 
 log() { logger -t mynet "$*"; echo "[MyNet] $*"; }
 
+# bundle 的接口名权威：$MYNET_HOME/var/bundle.json 的 node.interface。
+# 与 agent 侧 domain.BundleEnvelope.TunDevice() 同一口径：权威缺失时暂认过渡别名
+# gnb.options.ifname（旧 back 只发那一份）；两者都有值且不等 → 不猜，报错。
+bundle_tun_device() {
+	local b="$MYNET_HOME/var/bundle.json"
+	[ -f "$b" ] || return 0
+	command -v jsonfilter >/dev/null 2>&1 || return 0
+
+	local authority legacy
+	authority=$(jsonfilter -i "$b" -e '@.node.interface' 2>/dev/null | tr -d '[:space:]"')
+	legacy=$(jsonfilter -i "$b" -e '@.gnb.options.ifname' 2>/dev/null | tr -d '[:space:]"')
+	if [ -n "$authority" ] && [ -n "$legacy" ] && [ "$authority" != "$legacy" ]; then
+		log "ERROR: bundle 接口名冲突 node.interface=$authority vs gnb.options.ifname=$legacy"
+		return 1
+	fi
+	[ -n "$authority" ] && { echo "$authority"; return 0; }
+	[ -n "$legacy" ] && { echo "$legacy"; return 0; }
+
+	return 0
+}
+
 load_config() {
 	[ -f "$CONFIG_FILE" ] || { log "ERROR: Config not found: $CONFIG_FILE"; return 1; }
 	. "$CONFIG_FILE"
@@ -28,10 +49,14 @@ load_config() {
 	esac
 	# wg 旧名归一
 	[ "$VPN_TYPE" = "wg" ] && VPN_TYPE=wireguard
+	# 接口名：显式配置 > bundle 权威 > 报错。**不给兜底默认名**（gnb_tun / wg0 都不行）：
+	# 名字决定流量进哪条隧道，一台主机多个 zone 共存时（现网网关 182）兜底出来的
+	# 恰好是别人的接口，而 ip link / wg-quick / uci 只要名字可用就执行成功、不报错 ——
+	# 症状变成「服务起来了、防火墙绑错口」，比启动失败难查得多。
+	[ -n "$VPN_INTERFACE" ] || VPN_INTERFACE=$(bundle_tun_device) || return 1
 	[ -n "$VPN_INTERFACE" ] || {
-		if [ "$VPN_TYPE" = "wireguard" ]; then VPN_INTERFACE=wg0
-		else log "ERROR: VPN_INTERFACE not configured"; return 1
-		fi
+		log "ERROR: VPN_INTERFACE 未配置，bundle 里也没有接口名（先同步配置，或在 $CONFIG_FILE 设 MYNET_VPN_INTERFACE）"
+		return 1
 	}
 	ROUTE_CONFIG="${MYNET_ROUTE_CONFIG:-${ROUTE_CONFIG:-$MYNET_HOME/conf/route.conf}}"
 	return 0
@@ -194,10 +219,10 @@ stop_service() {
 		gnb)       stop_gnb_instance ;;
 		wireguard) stop_wg_interface ;;
 		*)
-			# 配置缺失时两边都收，保证不留半套
+			# 配置缺失时两边都收，保证不留半套。但 wg 那只**只在接口名已知时拆**：
+			# 兜底一个 wg0 去 `ip link del` 会连别人的口一起拆掉（按名字删，不问归属）。
 			stop_gnb_instance
-			VPN_INTERFACE="${VPN_INTERFACE:-wg0}"
-			stop_wg_interface
+			[ -n "${VPN_INTERFACE:-}" ] && stop_wg_interface
 			;;
 	esac
 

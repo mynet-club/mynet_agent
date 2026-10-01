@@ -21,16 +21,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet"
-	"github.com/mynet-club/mynet_agent-V2/mynetd"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet"
+	"github.com/mynet-club/mynet_agent/mynetd"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/localapi"
+	"github.com/mynet-club/mynet_agent/mynetd/transport"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 var (
@@ -80,8 +80,9 @@ func main() {
 	if os.Geteuid() != 0 {
 		if *flagConsole {
 			logger.Info("console 模式非 root 运行（D-8/D-12：无 WS、无节点身份、不碰驱动）")
-		} else if os.Getenv("MYNET_GATEWAYS") != "" {
+		} else if _, gwSrc, gwErr := utils.ResolveGateways(); gwErr == nil {
 			logger.Warn("节点模式下以非 root 运行 —— 隧道生命周期将无法自动管理",
+				"gateways_source", gwSrc,
 				"后果1", "起不了 gnb（建 tun 需特权）：service start 会失败",
 				"后果2", "写不了内核路由：apply 会失败，流量走默认路由不进隧道",
 				"后果3", "读不到 gnb.map（0600 root:root）：心跳里 connected_peers/rx/tx 恒 0",
@@ -89,7 +90,8 @@ func main() {
 					"手工跑则 sudo -E，或按 CPI-63 的三个备选方案之一处理")
 		} else {
 			// 未配 gateways 的纯本机模式：只有 localapi，不碰隧道，不该拿隧道的话术吓人
-			logger.Info("非 root 运行（未配 MYNET_GATEWAYS，纯本机模式：只有 localapi，不管理隧道）")
+			logger.Info("非 root 运行（网关未配置，纯本机模式：只有 localapi，不管理隧道）",
+				"why", gwErr.Error())
 		}
 	}
 
@@ -141,27 +143,32 @@ func runAgent(ctx context.Context) {
 
 	// 双轨/回写：即使未设 MYNET_GATEWAYS，也按 conf/agent.json 装配 ProxyWriteback，
 	// 否则 WebUI 改 proxy 永远 dirty（回写回调为 nil）。
+	// U3：网关走统一回退链（env → mynetd.env → agent.json），不再只认环境变量。
 	if api.ProxyWriteback == nil {
 		if id, idErr := loadNodeIdentity(""); idErr == nil {
-			gwURL := os.Getenv("MYNET_GATEWAYS")
-			if gwURL == "" {
-				gwURL = utils.LoadAgentCfg().Gateway
+			gwURL := ""
+			if gl, _, gwErr := utils.ResolveGateways(); gwErr == nil && len(gl) > 0 {
+				gwURL = gl[0]
 			}
-			if c, cErr := newBackClient(gwURL, id); cErr == nil {
-				api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
-					raw, err := json.Marshal(policy)
-					if err != nil {
-						return 0, err
+			if gwURL != "" {
+				if c, cErr := newBackClient(gwURL, id); cErr == nil {
+					api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
+						raw, err := json.Marshal(policy)
+						if err != nil {
+							return 0, err
+						}
+						var m map[string]any
+						if err := json.Unmarshal(raw, &m); err != nil {
+							return 0, err
+						}
+						return c.writeProxyConfig(context.Background(), m, revision)
 					}
-					var m map[string]any
-					if err := json.Unmarshal(raw, &m); err != nil {
-						return 0, err
-					}
-					return c.writeProxyConfig(context.Background(), m, revision)
+					logger.Info("proxy 回写已装配", "gw", gwURL)
+				} else {
+					logger.Warn("proxy 回写未装配：backClient", "err", cErr)
 				}
-				logger.Info("proxy 回写已装配（agent.json gateway）", "gw", gwURL)
 			} else {
-				logger.Warn("proxy 回写未装配：backClient", "err", cErr)
+				logger.Warn("proxy 回写未装配：网关未配置（见 ResolveGateways 回退链）")
 			}
 		} else {
 			logger.Warn("proxy 回写未装配：无节点身份", "err", idErr)
@@ -186,13 +193,10 @@ func runAgent(ctx context.Context) {
 	// 声明在函数级：拉取在 MYNET_GATEWAYS 块内，而 -once 分支在块外。
 	var bundlePullDone chan struct{}
 
-	// WS → gateway（C-3 只带 X-Node-Id）；未配 gateways 则纯本机
-	if gw := os.Getenv("MYNET_GATEWAYS"); gw != "" {
-		var gateways []string
-		for _, g := range strings.Split(gw, ",") {
-			// 归一 WS 路径：裸 wss://host 会打到 404（见 NormalizeGatewayURL）
-			gateways = append(gateways, utils.NormalizeGatewayURL(g))
-		}
+	// WS → gateway（C-3 只带 X-Node-Id）。
+	// U3：回退链 env → mynetd.env → agent.json；都没有则**指因跳过**，不静默。
+	if gateways, gwSrc, gwErr := utils.RequireGateways(); gwErr == nil {
+		logger.Info("网关已解析", "source", gwSrc, "gateways", gateways)
 		nodeID := os.Getenv("MYNET_NODE_ID")
 
 		// 节点面身份（C-2）：命令结果要签名后才能上报 back，
@@ -314,8 +318,11 @@ func runAgent(ctx context.Context) {
 			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
 				return commands.Run(execStd, req, nodeID)
 			},
-			OnEvent:  dispatcher.Handle,
-			OnResult: onResult,
+			// 每次连上（含重连）补拉一次 bundle：断线窗口里 back 推的事件不会补发，
+			// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
+			OnConnect: func(context.Context) { dispatcher.catchUpBundle() },
+			OnEvent:   dispatcher.Handle,
+			OnResult:  onResult,
 		}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })
 		if err != nil {
 			logger.Error("transport 启动失败", "err", err)
@@ -323,6 +330,11 @@ func runAgent(ctx context.Context) {
 			cli.SetDialer(transport.WebSocketDialer)
 			go func() { _ = cli.Run(ctx) }()
 		}
+	} else {
+		// U3：回退链也没有网关 —— 指因，禁止静默（session-pitfalls #16）
+		logger.Error("心跳/WS/自动拉 bundle 全部未启动：网关未配置",
+			"why", gwErr.Error(),
+			"处置", "export MYNET_GATEWAYS=... 或写 $MYNET_HOME/mynetd.env 或 conf/agent.json")
 	}
 
 	// 启动心跳。放在节点面客户端装配**之后**（理由见上面 hb 创建处）：
@@ -465,9 +477,14 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		logger.Error("heartbeat 采集失败", "err", err, "stderr", strings.TrimSpace(stderr))
 		return
 	}
-	// 本机态也保证 system.json 可用
+	// 本机态也保证 system.json 可用 —— 缺了就地跑 detector，
+	// 否则 apply --auto 读不到 system.json、路由装不全（启动漏 apply 的根因之一）。
 	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
-		logger.Warn("system.json 缺失，建议运行 mynet detector")
+		if _, _, dErr := h.ops([]string{"detector"}); dErr != nil {
+			logger.Warn("system.json 缺失且 detector 失败", "err", dErr)
+		} else {
+			logger.Info("system.json 缺失，已自动跑 detector")
+		}
 	}
 
 	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在

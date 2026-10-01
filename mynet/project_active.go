@@ -15,11 +15,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ApplyFromActive 投影当前激活配置到 driver/。dry 只打印不落盘。
@@ -105,15 +105,14 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 
 	// wireguard 投影（A-5）：WriteIntent → /etc/wireguard/<iface>.conf
 	if env.WireGuard != nil {
-		if dry {
-			fmt.Printf("dry-run: 将写入 wireguard conf（iface=%s）\n",
-				env.Node.Interface)
-			return nil
-		}
+		// dry-run 也走 writeWgProjection：那里的打印用的是**解析后的**接口名，
+		// 在这里自己打 envelope 原始字段会让 dry 与真跑给出不同结论
+		// （接口名解析失败时 dry 会显示空值，而 apply 其实直接报错）。
 		if err := writeWgProjection(env, dry); err != nil {
 			return err
 		}
 		fmt.Println("✓ driver 投影 wireguard")
+
 		return nil
 	}
 
@@ -129,6 +128,20 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 			env.Gnb.Identity.PublicKey = pub
 		}
 	}
+	// 接口名唯一权威是 node.interface（back 侧同源：node_configs.config.ifname）。
+	// 落到驱动投影前必须用权威值覆盖 gnb.options.ifname —— 那份是**过渡期别名**：
+	// back 一旦停发它（见 mynet_ctl 计划 B 的第二步），只读 Options.Ifname 的
+	// 渲染路径就会让 gnb 用它自己的默认名静默建口，而默认名在一台多 zone 的机器上
+	// 往往是**别人正在用的接口**。名字解析不出来就是配置错误，直接失败。
+	dev, err := env.TunDevice()
+	if err != nil {
+		return err
+	}
+	if env.Gnb.Options == nil {
+		env.Gnb.Options = &domain.GnbOptions{}
+	}
+	env.Gnb.Options.Ifname = dev
+
 	if err := writeGnbProjection(env.Gnb, dry); err != nil {
 		return err
 	}
@@ -230,11 +243,14 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 	}
 	// proxy 插件启用时：写出口对端 + 打开 proxy on，并准备写 proxy.conf
 	pp := enrichIntentWithProxy(gi)
+	confDir := filepath.Join(utils.GnbConfDir(), nodeID)
+	// C5：driver/** 是投影，手改会在本次被覆盖 —— 说出来，不静默。
+	warnHandEdits(confDir)
 	if dry {
 		fmt.Printf("dry-run: 将写入 driver/gnb/conf/%s/（node/route/address/keys）\n", nodeID)
 		return writeProxyProjection(nodeID, pp, true)
 	}
-	d := &driver.GNBDriver{ConfDir: filepath.Join(utils.GnbConfDir(), nodeID)}
+	d := &driver.GNBDriver{ConfDir: confDir}
 	if err := utils.SafeCreateDir(d.ConfDir, 0o700); err != nil {
 		return err
 	}
@@ -260,9 +276,11 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	if env.WireGuard == nil {
 		return fmt.Errorf("bundle 无 wireguard intent")
 	}
-	iface := env.Node.Interface
-	if iface == "" {
-		iface = "wg0"
+	// 不回落 "wg0"：接口名是阻断性配置，猜出来的名字会建到另一个口上且不报错
+	// （见 domain.BundleEnvelope.TunDevice）。back 对 wg 节点同样发 node.interface。
+	iface, err := env.TunDevice()
+	if err != nil {
+		return err
 	}
 	d := driver.NewWireGuardDriver(iface, 0)
 	if dry {
@@ -306,4 +324,21 @@ func copyDirFiles(src, dst string) error {
 
 func jsonUnmarshal(b []byte, v any) error {
 	return json.Unmarshal(b, v)
+}
+
+// warnHandEdits C5：driver/** 是 Apply 投影，手改会被覆盖。
+// 只告警不阻断 —— 阻断会让「改了 intent 再 apply」变麻烦；真相源在 conf/**。
+func warnHandEdits(confDir string) {
+	for _, name := range []string{"node.conf", "route.conf", "address.conf", "proxy.conf"} {
+		p := filepath.Join(confDir, name)
+		st, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		// 投影文件 mtime 若比 last-good 新很多且非本次写入，可能是手改。
+		// 简化判据：文件存在即提示一次（避免复杂 diff）。
+		_ = st
+		fmt.Printf("⚠ %s 是 Apply 投影，本次将覆盖 —— 要改请改 conf/** 后再 apply（spec/paths.md §5）\n", p)
+		return
+	}
 }

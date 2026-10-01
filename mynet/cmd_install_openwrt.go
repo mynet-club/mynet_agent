@@ -1,11 +1,14 @@
 package mynet
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // isOpenWrt — 运行期判定 OpenWrt（不依赖 runtime.GOOS：OpenWrt 也是 linux）。
@@ -94,15 +97,20 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 
 	// 2b) mynet 网络 + 防火墙 zone（服务可跑的前置）
-	//   network.mynet（proto=none，device 稍后绑 tun）
+	//   network.mynet（proto=none，device 只在有 bundle 时绑）
 	//   firewall zone mynet + lan↔mynet / mynet↔wan forwarding
 	// 优先委托 $MYNET_HOME/scripts/firewall.mynet install（与 LuCI 侧同一实现）；
 	// 脚本不在时用 UCI 最小集兜底，避免「服务 enable 了但 zone 没建」。
-	if err := setupOpenWrtNetworkZone(home); err != nil {
+	tunDev, err := setupOpenWrtNetworkZone(home)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "配置 network/zone:", err)
 		return 1
 	}
-	fmt.Println("configured network.mynet + firewall zone mynet")
+	if tunDev == "" {
+		fmt.Println("configured network.mynet + firewall zone mynet（未绑接口名：还没有 bundle，首次 start / 同步配置时按 node.interface 绑）")
+	} else {
+		fmt.Println("configured network.mynet + firewall zone mynet，device=" + tunDev)
+	}
 
 	// 3) env
 	if err := writeOpenWrtEnv(envPath, home, gateways, binDir); err != nil {
@@ -171,50 +179,102 @@ func writeOpenWrtEnv(path, home, gateways, binDir string) error {
 // 装服务不等于服务能跑：没有 network.mynet / zone / forwarding，
 // 隧道起来了也转发不通。优先走 firewall.mynet install（与 LuCI 同一实现，
 // 已处理 include/NAT 边角）；脚本缺失时用 UCI 最小集。
-func setupOpenWrtNetworkZone(home string) error {
+//
+// 返回值是**实际绑定的接口名**（"" = 本次没绑，交由首次 start / 配置同步补上），
+// 调用方要把它说出来 —— 「装了但没绑接口」和「装好」不能长得一样。
+func setupOpenWrtNetworkZone(home string) (string, error) {
 	script := filepath.Join(home, "scripts", "firewall.mynet")
 	if fileExists(script) {
 		cmd := exec.Command("sh", script, "install")
 		cmd.Env = append(os.Environ(), "MYNET_HOME="+home)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("firewall.mynet install: %w (%s)", err, strings.TrimSpace(string(out)))
+			return "", fmt.Errorf("firewall.mynet install: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
-		return nil
+		return "", nil
 	}
+
 	// UCI 最小集：network.mynet + zone mynet + lan↔mynet / mynet↔wan
+	dev, err := installTunDevice(home)
+	if err != nil {
+		return "", fmt.Errorf("接口名不可用: %w", err)
+	}
+	for _, c := range openWrtUciSteps(dev) {
+		out, err := exec.Command(c[0], c[1:]...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("%v: %w (%s)", c, err, strings.TrimSpace(string(out)))
+		}
+	}
+
+	return dev, nil
+}
+
+// installTunDevice 取安装期**唯一**能拿到的接口名权威：$MYNET_HOME/var/bundle.json
+// 的 node.interface（同一解析口 domain.BundleEnvelope.TunDevice）。
+//
+// 没 bundle（首次安装、还没同步过配置）返回 ("", nil) —— 调用方必须**跳过**
+// device 写入；bundle 在但名字解析不出来返回 error，因为接口名是阻断性配置：
+// 猜出来的名字在单 zone 机器上能用，在现网 182 这类机器上恰好是**另一个 zone 的
+// 接口**，而 `uci set network.mynet.device=X` / 防火墙按 X 匹配都不报错
+// —— 宁可安装失败、错误可见，也不写一份会把流量搬走的绑定。
+// 绑定会由首次 `init start`（firewall.mynet start --interface）或
+// LuCI 的 config.lua / node.lua 按实际接口名补上。
+func installTunDevice(home string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(home, "var", "bundle.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	env, err := domain.DecodeBundleEnvelope(raw)
+	if err != nil {
+		return "", err
+	}
+
+	return env.TunDevice()
+}
+
+// openWrtUciSteps 生成 UCI 兜底命令序列，dev == "" 时**不含任何 device 写入**。
+//
+// dev 直接拼进 `sh -c` 的那段，安全性来自 domain.ValidateTunDevice：字符集
+// 限定 `[A-Za-z0-9._-]{1,15}`，不含空格/引号/分号。别在这里再放宽。
+func openWrtUciSteps(dev string) [][]string {
+	zoneBody := `s=$(uci show firewall | grep "name='mynet'" | cut -d. -f2 | cut -d= -f1 | head -1); \
+		[ -n "$s" ] || exit 1; \
+		uci set firewall.$s.name=mynet; \
+		uci set firewall.$s.input=ACCEPT; \
+		uci set firewall.$s.output=ACCEPT; \
+		uci set firewall.$s.forward=ACCEPT; \
+		uci set firewall.$s.masq=1`
+	if dev != "" {
+		zoneBody += `; \
+		uci set firewall.$s.device=` + dev
+	}
+
 	steps := [][]string{
 		{"uci", "set", "network.mynet=interface"},
 		{"uci", "set", "network.mynet.proto=none"},
-		{"uci", "set", "network.mynet.device=gnb_tun"},
+	}
+	if dev != "" {
+		steps = append(steps, []string{"uci", "set", "network.mynet.device=" + dev})
+	}
+
+	return append(steps,
 		// zone 已存在则跳过创建（uci add 会重复）
-		{"sh", "-c", `uci show firewall | grep -q "name='mynet'" || uci add firewall zone >/dev/null`},
-		{"sh", "-c", `s=$(uci show firewall | grep "name='mynet'" | cut -d. -f2 | cut -d= -f1 | head -1); \
-			[ -n "$s" ] || exit 1; \
-			uci set firewall.$s.name=mynet; \
-			uci set firewall.$s.input=ACCEPT; \
-			uci set firewall.$s.output=ACCEPT; \
-			uci set firewall.$s.forward=ACCEPT; \
-			uci set firewall.$s.masq=1; \
-			uci set firewall.$s.device=gnb_tun`},
-		{"sh", "-c", `uci show firewall | grep -q "src='lan'.*dest='mynet'" || { \
+		[]string{"sh", "-c", `uci show firewall | grep -q "name='mynet'" || uci add firewall zone >/dev/null`},
+		[]string{"sh", "-c", zoneBody},
+		[]string{"sh", "-c", `uci show firewall | grep -q "src='lan'.*dest='mynet'" || { \
 			s=$(uci add firewall forwarding); \
 			uci set firewall.$s.src=lan; \
 			uci set firewall.$s.dest=mynet; }`},
-		{"sh", "-c", `uci show firewall | grep -q "src='mynet'.*dest='wan'" || { \
+		[]string{"sh", "-c", `uci show firewall | grep -q "src='mynet'.*dest='wan'" || { \
 			s=$(uci add firewall forwarding); \
 			uci set firewall.$s.src=mynet; \
 			uci set firewall.$s.dest=wan; }`},
-		{"uci", "commit", "network"},
-		{"uci", "commit", "firewall"},
-	}
-	for _, c := range steps {
-		out, err := exec.Command(c[0], c[1:]...).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%v: %w (%s)", c, err, strings.TrimSpace(string(out)))
-		}
-	}
-	return nil
+		[]string{"uci", "commit", "network"},
+		[]string{"uci", "commit", "firewall"},
+	)
 }
 
 func runInit(name, action string) ([]byte, error) {

@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 // BundleEnvelope 是 R2 schema v2 的 Go 形态（driver-abstraction.md §5 / unified-platform-architecture.md §3）。
@@ -230,6 +232,103 @@ type ConnectionPlan struct {
 	TargetNodeID    string         `json:"target_node_id"`
 	TransportMode   string         `json:"transport_mode,omitempty"`
 	TransportPolicy map[string]any `json:"transport_policy,omitempty"`
+}
+
+// TunDeviceMaxLen Linux IFNAMSIZ=16（含结尾 \0）；gnb 的 conf 解析器同样是 16 字节
+// 缓冲并**静默截断**到 15（gnb_conf_file.c:275-277）。
+const TunDeviceMaxLen = 15
+
+// tunDevicePattern 是**节点侧**对接口名的形态要求，刻意与 back 的字段声明
+// （`vpn.gnb…ifname.validation`）分开的两份判据：
+//
+//   - back 那份是**写入门禁**，决定「管理员能不能存下这个值」，可以更严；
+//   - 这份是**安全边界**，只挡会出事的两类：超长（内核与 gnb 静默截断）
+//     与含拼接字符（agent 把名字拼进 `ip route … dev X` / `iptables -o X`，
+//     空格=断词、分号=注入、斜杠=非法接口名）。
+//
+// 不在这里复制 back 的字符集，是为了让 back 收紧或放宽声明时**不必同步发 agent**：
+// 两边钉死同一字符串的话，改一处就把自己刚下发的合法配置判成非法，节点直接停更。
+var tunDevicePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,15}$`)
+
+// ValidateTunDevice 校验一个接口名能不能安全地落到系统里。
+func ValidateTunDevice(name string) error {
+	if name == "" {
+		return fmt.Errorf("接口名为空")
+	}
+	// 先给长度单独报错：截断是这条链上最阴的失败模式（不报错、名字变样），
+	// 报错里带上实际长度才看得出是「谁拼了 node_id」。
+	if len(name) > TunDeviceMaxLen {
+		return fmt.Errorf("接口名 %q 长 %d 字符，超过上限 %d（内核与 gnb 都会静默截断，之后按名字找接口全对不上）",
+			name, len(name), TunDeviceMaxLen)
+	}
+	if !tunDevicePattern.MatchString(name) {
+		return fmt.Errorf("接口名 %q 不合法（须为 [A-Za-z0-9._-]，最长 %d 字符）：会被拼进 ip route / 防火墙命令与驱动配置",
+			name, TunDeviceMaxLen)
+	}
+
+	return nil
+}
+
+// TunDevice 返回本节点的 TUN 接口名。
+//
+// **唯一权威是 `node.interface`**（back 侧同源：node_configs.config.ifname →
+// BundleEnvelopePublisher::resolveTunIfname）。`gnb.options.ifname` 是过渡期别名：
+// back 两处发的是同一个值，agent 老版本只读后者，所以这里仍接受它 —— 但只接受
+// 「与权威一致」或「权威缺失」两种情况。
+//
+// 为什么不回退：接口名决定「流量进哪条隧道」，是阻断性配置。一台主机可能多个
+// zone 共存（现网网关 182：`gnb_tun` 被另一个 zone 占用，本节点用 `gnb_tun_16`），
+// 猜出来的名字**能建接口、能让 ip route 执行成功**，只是把流量搬到别的隧道上且不报错。
+// 宁可 apply 失败、错误可见，也不下发一份会搬走流量的配置。
+func (e *BundleEnvelope) TunDevice() (string, error) {
+	if e == nil {
+		return "", fmt.Errorf("envelope 为 nil")
+	}
+
+	authority := strings.TrimSpace(e.Node.Interface)
+	legacy := ""
+	if e.Gnb != nil && e.Gnb.Options != nil {
+		legacy = strings.TrimSpace(e.Gnb.Options.Ifname)
+	}
+
+	name := authority
+	switch {
+	case authority == "" && legacy == "":
+		return "", fmt.Errorf("bundle 没有接口名（node.interface 与 gnb.options.ifname 皆空）：" +
+			"不接受让 gnb 用它自己的默认名静默建口")
+	case authority == "":
+		name = legacy // 旧 back 的 bundle：过渡期认 gnb.options.ifname
+	case legacy != "" && legacy != authority:
+		return "", fmt.Errorf("bundle 接口名冲突：node.interface=%q 与 gnb.options.ifname=%q 不一致，"+
+			"两者必须由 back 同源产生", authority, legacy)
+	}
+
+	if err := ValidateTunDevice(name); err != nil {
+		return "", err
+	}
+
+	return name, nil
+}
+
+// DeviceForRoute 校验一条 OS 路由的 dev 是否指向本节点的隧道口。
+//
+// back 的 `network.routes[].dev` 与接口名同源，所以不一致只可能是**陈旧 bundle**
+// （上一版配置）、手工编辑、或 back 侧漂移。这正是 182 事故的形态：
+// `ip route … dev gnb_tun` 命中了另一个 zone 的接口，路由"装成功了"，流量进了别人的隧道。
+// dev 为空是给网关/别的表用的，不在此列。
+func (e *BundleEnvelope) DeviceForRoute(dev string) error {
+	if strings.TrimSpace(dev) == "" {
+		return nil
+	}
+	want, err := e.TunDevice()
+	if err != nil {
+		return err
+	}
+	if dev != want {
+		return fmt.Errorf("OS 路由的 dev=%q 不是本节点隧道口 %q：拒绝按这份路由装 FIB", dev, want)
+	}
+
+	return nil
 }
 
 // DecodeBundleEnvelope 解码线上 envelope。

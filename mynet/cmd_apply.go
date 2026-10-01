@@ -5,29 +5,42 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/mynet/upgrade"
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/upgrade"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // cmdApply — F-2/F-3/F-5：唯一写入者。
 //
 // 路由 SSOT = bundle.network.routes（不是 gnb route.conf，见 ApplyPlan 注释）。
-// 三面对称：--active 写驱动配置 · --auto 装 OS 路由 · --clear 只清隧道口上的。
+// 边界 SSOT = knowledge-base/spec/route-firewall-split.md。
+//
+// 三面语义（不可混）：
+//
+//	--active  投影：mode.json/intent/bundle → driver/**（不装 OS 路由）
+//	--auto    系统：OS 路由/防火墙/NAT（不改 driver conf）
+//	--clear   清理：只删自己装的隧道路由（所有权闸，不盲删目的地）
 //
 // 读 system.json 决定 exec 什么工具，对 gnb0 与 wg0 一视同仁（不感知驱动）。
 //
 // 用法:
 //
-//	mynet apply [--dry-run] <plan.json>   # 执行一份已生成的计划
-//	mynet apply [--dry-run] --auto        # 直接从 $MYNET_HOME/var/bundle.json 生成并执行
+//	mynet apply [--dry-run] --active       # 只写驱动投影
+//	mynet apply [--dry-run] --auto         # 只装 OS 路由/防火墙（读 var/bundle.json）
+//	mynet apply [--dry-run] --active --auto  # 两面都做（推荐；service start 默认）
+//	mynet apply [--dry-run] --clear        # 清自有隧道路由
+//	mynet apply [--dry-run] <plan.json>    # 执行一份已生成的计划
 //
 // --auto 是给守护进程用的：mynetd 收到 bundle_changed 后要「刷配置 → 起驱动 →
 // 装路由」一条龙，中间不该出现一个临时 plan 文件（多一个落盘点就多一处
 // 「打印的计划」与「真执行的」可能不一致的地方）。两条路径共用 planFromBundle()。
 func cmdApply(args []string) int {
+	// C3：apply 写 driver 投影 / OS 路由，必须显式 MYNET_HOME
+	if _, code := requireHome(); code != 0 {
+		return code
+	}
 	dry := false
 	auto := false
 	active := false
@@ -56,12 +69,15 @@ func cmdApply(args []string) int {
 	}
 
 	// --active：从 mode.json / intent / bundle 生成 driver 投影
+	// 可与 --auto 同用：先投影再装 OS（service start 的默认序）
 	if active {
 		if err := ApplyFromActive(dry); err != nil {
 			fmt.Fprintf(os.Stderr, "apply --active: %v\n", err)
 			return 1
 		}
-		return 0
+		if !auto && !clear {
+			return 0
+		}
 	}
 
 	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
@@ -82,7 +98,13 @@ func cmdApply(args []string) int {
 			fmt.Fprintf(os.Stderr, "apply --auto: 读 bundle 失败（先让 mynetd 拉一版）: %v\n", err)
 			return 1
 		}
-		plan := planFromBundle(env)
+		plan, err := planFromBundle(env)
+		if err != nil {
+			// 计划不成立 = 一条都不装。半装（跳过对不上的路由）会把 FIB
+			// 留在「部分新部分旧」的状态，比不装更难排查。
+			fmt.Fprintf(os.Stderr, "apply --auto: %v\n", err)
+			return 1
+		}
 		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 {
 			// 不是错误：没有对端时本来就没有路由要装。但要**说出来**，
 			// 否则「apply 成功」和「apply 什么都没做」在日志里长得一样。
@@ -94,7 +116,10 @@ func cmdApply(args []string) int {
 	}
 
 	if planPath == "" {
-		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] <plan.json> | --auto | --clear")
+		fmt.Fprintln(os.Stderr, "用法: mynet apply [--dry-run] --active | --auto | --active --auto | --clear | <plan.json>")
+		fmt.Fprintln(os.Stderr, "  --active  写驱动投影 driver/**（不装 OS 路由）")
+		fmt.Fprintln(os.Stderr, "  --auto    装 OS 路由/防火墙（不改 driver conf）")
+		fmt.Fprintln(os.Stderr, "  --clear   清自有隧道路由")
 		return 2
 	}
 
@@ -127,6 +152,10 @@ func cmdApply(args []string) int {
 // /etc/wireguard/<iface>.conf（wireguard.go:146,158,164）—— 路径对不上。
 // gnb 那条链已通；wg 这条要等 install 阶段落地，此处不假装它能用。
 func cmdService(args []string) int {
+	// C3：service 驱动进程生命周期，必须显式 MYNET_HOME
+	if _, code := requireHome(); code != 0 {
+		return code
+	}
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "用法: mynet service <start|stop|reload|restart|status> [gnb|wireguard]")
 		return 2
@@ -175,14 +204,28 @@ func cmdService(args []string) int {
 			return 1
 		}
 		fmt.Printf("started %s\n", name)
+		// D4/§14：DNS 是**用户三选一**（不劫持 / 指定上游 / 交我们），默认不劫持。
+		// 只有显式 mynet dns apply 或配置 dns.hijack=ours 才接管 ——
+		// service start 自动劫持曾把网络干死（多网卡/目标不稳），禁止默认劫持。
+		// stop 时仍还原（幂等），收掉遗留接管。
 		// 起隧道后必须装路由，否则「起来了但 ping 不通」——
 		// 流量没进隧道（实测 DEGRADED：22 条路由未安装）。
-		if code := applyAutoAfterStart(); code != 0 {
-			fmt.Fprintf(os.Stderr, "start %s: 隧道已启动，但路由 apply 未全部成功（exit %d）\n", name, code)
+		if code := applyAfterStart(); code != 0 {
+			fmt.Fprintf(os.Stderr, "start %s: 隧道已启动，但 apply（投影+路由）未全部成功（exit %d）\n", name, code)
 			return code
 		}
 		return 0
 	case "stop":
+		// 还原遗留 DNS 接管（幂等；只有显式接管过才有备份）
+		if isPCDNSPlatform() {
+			if err := RestoreSystemDNS(); err != nil {
+				fmt.Fprintf(os.Stderr, "⚠ DNS 还原失败: %v\n", err)
+			} else if DNSRestoreNeeded() {
+				fmt.Println("dns: 仍有未还原的接管（mynet dns restore）")
+			} else {
+				fmt.Println("dns: 无接管或已还原")
+			}
+		}
 		if err := d.Stop(); err != nil {
 			fmt.Fprintf(os.Stderr, "stop %s: %v\n", name, err)
 			return 1
@@ -196,8 +239,8 @@ func cmdService(args []string) int {
 			return 1
 		}
 		fmt.Printf("reloaded %s\n", name)
-		if code := applyAutoAfterStart(); code != 0 {
-			fmt.Fprintf(os.Stderr, "reload %s: 路由 apply 未全部成功（exit %d）\n", name, code)
+		if code := applyAfterStart(); code != 0 {
+			fmt.Fprintf(os.Stderr, "reload %s: apply（投影+路由）未全部成功（exit %d）\n", name, code)
 			return code
 		}
 		return 0
@@ -218,11 +261,18 @@ func cmdService(args []string) int {
 	}
 }
 
-// applyAutoAfterStart 启动/重启后从 bundle 自动装 OS 路由与防火墙。
-// 复用 `apply --auto` 同一套策略（防劫持跳过、所有权闸等）。
-func applyAutoAfterStart() int {
-	logger.Comp("apply").Info("启动后自动 apply 路由")
-	return cmdApply([]string{"--auto"})
+// applyAfterStart 启动/重启后：先投影再装 OS 路由（route-firewall-split §3.1）。
+// 复用 `apply --active --auto` 同一套策略（防劫持跳过、所有权闸等）。
+func applyAfterStart() int {
+	logger.Comp("apply").Info("启动后 apply：投影 + OS 路由")
+	// 缺 system.json 时 apply --auto 会直接失败、路由装不全 —— 先补 detector。
+	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
+		logger.Comp("apply").Info("system.json 缺失，先跑 detector")
+		if rc := cmdDetector(nil); rc != 0 {
+			logger.Comp("apply").Warn("detector 失败，apply 可能不完整")
+		}
+	}
+	return cmdApply([]string{"--active", "--auto"})
 }
 
 // buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。
@@ -250,12 +300,16 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 
 		return d, nil
 	case domain.DriverTypeWireGuard:
-		d := driver.NewWireGuardDriver(env.Node.Interface, 0)
+		// 接口名只经 TunDevice() 这一个解析口，且**不给「空则 wg0」的兜底**：
+		// wg-quick 只要接口名存在就执行成功，猜错名字等于把这台机器的流量搬进
+		// 别人的隧道 —— 宁可这里报错、服务起不来，也不下一份会把流量搬走的配置。
+		dev, err := env.TunDevice()
+		if err != nil {
+			return nil, fmt.Errorf("wireguard 接口名: %w", err)
+		}
+		d := driver.NewWireGuardDriver(dev, 0)
 		// 路径对齐 wg-quick 原生位（见 wireguard.go WriteIntent 默认值）。
 		// 此前写 var/wg.conf 而 wg-quick 只读 /etc/wireguard/，Start 必失败。
-		if d.Interface == "" {
-			d.Interface = "wg0"
-		}
 		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
 
 		return d, nil

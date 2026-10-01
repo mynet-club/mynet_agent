@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 // recordingExec 记录被调用的 argv，可选阻塞以测单飞守卫。
@@ -173,10 +173,15 @@ func TestEventUnknownIsLogged(t *testing.T) {
 
 // 单飞守卫：同一时刻只允许一个刷新在跑。
 // 多个 `mynet apply`/`refresh-*` 并发写 OS 路由与驱动配置是本项目踩过的坑。
+//
+// ⚠️ 「合并」不等于「丢弃」：在跑期间到达的事件按名字合并成一份，
+// 守卫释放后**补跑一次**。丢弃的代价是「错过的那次推送永远不会再来了」
+// （网关不补发），实测形态就是「back 改了配置，节点毫无反应」。
 func TestEventDispatcherMergesConcurrentEvents(t *testing.T) {
 	block := make(chan struct{})
 	ex := &recordingExec{block: block}
 	d, logs := newTestDispatcher(ex.run)
+	d.setBundleSyncer(func(context.Context) (string, error) { return "updated", nil })
 
 	d.Handle("route_changed", nil)
 	// 等第一个真的进入执行（inFlight 已置位）
@@ -184,24 +189,93 @@ func TestEventDispatcherMergesConcurrentEvents(t *testing.T) {
 		t.Fatal("第一个事件未开始执行")
 	}
 
-	// 第一个还在跑时再来两个 → 应被合并丢弃
-	d.Handle("route_changed", nil)
+	// 第一个还在跑时再来事件 → 排队补跑，但绝不能并发执行
+	d.Handle("route_changed", nil) // 同名，合并成一份
 	d.Handle("bundle_changed", nil)
 	time.Sleep(150 * time.Millisecond)
 
 	if got := len(ex.snapshot()); got != 1 {
-		t.Errorf("并发事件应被合并，实际执行了 %d 次", got)
+		t.Errorf("在跑期间不得并发执行，实际执行了 %d 次", got)
 	}
-	if !logs.waitLog(t, "合并") {
+	if !logs.waitLog(t, "合并补跑") {
 		t.Errorf("合并时应记日志说明，实际: %q", logs.joined())
 	}
 
-	// 放行后守卫必须释放，后续事件能正常执行
+	// 放行：排队的事件必须补跑（route 1 次 + bundle 生命周期 3 步 = 4）
 	close(block)
+	if !ex.waitCalls(t, 5) {
+		t.Errorf("守卫释放后未补跑排队事件，实际调用 %d 次: %v",
+			len(ex.snapshot()), ex.snapshot())
+	}
+	// 同名只补一次，不得按写入次数膨胀
+	time.Sleep(200 * time.Millisecond)
+	if got := len(ex.snapshot()); got != 5 {
+		t.Errorf("同名事件应合并为一次补跑，实际调用 %d 次: %v", got, ex.snapshot())
+	}
+}
+
+// ── 连接建立时的补拉（WS 下发自愈，替代「心跳兜底」那句假话）──────────────
+
+func fixedSyncer(status string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) { return status, nil }
+}
+
+// 补拉到新版 → 必须走完整落地链（refresh-config → 重载驱动 → 装路由）。
+// 只写盘不重载就是「收到了但没生效」那一类最难发现的故障。
+func TestCatchUpBundleRunsLifecycleWhenUpdated(t *testing.T) {
+	ex := &recordingExec{}
+	d, logs := newTestDispatcher(ex.run)
+	d.setBundleSyncer(fixedSyncer("updated"))
+
+	d.catchUpBundle()
+
+	if !ex.waitCalls(t, 3) {
+		t.Fatalf("补拉到新版应跑三步落地链，实际: %v（日志 %q）", ex.snapshot(), logs.joined())
+	}
+	want := []string{"refresh-config", "reload", "apply"}
+	for i, w := range want {
+		if !strings.Contains(ex.snapshot()[i], w) {
+			t.Errorf("第 %d 步 argv = %q, 应含 %q", i+1, ex.snapshot()[i], w)
+		}
+	}
+}
+
+// 304（unchanged）= 本地已是最新。此时**不得**重载驱动：
+// 重连是常规事件（网络抖动就会重连），每次重连都 Stop+Start 等于周期性掐断隧道。
+func TestCatchUpBundleSkipsWhenUnchanged(t *testing.T) {
+	ex := &recordingExec{}
+	d, _ := newTestDispatcher(ex.run)
+	d.setBundleSyncer(fixedSyncer("unchanged"))
+
+	d.catchUpBundle()
+	time.Sleep(150 * time.Millisecond)
+
+	if got := ex.snapshot(); len(got) != 0 {
+		t.Errorf("bundle 未变更时不得重载驱动/装路由，实际: %v", got)
+	}
+}
+
+// 拉取链未装配 / 拉取失败：只记日志，不执行，也不得谎报成功。
+func TestCatchUpBundleLogsAndSkipsOnFailure(t *testing.T) {
+	ex := &recordingExec{}
+	d, logs := newTestDispatcher(ex.run)
+	// 未装配
+	d.catchUpBundle()
+	if !logs.waitLog(t, "拉取链未装配") {
+		t.Errorf("未装配时应说明缺什么，实际: %q", logs.joined())
+	}
+
+	d2, logs2 := newTestDispatcher(ex.run)
+	d2.setBundleSyncer(func(context.Context) (string, error) {
+		return "", errors.New("relay 超时")
+	})
+	d2.catchUpBundle()
+	if !logs2.waitLog(t, "拉取失败") {
+		t.Errorf("拉取失败应记日志，实际: %q", logs2.joined())
+	}
 	time.Sleep(100 * time.Millisecond)
-	d.Handle("route_changed", nil)
-	if !ex.waitCalls(t, 2) {
-		t.Error("守卫未释放 —— 后续事件再也跑不动了")
+	if got := ex.snapshot(); len(got) != 0 {
+		t.Errorf("拉取失败不应执行任何落地步骤，实际: %v", got)
 	}
 }
 

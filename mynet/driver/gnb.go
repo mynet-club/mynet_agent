@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // GNBDriver — A-3。只读 + 生命周期。
@@ -254,22 +254,25 @@ func (d *GNBDriver) WriteIntent(g *domain.GnbIntent) error {
 	return d.writeGnbKeys(g)
 }
 
-// checkGnbIfname 挡掉超长接口名。
+// checkGnbIfname 挡掉会被静默截断或拼坏命令的接口名（规则在 domain.ValidateTunDevice，
+// 与路由/proxy 那条解析链同源）。
 //
 // gnb 的 ifname 缓冲区是 16 字节且硬截断到 15 字符
 // （gnb_conf_file.c:275-277：memset(…,0,16) + strncpy(…,16) + ifname[15]='\0'），
 // Linux 的 IFNAMSIZ 同样是 16。超长名字会被**静默截断**成一个谁也没预期的接口名，
 // 之后所有按名字找接口的操作全都对不上。宁可在这里报错。
+//
+// 空值在这里是允许的，因为本函数也服务**本地意图**（apply --active 的 local 模式，
+// 没有 back 参与，只能由 gnb 自己决定默认名）。从 bundle 来的路径不会走到「空」：
+// project_active / refresh-config 用 node.interface 覆盖过 Options.Ifname，
+// 解析不出来时直接报错退出（见 domain.BundleEnvelope.TunDevice）。
 func checkGnbIfname(g *domain.GnbIntent) error {
 	ifname := gnbIfname(g)
 	if ifname == "" {
-		return nil // 空 → 不写 ifname 键，gnb 用自己的默认 gnb_tun（gnb_argv.c:224）
-	}
-	if len(ifname) > 15 {
-		return fmt.Errorf("gnb: ifname %q 长 %d 字符，超过上限 15（会被静默截断）", ifname, len(ifname))
+		return nil
 	}
 
-	return nil
+	return domain.ValidateTunDevice(ifname)
 }
 
 func gnbIfname(g *domain.GnbIntent) string {

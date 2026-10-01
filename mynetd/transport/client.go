@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 type Config struct {
@@ -22,15 +22,20 @@ type Config struct {
 	NodeID   string
 	// HandshakeTimeout / IdleTimeout / Backoff*
 	HandshakeTimeout time.Duration
-	IdleTimeout      time.Duration
-	BackoffBase      time.Duration
-	BackoffMax       time.Duration
+	// IdleTimeout 允许「没有下行帧」的最长时长。超过即判定连接已死，主动断开重连。
+	IdleTimeout time.Duration
+	// PingInterval 发一次 ping（并顺带做一次 IdleTimeout 判活）的间隔。
+	// 必须显著小于 IdleTimeout，否则判活要等到下一个 tick 才发生。
+	PingInterval time.Duration
+	BackoffBase  time.Duration
+	BackoffMax   time.Duration
 }
 
 func DefaultConfig() Config {
 	return Config{
 		HandshakeTimeout: 10 * time.Second,
 		IdleTimeout:      180 * time.Second,
+		PingInterval:     30 * time.Second,
 		BackoffBase:      2 * time.Second,
 		BackoffMax:       2 * time.Minute,
 	}
@@ -40,6 +45,15 @@ func DefaultConfig() Config {
 type Handlers struct {
 	OnCommand func(ctx context.Context, req commands.Request) commands.Result
 	OnEvent   func(name string, data map[string]string)
+	// OnConnect 每次 WS 连接**建立**后被调用（首连和每次重连都算）。
+	//
+	// 为什么需要它：网关下发是 fire-and-forget 的事件帧，连接断开期间 back
+	// 推过的 bundle_changed **不会补发**，通知丢了就永远丢。让「连上」这个动作
+	// 自己补一次拉取（ETag 条件请求，无变化就是 304），断线窗口才不至于变成
+	// 「配置永久滞后」。这是 WS 链路的自愈，不是心跳轮询。
+	//
+	// 跑在独立 goroutine 上，不得阻塞读循环；内部自行限时。
+	OnConnect func(ctx context.Context)
 	// OnResult 把命令结果编码成一帧上行数据（由调用方完成节点面签名）。
 	// 返回 nil 表示不上报。
 	//
@@ -84,6 +98,25 @@ func (c *Client) setSender(f func([]byte) error) {
 	c.mu.Unlock()
 }
 
+// fireOnConnect 由 Dialer 在连接建立后调用：跑一次「连上就该做的事」。
+//
+// 跑在独立 goroutine 上，绝不能在读循环之前同步等它 —— 补拉 bundle 走的是
+// HTTP relay（另一条通路），慢或失败都不该拖住下行帧的接收。
+// ctx 是这次连接的生命周期上下文：断开后补拉即使还在跑，也会被取消。
+func (c *Client) fireOnConnect(ctx context.Context) {
+	if c.handlers.OnConnect == nil {
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logf("transport: OnConnect 回调 panic: %v", r)
+			}
+		}()
+		c.handlers.OnConnect(ctx)
+	}()
+}
+
 // Connected 报告当前是否有可用的上行通道。
 func (c *Client) Connected() bool {
 	c.mu.Lock()
@@ -101,9 +134,9 @@ func New(cfg Config, h Handlers, logf func(string, ...any)) (*Client, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	if cfg.HandshakeTimeout == 0 {
-		cfg = mergeDefaults(cfg)
-	}
+	// 始终过一遍 mergeDefaults：拨号实现现在会**用** IdleTimeout 判连接死活
+	// （见 dial_websocket.go 的 pong 超时），漏配不能再退化成「恒为 0 → 一连就判死」。
+	cfg = mergeDefaults(cfg)
 	cl := &Client{cfg: cfg, handlers: h, logf: logf, dialer: WebSocketDialer}
 	return cl, nil
 }
@@ -115,6 +148,9 @@ func mergeDefaults(cfg Config) Config {
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = d.IdleTimeout
+	}
+	if cfg.PingInterval == 0 {
+		cfg.PingInterval = d.PingInterval
 	}
 	if cfg.BackoffBase == 0 {
 		cfg.BackoffBase = d.BackoffBase

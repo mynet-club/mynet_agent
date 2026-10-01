@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func snapNft() *shared.SystemSnapshot {
@@ -185,7 +185,10 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 			},
 		},
 	}
-	plan := planFromBundle(env)
+	plan, perr := planFromBundle(env)
+	if perr != nil {
+		t.Fatal(perr)
+	}
 	if plan.Proxy == nil {
 		t.Fatal("plan.Proxy 为空")
 	}
@@ -197,7 +200,10 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 	}
 	// 出口 VIP 显式给出时优先
 	env.Network.Proxy.Exits[0].Via = "10.20.0.99"
-	plan2 := planFromBundle(env)
+	plan2, perr2 := planFromBundle(env)
+	if perr2 != nil {
+		t.Fatal(perr2)
+	}
 	if plan2.Proxy.Runtime.ExitVia != "10.20.0.99" {
 		t.Fatalf("显式 via 应优先: %q", plan2.Proxy.Runtime.ExitVia)
 	}
@@ -230,7 +236,10 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 	if env.Network.Proxy == nil {
 		t.Fatal("fixture 缺 network.proxy")
 	}
-	plan := planFromBundle(env)
+	plan, perr := planFromBundle(env)
+	if perr != nil {
+		t.Fatal(perr)
+	}
 	if plan.Proxy == nil {
 		t.Fatal("plan.Proxy 为空")
 	}
@@ -243,7 +252,8 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 		"fwmark 0xc8",
 		"daddr @mynet_proxy dst4 meta mark set 0xc8",
 		"ip route replace 8.8.8.8/32", // GUARD-OK 测试断言命令串，非执行点
-		"mynet proxy dns-split 223.5.5.5,119.29.29.29 8.8.8.8",
+		// mynetBinPath() 给绝对路径（服务环境 PATH 不含 mynet）——只查子命令
+		"proxy dns-split 223.5.5.5,119.29.29.29 8.8.8.8",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("fixture 链缺 %q\n%s", want, text)

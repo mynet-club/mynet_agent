@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // commandPullTimeout 一次 command_queued 处理（拉取 + 执行 + 回报）的总超时。
@@ -52,13 +54,22 @@ type eventDispatcher struct {
 	// bundle_changed 必须**先拉后刷**：refresh-config 读的是 var/bundle.json，
 	// 不先拉就只能读到上一版、或者根本没有那个文件（V1-10① 的断点）。
 	syncBundle func(ctx context.Context) (string, error)
+
+	// pending 是「跑的时候又来事件」的补跑队列（按事件名合并，见 runExclusive）。
+	pendingMu sync.Mutex
+	pending   map[string]func()
 }
+
+// bundleStatusUpdated 是 bundleStore.Sync 在拿到新版时返回的标记
+// （另一种是 "unchanged"，即 back 返 304）。
+const bundleStatusUpdated = "updated"
 
 // bundleSyncTimeout 一次 bundle 拉取的超时。
 //
 // 比 backRequestTimeout 短：它跑在事件处理路径上，卡住会让后续事件全排队
-// （inFlight 守卫是串行的）。超时就放弃这一次 —— back 还会再广播，
-// 且节点下次心跳轮询也能补上。
+// （inFlight 守卫是串行的）。超时就放弃这一次 —— 事件侧的补偿不是靠心跳轮询
+// 兜底，而是靠「下次 WS 连接建立时补拉」（transport.OnConnect），
+// 断线窗口越长、重连越多次，追平的机会越多。
 const bundleSyncTimeout = 15 * time.Second
 
 // setBundleSyncer 注入 bundle 拉取能力。与 heartbeat 的 setReporter 同一套做法：
@@ -67,14 +78,14 @@ func (d *eventDispatcher) setBundleSyncer(fn func(ctx context.Context) (string, 
 	d.syncBundle = fn
 }
 
-// pullBundle 拉一次 bundle。返回 false 表示**不该继续跑 refresh** ——
-// 因为没有新配置可读，跑下去只会把「读 bundle 失败」当成刷新失败报出来，
-// 那会把「上游没拉到」和「本地刷新坏了」两种故障混成一条日志。
-func (d *eventDispatcher) pullBundle(name string) bool {
+// pullBundle 拉一次 bundle。返回 (结果标记, 是否该继续跑刷新) ——
+// false 表示**不该继续**：因为没有新配置可读，跑下去只会把「读 bundle 失败」
+// 当成刷新失败报出来，那会把「上游没拉到」和「本地刷新坏了」两种故障混成一条日志。
+func (d *eventDispatcher) pullBundle(name string) (string, bool) {
 	if d.syncBundle == nil {
 		d.logf("event: %s —— bundle 拉取链未装配（未配 MYNET_GATEWAYS 或节点面密钥未就绪），"+
 			"只能沿用本地已有的 var/bundle.json", name)
-		return false
+		return "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bundleSyncTimeout)
 	defer cancel()
@@ -82,10 +93,28 @@ func (d *eventDispatcher) pullBundle(name string) bool {
 	status, err := d.syncBundle(ctx)
 	if err != nil {
 		d.logf("event: %s —— bundle 拉取失败，跳过本次刷新: %s", name, err)
-		return false
+		return "", false
 	}
 	d.logf("event: %s —— bundle %s", name, status)
-	return true
+	return status, true
+}
+
+// catchUpBundle 连接建立时补一次拉取（由 transport.OnConnect 触发）。
+//
+// 这是 WS 下发的自愈路径：网关推送是 fire-and-forget，节点断开（网络抖动、网关
+// 重启、背压判死）期间 back 广播的 bundle_changed **不会补发**。以前说「心跳会
+// 兜住」，但心跳只做采集上报、根本不拉 bundle —— 于是「错过一次推送」实际等于
+// 「配置永久滞后，直到进程重启」。现在每次连上都对一次 ETag：
+//   - 304（unchanged）→ 什么都不做，不重载驱动（避免无谓的隧道抖动）
+//   - updated         → 走完整落地链 runBundleLifecycle
+//   - 拉取失败        → 只记日志，下次重连再试
+func (d *eventDispatcher) catchUpBundle() {
+	status, ok := d.pullBundle("ws 连接建立")
+	if !ok || status != bundleStatusUpdated {
+		return
+	}
+	d.logf("event: 重连补拉到新配置（generation 变更），执行落地链")
+	d.runExclusive("reconnect", d.runBundleLifecycle)
 }
 
 // maxCommandsPerEvent 单次 command_queued 最多处理多少条命令。
@@ -108,10 +137,10 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 	d.runExclusive(name, func() {
 		// bundle_changed 先拉后刷（见 pullBundle）。route_changed 不需要 ——
 		// 它刷的是拓扑/路由，就地可完成，不依赖 back 下发的配置包。
-		if name == "bundle_changed" && !d.pullBundle(name) {
-			return
-		}
 		if name == "bundle_changed" {
+			if _, ok := d.pullBundle(name); !ok {
+				return
+			}
 			d.runBundleLifecycle()
 			return
 		}
@@ -204,8 +233,8 @@ func (d *eventDispatcher) runCommandPull(commandID string) {
 				d.executeOne(ctx, cmd)
 			}
 		}
-		d.logf("event: 单次 command_queued 处理已达上限 %d 条，剩余留待下次事件或心跳轮询",
-			maxCommandsPerEvent)
+		d.logf("event: 单次 command_queued 处理已达上限 %d 条，剩余仍在 back 队列里，"+
+			"下次 command_queued 事件或重连补拉会接着取", maxCommandsPerEvent)
 	})
 }
 
@@ -244,16 +273,78 @@ func (d *eventDispatcher) reportResult(ctx context.Context, res commands.Result)
 	}
 }
 
-// runExclusive 在单飞守卫下跑一个动作。
+// runExclusive 在单飞守卫下跑一个动作，**忙碌时不丢事件**。
+//
+// 为什么不是「直接丢弃」：丢弃的前提是同一次在跑的动作能看到新状态。这个前提
+// 在两类场景下都不成立 ——
+//  1. 在跑的是 command_queued（拉命令 + 执行，可能几分钟），此时 bundle_changed
+//     到达被丢 → 新配置永远不落地，除非网关再推一次（它不会）；
+//  2. 在跑的 bundle 拉取已经**越过**了拉取步骤，之后的推送若被丢，本地文件不会更新。
+//
+// 所以改成「按事件名合并补跑」：同名只记一份，当前动作结束后再跑一次。
+// 合并仍然安全（语义是「去处理」而非「处理 N 次」），但不再丢失「有变化」这个事实。
 func (d *eventDispatcher) runExclusive(name string, fn func()) {
 	if !d.inFlight.CompareAndSwap(false, true) {
-		d.logf("event: %s 已有动作在跑，合并本次（事件语义是「去处理」而非「处理 N 次」）", name)
+		d.queuePending(name, fn)
+		d.logf("event: %s 已有动作在跑，合并补跑", name)
 		return
 	}
 	go func() {
-		defer d.inFlight.Store(false)
 		fn()
+		for {
+			// 守卫仍在手上时取空队列：期间新到的事件只会入队，不会并发跑。
+			tasks := d.takePending()
+			for _, t := range tasks {
+				t.fn()
+			}
+			if len(tasks) == 0 {
+				d.inFlight.Store(false)
+				// 置空闲与上一条入队可能交错（它先入队、我们后置空闲），
+				// 那一条就没有人去跑了。再确认一次，非空就重新占位继续。
+				if d.hasPending() && d.inFlight.CompareAndSwap(false, true) {
+					continue
+				}
+				return
+			}
+		}
 	}()
+}
+
+func (d *eventDispatcher) queuePending(name string, fn func()) {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+	if d.pending == nil {
+		d.pending = make(map[string]func())
+	}
+	// 同名只留一份：合并的语义是「这个事件类型还需要被处理一次」。
+	d.pending[name] = fn
+}
+
+type pendingTask struct {
+	name string
+	fn   func()
+}
+
+// takePending 取空补跑队列（按名字排序，保证日志与测试的确定性）。
+func (d *eventDispatcher) takePending() []pendingTask {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+	if len(d.pending) == 0 {
+		return nil
+	}
+	out := make([]pendingTask, 0, len(d.pending))
+	for name, fn := range d.pending {
+		out = append(out, pendingTask{name: name, fn: fn})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	d.pending = nil
+	return out
+}
+
+func (d *eventDispatcher) hasPending() bool {
+	d.pendingMu.Lock()
+	defer d.pendingMu.Unlock()
+	return len(d.pending) > 0
 }
 
 // stringifyParams 把 back 的 params（任意 JSON 值）压成 commands.Request 要的

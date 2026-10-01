@@ -3,11 +3,13 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 func TestConnectHeadersHaveNodeIDButNoSignature(t *testing.T) {
@@ -121,4 +123,83 @@ func TestRunStopsOnCancel(t *testing.T) {
 	if err == nil || (!strings.Contains(err.Error(), "context") && ctx.Err() == nil) {
 		// Run 返回 ctx.Err()
 	}
+}
+
+// 每次连接建立都要触发补拉（断线窗口里网关推的事件不会补发）。
+// ctx 必须是**本次连接**的生命周期：连接结束时补拉要跟着收尾。
+func TestFireOnConnectFiresWithConnectionContext(t *testing.T) {
+	var mu sync.Mutex
+	fired := 0
+	entered := make(chan struct{}, 1)
+	canceled := make(chan struct{})
+
+	c, err := New(Config{Gateways: []string{"ws://gw/v1/node/connect"}, NodeID: "n1"},
+		Handlers{OnConnect: func(ctx context.Context) {
+			mu.Lock()
+			fired++
+			mu.Unlock()
+			entered <- struct{}{}
+			<-ctx.Done()
+			close(canceled)
+		}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.fireOnConnect(ctx)
+
+	<-entered
+	cancel()
+
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("连接结束后 OnConnect 的 ctx 未被取消 —— 补拉会跨连接泄漏")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if fired != 1 {
+		t.Errorf("OnConnect 应触发 1 次，实际 %d", fired)
+	}
+}
+
+// 未注入 OnConnect（桌面端/测试装配可缺省）时不得 panic。
+func TestFireOnConnectWithoutHandlerIsNoop(t *testing.T) {
+	c, err := New(Config{Gateways: []string{"ws://gw"}, NodeID: "n1"}, Handlers{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.fireOnConnect(context.Background())
+}
+
+// OnConnect 里 panic 不能带走守护进程，而且必须留下可见证据 ——
+// 补拉静默失败的症状和「back 没变更」一模一样，没日志就等于查不出来。
+func TestFireOnConnectRecoversPanicAndLogs(t *testing.T) {
+	var mu sync.Mutex
+	got := ""
+	c, err := New(Config{Gateways: []string{"ws://gw"}, NodeID: "n1"},
+		Handlers{OnConnect: func(context.Context) { panic("boom") }},
+		func(f string, a ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = fmt.Sprintf(f, a...)
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c.fireOnConnect(context.Background())
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		s := got
+		mu.Unlock()
+		if strings.Contains(s, "panic") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("OnConnect panic 必须记日志，实际: %q", got)
 }

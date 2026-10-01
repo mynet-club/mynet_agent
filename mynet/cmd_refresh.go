@@ -9,12 +9,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdRefresh — R2-3：refresh-{routes,address,config,keys}
@@ -25,6 +25,10 @@ import (
 //	mynet refresh-keys --auto
 //
 // 输入：$MYNET_HOME/var/bundle.json（BundleEnvelope v2）或 stdin。
+//
+// ⚠️ 语义（U2）：refresh-* **只把本地 bundle 渲染成驱动配置**，不访问网络。
+// 要拉新配置请 `mynet config pull`（下载 + 投影）或 `mynet config sync`（拉新 + 投影 + OS 路由）。
+// 「改了 back 但本地还是旧的」九成是忘了 pull，不是 refresh 坏了。
 func cmdRefresh(args []string) int {
 	what := strings.TrimPrefix(args0(args), "refresh-")
 	rest := args
@@ -134,7 +138,12 @@ func readNodeConf() (map[string]string, error) {
 		// 未初始化时退回 local
 		src = filepath.Join(confDir(), "local")
 	}
-	priv, pub, algo, nodeID, err := keys.LoadNodeKeys(filepath.Join(src, "keys"))
+	// 密钥挂节点：conf/online/{tenant}/nodes/{id}/keys（ResolveKeysDir 兼容旧 {space}/keys）
+	nodeIDHint := ""
+	if mode != nil {
+		nodeIDHint = mode.Active.NodeID
+	}
+	priv, pub, algo, nodeID, err := keys.LoadNodeKeys(utils.ResolveKeysDir(src, nodeIDHint))
 	if err != nil {
 		return nil, fmt.Errorf("读节点密钥失败（先 mynet setup --local|--online）: %w", err)
 	}
@@ -148,7 +157,7 @@ func readNodeConf() (map[string]string, error) {
 		kv["ALGORITHM"] = algo
 	}
 	// back_pub 在 meta.json 里
-	if meta, err := keys.LoadNodeMeta(filepath.Join(src, "keys")); err == nil && meta.BackPubHex != "" {
+	if meta, err := keys.LoadNodeMeta(utils.ResolveKeysDir(src, nodeIDHint)); err == nil && meta.BackPubHex != "" {
 		kv["BACK_PUB_HEX"] = meta.BackPubHex
 	}
 	return kv, nil
@@ -159,7 +168,13 @@ func sharedVarDir() string {
 }
 
 func refreshRoutes(env *domain.BundleEnvelope) int {
-	return printPlan(planFromBundle(env))
+	plan, err := planFromBundle(env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "refresh-routes: %v\n", err)
+		return 1
+	}
+
+	return printPlan(plan)
 }
 
 // planFromBundle L6：NetworkIntent.Routes → apply 计划。
@@ -167,9 +182,23 @@ func refreshRoutes(env *domain.BundleEnvelope) int {
 // refresh-routes（打印计划给人看/存盘）与 apply --auto（直接执行）共用这一份，
 // 否则两条路径的翻译规则迟早漂移 —— 而漂移的症状是「打印的计划」和
 // 「真执行的」不是同一件事，极难发现。
-func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
+//
+// 返回错误 = **这份 bundle 不许翻译成计划**：接口名解析不出来，或某条 OS 路由的
+// dev 指向的不是本节点隧道口。后者是 182 事故的形态（`ip route … dev gnb_tun`
+// 命中另一个 zone 的接口，命令执行成功、路由"装上了"，流量却进了别人的隧道），
+// 所以这里必须在装之前拒掉，而不是等 resolveDevice 按名字找接口。
+func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	var plan ApplyPlan
+
+	dev, err := env.TunDevice()
+	if err != nil {
+		return plan, err
+	}
+
 	for _, r := range env.Network.Routes {
+		if err := env.DeviceForRoute(r.Dev); err != nil {
+			return plan, fmt.Errorf("路由 %s: %w", r.Prefix, err)
+		}
 		plan.Routes = append(plan.Routes, RouteOp{
 			Action:      "replace",
 			Destination: r.Prefix,
@@ -178,14 +207,14 @@ func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
 			Metric:      r.Metric,
 		})
 	}
-	// Device 是逻辑名（gnb_tun）；darwin 的 gnb 实际拿到 utunN。
+	// Device 是逻辑名（如 gnb_tun_16）；darwin 的 gnb 实际拿到 utunN。
 	// 把本机 overlay 地址带上，执行期才能反查真实接口（见 resolveDevice）。
 	plan.LocalAddresses = append(plan.LocalAddresses, env.Network.Addresses...)
 
 	// 代理分流（主线⑦）：back 解算好的 ProxyPolicy → L6 计划。
 	if p := env.Network.Proxy; p != nil && p.Enabled {
 		rt := ProxyRuntime{
-			TunDevice: env.Node.Interface,
+			TunDevice: dev,
 		}
 		if ex := firstEnabledExit(p); ex != nil {
 			rt.ExitVia = resolveExitVia(env, ex)
@@ -201,7 +230,7 @@ func planFromBundle(env *domain.BundleEnvelope) ApplyPlan {
 		plan.Proxy = planProxy(p, rt)
 	}
 
-	return plan
+	return plan, nil
 }
 
 func firstEnabledExit(p *domain.ProxyPolicy) *domain.ProxyExit {
@@ -241,13 +270,26 @@ func refreshAddress(env *domain.BundleEnvelope) int {
 }
 
 func refreshConfig(env *domain.BundleEnvelope) int {
+	// 接口名的唯一权威是 node.interface（back 侧 = node_configs.config.ifname）。
+	// gnb 的渲染只读 Options.Ifname，所以投影前用权威值覆盖它：back 一旦停发那份
+	// 过渡期别名，这条路径也不会退回 gnb 自己的默认名（在多 zone 主机上那是别人
+	// 正在用的接口）。解析不出来就是配置错误 —— 报错退出，不猜。
+	dev, err := env.TunDevice()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "refresh-config: %v\n", err)
+		return 1
+	}
+	if env.Gnb != nil {
+		if env.Gnb.Options == nil {
+			env.Gnb.Options = &domain.GnbOptions{}
+		}
+		env.Gnb.Options.Ifname = dev
+	}
+
 	f := driver.NewFactory()
 	switch env.Driver {
 	case domain.DriverTypeWireGuard:
-		d := driver.NewWireGuardDriver(env.Node.Interface, 0)
-		if d.Interface == "" {
-			d.Interface = "wg0"
-		}
+		d := driver.NewWireGuardDriver(dev, 0)
 		// 与 WriteIntent / wg-quick 同位（见 wireguard.go）
 		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
 		if err := d.WriteIntent(env.WireGuard); err != nil {
