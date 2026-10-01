@@ -67,6 +67,23 @@ get_node_id_from_conf() {
 	sed -n 's/^NODE_ID=//p' "$CONFIG_FILE" 2>/dev/null | head -1
 }
 
+# procd 是异步拉起：gnb 起来到 tun 出现之间有几百 ms~几秒的窗口。
+# 不等就直接跑 apply / firewall / post_start，症状是「服务起来了但
+# 0 条 overlay 路由 + VPN device not found」，重启后节点必然不通。
+wait_for_tun() {
+	local tries="${1:-15}" i=0
+	while [ "$i" -lt "$tries" ]; do
+		if ip link show "$VPN_INTERFACE" >/dev/null 2>&1; then
+			[ "$i" -gt 0 ] && log "tun $VPN_INTERFACE ready after ${i}s"
+			return 0
+		fi
+		i=$((i + 1))
+		sleep 1
+	done
+	log "WARNING: tun $VPN_INTERFACE ${tries}s 内未出现 —— 路由与防火墙规则缺失，接口起来后需补跑 mynet apply --auto"
+	return 1
+}
+
 run_plugin_hooks() {
 	local hook_name="$1"
 	local plugin_dir="$MYNET_HOME/scripts/plugin"
@@ -185,16 +202,15 @@ stop_wg_interface() {
 	ip link del dev "$VPN_INTERFACE" 2>/dev/null || true
 }
 
-# ── start / stop ───────────────────────────────────────────────
-start_service() {
-	load_config || return 1
-	log "Starting MyNet (procd) type=$VPN_TYPE..."
-	run_plugin_hooks "pre_start"
-
-	case "$VPN_TYPE" in
-		gnb)       start_gnb_instance || return 1 ;;
-		wireguard) start_wg_interface || return 1 ;;
-	esac
+# USE_PROCD=1 的坑：start_service 只是在「描述实例」，procd 要等它返回之后才
+# 真正 spawn gnb —— 在原地等 tun 是等不到的。原样直接跑 apply/firewall 的症状
+# 是「服务显示正常、0 条 overlay 路由、firewall: VPN device not found」，
+# 而且只在重启后出现（装完手工补跑过一次 apply 就看不出来）。
+post_start_setup() {
+	wait_for_tun 20 || {
+		log "ERROR: tun $VPN_INTERFACE 未就绪，已跳过路由与防火墙收尾"
+		return 1
+	}
 
 	# 路由：唯一写入者 = mynet apply
 	if [ -x /usr/sbin/mynet ] || command -v mynet >/dev/null 2>&1; then
@@ -208,6 +224,29 @@ start_service() {
 
 	run_plugin_hooks "post_start"
 	log "MyNet started ($VPN_TYPE)"
+	return 0
+}
+
+# ── start / stop ───────────────────────────────────────────────
+start_service() {
+	load_config || return 1
+	log "Starting MyNet (procd) type=$VPN_TYPE..."
+	run_plugin_hooks "pre_start"
+
+	case "$VPN_TYPE" in
+		gnb)       start_gnb_instance || return 1 ;;
+		wireguard) start_wg_interface || return 1 ;;
+	esac
+
+	# wg 的接口是同步 set up 的，可以直接收尾；gnb 交给 procd 异步拉起，
+	# 收尾必须等 tun 出现之后再跑（见 post_start_setup 注释）。
+	if [ "$VPN_TYPE" = "gnb" ]; then
+		( post_start_setup ) &
+		log "gnb 实例已交给 procd，路由/防火墙/post_start 在 tun 就绪后后台补齐"
+		return 0
+	fi
+
+	post_start_setup
 }
 
 stop_service() {
