@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 func TestLocalResultReporter_ReportsSuccess(t *testing.T) {

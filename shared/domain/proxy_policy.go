@@ -67,19 +67,116 @@ type ProxyIPListRef struct {
 	Bytes int64 `json:"bytes,omitempty"`
 }
 
-// ProxyDNS DNS 策略（旧线 DNS_MODE + 新线强劫持）。
+// ProxyDNS DNS 策略（2026-10-01 修订：用户三选一，spec/proxy-split.md §13）。
+//
+// 核心洞察：指**公网**智能 DNS（UDP:53）可被链路劫持/污染；
+// 唯一安全路径是把系统 DNS 指到 **peer 隧道 VIP**，查询走 gnb 加密封装。
+// 不需要本地 forwarder —— 零常驻、零体积。
 type ProxyDNS struct {
-	// Mode none | redirect | resolv | split。
+	// Mode 用户三选一：
+	//   off         不加速（默认）—— 不碰系统 DNS
+	//   peer        隧道节点 DNS —— 系统 DNS → peer VIP（走加密隧道，安全）
+	//   smart       智能 DNS —— 系统 DNS → 智能 DNS（兜底，可能被劫持但不断网）
+	//   peer_smart  叠加：peer 优先，smart 兜底（nameserver 顺序 fallback）
 	Mode string `json:"mode,omitempty"`
-	// Hijack 强劫持范围：off | local（仅本机）| lan（网关，含 LAN）。
-	// 与 Mode 正交：hijack 负责「把 :53 收到本地解析器」，Mode 负责「本地解析器怎么分流」。
+
+	// PeerServers 隧道节点 DNS（mode=peer|peer_smart）。
+	// Addr 是 peer 隧道 VIP（如 10.182.236.180），查询自动进 gnb 数据面。
+	PeerServers []DNSServer `json:"peer_servers,omitempty"`
+
+	// SmartServers 智能 DNS（mode=smart|peer_smart）。
+	// Addr 是智能 DNS 地址（IP 或域名），兜底用。
+	SmartServers []DNSServer `json:"smart_servers,omitempty"`
+
+	// Hijack 强劫持范围：off | local | lan。**仅网关形态有意义**。
+	// client（Win/Mac）不劫持 —— 只改系统 DNS 配置。
+	// 网关也**不需要劫持** —— LAN 客户端本来就指网关当 DNS，只配上游即可。
 	Hijack string `json:"hijack,omitempty"`
+
+	// ── 旧字段（gateway 形态兼容，新码优先用上面的三选一）──
+	// Mode 的旧值 none|redirect|resolv|split 仍被 gateway 侧解析逻辑读。
 	// Server 国外 DNS（redirect/resolv 目标上游，split 的国外 DNS）。
 	Server string `json:"server,omitempty"`
 	// DomesticServers split 模式国内上游。
 	DomesticServers []string `json:"domestic_servers,omitempty"`
 	// RedirectTarget DNAT 目标（通常是出口 peer VIP）。mode=redirect 必填。
 	RedirectTarget string `json:"redirect_target,omitempty"`
+}
+
+// DNSServer 一个 DNS 上游条目（三选一的来源，spec §13.4）。
+// 与 ProxyExit 同形状：来源可租户下发 / 用户自建 / 朋友分享。
+type DNSServer struct {
+	// Source tenant | self | friend | platform —— 来源类型。
+	Source string `json:"source,omitempty"`
+	// Label 显示名（如「朋友的节点」「我的 dnsmasq」）。
+	Label string `json:"label,omitempty"`
+	// Addr 上游地址。peer=隧道 VIP；smart=IP 或域名。
+	Addr string `json:"addr"`
+	// NodeID peer 来源时的节点 ID（便于回链）。
+	NodeID string `json:"node_id,omitempty"`
+}
+
+// DNS 模式常量（spec §13.1）。
+const (
+	DNSModeOff       = "off"        // 不加速（默认）
+	DNSModePeer      = "peer"       // 隧道节点 DNS
+	DNSModeSmart     = "smart"      // 智能 DNS
+	DNSModePeerSmart = "peer_smart" // 叠加：peer 优先，smart 兜底
+)
+
+// Nameservers 按三选一模式推出 nameserver 列表（有序）。
+// 顺序即优先级：peer 在前、smart 在后，OS/dnsmasq 自带 fallback。
+//
+//	off        → nil（不碰 DNS）
+//	peer       → [peer VIP...]
+//	smart      → [smart IP...]
+//	peer_smart → [peer VIP..., smart IP...]
+//
+// 旧模式（none|redirect|resolv|split）返回 nil —— 由 gateway 侧旧逻辑处理。
+func (d *ProxyDNS) Nameservers() []string {
+	if d == nil {
+		return nil
+	}
+	switch d.Mode {
+	case DNSModePeer, DNSModePeerSmart:
+		var out []string
+		for _, s := range d.PeerServers {
+			if s.Addr != "" {
+				out = append(out, s.Addr)
+			}
+		}
+		if d.Mode == DNSModePeerSmart {
+			for _, s := range d.SmartServers {
+				if s.Addr != "" {
+					out = append(out, s.Addr)
+				}
+			}
+		}
+		return out
+	case DNSModeSmart:
+		var out []string
+		for _, s := range d.SmartServers {
+			if s.Addr != "" {
+				out = append(out, s.Addr)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// Active 三选一是否开启了 DNS 处理（off/空 = 不碰）。
+func (d *ProxyDNS) Active() bool {
+	if d == nil {
+		return false
+	}
+	switch d.Mode {
+	case DNSModePeer, DNSModeSmart, DNSModePeerSmart:
+		return len(d.Nameservers()) > 0
+	default:
+		return false
+	}
 }
 
 // ── Region × Policy 矩阵 ─────────────────────────────────────

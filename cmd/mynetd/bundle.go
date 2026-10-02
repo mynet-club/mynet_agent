@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // bundleStore 把 back 下发的 BundleEnvelope 落到 $MYNET_HOME/var/bundle.json。

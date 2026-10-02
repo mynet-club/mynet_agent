@@ -1,0 +1,48 @@
+#!/bin/sh
+# 服务装配：全部委托给 `mynet install`（plist/env/detector/enable 都在执行器里，
+# pkg 不自己写 launchd —— 薄壳原则，system 能力只归 mynet/mynetd 执行器）。
+#
+# gateways 解析顺序（升级不换网络入口）：
+#   1) /opt/mynet/etc/mynetd.env 的 MYNET_GATEWAYS（mynet install 上次写的）
+#   2) 已装 plist 的 EnvironmentVariables（launchd 口径）
+#   3) 出厂默认 gw.mynet.club
+set -u
+MYNET_HOME=/var/lib/mynet
+GW_DEFAULT='wss://gw.mynet.club/v1/node/connect'
+
+GW=""
+if [ -f /opt/mynet/etc/mynetd.env ]; then
+  GW=$(sed -n 's/^MYNET_GATEWAYS=//p' /opt/mynet/etc/mynetd.env | head -1)
+fi
+if [ -z "$GW" ] && [ -f /Library/LaunchDaemons/com.mynet.mynetd.plist ]; then
+  GW=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MYNET_GATEWAYS' \
+    /Library/LaunchDaemons/com.mynet.mynetd.plist 2>/dev/null || true)
+fi
+[ -n "$GW" ] || GW="$GW_DEFAULT"
+
+export MYNET_HOME
+/opt/mynet/bin/mynet install \
+  --gateways "$GW" \
+  --prefix /opt/mynet --home "$MYNET_HOME"
+rc=$?
+if [ $rc -ne 0 ]; then
+  # 不静默：文件已落地、服务没装配成功，让用户看到确切补救命令
+  echo "文件已安装，但服务装配失败（rc=$rc）。请手动执行：" >&2
+  echo "  sudo MYNET_HOME=$MYNET_HOME /opt/mynet/bin/mynet install --gateways '$GW' --prefix /opt/mynet --home $MYNET_HOME" >&2
+  exit $rc
+fi
+
+# 装完即引导：等 mynetd 的 WebUI 就绪（launchd bootstrap 到监听有几秒间隙），
+# 再以控制台用户打开浏览器 —— root 直接 open 会把页面开到错的会话/根本不开。
+# 打不开不算安装失败（托盘已在菜单栏，菜单里也能进控制台）。
+n=0
+while [ $n -lt 12 ]; do
+  curl -sf -o /dev/null http://127.0.0.1:8096/ui/ && break
+  n=$((n+1))
+  sleep 2
+done
+CU=$(stat -f%Su /dev/console)
+if [ -n "$CU" ] && [ "$CU" != root ]; then
+  su "$CU" -c 'open http://127.0.0.1:8096/ui/' 2>/dev/null || true
+fi
+exit 0

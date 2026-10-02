@@ -32,15 +32,21 @@ import (
 // 所以 launchd 负责「mynetd 一直活着」，gnb 由 mynetd 用 daemon 化方式拉起
 // —— 与 Linux 的 mynet_gnb.service 分工不同，这是 darwin 的现实约束。
 
-// LaunchdLabel 两个 LaunchDaemon 的 Label。gnb 的那条只在卸载时清理
-// （旧版装过），不再写入。
+// LaunchdLabel LaunchDaemon 的 Label。gnb 的那条只在卸载时清理
+// （旧版装过），不再写入。LabelTray 与托盘自带 autostart 同名 ——
+// 同一 gui 域里同名 Label 只会有一份生效，不会双托盘。
 const (
 	LabelMynetd = "com.mynet.mynetd"
 	LabelGNB    = "com.mynet.gnb"
+	LabelTray   = "club.mynet.tray"
 )
 
-// launchdPlistDir root 专属目录。
-const launchdPlistDir = "/Library/LaunchDaemons"
+// launchdPlistDir root 专属目录；launchAgentsDir 是全体登录用户的
+// LaunchAgent 目录（launchd 在每次登录时自动加载，安装器代写=装完即有托盘）。
+const (
+	launchdPlistDir = "/Library/LaunchDaemons"
+	launchAgentsDir = "/Library/LaunchAgents"
+)
 
 // installLaunchd 写 plist 并 bootstrap。要求已 root。
 func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
@@ -57,8 +63,9 @@ func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
 		"PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
 
-	if err := writeLaunchdPlist(LabelMynetd, launchdPlistDir, []string{mynetdBin, "-listen", "127.0.0.1:8711"},
-		env, "/var/log/mynet/mynetd.log", "/var/log/mynet/mynetd.err"); err != nil {
+	// 8096 = 本机 API/WebUI 约定端口（AGENTS.md §1.5）；与 DefaultLocalAPI 一致
+	if err := writeLaunchdPlist(LabelMynetd, launchdPlistDir, []string{mynetdBin, "-listen", "127.0.0.1:8096"},
+		env, "/var/log/mynet/mynetd.log", "/var/log/mynet/mynetd.err", true); err != nil {
 		return err
 	}
 	fmt.Println("installed", filepath.Join(launchdPlistDir, LabelMynetd+".plist"))
@@ -75,6 +82,69 @@ func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
 	return nil
 }
 
+// installTrayAgent 装 macOS 托盘（安装器形态的一部分：装完菜单栏就要有东西）。
+//
+// 托盘是 GUI 进程，归 LaunchAgent（gui 域）不归 LaunchDaemon：
+//   - plist 写 /Library/LaunchAgents —— 全体用户登录时 launchd 自动加载；
+//   - 当场生效要 `launchctl asuser <uid> bootstrap gui/<uid>`（root 装完
+//     立刻拉给控制台用户，不用等下次登录）；
+//   - KeepAlive=false：用户从菜单退出托盘就该是退出，launchd 复活是骚扰。
+//
+// mynet_tray 不在位（服务器/精简分发）静默跳过 —— 服务本身照装。
+// enable=false 只写 plist 不 bootstrap（与 installLaunchd 对 mynetd 的分工一致）。
+func installTrayAgent(home, binDir string, enable bool) error {
+	tray := filepath.Join(binDir, "mynet_tray")
+	if !fileExists(tray) {
+		return nil
+	}
+	env := map[string]string{
+		"MYNET_HOME": home,
+		"PATH":       "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	// gui 域以登录用户身份跑：/var/log/mynet 是 root 0755 写不进去，
+	// 日志给 /dev/null（托盘状态以 WebUI/mynetd 为准，不靠这份日志）
+	plist := filepath.Join(launchAgentsDir, LabelTray+".plist")
+	if err := writeLaunchdPlist(LabelTray, launchAgentsDir, []string{tray},
+		env, "/dev/null", "/dev/null", false); err != nil {
+		return err
+	}
+	fmt.Println("installed", plist)
+	if !enable {
+		fmt.Println("  （--no-enable：plist 已就位，未 bootstrap）")
+		return nil
+	}
+	uid := consoleUserUID()
+	if uid == "" {
+		fmt.Println("  （无 GUI 登录会话：plist 已就位，下次登录自动拉起托盘）")
+		return nil
+	}
+	_, _ = launchctl("asuser", uid, "launchctl", "bootout", "gui/"+uid+"/"+LabelTray)
+	if out, err := launchctl("asuser", uid, "launchctl", "bootstrap", "gui/"+uid, plist); err != nil {
+		fmt.Printf("⚠ 托盘 bootstrap 失败（下次登录仍会拉起）: %v %s\n", err, strings.TrimSpace(out))
+	} else {
+		fmt.Println("tray bootstrapped: gui/" + uid + "/" + LabelTray)
+	}
+	return nil
+}
+
+// consoleUserUID 当前 GUI 登录用户的 uid；无人登录（或登录的是 root）返回 ""。
+// `stat -f%Su /dev/console` 是判定控制台用户的标准姿势（$USER/SUDO_USER 都不可信）。
+func consoleUserUID() string {
+	out, err := exec.Command("stat", "-f%Su", "/dev/console").Output()
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(out))
+	if name == "" || name == "root" {
+		return ""
+	}
+	u, err := exec.Command("id", "-u", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(u))
+}
+
 // uninstallLaunchd bootout 并删 plist。**不动** home 下的节点身份与数据。
 func uninstallLaunchd(keepBin bool, home string) error {
 	for _, label := range []string{LabelGNB, LabelMynetd} {
@@ -84,16 +154,30 @@ func uninstallLaunchd(keepBin bool, home string) error {
 			fmt.Println("removed", p)
 		}
 	}
+	// 托盘在 gui 域：先按控制台用户 bootout 再删 plist；
+	// 其它用户的 gui 域不用管 —— plist 没了，下次登录自然不加载。
+	if uid := consoleUserUID(); uid != "" {
+		_, _ = launchctl("asuser", uid, "launchctl", "bootout", "gui/"+uid+"/"+LabelTray)
+	}
+	p := filepath.Join(launchAgentsDir, LabelTray+".plist")
+	if err := os.Remove(p); err == nil {
+		fmt.Println("removed", p)
+	}
 	_ = keepBin
 	_ = home
 	return nil
 }
 
-// writeLaunchdPlist 写一份 LaunchDaemon plist。
+// writeLaunchdPlist 写一份 plist（LaunchDaemon 与 LaunchAgent 共用模板）。
 // 路径写进 ProgramArguments（绝对路径，不靠 PATH —— launchd 的 PATH 是残的）。
-func writeLaunchdPlist(label, dir string, argv []string, env map[string]string, stdout, stderr string) error {
+// keepAlive=false 用于交互式进程（托盘）：RunAtLoad 拉一次，用户退出就是退出。
+func writeLaunchdPlist(label, dir string, argv []string, env map[string]string, stdout, stderr string, keepAlive bool) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	ka := "<false/>"
+	if keepAlive {
+		ka = "<true/>"
 	}
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
@@ -123,7 +207,7 @@ func writeLaunchdPlist(label, dir string, argv []string, env map[string]string, 
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  ` + ka + `
   <key>StandardOutPath</key>
   <string>` + xmlEsc(stdout) + `</string>
   <key>StandardErrorPath</key>

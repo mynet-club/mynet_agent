@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
 )
 
 func main() {

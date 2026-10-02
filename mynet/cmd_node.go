@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdTenants / cmdNode —— 首次运行向导的第 2、3 步（账号态操作）。
@@ -80,6 +81,10 @@ func cmdTenants(args []string) int {
 }
 
 func cmdNode(args []string) int {
+	// C3：node claim 写密钥/上传公钥，必须显式 MYNET_HOME
+	if _, code := requireHome(); code != 0 {
+		return code
+	}
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "用法: mynet node <list|claim>")
 		fmt.Fprintln(os.Stderr, "  list")
@@ -147,6 +152,19 @@ func nodeClaim(args []string) int {
 		return 2
 	}
 	nodeID := args[0]
+	// 防御：`--help` 这类标志位不能当 node-id。
+	// 实测踩过：`node claim --help` 把 "--help" 写进 mode.json/profile，
+	// 状态变「未配置节点」，还建出 nodes/--help/ 空树。宁可报错也不静默写脏配置。
+	if strings.HasPrefix(nodeID, "-") {
+		fmt.Fprintf(os.Stderr, "✗ node-id 不能以 - 开头（得到 %q）\n", nodeID)
+		fmt.Fprintln(os.Stderr, "  用法: mynet node claim <node-id> [--vpn-type gnb|wireguard] …")
+		fmt.Fprintln(os.Stderr, "  帮助: mynet node   （不带子命令）")
+		return 2
+	}
+	if nodeID == "" || strings.ContainsAny(nodeID, "/\\ \t\n") {
+		fmt.Fprintf(os.Stderr, "✗ node-id 含非法字符: %q\n", nodeID)
+		return 2
+	}
 	vpnType := "gnb"
 	endpoint := ""
 	backPub := ""
@@ -335,9 +353,15 @@ func tenantOr(cred *Credential) string {
 	return "default"
 }
 
-// readNodePublicKey 读 conf/online/{tenant}/keys/node.public。
+// readNodePublicKey 读 conf/online/{tenant}/nodes/{nodeID}/keys/node.public。
+// 密钥挂**节点**不挂租户（setup_v2 的 NodeKeysDir）；claim 上传的是这把 public。
 func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
-	_, pub, _, _, err := keys.LoadNodeKeys(confOnlineKeysDir(tenantOr(cred)))
+	space := filepath.Join(confDir(), "online", tenantOr(cred))
+	keysDir, err := utils.NodeKeysDir(space, nodeID)
+	if err != nil {
+		return "", err
+	}
+	_, pub, _, _, err := keys.LoadNodeKeys(keysDir)
 	if err != nil {
 		return "", err
 	}
@@ -345,10 +369,6 @@ func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
 		return "", fmt.Errorf("node.public 为空")
 	}
 	return pub, nil
-}
-
-func confOnlineKeysDir(tenant string) string {
-	return filepath.Join(confDir(), "online", tenant, "keys")
 }
 
 // joinIfSlice vpn_type 在 back 侧是 string[]（A-7），打印时合起来。

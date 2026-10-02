@@ -140,3 +140,66 @@ func TestProxyPolicyJSONRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// DNS 三选一（spec §13.1）：模式 → nameserver 列表，顺序即优先级。
+func TestProxyDNSNameservers(t *testing.T) {
+	peer := []DNSServer{
+		{Source: "friend", Addr: "10.182.236.180", NodeID: "4997342800601732"},
+		{Source: "self", Addr: "10.182.236.181"},
+	}
+	smart := []DNSServer{
+		{Source: "platform", Addr: "dns.mynet.club"},
+		{Source: "self", Addr: "223.5.5.5"},
+	}
+
+	// off / nil → 不碰 DNS
+	if got := (*ProxyDNS)(nil).Nameservers(); got != nil {
+		t.Fatalf("nil 应返回 nil: %v", got)
+	}
+	if got := (&ProxyDNS{Mode: DNSModeOff}).Nameservers(); got != nil {
+		t.Fatalf("off 应返回 nil: %v", got)
+	}
+
+	// peer → 只有 peer
+	got := (&ProxyDNS{Mode: DNSModePeer, PeerServers: peer}).Nameservers()
+	if len(got) != 2 || got[0] != "10.182.236.180" || got[1] != "10.182.236.181" {
+		t.Fatalf("peer: %v", got)
+	}
+
+	// smart → 只有 smart
+	got = (&ProxyDNS{Mode: DNSModeSmart, SmartServers: smart}).Nameservers()
+	if len(got) != 2 || got[0] != "dns.mynet.club" || got[1] != "223.5.5.5" {
+		t.Fatalf("smart: %v", got)
+	}
+
+	// peer_smart → peer 在前、smart 在后（顺序即优先级）
+	got = (&ProxyDNS{Mode: DNSModePeerSmart, PeerServers: peer, SmartServers: smart}).Nameservers()
+	want := []string{"10.182.236.180", "10.182.236.181", "dns.mynet.club", "223.5.5.5"}
+	if len(got) != len(want) {
+		t.Fatalf("peer_smart 长度 %d want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("peer_smart[%d]=%s want %s", i, got[i], want[i])
+		}
+	}
+}
+
+func TestProxyDNSActive(t *testing.T) {
+	if (*ProxyDNS)(nil).Active() {
+		t.Fatal("nil 不应 Active")
+	}
+	if (&ProxyDNS{Mode: DNSModeOff}).Active() {
+		t.Fatal("off 不应 Active")
+	}
+	if (&ProxyDNS{Mode: DNSModePeer}).Active() {
+		t.Fatal("peer 无 server 不应 Active")
+	}
+	if !(&ProxyDNS{Mode: DNSModePeer, PeerServers: []DNSServer{{Addr: "10.0.0.1"}}}).Active() {
+		t.Fatal("peer 有 server 应 Active")
+	}
+	// 旧模式不走三选一
+	if (&ProxyDNS{Mode: "resolv", Server: "8.8.8.8"}).Active() {
+		t.Fatal("旧模式不应算三选一 Active")
+	}
+}

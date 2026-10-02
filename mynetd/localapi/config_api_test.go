@@ -141,4 +141,81 @@ func TestConfigKeysShell(t *testing.T) {
 	if !found {
 		t.Fatalf("POST generate 未走执行器: %v", got)
 	}
+
+	// 仅私钥 → keys set 不带 --public（推导归执行器，B2 薄壳不算密钥）
+	got = nil
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/config/keys",
+		strings.NewReader(`{"private_hex":"`+strings.Repeat("ab", 64)+`"}`))
+	req.Host = "127.0.0.1:8096"
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("POST keys private-only: %d %s", rec.Code, rec.Body.String())
+	}
+	setArgv := ""
+	for _, a := range got {
+		if strings.Contains(strings.Join(a, " "), "keys set") {
+			setArgv = strings.Join(a, " ")
+		}
+	}
+	if !strings.Contains(setArgv, "--private") || strings.Contains(setArgv, "--public") {
+		t.Fatalf("private-only 应只带 --private: %q", setArgv)
+	}
+
+	// 既无私钥也不 generate → 400，不打执行器
+	got = nil
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/config/keys",
+		strings.NewReader(`{"public_hex":"cd"}`))
+	req.Host = "127.0.0.1:8096"
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("无私钥应 400，得 %d %s", rec.Code, rec.Body.String())
+	}
+	if len(got) != 0 {
+		t.Fatalf("400 路径不得调执行器: %v", got)
+	}
+}
+
+// 流程闸门第②步「选节点」：setup_only 只落 profile + mode.json，
+// 绝不停旧驱动 / apply / service start —— 此刻还没密钥，全量切换会停在 apply。
+func TestConfigActiveSetupOnly(t *testing.T) {
+	var got [][]string
+	s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
+	s.Ops = func(argv []string) (any, error) {
+		got = append(got, append([]string(nil), argv...))
+		return opsOut(`{}`), nil
+	}
+
+	// 缺 node → 400 且不打执行器
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/active",
+		strings.NewReader(`{"tenant":"t1","setup_only":true}`))
+	req.Host = "127.0.0.1:8096"
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("缺 node 应 400: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(got) != 0 {
+		t.Fatalf("缺 node 不该调执行器: %v", got)
+	}
+
+	// 成功路径：恰好一条 setup --online，没有任何切换动作
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/config/active",
+		strings.NewReader(`{"tenant":"t1","node":"n9","setup_only":true}`))
+	req.Host = "127.0.0.1:8096"
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("setup_only 应 200: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(got) != 1 || strings.Join(got[0], " ") != "setup --online --tenant t1 --node-id n9" {
+		t.Fatalf("setup_only argv=%v，必须只有 setup --online 一条", got)
+	}
+	for _, a := range got {
+		j := strings.Join(a, " ")
+		if strings.Contains(j, "service") || strings.Contains(j, "apply") || strings.Contains(j, "config use") {
+			t.Fatalf("setup_only 混入全量切换动作: %s", j)
+		}
+	}
 }

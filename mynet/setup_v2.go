@@ -6,19 +6,28 @@ package mynet
 //	mynet setup --online --tenant T --node-id ID [--vpn-type …] [--api-base URL]
 //
 // 旧 mynet.conf 单文件写盘已删除：身份进 keys/，意图进 intent.json / profile.json。
+//
+// ⚠️ setup **不生成密钥**（用户旅程：有私钥则导入，没有才显式生成）。
+//   导入：mynet config keys set --private … --public … --node-id …
+//   新建：mynet config keys generate --vpn gnb --node-id …
+// setup 只负责 profile/intent + 激活；密钥是独立一步，禁止顺手 new。
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdSetupV2 覆盖原 cmdSetup 的落盘面；密钥生成逻辑与旧版一致。
 func cmdSetupV2(args []string) int {
+	// C3：setup 写 keys/mode.json，必须显式 MYNET_HOME
+	if _, code := requireHome(); code != 0 {
+		return code
+	}
 	var (
 		printKeys = false
 		local     = false
@@ -117,12 +126,8 @@ func cmdSetupV2(args []string) int {
 		driverType = domain.DriverTypeWireGuard
 	}
 
-	privHex, pubHex, algorithm, err := keys.GenerateNodeKeys(vpnType)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "generate keys: %v\n", err)
-		return 1
-	}
-
+	// 不生成密钥。profile/intent 与 keys 分离：
+	// 有私钥 → config keys set 导入；没有 → config keys generate 显式新建。
 	store := &config.Store{}
 	var sourceDir string
 
@@ -155,19 +160,9 @@ func cmdSetupV2(args []string) int {
 		}
 	}
 
-	// 密钥：{space}/nodes/{nodeID}/keys（节点级，不挂租户）
-	keysDir, kerr := utils.NodeKeysDir(sourceDir, nodeID)
-	if kerr != nil {
-		fmt.Fprintf(os.Stderr, "keys dir: %v\n", kerr)
-		return 1
-	}
-	if err := keys.WriteNodeKeys(keysDir, privHex, pubHex, algorithm, nodeID, backPub); err != nil {
-		fmt.Fprintf(os.Stderr, "write keys: %v\n", err)
-		return 1
-	}
-
 	// 激活
 	var mode domain.ModeFile
+	var err error
 	if local {
 		mode, err = store.UseLocal()
 	} else {
@@ -178,16 +173,43 @@ func cmdSetupV2(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("wrote %s (mode=%s driver=%s algorithm=%s)\n",
-		keysDir, mode.Mode, driverType, algorithm)
-	fmt.Printf("公钥（需上传到 back）：%s\n", pubHex)
+	// 密钥目录位置（不写入）
+	keysDir, kerr := utils.NodeKeysDir(sourceDir, nodeID)
+	if kerr != nil {
+		fmt.Fprintf(os.Stderr, "keys dir: %v\n", kerr)
+		return 1
+	}
+	hasKeys := false
+	if _, _, _, _, err := keys.LoadNodeKeys(keysDir); err == nil {
+		hasKeys = true
+	}
+
+	fmt.Printf("✓ profile/intent 已就绪（mode=%s driver=%s node=%s）\n",
+		mode.Mode, driverType, nodeID)
+	fmt.Printf("  keys_dir: %s\n", keysDir)
+	if hasKeys {
+		fmt.Println("  密钥: 已存在（未改动）")
+	} else {
+		fmt.Println("  密钥: 未设置 —— setup 不生成密钥，请二选一：")
+		fmt.Println("    导入: mynet config keys set --private <HEX> --public <HEX> --node-id", nodeID, "--algorithm ed25519")
+		fmt.Println("    新建: mynet config keys generate --vpn", vpnType, "--node-id", nodeID)
+		fmt.Println("  之后: mynet config keys sync   # 只上传 public")
+	}
 	if local {
 		fmt.Println("下一步：mynet apply --active   # 按 intent 生成 driver 投影")
 	} else {
-		fmt.Println("下一步：登录/claim 后由 mynetd 拉 bundle；或 mynet apply --active")
+		fmt.Println("下一步：mynet config pull     # 或 login 后由 mynetd 拉 bundle")
 	}
 	_ = printKeys
-	_ = backPub
+	// back 节点面公钥是服务器侧公开参数（非秘密），不违反「setup 不生成密钥」：
+	// node claim 取到后经此回填 meta.json，mynetd 节点面才装配得了。
+	if backPub != "" {
+		if err := keys.UpdateNodeMetaBackPub(keysDir, nodeID, backPub); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ back_pub_hex 回填失败（不影响 setup 结果）: %v\n", err)
+		} else {
+			fmt.Println("  back 节点面公钥已回填: keys/meta.json")
+		}
+	}
 	return 0
 }
 
@@ -195,6 +217,8 @@ const usageSetupV2 = `用法:
   mynet setup --local  --node-id ID [--overlay CIDR] [--vpn-type gnb|wireguard] [--name N]
   mynet setup --online --tenant T --node-id ID [--vpn-type …] [--api-base URL]
 
-密钥写入 conf/local/keys 或 conf/online/<tenant>/keys（0600）。
-私钥不上传；public 需 PUT 到 back（key_type: gnbkey|wireguard）。
+setup 只写 profile/intent 并激活，**不生成密钥**：
+  导入私钥: mynet config keys set --private … --public … --node-id …
+  新建密钥: mynet config keys generate --vpn gnb --node-id …
+  上传公钥: mynet config keys sync
 `

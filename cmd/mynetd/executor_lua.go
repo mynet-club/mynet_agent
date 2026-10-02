@@ -109,7 +109,7 @@ func planLuaScript(argv []string) (string, error) {
 	// 而不是假装成功（D1：桩不算实现）。
 	switch cmd {
 	case "apply", "refresh-routes", "refresh-address", "refresh-config",
-		"service", "metrics", "detector":
+		"service", "metrics", "detector", "nodes", "config", "status":
 		// ok
 	default:
 		return "", fmt.Errorf("lua 执行器不支持子命令: %s", cmd)
@@ -191,23 +191,6 @@ if cmd == "apply" or cmd == "refresh-routes" then
   end
   local errs = (r and r.errors) or {}
   fail(table.concat(errs, "; "))
-elseif cmd == "refresh-address" then
-  local node = try_require("luci.model.mynet.node")
-  local r = node.refresh_single_config(nid(), "address")
-  if r ~= nil then
-    out("address refreshed")
-    os.exit(0)
-  end
-  fail("refresh-address failed")
-elseif cmd == "refresh-config" then
-  local node = try_require("luci.model.mynet.node")
-  local r = node.refresh_configs_bundle(nid())
-  if r and r.ok then
-    out("config refreshed method=" .. tostring(r.method or ""))
-    os.exit(0)
-  end
-  local errs = (r and r.errors) or {}
-  fail(table.concat(errs, "; "))
 elseif cmd == "service" then
   -- E-1：进程生命周期归 procd。不再 Lua spawn/kill gnb。
   -- 启停走 /etc/init.d/mynet（由 mynet install 写入的 procd 单元）。
@@ -247,6 +230,56 @@ elseif cmd == "detector" then
     os.exit(0)
   end
   fail(so ~= "" and so or ("detector failed code=" .. tostring(code)))
+elseif cmd == "refresh-config" or cmd == "refresh-routes" or cmd == "refresh-address" then
+  -- 节点面 bundle 已由 mynetd 拉好；这里转调 mynet（L6）读本地 bundle，
+  -- 不走 Lua 的用户 JWT（会过期，且节点面本就不该依赖用户会话）。
+  local util = try_require("luci.model.mynet.util")
+  local node = try_require("luci.model.mynet.node")
+  local bin = util.mynet_bin()
+  if not bin then fail("mynet binary not found (expect /usr/sbin/mynet)") end
+  local home = os.getenv("MYNET_HOME") or util.MYNET_HOME or "/etc/mynet"
+  local so, code = util.exec_status("MYNET_HOME='" .. home .. "' '" .. bin .. "' " .. cmd .. " --auto 2>&1")
+  so = tostring(so or "")
+  if code ~= 0 then
+    fail(so ~= "" and so or (cmd .. " failed code=" .. tostring(code)))
+  end
+  -- driver/gnb/route.conf 已更新；同步生成 OS 级 /etc/mynet/conf/route.conf
+  -- （route.mynet / proxy 读这份）。此前链路断在这里：188 进了 driver 却不进 conf。
+  if cmd == "refresh-config" and node.generate_route_conf then
+    local _, rerr = node.generate_route_conf(nid())
+    if rerr then
+      so = so .. "\nroute.conf: " .. tostring(rerr)
+    end
+  end
+  out(so)
+  os.exit(0)
+elseif cmd == "nodes" then
+  -- 节点列表：本地 route/gnb 视图（对齐 LuCI Node List）
+  local node = try_require("luci.model.mynet.node")
+  local util = try_require("luci.model.mynet.util")
+  local list = node.get_nodes and node.get_nodes() or nil
+  if list then
+    out(util.json_encode(list) or "[]")
+    os.exit(0)
+  end
+  -- 兜底：从 route.conf 抽节点
+  local cfg = try_require("luci.model.mynet.config")
+  local util2 = try_require("luci.model.mynet.util")
+  local nid = cfg.get_node_id()
+  out(util2.json_encode({ node_id = nid }) or "{}")
+  os.exit(0)
+elseif cmd == "status" or cmd == "config" then
+  local node = try_require("luci.model.mynet.node")
+  local util = try_require("luci.model.mynet.util")
+  local cfg = try_require("luci.model.mynet.config")
+  local running = node.gnb_is_running and node.gnb_is_running(nil)
+  out(util.json_encode({
+    node_id = cfg.get_node_id(),
+    running = running and true or false,
+    vpn_type = cfg.get_vpn_type and cfg.get_vpn_type() or "gnb",
+    interface = cfg.get_vpn_interface and cfg.get_vpn_interface() or "",
+  }) or "{}")
+  os.exit(0)
 else
   fail("unhandled cmd: " .. tostring(cmd))
 end

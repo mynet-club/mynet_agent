@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 // DynamicIPSet 域名解析出的动态 IP（带 TTL）。

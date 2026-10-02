@@ -46,14 +46,26 @@ fi
 
 # 归档里至少要有一个二进制，否则打的是空壳。
 # Windows 产物名带 .exe，两种后缀都要认；zip 用 unzip -l（tar 读不了 zip）。
+# 客户端包**不含** mynet_gateway（服务端组件，不进用户安装包）。
 count=0
 if [ "$ext" = "zip" ]; then
-  count=$(unzip -l "$out" 2>/dev/null | grep -cE '(mynet|mynetd|mynet_gateway)(\.exe)?$' || true)
+  count=$(unzip -l "$out" 2>/dev/null | grep -cE '(mynet|mynetd)(\.exe)?$' || true)
 else
-  count=$(tar -tzf "$out" 2>/dev/null | grep -cE '/(mynet|mynetd|mynet_gateway)(\.exe)?$' || true)
+  count=$(tar -tzf "$out" 2>/dev/null | grep -cE '/(mynet|mynetd)(\.exe)?$' || true)
 fi
 if [ "$count" -lt 1 ]; then
-  echo "pack: $out 里没有 mynet/mynetd/mynet_gateway —— 打包前构建失败？" >&2
+  echo "pack: $out 里没有 mynet/mynetd —— 打包前构建失败？" >&2
+  exit 1
+fi
+
+# 每个平台包必须带自己的安装文档（用户旅程：解压即见怎么装）
+if [ "$ext" = "zip" ]; then
+  has_install=$(unzip -l "$out" 2>/dev/null | grep -c 'INSTALL.md$' || true)
+else
+  has_install=$(tar -tzf "$out" 2>/dev/null | grep -c 'INSTALL.md$' || true)
+fi
+if [ "$has_install" -lt 1 ]; then
+  echo "pack: $out 缺 INSTALL.md —— 每个平台产物必须带分平台安装文档" >&2
   exit 1
 fi
 

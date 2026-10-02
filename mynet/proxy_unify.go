@@ -13,11 +13,13 @@ package mynet
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ProxyStateDir 双控状态目录（与 localapi 同源）。
@@ -155,6 +157,72 @@ func SetProxyExits(exits []domain.ProxyExit) error {
 		return err
 	}
 	return SyncPluginProxyFromPolicy(&p)
+}
+
+// SetProxyCustomDomains D5：写自定义域名叠加（本机，不回写云端）。
+// customProxied 追加到代理组；customDirect 追加到直连组（优先级最高）。
+func SetProxyCustomDomains(customProxied, customDirect []string) error {
+	st, err := LoadProxyState()
+	if err != nil {
+		return err
+	}
+	var p domain.ProxyPolicy
+	if eff := st.Effective(); eff != nil {
+		p = eff.Policy
+	}
+	if p.DomainRules == nil {
+		p.DomainRules = &domain.ProxyDomainRules{}
+	}
+	p.DomainRules.CustomDomains = customProxied
+	p.DomainRules.CustomDirect = customDirect
+	if err := st.ApplyLocal(p, time.Now()); err != nil {
+		return err
+	}
+	if err := SaveProxyState(st); err != nil {
+		return err
+	}
+	return SyncPluginProxyFromPolicy(&p)
+}
+
+// StampCloudIntent 把云端 bundle 的 proxy 策略记入 intent 的 Cloud 轨。
+//
+// 历史断链：读取侧（planFromBundle）只看 bundle、写入侧（ApplyCloudIntent）无人调用，
+// 导致「本地页面关掉开关、下一次 config sync 又被云端策略复活」。这里把云端下发
+// 落到 Cloud 轨，Effective() 才能按 revision 仲裁本地覆盖。
+//
+// 防复活两道闸（generation 实际是 "rev-…" 字符串，解析不出数字是常态）：
+//  1. Cloud 轨内容与本次下发一致 → 跳过重 stamp。否则会自增 revision 越过
+//     本地关掉的那次写入，每次 sync 都复活一次。
+//  2. revision 未知（<=0）且本地有未回写（Dirty）的修改 → 无法证明云端更新，
+//     保持 Cloud 轨现状，不覆盖。
+//
+// 校验失败仅告警，返回 false，调用方回落 bundle 原策略。
+func StampCloudIntent(p *domain.ProxyPolicy, revision int64) bool {
+	if p == nil {
+		return false
+	}
+	st, err := LoadProxyState()
+	if err != nil {
+		logger.Comp("apply").Warn("proxy intent 读取失败，云端策略未落轨", "err", err)
+		return false
+	}
+	if st.Cloud != nil && reflect.DeepEqual(st.Cloud.Policy, *p) {
+		return true // 内容未变：不动 revision
+	}
+	if revision <= 0 && st.Local != nil && st.Status.Dirty {
+		logger.Comp("apply").Info("proxy 云端下发无版本号且本地有未回写修改，保持本地覆盖",
+			"local_rev", st.Local.Revision)
+		return st.Cloud != nil
+	}
+	if err := st.ApplyCloud(*p, revision, time.Now()); err != nil {
+		logger.Comp("apply").Warn("proxy 云端策略 stamp 失败，回落 bundle", "err", err)
+		return false
+	}
+	if err := SaveProxyState(st); err != nil {
+		logger.Comp("apply").Warn("proxy intent 保存失败", "err", err)
+		return false
+	}
+	return true
 }
 
 // DescribeProxyUnified 一行统一状态（给 status / 诊断）。

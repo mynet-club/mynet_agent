@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // ── 夹具 ─────────────────────────────────────────────────────

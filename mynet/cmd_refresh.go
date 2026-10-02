@@ -211,23 +211,38 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	// 把本机 overlay 地址带上，执行期才能反查真实接口（见 resolveDevice）。
 	plan.LocalAddresses = append(plan.LocalAddresses, env.Network.Addresses...)
 
-	// 代理分流（主线⑦）：back 解算好的 ProxyPolicy → L6 计划。
-	if p := env.Network.Proxy; p != nil && p.Enabled {
+	// 代理分流（主线⑦）：intent 是唯一真相。
+	//
+	// 历史断链：这里曾直接拿 bundle 的 ProxyPolicy 建计划，本地关掉的开关会被
+	// 下一次 config sync 用云端策略复活。现在先把云端下发 stamp 进 intent 的
+	// Cloud 轨，再由 Effective() 按 revision 仲裁（本地更新则压制云端）；
+	// intent 无任何记录时才回落 bundle 原策略（升级路径兼容）。
+	stampRev, _ := strconv.ParseInt(env.Generation, 10, 64)
+	StampCloudIntent(env.Network.Proxy, stampRev)
+	var proxyPolicy *domain.ProxyPolicy
+	if st, err := LoadProxyState(); err == nil && st != nil && (st.Local != nil || st.Cloud != nil) {
+		if eff := st.Effective(); eff != nil && eff.Policy.Enabled {
+			proxyPolicy = &eff.Policy
+		}
+	} else if env.Network.Proxy != nil && env.Network.Proxy.Enabled {
+		proxyPolicy = env.Network.Proxy
+	}
+	if proxyPolicy != nil {
 		rt := ProxyRuntime{
 			TunDevice: dev,
 		}
-		if ex := firstEnabledExit(p); ex != nil {
+		if ex := firstEnabledExit(proxyPolicy); ex != nil {
 			rt.ExitVia = resolveExitVia(env, ex)
 		}
-		if p.Split != nil && p.Split.IPList != nil {
+		if proxyPolicy.Split != nil && proxyPolicy.Split.IPList != nil {
 			// 缓存路径由 source 决定；URL 在执行期 FetchProxyIPList 使用
-			src := p.Split.IPList.Source
+			src := proxyPolicy.Split.IPList.Source
 			if src == "" {
-				src = p.Split.ListSource
+				src = proxyPolicy.Split.ListSource
 			}
 			rt.IPSetFile = ProxyListCachePath(filepath.Join(varDir(), "proxy-lists"), src)
 		}
-		plan.Proxy = planProxy(p, rt)
+		plan.Proxy = planProxy(proxyPolicy, rt)
 	}
 
 	return plan, nil

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // DNSForm 形态。
@@ -91,11 +91,12 @@ func WriteDomainDNSSplitConf(rules *domain.ProxyDomainRules, path string) error 
 			names[d] = upstreamSlot{ups: resolve(d)}
 		}
 	}
-	add(rules.Direct, func(d string) []string {
+	// D5：吃合并组（基础清单 ∪ 自定义 − 直连），不是原始字段
+	add(rules.EffectiveDirect(), func(d string) []string {
 		u, _ := rules.ResolveDNSSplit(d)
 		return u
 	})
-	add(rules.Proxied, func(d string) []string {
+	add(rules.EffectiveProxied(), func(d string) []string {
 		u, _ := rules.ResolveDNSSplit(d)
 		return u
 	})
@@ -120,9 +121,9 @@ func WriteDomainDNSSplitConf(rules *domain.ProxyDomainRules, path string) error 
 	}
 
 	// T14：proxied 域名解析出的 A 记录 → ipset mynet_proxy（增量，dnsmasq 原生）
-	// 只对「会走代理」的域名挂 ipset；direct 不进集合。
+	// 只对「会走代理」的域名挂 ipset；direct 不进集合。D5：用合并组。
 	var proxiedForIPSet []string
-	proxiedForIPSet = append(proxiedForIPSet, rules.Proxied...)
+	proxiedForIPSet = append(proxiedForIPSet, rules.EffectiveProxied()...)
 	proxiedForIPSet = append(proxiedForIPSet, rules.UpstreamClean...)
 	for _, line := range DnsmasqIPSetLines(proxiedForIPSet, "mynet_proxy") {
 		b.WriteString(line + "\n")

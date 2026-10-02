@@ -2,7 +2,9 @@ package mynet
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,14 +124,25 @@ func TestWriteEnvFileIs0600AndCarriesAllThreeVars(t *testing.T) {
 // 不给的话 mynetd 起来是「纯本机模式」（无 WS、无节点身份、不碰驱动），
 // 装了等于没装，而 install 还报成功。
 func TestInstallRequiresGateways(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir()) // C3：install 要求显式 home
 	if rc := cmdInstall([]string{"--dry-run", "--home", t.TempDir()}); rc != 2 {
 		t.Fatalf("缺 --gateways 应退出码 2（用法错），实际 %d", rc)
+	}
+}
+
+// C3：缺 MYNET_HOME 必须拒绝（禁止静默回退 exe/cwd）。
+func TestInstallRequiresMyNetHome(t *testing.T) {
+	t.Setenv("MYNET_HOME", "")
+	rc := cmdInstall([]string{"--dry-run", "--home", t.TempDir(), "--gateways", "wss://gw.example.com/v1/node/connect"})
+	if rc != 1 {
+		t.Fatalf("缺 MYNET_HOME 应退出码 1，实际 %d", rc)
 	}
 }
 
 func TestInstallDryRunDoesNotTouchFilesystem(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "home")
 	prefix := filepath.Join(t.TempDir(), "prefix")
+	t.Setenv("MYNET_HOME", home)
 
 	rc := cmdInstall([]string{
 		"--dry-run",
@@ -161,6 +174,42 @@ func TestUninstallDryRunDoesNotTouchFilesystem(t *testing.T) {
 	}
 }
 
+// 从浏览器/网盘下载解压出来的二进制带「下载来源」标记：
+// macOS 是 com.apple.quarantine xattr，Windows 是 Zone.Identifier ADS。
+// 不清的话 launchd/SCM 可能拒绝执行 —— 服务「装得上起不来」，报错还不直观。
+func TestClearDownloadMarks(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("quarantine 是 macOS 概念；windows 分支需在真机验证")
+	}
+	dir := t.TempDir()
+	marked := filepath.Join(dir, "mynet")
+	if err := os.WriteFile(marked, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("xattr", "-w", "com.apple.quarantine",
+		"0001;00000000;test;00000000-0000-0000-0000-000000000000", marked).CombinedOutput(); err != nil {
+		t.Fatalf("测试前置：xattr -w 失败: %v %s", err, out)
+	}
+
+	clean := filepath.Join(dir, "mynetd")
+	if err := os.WriteFile(clean, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings := clearDownloadMarks([]string{marked, clean, filepath.Join(dir, "不存在")})
+	if len(warnings) != 0 {
+		t.Fatalf("清除应成功且无警告，实际: %v", warnings)
+	}
+	if out, err := exec.Command("xattr", "-p", "com.apple.quarantine", marked).Output(); err == nil && len(out) > 0 {
+		t.Fatalf("quarantine 未清除: %q", out)
+	}
+	// 未标记/不存在的文件必须静默通过（不误报、不中止安装）。
+	// 注意只查 quarantine —— macOS 会给新落盘文件自动挂 com.apple.provenance，那不是下载标记。
+	if out, err := exec.Command("xattr", "-p", "com.apple.quarantine", clean).Output(); err == nil && len(out) > 0 {
+		t.Fatalf("干净文件不该有 quarantine: %q", out)
+	}
+}
+
 // launchd plist 的 XML 转义：路径/URL 里有 & 时不能把 plist 写坏。
 func TestXMLesc(t *testing.T) {
 	got := xmlEsc(`a&b<c>d"e`)
@@ -182,7 +231,7 @@ func TestWriteLaunchdPlistShape(t *testing.T) {
 	}
 	err := writeLaunchdPlist("com.mynet.gnb", dir,
 		[]string{"/usr/local/bin/gnb", "--systemd", "-c", "/opt/mynet/var/gnb"},
-		env, "/var/log/mynet/gnb.log", "/var/log/mynet/gnb.err")
+		env, "/var/log/mynet/gnb.log", "/var/log/mynet/gnb.err", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,11 +259,86 @@ func TestWriteLaunchdPlistShape(t *testing.T) {
 	}
 	// 含 & 的 gateways 必须被转义
 	if err := writeLaunchdPlist("com.x", dir, []string{"/bin/true"},
-		map[string]string{"MYNET_GATEWAYS": "wss://a?b=1&c=2"}, "/tmp/o", "/tmp/e"); err != nil {
+		map[string]string{"MYNET_GATEWAYS": "wss://a?b=1&c=2"}, "/tmp/o", "/tmp/e", true); err != nil {
 		t.Fatal(err)
 	}
 	b2, _ := os.ReadFile(filepath.Join(dir, "com.x.plist"))
 	if !strings.Contains(string(b2), "wss://a?b=1&amp;c=2") {
 		t.Fatalf("URL 里的 & 未转义:\n%s", b2)
+	}
+}
+
+// 托盘是交互式进程：KeepAlive 必须为 false ——
+// 为 true 时用户从菜单退出会被 launchd 复活，属于骚扰级 bug。
+func TestWriteLaunchdPlistKeepAlive(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeLaunchdPlist("club.mynet.tray", dir, []string{"/opt/mynet/bin/mynet_tray"},
+		map[string]string{"MYNET_HOME": "/var/lib/mynet"}, "/dev/null", "/dev/null", false); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "club.mynet.tray.plist"))
+	s := string(b)
+	if !strings.Contains(s, "<key>KeepAlive</key>\n  <false/>") {
+		t.Fatalf("托盘 plist 的 KeepAlive 必须是 <false/>:\n%s", s)
+	}
+	if !strings.Contains(s, "<key>RunAtLoad</key>\n  <true/>") {
+		t.Fatalf("托盘 plist 缺 RunAtLoad:\n%s", s)
+	}
+}
+
+// 「装完还在别的地方找二进制」的根治：install 必须把四件套置备到
+// resolveGNBBinary 的第一优先标准位，且幂等、随源刷新。
+func TestProvisionDriverGnbBin(t *testing.T) {
+	prefix := t.TempDir()
+	home := t.TempDir()
+	srcDir := filepath.Join(prefix, "driver", "gnb", "bin")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, prog := range gnbSuite {
+		if err := os.WriteFile(filepath.Join(srcDir, prog), []byte("v1-"+prog), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dstDir := filepath.Join(home, "driver", "gnb", "bin")
+
+	copied, missing := provisionDriverGnbBin(prefix, home, filepath.Join(prefix, "sbin", "gnb"))
+	if len(missing) != 0 {
+		t.Fatalf("四件套都在源里，missing 应为空: %v", missing)
+	}
+	if len(copied) != len(gnbSuite) {
+		t.Fatalf("copied=%v，应置备 %d 件", copied, len(gnbSuite))
+	}
+	for _, prog := range gnbSuite {
+		b, err := os.ReadFile(filepath.Join(dstDir, prog))
+		if err != nil {
+			t.Fatalf("标准位缺 %s: %v", prog, err)
+		}
+		if string(b) != "v1-"+prog {
+			t.Errorf("%s 内容不是源内容: %q", prog, b)
+		}
+		st, _ := os.Stat(filepath.Join(dstDir, prog))
+		if st.Mode().Perm()&0o111 == 0 {
+			t.Errorf("%s 没有执行位: %v", prog, st.Mode())
+		}
+	}
+
+	// 幂等：内容没变 → 一个都不重写
+	copied, _ = provisionDriverGnbBin(prefix, home, filepath.Join(prefix, "sbin", "gnb"))
+	if len(copied) != 0 {
+		t.Fatalf("重复置备应全部跳过，实际重写: %v", copied)
+	}
+
+	// 包升级（源内容变了）→ 标准位跟着刷新
+	if err := os.WriteFile(filepath.Join(srcDir, "gnb"), []byte("v2-gnb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copied, _ = provisionDriverGnbBin(prefix, home, filepath.Join(prefix, "sbin", "gnb"))
+	if len(copied) != 1 || filepath.Base(copied[0]) != "gnb" {
+		t.Fatalf("只有 gnb 变了，应只重写它: %v", copied)
+	}
+	b, _ := os.ReadFile(filepath.Join(dstDir, "gnb"))
+	if string(b) != "v2-gnb" {
+		t.Fatalf("标准位没跟上源内容: %q", b)
 	}
 }

@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 const DefaultListen = "127.0.0.1:8096"

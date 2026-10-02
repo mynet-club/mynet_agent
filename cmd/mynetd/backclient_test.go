@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
 )
 
 func TestNewBackClientDerivesRelayURL(t *testing.T) {

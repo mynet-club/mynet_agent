@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
@@ -80,6 +81,24 @@ func TestProxyClientCmdsHasPolicyRouteAndMark(t *testing.T) {
 	}
 }
 
+func TestProxyBSDNeverTouchesMainDefault(t *testing.T) {
+	// 事故回归（#21）：macOS route 删 default 不带网关会删掉**全部** IPv4 默认路由
+	// （含物理网关），历史代码在 BSD 分支发 replace default → 整机断网。
+	// 契约：BSD/macOS 下 proxy 命令计划绝不允许出现 `-net default` / 主表 default。
+	p := mustPolicy(t, "domestic", "whitelist")
+	p.FullTunnel = true
+	p.DoHMode = DoHModeTunnel
+	rt := ProxyRuntime{TunDevice: "gnb_tun", ExitVia: "10.20.0.250", IPSetFile: "/tmp/x"}
+	snap := &shared.SystemSnapshot{OS: "darwin", Capabilities: map[string]bool{}}
+	text := joinCmds(proxyAllCmds(snap, p, rt))
+	if strings.Contains(text, "-net default") || strings.Contains(text, " default ") {
+		t.Fatalf("BSD 计划不得触碰 default:\n%s", text)
+	}
+	if !strings.Contains(text, "route -n add -host 8.8.8.8") { // GUARD-OK 测试断言命令串，非执行点
+		t.Fatalf("BSD 分流契约 = 国外 DNS /32 钉隧道，应保留:\n%s", text)
+	}
+}
+
 func TestProxyMatchModeInvertedUsesNegatedMatch(t *testing.T) {
 	// domestic+blacklist → china/inverted：未命中集合 → mark
 	p := mustPolicy(t, "domestic", "blacklist")
@@ -143,7 +162,7 @@ func TestProxyServerCmds(t *testing.T) {
 func TestProxyCleanupRemovesForeignDNSAndRule(t *testing.T) {
 	p := mustPolicy(t, "domestic", "whitelist")
 	rt := ProxyRuntime{TunDevice: "gnb_tun"}
-	text := joinCmds(proxyCleanupCmds(p, rt))
+	text := joinCmds(proxyCleanupCmds(snapNft(), p, rt))
 	for _, want := range []string{
 		"ip route del 8.8.8.8/32 dev gnb_tun", // GUARD-OK 测试断言命令串，非执行点
 		"ip rule del fwmark 0xc8 lookup 200",
@@ -153,10 +172,19 @@ func TestProxyCleanupRemovesForeignDNSAndRule(t *testing.T) {
 			t.Fatalf("cleanup 缺 %q\n%s", want, text)
 		}
 	}
-	for _, c := range proxyCleanupCmds(p, rt) {
+	for _, c := range proxyCleanupCmds(snapNft(), p, rt) {
 		if !c.optional {
 			t.Fatalf("cleanup 命令应全部 optional: %v", c.argv)
 		}
+	}
+	// BSD 方言：只撤 /32 钉扎（route del 不触碰 default），且不得出现任何 default 命令
+	snapBSD := &shared.SystemSnapshot{OS: "darwin", Capabilities: map[string]bool{}}
+	bsdText := joinCmds(proxyCleanupCmds(snapBSD, p, rt))
+	if !strings.Contains(bsdText, "route -n delete -host 8.8.8.8") { // GUARD-OK 测试断言命令串，非执行点
+		t.Fatalf("BSD cleanup 应撤国外 DNS 钉扎:\n%s", bsdText)
+	}
+	if strings.Contains(bsdText, "default") || strings.Contains(bsdText, "ip route") || strings.Contains(bsdText, "ip rule") {
+		t.Fatalf("BSD cleanup 不该出现策略路由/default:\n%s", bsdText)
 	}
 }
 
@@ -170,6 +198,7 @@ func TestProxyDNSRedirect(t *testing.T) {
 }
 
 func TestPlanFromBundleIncludesProxy(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir()) // intent 落轨写的是本机状态，测试必须隔离
 	env := &domain.BundleEnvelope{
 		SchemaVersion: 2,
 		Node:          domain.NodeRef{ID: "1001", Interface: "gnb_tun"},
@@ -209,10 +238,68 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 	}
 }
 
+// TestPlanFromBundleLocalDisabledSuppressesCloud 回归 #21-B：
+// 本地页面上的「关闭」（intent local，dirty 未回写）必须压制云端 enabled ——
+// 历史行为是每次 config sync 都把云端策略原样落计划，关掉的开关被复活。
+func TestPlanFromBundleLocalDisabledSuppressesCloud(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	cloud := mustPolicy(t, "domestic", "whitelist")
+	env := &domain.BundleEnvelope{
+		SchemaVersion: 2,
+		Node:          domain.NodeRef{ID: "1001", Interface: "gnb_tun"},
+		Driver:        domain.DriverTypeGNB,
+		Network:       domain.NetworkIntent{Addresses: []string{"10.20.0.1/24"}, Proxy: cloud},
+	}
+	// 第一次 sync：云端策略落轨
+	if _, err := planFromBundle(env); err != nil {
+		t.Fatal(err)
+	}
+	// 用户在本地关闭
+	st, err := LoadProxyState()
+	if err != nil || st == nil || st.Cloud == nil {
+		t.Fatalf("首次 sync 后 cloud 轨应存在: %+v err=%v", st, err)
+	}
+	off := st.Cloud.Policy
+	off.Enabled = false
+	if err := st.ApplyLocal(off, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveProxyState(st); err != nil {
+		t.Fatal(err)
+	}
+	// 再次 sync（generation 解析为 0）：不得复活
+	plan, err := planFromBundle(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Proxy != nil {
+		t.Fatal("本地已关闭，plan.Proxy 必须为空")
+	}
+	st2, _ := LoadProxyState()
+	if st2.Cloud == nil || !st2.Cloud.Policy.Enabled || st2.Local == nil || st2.Local.Revision <= st2.Cloud.Revision {
+		t.Fatalf("cloud 轨应保持且 local 版本更高: %+v", st2)
+	}
+	// 云端内容变化但无版本号、本地 dirty：同样不得越过本地覆盖
+	changed := *cloud
+	changed.Region = "international"
+	changed.Policy = "whitelist"
+	if src, mode, err := domain.ResolveProxySplit("international", "whitelist"); err == nil {
+		changed.Split = &domain.ProxySplit{ListSource: src, MatchMode: mode}
+	}
+	if StampCloudIntent(&changed, 0) {
+		t.Log("stamp 返回 true（cloud 轨已有记录）——检查 local 仍压制")
+	}
+	st3, _ := LoadProxyState()
+	if eff := st3.Effective(); eff == nil || eff.Source != domain.ProxySourceLocal {
+		t.Fatalf("dirty 本地覆盖必须仍然生效: %+v", eff)
+	}
+}
+
 // TestProxyFromFixtureEndToEnd 用双端 fixture 走通
 // DecodeBundleEnvelope → planFromBundle → proxyAllCmds。
 // 这是 D2 意义上的「打真数据路径」，不是读 fixture skip。
 func TestProxyFromFixtureEndToEnd(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	// CI 自包含：仓内 testdata 优先；monorepo 再回退 mynet_ctl SSOT
 	var raw []byte
 	var err error

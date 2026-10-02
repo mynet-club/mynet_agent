@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/gateway/relaypolicy"
+	"github.com/mynet-club/mynet_agent/gateway/relaypolicy"
 )
 
 // relayTimeout 单次中继的超时。用户面是 JSON API 调用，不需要长连接。

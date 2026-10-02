@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ParityItem 一项「对等配置」检查结果。
@@ -66,6 +66,16 @@ func ParseNodeConfKV(text string) map[string]string {
 }
 
 // LoadNodeConfKV 读当前激活节点的 node.conf。
+// currentParity N6：当前节点 conf 的对等项检查（sync 后必查）。
+// remote 为 nil 时按工作基线比对（zip/crypto 等 expected 值）。
+func currentParity() []ParityItem {
+	local, _, err := LoadNodeConfKV()
+	if err != nil || local == nil {
+		return nil
+	}
+	return CheckGNBParity(local, nil)
+}
+
 func LoadNodeConfKV() (map[string]string, string, error) {
 	home := utils.GetMyNetHome()
 	cands := []string{}

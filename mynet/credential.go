@@ -2,7 +2,9 @@ package mynet
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // Credential 用户凭证 = **会话存储**（账号态，不是节点身份）。
@@ -72,21 +76,38 @@ func SaveCredential(c *Credential) error {
 }
 
 // LoadCredential 读不到/解析失败都返回 nil —— 调用方按「未登录」处理并给出提示。
+//
+// ⚠️ 权限不足与「未登录」必须分开：credential.json 是 root 0600，
+// 普通用户跑 CLI 会读不到 —— 报「未登录」会误导人去重登（还可能把好 token 覆盖）。
+// 这里把错误记到 lastCredentialErr，由 auth status 显示。
+var lastCredentialErr string
+
 func LoadCredential() *Credential {
+	lastCredentialErr = ""
 	b, err := os.ReadFile(credentialPath())
 	if err != nil {
+		if os.IsPermission(err) {
+			lastCredentialErr = fmt.Sprintf("凭证存在但当前用户读不了（%s，需 root/sudo）: %v", credentialPath(), err)
+		} else if !os.IsNotExist(err) {
+			lastCredentialErr = "读凭证失败: " + err.Error()
+		}
 		return nil
 	}
 	var c Credential
 	if err := json.Unmarshal(b, &c); err != nil {
+		lastCredentialErr = "凭证损坏: " + err.Error()
 		return nil
 	}
 	if c.Token == "" {
+		lastCredentialErr = "凭证存在但 token 为空"
 		return nil
 	}
 
 	return &c
 }
+
+// CredentialErr 最近一次 LoadCredential 失败原因（空 = 真的未登录或成功）。
+func CredentialErr() string { return lastCredentialErr }
 
 func RemoveCredential() error {
 	err := os.Remove(credentialPath())
@@ -105,6 +126,9 @@ func RemoveCredential() error {
 
 const backHTTPTimeout = 30 * time.Second
 
+// backQuickTimeout UI 首屏/身份查询短超时（3s）。
+const backQuickTimeout = 3 * time.Second
+
 type backClient struct {
 	base  string
 	token string
@@ -112,6 +136,15 @@ type backClient struct {
 	// cred 非 nil 时启用 401 自动续期；续期后会回调 onRefresh 让调用方落盘
 	cred      *Credential
 	onRefresh func(*Credential) error
+}
+
+// newBackClientQuick 3s 短超时客户端（UI 首屏身份查询；补显示名不阻塞）。
+func newBackClientQuick(cred *Credential) *backClient {
+	c := newBackClientFor(cred)
+	if c != nil && c.hc != nil {
+		c.hc = &http.Client{Timeout: backQuickTimeout}
+	}
+	return c
 }
 
 // newBackClientFor 用已存的凭证建客户端（带自动续期）。
@@ -301,19 +334,18 @@ func machineID() string {
 // DeviceFingerprint 稳定设备指纹（Token Binding，integration-plan §14.4）。
 // UUID v5 风格：SHA1(DNS-namespace ‖ host 特征)，同机稳定、异机不同。
 // 与旧 TUI credential.GenerateMachineID 同思路，但不引入 uuid 依赖。
+//
+// ⚠️ 稳定性靠 machine-id，不靠 hostname：
+//   - hostname 会变（MacBook-Pro-3.local → Mac.lan 实测踩过），
+//     一旦变了 back 侧 Token Binding 判 mismatch 并**吊销 token**，
+//     而 refresh 还沿用旧指纹 → 死循环只能重登。
+//   - /etc/machine-id 是 Linux 事实标准；macOS/自装路径用
+//     $MYNET_HOME/var/machine-id（首次生成后落盘，之后只读）。
+//
+// ⚠️ 不要掺 USER/用户名：sudo 与非 sudo 会得到不同指纹，同一台机被误判为换机。
 func DeviceFingerprint() string {
-	hostname, _ := os.Hostname()
-	mid := ""
-	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
-		mid = strings.TrimSpace(string(b))
-	}
-	if mid == "" {
-		if b, err := os.ReadFile("/var/lib/mynet/var/machine-id"); err == nil {
-			mid = strings.TrimSpace(string(b))
-		}
-	}
-	// ⚠️ 不要掺 USER/用户名：sudo 与非 sudo 会得到不同指纹，同一台机被误判为换机。
-	unique := hostname + "|" + runtime.GOOS + "|" + runtime.GOARCH + "|" + mid
+	mid := readMachineID()
+	unique := runtime.GOOS + "|" + runtime.GOARCH + "|" + mid
 	// DNS namespace UUID（RFC4122）后 16 字节 + SHA1 → 取前 16 字节作 UUID v5
 	var ns [16]byte
 	copy(ns[:], []byte{0x6b, 0xa7, 0xb8, 0x10, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8})
@@ -326,6 +358,35 @@ func DeviceFingerprint() string {
 	u[6] = (u[6] & 0x0f) | 0x50 // version 5
 	u[8] = (u[8] & 0x3f) | 0x80 // variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
+}
+
+// readMachineID 取稳定机器标识：Linux 用 /etc/machine-id；
+// 否则用 $MYNET_HOME/var/machine-id（首次生成 32 hex 后落盘，之后只读）。
+// 落盘失败时退回 hostname，保证指纹仍有值 —— 但会在下次读到文件后改变，
+// 所以部署机必须能写 var/。
+func readMachineID() string {
+	if b, err := os.ReadFile("/etc/machine-id"); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s
+		}
+	}
+	p := filepath.Join(utils.GetMyNetHome(), "var", "machine-id")
+	if b, err := os.ReadFile(p); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s
+		}
+	}
+	// 首次生成：16 字节随机 → 32 hex（不依赖 uuid 库）
+	var buf [16]byte
+	if _, err := io.ReadFull(rand.Reader, buf[:]); err != nil {
+		h, _ := os.Hostname()
+		return "fallback:" + h
+	}
+	s := hex.EncodeToString(buf[:])
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err == nil {
+		_ = os.WriteFile(p, []byte(s+"\n"), 0o600)
+	}
+	return s
 }
 
 func nowISO() string {

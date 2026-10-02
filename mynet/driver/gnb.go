@@ -421,6 +421,9 @@ func resolveGNBBinary() string {
 		filepath.Join(home, "driver", "gnb", "bin", name),
 		filepath.Join(home, "driver", "gnb", "bin", "gnb"),
 		"/usr/local/opt/mynet/driver/gnb/bin/gnb",
+		// pkg 落地位（build_pkg.sh 的 /opt/mynet/driver/gnb/bin）——
+		// 不列进来，launchd 之外的场景就只能靠 PATH 捡 /usr/local/bin
+		"/opt/mynet/driver/gnb/bin/gnb",
 		"/usr/sbin/gnb",
 		"/usr/local/opt/mynet/bin/gnb",
 		"/opt/mynet/bin/gnb",

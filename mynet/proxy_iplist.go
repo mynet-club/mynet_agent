@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ProxyListCachePath 列表缓存路径。dir 通常为 var/proxy-lists。

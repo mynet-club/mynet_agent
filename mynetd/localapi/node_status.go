@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
 )
 
 // 本机节点状态机（P1）—— 判据全部来自**磁盘产物 + 进程 + 内核**，

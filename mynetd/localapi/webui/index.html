@@ -263,6 +263,36 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .key-card:hover{border-color:#a8cfc0;background:var(--soft)}
 .key-card.on{border-color:var(--brand);background:var(--brand-soft);box-shadow:0 0 0 2px #16805d22}
 .key-grid.has-on .key-card:not(.on){opacity:.45;filter:grayscale(.25)}
+/* 闸门未过时：动作卡不可点、已展开的操作面板一律收起 */
+#key-grid.gated{opacity:.45;pointer-events:none;filter:grayscale(.4)}
+#cfg-gate:not(.hidden) ~ .key-op{display:none !important}
+#cfg-gate .gate-title b{font-size:14px}
+#cfg-gate .gate-title small{display:block;color:var(--mut);margin-top:2px;font-size:12px}
+#cfg-gate .gate-row{display:flex;align-items:center;gap:10px;padding:10px 12px;
+  border:1px solid var(--line);border-radius:10px;margin-top:8px}
+#cfg-gate .gate-row small{color:var(--mut)}
+/* ── 流程台阶：闸门过后的 ③密钥 → ④加载配置 → ⑤启动 ── */
+#cfg-flow:not(.hidden){
+  border:1.5px solid var(--brand);background:linear-gradient(180deg,#f4fbf8,#fff);
+  padding:14px 16px;margin:0 0 14px;
+}
+.flow-step{display:flex;align-items:flex-start;gap:12px}
+.flow-chip{
+  flex:0 0 auto;width:30px;height:30px;border-radius:50%;background:var(--brand);
+  color:#fff;font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;
+}
+.flow-body{flex:1 1 auto;min-width:0}
+.flow-body b{font-size:14px}
+.flow-body small{display:block;color:var(--mut);font-size:12px;line-height:1.5;margin-top:2px}
+.flow-actions{margin-top:10px;display:flex;gap:8px;flex-wrap:wrap}
+.flow-done{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.flow-done b{color:var(--brand)}
+/* 密钥就绪：收起四张动作卡，换成一条紧凑状态条 */
+#key-grid.collapsed{display:none}
+#key-ready{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--soft);margin:2px 0 10px}
+#key-ready .kr-pub{font-family:var(--mono);font-size:12.5px;color:var(--mut)}
+#key-ready .grow{flex:1 1 auto}
 .kc-title{font-weight:700;font-size:14px;margin-bottom:6px}
 .kc-desc{font-size:12px;color:var(--mut);line-height:1.55;min-height:54px}
 .kc-meta{margin-top:8px}
@@ -318,6 +348,13 @@ button:disabled{opacity:.45;cursor:not-allowed}
   background-size:5px 5px,5px 5px;background-repeat:no-repeat;
 }
 .field input:focus,.field select:focus{outline:2px solid #16805d44;border-color:var(--brand)}
+.field textarea{
+  border:1px solid var(--line);background:var(--card);color:var(--ink);
+  border-radius:10px;padding:9px 12px;font:inherit;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  width:100%;min-height:84px;resize:vertical;line-height:1.5;word-break:break-all;
+}
+.field textarea:focus{outline:2px solid #16805d44;border-color:var(--brand)}
 .span2{grid-column:span 2}
 .span3{grid-column:span 3}
 /* 分段按钮组：等宽、不换行，与输入框同高 */
@@ -644,10 +681,24 @@ details.raw pre{
   </div>
 
   <div class="panel on" data-panel="config/keys">
+    <!-- 流程台阶：闸门过后，明确「现在该做什么、下一步去哪」 -->
+    <div class="card hidden" id="cfg-flow"><div id="flow-body"></div></div>
     <div class="card">
       <div class="cardhead"><h3>节点配置</h3><span class="badge" id="keys-status-inline">—</span></div>
-      <p class="note">密钥标识「这台设备是谁」，只存在本机。下面四种方式<strong>互斥</strong>，点选一张卡片再操作；未选中的不会执行。</p>
+      <p class="note" id="key-intro-note">密钥标识「这台设备是谁」，只存在本机。下面四种方式<strong>互斥</strong>，点选一张卡片再操作；未选中的不会执行。</p>
       <div id="keys-status"></div>
+
+      <!-- 密钥就绪态：折叠四张卡，只留一条状态 + 更换入口 -->
+      <div id="key-ready" class="hidden">
+        <span class="badge ok">✓ 密钥已就绪</span>
+        <span class="grow kr-pub" id="kr-pub">—</span>
+        <button class="btn" id="kr-change">更换 / 重新同步</button>
+      </div>
+
+      <!-- 流程闸门：先登录 → 再选节点 → 才放开下面的密钥操作（顺序是用户裁定的） -->
+      <div id="cfg-gate" class="card hidden" style="border-style:dashed">
+        <div id="gate-body"></div>
+      </div>
 
       <div class="key-grid" id="key-grid">
         <button type="button" class="key-card" data-key-op="import">
@@ -675,12 +726,12 @@ details.raw pre{
       <!-- 选中后的操作面板 -->
       <div class="key-op hidden" id="key-op-import">
         <h4>导入密钥</h4>
-        <p class="note">粘贴 hex 密钥，或上传备份/密钥文件。服务端会扫描文件内容，识别出成对的公私钥即可写入。</p>
+        <p class="note">粘贴 hex 私钥，或上传备份/密钥文件。只给私钥即可 —— 服务端会从私钥推导公钥并做配对校验（私钥是身份源）。</p>
         <div class="stack">
-          <div class="field"><label>公钥（hex）</label><input id="key-pub" placeholder="64 hex 字符"></div>
-          <div class="field"><label>私钥（hex）</label><input type="password" id="key-priv" autocomplete="off"></div> <!-- GUARD-OK 误报：HTML password 输入框，非硬编码凭据 -->
-          <div class="field"><label>或上传文件</label><input type="file" id="key-file" accept=".txt,.json,.conf,.gz,.tar.gz,*"></div>
-          <div class="note" id="key-file-hint">支持：hex 文本、含 keys 的 JSON/配置、config export 的 tar.gz。</div>
+          <div class="field"><label>私钥（hex）</label><textarea id="key-priv" rows="3" spellcheck="false" autocomplete="off" placeholder="粘贴 128 hex（gnb/ed25519）或 64 hex（x25519）私钥"></textarea></div>
+          <div class="field"><label>公钥（hex，可留空 —— 自动从私钥推导）</label><input id="key-pub" placeholder="64 hex 字符（可选）"></div>
+          <div class="field"><label>或上传文件</label><input type="file" id="key-file" accept=".txt,.json,.conf,.gz,.tar.gz,.private,.hex,.key,*"></div>
+          <div class="note" id="key-file-hint">支持：node.private、hex 文本、含 keys 的 JSON/配置、config export 的 tar.gz。</div>
         </div>
         <div class="actions">
           <button class="btn primary" id="btn-key-save">写入密钥</button>
@@ -837,22 +888,51 @@ details.raw pre{
     <div class="proxy-sec" data-sec="dns">
       <div class="card">
         <div class="cardhead"><h3>DNS</h3></div>
+        <p class="note">客户端模式：改系统 DNS 指向上游。<strong>指 peer 隧道 VIP 走加密隧道（安全）；指公网 DNS 可被链路劫持。</strong></p>
         <div class="form-grid g2">
-          <div class="field span2"><label>模式</label>
+          <div class="field span2"><label>模式（三选一，①+② 可叠加）</label>
             <select id="proxy-dns-mode">
-              <option value="none">不处理</option>
-              <option value="redirect">重定向</option>
-              <option value="resolv">改 resolv</option>
-              <option value="split">分流</option>
+              <option value="off">③ 不加速（默认，不碰 DNS）</option>
+              <option value="peer">① 隧道节点 DNS（走加密隧道，安全）</option>
+              <option value="smart">② 智能 DNS（兜底，不断网）</option>
+              <option value="peer_smart">①+② 叠加（peer 优先，智能兜底）</option>
             </select>
           </div>
-          <div class="field"><label>劫持</label>
-            <select id="proxy-dns-hijack">
-              <option value="off">关</option>
-              <option value="local">仅本机</option>
-              <option value="lan">网关 LAN</option>
+        </div>
+
+        <div id="dns-peer-block" class="form-grid g2" style="display:none">
+          <div class="field span2"><label>① 隧道节点 DNS（peer VIP，查询进 gnb 隧道）</label>
+            <p class="note">来源：租户下发 / 用户自建 / 朋友分享。填 peer 的隧道 VIP（如 10.182.236.180），系统 DNS 会指向它。</p>
+          </div>
+          <div class="field"><label>来源</label>
+            <select id="proxy-dns-peer-source">
+              <option value="tenant">租户下发</option>
+              <option value="self">用户自建</option>
+              <option value="friend">朋友分享</option>
             </select>
           </div>
+          <div class="field"><label>Peer VIP</label><input id="proxy-dns-peer-addr" placeholder="10.182.236.180"></div>
+          <div class="field span2"><label>更多 peer（逗号分隔，顺序即优先级）</label>
+            <input id="proxy-dns-peer-more" class="input-wide" placeholder="10.182.236.181,10.182.236.180"></div>
+        </div>
+
+        <div id="dns-smart-block" class="form-grid g2" style="display:none">
+          <div class="field span2"><label>② 智能 DNS（兜底）</label>
+            <p class="note">来源：租户下发 / 自建 / 平台。公网 UDP:53 可被链路劫持 —— 仅作兜底，不作安全路径。</p>
+          </div>
+          <div class="field"><label>来源</label>
+            <select id="proxy-dns-smart-source">
+              <option value="platform">平台</option>
+              <option value="tenant">租户下发</option>
+              <option value="self">自建</option>
+            </select>
+          </div>
+          <div class="field"><label>地址</label><input id="proxy-dns-smart-addr" placeholder="dns.mynet.club"></div>
+          <div class="field span2"><label>更多智能 DNS（逗号分隔）</label>
+            <input id="proxy-dns-smart-more" class="input-wide" placeholder="223.5.5.5,119.29.29.29"></div>
+        </div>
+
+        <div class="form-grid g2">
           <div class="field"><label>DoH/DoT</label>
             <select id="proxy-doh-mode">
               <option value="allow">放行</option>
@@ -863,11 +943,6 @@ details.raw pre{
           <div class="field"><label>国外 DNS 进隧道</label>
             <select id="proxy-foreign-dns"><option value="1">是</option><option value="0">否</option></select>
           </div>
-        </div>
-        <div class="form-grid g2">
-          <div class="field"><label>国外 DNS</label><input id="proxy-dns-server" placeholder="8.8.8.8"></div>
-          <div class="field"><label>国内 DNS</label><input id="proxy-dns-domestic" placeholder="223.5.5.5,119.29.29.29"></div>
-          <div class="field span2"><label>平台 DNS</label><input id="proxy-platform-dns" placeholder="dns.mynet.club"></div>
         </div>
       </div>
     </div>
@@ -1132,10 +1207,14 @@ details.raw pre{
     </div>
     <div class="wiz" data-wiz="2">
       <div class="form-grid g1">
-        <div class="field"><label>API 地址</label><input id="wiz-api" placeholder="https://api.mynet.club"></div>
+        <!-- 本机页不填 API：平台请求经 gateway 中继（AGENTS.md §1.3/架构口径）。
+             api.mynet.club 是 back 部署地址，只属内部，不出现在用户输入面。 -->
+        <div class="field"><label>Gateway（只读，本机服务转发出口）</label>
+          <input id="wiz-gateway" readonly placeholder="wss://gw.mynet.club/v1/node/connect"></div>
         <div class="field"><label>邮箱</label><input id="wiz-email"></div>
         <div class="field"><label>密码</label><input type="password" id="wiz-pass" autocomplete="off"></div> <!-- GUARD-OK 误报：HTML password 输入框，非硬编码凭据 -->
       </div>
+      <p class="note" style="margin-top:8px">登录经本机服务 → gateway → 云端，无需填写 API 地址。</p>
       <div class="actions">
         <button class="btn primary" id="wiz-login">登录</button>
         <button class="btn" id="wiz-key-gen">生成密钥</button>
@@ -1399,6 +1478,9 @@ async function loadSession() {
   session.api_base = i.api_base || w.api_base_url || '';
   session.gateway = i.gateway || '';
   window.session = session;
+  try { renderConfigGate(); } catch (_) {}
+  // 登录态一到就用缓存的就绪态重画流程条（loadSettings 可能已先跑过一次）
+  try { renderConfigFlow(window.__nodeReady, window.__rtReady); } catch (_) {}
   /* 登录态一到就刷新空间页；失败不得拖垮 refresh */
   try { if (typeof ensureConsole === 'function') ensureConsole(); } catch (_) {}
   return session;
@@ -1810,6 +1892,12 @@ async function loadSettings() {
     source: kd.source
   }, null, 2);
 
+  // 流程台阶（③密钥 → ④加载配置 → ⑤启动）：需要 nodeReady/rtReady 与登录态
+  window.__lastKeyPub = kd.public_hex || '';
+  window.__nodeReady = nodeReady;
+  window.__rtReady = rtReady;
+  try { renderConfigFlow(nodeReady, rtReady); } catch (e) { console.error('renderConfigFlow', e); }
+
   $('rt-status').innerHTML =
     badge('对端 ' + (rd.peer_count || 0)) +
     badge('网段 ' + (rd.network_count || 0)) +
@@ -1882,11 +1970,23 @@ async function loadProxyPolicy(pluginList) {
   setv('proxy-role', p.role || 'client');
   setv('proxy-region', p.region || 'domestic');
   setv('proxy-policy', p.policy || 'whitelist');
-  setv('proxy-dns-mode', (p.dns && p.dns.mode) || 'none');
-  setv('proxy-dns-server', (p.dns && p.dns.server) || '');
-  setv('proxy-dns-domestic', (p.dns && (p.dns.domestic_servers || []).join(',')) || '');
+  // DNS 三选一（spec §13.1）：off / peer / smart / peer_smart
+  const dns = p.dns || {};
+  setv('proxy-dns-mode', dns.mode || 'off');
+  const peers = dns.peer_servers || [];
+  if (peers.length) {
+    setv('proxy-dns-peer-source', peers[0].source || 'tenant');
+    setv('proxy-dns-peer-addr', peers[0].addr || '');
+    setv('proxy-dns-peer-more', peers.slice(1).map((s) => s.addr).filter(Boolean).join(','));
+  }
+  const smarts = dns.smart_servers || [];
+  if (smarts.length) {
+    setv('proxy-dns-smart-source', smarts[0].source || 'platform');
+    setv('proxy-dns-smart-addr', smarts[0].addr || '');
+    setv('proxy-dns-smart-more', smarts.slice(1).map((s) => s.addr).filter(Boolean).join(','));
+  }
+  if (typeof window.toggleDnsBlocks === 'function') window.toggleDnsBlocks();
   setv('proxy-foreign-dns', p.foreign_dns_route ? '1' : '0');
-  setv('proxy-dns-hijack', (p.dns && p.dns.hijack) || 'off');
   setv('proxy-doh-mode', p.doh_mode || 'allow');
   setv('proxy-full-tunnel', p.full_tunnel ? '1' : '0');
   const dr = p.domain_rules || {};
@@ -1894,7 +1994,6 @@ async function loadProxyPolicy(pluginList) {
   setv('proxy-domains-direct', (dr.direct || []).join(','));
   setv('proxy-domains-clean', (dr.upstream_clean || []).join(','));
   setv('proxy-upstream-proxied', dr.upstream_proxied || 'fast');
-  setv('proxy-platform-dns', dr.platform_dns || '');
   const acl = p.acl || {};
   setv('proxy-acl-mode', acl.mode || 'open');
   const aclNames = (acl.allowed_node_ids || []).concat(acl.allowed_cidrs || []).join(',');
@@ -2017,6 +2116,10 @@ function selectKeyOp(op) {
     const el = $('key-op-' + k);
     if (el) el.classList.toggle('hidden', k !== op);
   });
+  if (op === 'import') {
+    $('key-file-hint').textContent = '支持：node.private、hex 文本、含 keys 的 JSON/配置、config export 的 tar.gz。';
+    $('key-file').value = '';
+  }
   if (op === 'backup') loadBackupList();
 }
 document.querySelectorAll('.key-card').forEach((c) => {
@@ -2059,33 +2162,215 @@ $('key-file').onchange = async (e) => {
       // gzip：浏览器里先当二进制扫 printable
       const bytes = new Uint8Array(buf);
       text = Array.from(bytes).map((c) => (c >= 32 && c < 127 ? String.fromCharCode(c) : '\n')).join('');
-      $('key-file-hint').textContent = '已扫描压缩包二进制中的 hex；若未识别请解开后粘贴。';
     } else {
       text = new TextDecoder().decode(buf);
     }
     const k = extractHexKeys(text);
     if (k.pub) $('key-pub').value = k.pub;
     if (k.priv) $('key-priv').value = k.priv;
-    $('key-file-hint').textContent =
-      (k.pub || k.priv) ? '已识别：公钥 ' + (k.pub ? '✓' : '✗') + ' 私钥 ' + (k.priv ? '✓' : '✗') + '。确认后点「写入密钥」。'
-        : '未能从文件识别出 hex 密钥，请手动粘贴。';
+    $('key-file-hint').textContent = k.priv
+      ? '已识别 ' + f.name + '：' + (k.pub ? '公钥 ✓ 私钥 ✓' : '私钥 ✓（公钥将由服务端从私钥推导）') + '。确认后点「写入密钥」。'
+      : (k.pub ? '只识别到公钥 —— 导入需要私钥，请粘贴私钥。' : '未能从 ' + f.name + ' 识别出 hex 密钥，请手动粘贴。');
   } catch (err) {
     $('key-file-hint').textContent = '读取文件失败：' + err.message;
   }
+  e.target.value = ''; // 允许重选同一文件再次触发 change
 };
+
+/* ── 配置页流程闸门：① 登录 → ② 选节点 → 才放开密钥操作 ──
+ * 顺序是刻意硬性的：没节点身份时导密钥会因缺 --node-id 失败、拉配置会因无
+ * active profile 失败 —— 与其让用户撞墙，不如把前置条件摆成台阶。 */
+let cloudNodesCache = null;
+
+function renderConfigGate() {
+  const gate = $('cfg-gate');
+  const grid = $('key-grid');
+  if (!gate) return;
+  const pass = !!session.logged_in && !!session.node_id;
+  if (grid) grid.classList.toggle('gated', !pass);
+  gate.classList.toggle('hidden', pass);
+  if (pass) { $('gate-body').innerHTML = ''; cloudNodesCache = null; return; }
+  const body = $('gate-body');
+  if (!session.logged_in) {
+    body.innerHTML =
+      '<div class="gate-title"><b>第 1 步 · 登录 MyNet 账号</b>' +
+      '<small>配置操作要先确认「你归哪个云端空间」，登录后才能选节点。</small></div>' +
+      '<div class="actions" style="margin-top:8px"><button class="btn primary" id="gate-login">登录</button></div>';
+    $('gate-login').onclick = () => openLoginModal();
+  } else {
+    body.innerHTML =
+      '<div class="gate-title"><b>第 2 步 · 选择本机对应的节点</b>' +
+      '<small>已登录 ' + esc(session.user_email || '云端账号') +
+      '。这台设备要用哪个节点身份？密钥与配置都会挂到它上面。</small></div>' +
+      '<div class="actions" style="margin-top:8px"><button class="btn primary" id="gate-nodes">刷新节点列表</button></div>' +
+      '<div id="gate-node-list" class="gate-list"></div>';
+    $('gate-nodes').onclick = loadGateNodes;
+    if (cloudNodesCache) renderGateNodes(cloudNodesCache);
+  }
+}
+
+async function loadGateNodes(e) {
+  await busy(e.currentTarget, async () => {
+    const r = await api('/api/v1/config/cloud');
+    if (!r.success) {
+      const need = r.data && r.data.need_login || /need_login/.test(r.message || '');
+      toast('节点列表拉取失败', need ? '登录态已失效，请重新登录' : (r.message || ''), 'err');
+      if (need) { await loadSession(); renderConfigGate(); }
+      return;
+    }
+    cloudNodesCache = (r.data && r.data.nodes) || [];
+    renderGateNodes(cloudNodesCache);
+  });
+}
+
+function renderGateNodes(nodes) {
+  const box = $('gate-node-list');
+  if (!box) return;
+  if (!nodes.length) {
+    box.innerHTML = '<div class="placeholder" style="padding:12px">云端空间里还没有设备 —— 请先在平台侧登记本设备，再回来刷新。</div>';
+    return;
+  }
+  box.innerHTML = nodes.map((n) => {
+    const id = String(n.node_id != null ? n.node_id : (n.id || ''));
+    if (!id) return '';
+    const name = esc(String(n.node_name || n.name || n.hostname || id));
+    const online = n.status === 'online' || n.online === true;
+    const tenant = esc(String(n.tenant_id || n.tenant || session.tenant_id || ''));
+    const active = id === String(session.node_id);
+    return '<div class="gate-row"><div class="grow"><b>' + name + '</b> ' +
+      '<small class="mono">' + esc(id) + '</small></div>' +
+      '<span class="badge ' + (online ? 'ok' : '') + '">' + (online ? '在线' : '离线') + '</span>' +
+      (active ? '<span class="badge ok">当前节点</span>' :
+        '<button class="btn" data-gate-tenant="' + tenant + '" data-gate-node="' + esc(id) + '">用这台</button>') +
+      '</div>';
+  }).join('');
+  box.querySelectorAll('[data-gate-node]').forEach((btn) => {
+    btn.onclick = () => useGateNode(btn.dataset.gateTenant, btn.dataset.gateNode, btn);
+  });
+}
+
+async function useGateNode(tenant, node, btn) {
+  if (!tenant) {
+    toast('缺少空间 ID', '该节点没有 tenant 信息，无法激活', 'err');
+    return;
+  }
+  await busy(btn, async () => {
+    const r = await api('/api/v1/config/active', 'POST', { tenant, node, setup_only: true });
+    logAction('选择节点 ' + node, r.success, r.message || '');
+    if (!r.success) {
+      toast('选节点失败', r.message || '', 'err');
+      return;
+    }
+    await loadSession();
+    await loadSettings();
+    toast('节点已选定', '现在可以导入或生成密钥了', 'ok');
+  });
+}
+
+/* ── 闸门过后的流程台阶：③ 密钥 → ④ 加载配置 → ⑤ 启动 ──
+ * 与后端 node-status 状态机同源：这里只做「现在该做什么」的引导，
+ * 真正的启停仍走概览页那套按钮，避免两处逻辑打架。 */
+let keySectionOpen = false;   // 密钥就绪后用户是否主动展开四张卡
+
+function flowStep(n, title, desc, actions) {
+  return '<div class="flow-step"><div class="flow-chip">' + n + '</div>' +
+    '<div class="flow-body"><b>' + esc(title) + '</b><small>' + esc(desc) + '</small>' +
+    (actions ? '<div class="flow-actions">' + actions + '</div>' : '') +
+    '</div></div>';
+}
+
+function renderConfigFlow(nodeReady, rtReady) {
+  // 就绪态由 loadSettings 提供；未取到前不渲染，避免 loadSession 先跑时误判
+  if (nodeReady === undefined || rtReady === undefined) return;
+  const flow = $('cfg-flow');
+  const body = $('flow-body');
+  const grid = $('key-grid');
+  const note = $('key-intro-note');
+  const ready = $('key-ready');
+  const gatePass = !!session.logged_in && !!session.node_id;
+  const s = status || {};
+  const running = s.state === 'RUNNING' || s.state === 'DEGRADED';
+
+  // 密钥区折叠：nodeReady 且未主动展开时，收起四张卡换成状态条
+  if (ready) {
+    const collapsed = gatePass && nodeReady && !keySectionOpen;
+    ready.classList.toggle('hidden', !(gatePass && nodeReady));
+    if (grid) grid.classList.toggle('collapsed', collapsed);
+    if (note) note.classList.toggle('hidden', collapsed);
+    if (gatePass && nodeReady) {
+      const pub = window.__lastKeyPub || '';
+      $('kr-pub').textContent = '公钥 ' + (pub ? pub.slice(0, 16) + '…' : '—');
+    }
+    const kr = $('kr-change');
+    if (kr) kr.onclick = () => { keySectionOpen = true; renderConfigFlow(nodeReady, rtReady); };
+  }
+
+  if (!flow || !body) return;
+  if (!gatePass) { flow.classList.add('hidden'); body.innerHTML = ''; return; }
+  flow.classList.remove('hidden');
+
+  if (!nodeReady) {
+    body.innerHTML = flowStep(3, '导入或生成密钥',
+      '身份密钥决定「这台设备是谁」。完成后即可从云端加载本节点的网络配置。', '');
+    return;
+  }
+  if (!rtReady) {
+    body.innerHTML = flowStep(4, '加载网络配置',
+      '密钥已就绪。从 MyNet 云端拉取本节点的对端、网段与路由，并应用到本机。',
+      '<button class="btn primary" id="flow-pull">加载并应用配置</button>');
+    $('flow-pull').onclick = (e) => busy(e.currentTarget, flowPullApply);
+    return;
+  }
+  if (!running) {
+    body.innerHTML = flowStep(5, '启动网络连接',
+      '配置已就绪。启动后本设备加入 MyNet 网络，可与对端互通。',
+      '<button class="btn primary" id="flow-start">启动网络</button>' +
+      '<button class="btn" id="flow-goto-ov">前往概览</button>');
+    $('flow-start').onclick = (e) => doAction(e.currentTarget, '启动',
+      ['service', 'start', window.__mynetDriver || 'gnb']);
+    $('flow-goto-ov').onclick = () => goPage('overview');
+    return;
+  }
+  body.innerHTML = '<div class="flow-done"><span class="flow-chip">✓</span>' +
+    '<b>网络连接运行中</b><small>' + esc(s.one_line || '本设备已加入 MyNet 网络') + '</small>' +
+    '<div class="flow-actions"><button class="btn" id="flow-view-ov">查看概览</button></div></div>';
+  $('flow-view-ov').onclick = () => goPage('overview');
+}
+
+// flowPullApply：拉取 bundle → 生成驱动投影并安装路由，一步到位。
+// 与概览「应用配置」同走 apply --auto（自动挑驱动），失败时把 stderr 带出来。
+async function flowPullApply() {
+  const pull = await api('/api/v1/command', 'POST', { argv: ['config', 'pull', '--json'] }, 60000);
+  logAction('加载云端配置', pull.success, pull.message || '');
+  if (!pull.success) {
+    toast('加载配置失败', pull.message || pull.stderr || pull.stdout || '', 'err');
+    loadSettings();
+    return;
+  }
+  const apply = await api('/api/v1/command', 'POST', { argv: ['apply', '--auto'] }, 60000);
+  logAction('应用配置', apply.success, apply.message || '');
+  toast(apply.success ? '配置已就绪' : '配置已加载，应用待确认',
+    apply.success ? '' : (apply.message || apply.stderr || ''), apply.success ? 'ok' : 'warn');
+  await refresh();
+  await loadSettings();
+}
 
 $('btn-key-save').onclick = (e) => busy(e.currentTarget, async () => {
   const pub = $('key-pub').value.trim();
   const priv = $('key-priv').value.trim();
-  if (!pub && !priv) return toast('请填写或上传密钥', '至少要有公钥或私钥', 'warn');
+  if (!priv) return toast('需要私钥', '请粘贴或上传私钥（公钥会由服务端自动推导）', 'warn');
   const r = await api('/api/v1/config/keys', 'POST', {
     private_hex: priv,
     public_hex: pub
   });
-  $('key-priv').value = ''; $('key-pub').value = '';
   logAction('导入密钥', r.success, r.message || '');
   toast(r.success ? '密钥已写入' : '写入失败', r.message || '', r.success ? 'ok' : 'err');
-  if (r.success) selectKeyOp('');
+  if (r.success) {
+    $('key-priv').value = ''; $('key-pub').value = '';
+    $('key-file-hint').textContent = '支持：node.private、hex 文本、含 keys 的 JSON/配置、config export 的 tar.gz。';
+    selectKeyOp('');
+    keySectionOpen = false;   // 写成功后自动折叠，露出「下一步：加载配置」
+  } // 失败保留已填内容，便于修正后直接重试
   loadSettings();
 });
 
@@ -2146,6 +2431,7 @@ $('btn-key-gen').onclick = () => confirmDlg(
     logAction('生成并同步密钥', synced.success, synced.message || '');
     toast(synced.success ? '新密钥已生成并同步' : '密钥已生成，但同步失败',
       synced.message || synced.stderr || '', synced.success ? 'ok' : 'err');
+    keySectionOpen = false;
     refresh();
     loadSettings();
     selectKeyOp('');
@@ -2159,7 +2445,9 @@ $('btn-key-upload').onclick = () => confirmDlg(
     const r = await api('/api/v1/command', 'POST', { argv: ['config', 'keys', 'sync', '--json'] });
     logAction('同步公钥', r.success, r.message || '');
     toast(r.success ? '公钥已同步' : '同步失败', r.message || r.stderr || '', r.success ? 'ok' : 'err');
+    keySectionOpen = false;
     selectKeyOp('');
+    loadSettings();
   }
 );
 $('btn-key-export').onclick = (e) => busy(e.currentTarget, async () => {
@@ -2236,7 +2524,6 @@ function segify(id) {
 
 function collectProxyPolicy() {
   const dnsMode = $('proxy-dns-mode').value;
-  const domestic = ($('proxy-dns-domestic').value || '').split(',').map((s) => s.trim()).filter(Boolean);
   const region = $('proxy-region').value;
   const policyName = $('proxy-policy').value;
   const matrix = {
@@ -2253,6 +2540,22 @@ function collectProxyPolicy() {
   for (const x of aclNames) {
     if (x.indexOf('/') >= 0) aclCidrs.push(x); else aclNodes.push(x);
   }
+
+  // DNS 三选一（spec §13.1）：peer_servers + smart_servers，顺序即优先级
+  const peerSource = ($('proxy-dns-peer-source') && $('proxy-dns-peer-source').value) || 'tenant';
+  const peerAddr = ($('proxy-dns-peer-addr') && $('proxy-dns-peer-addr').value.trim()) || '';
+  const peerMore = splitList($('proxy-dns-peer-more') ? $('proxy-dns-peer-more').value : '');
+  const peerServers = [];
+  if (peerAddr) peerServers.push({ source: peerSource, addr: peerAddr });
+  for (const a of peerMore) peerServers.push({ source: peerSource, addr: a });
+
+  const smartSource = ($('proxy-dns-smart-source') && $('proxy-dns-smart-source').value) || 'platform';
+  const smartAddr = ($('proxy-dns-smart-addr') && $('proxy-dns-smart-addr').value.trim()) || '';
+  const smartMore = splitList($('proxy-dns-smart-more') ? $('proxy-dns-smart-more').value : '');
+  const smartServers = [];
+  if (smartAddr) smartServers.push({ source: smartSource, addr: smartAddr });
+  for (const a of smartMore) smartServers.push({ source: smartSource, addr: a });
+
   return {
     enabled: $('proxy-enabled').value === '1',
     local_only: ($('proxy-local-only') && $('proxy-local-only').value === '1'),
@@ -2263,16 +2566,14 @@ function collectProxyPolicy() {
     exits: window.__proxyExits || [],
     dns: {
       mode: dnsMode,
-      hijack: ($('proxy-dns-hijack') && $('proxy-dns-hijack').value) || 'off',
-      server: $('proxy-dns-server').value || '',
-      domestic_servers: domestic
+      peer_servers: peerServers,
+      smart_servers: smartServers
     },
     domain_rules: {
       proxied: splitList($('proxy-domains-proxied') ? $('proxy-domains-proxied').value : ''),
       direct: splitList($('proxy-domains-direct') ? $('proxy-domains-direct').value : ''),
       upstream_proxied: ($('proxy-upstream-proxied') && $('proxy-upstream-proxied').value) || 'fast',
-      upstream_clean: splitList($('proxy-domains-clean') ? $('proxy-domains-clean').value : ''),
-      platform_dns: ($('proxy-platform-dns') && $('proxy-platform-dns').value) || ''
+      upstream_clean: splitList($('proxy-domains-clean') ? $('proxy-domains-clean').value : '')
     },
     acl: {
       mode: aclMode,
@@ -2285,11 +2586,23 @@ function collectProxyPolicy() {
   };
 }
 
+/* DNS 三选一：按模式显隐 peer/smart 块（spec §13.1） */
+function toggleDnsBlocks() {
+  const mode = ($('proxy-dns-mode') && $('proxy-dns-mode').value) || 'off';
+  const peer = $('dns-peer-block');
+  const smart = $('dns-smart-block');
+  if (peer) peer.style.display = (mode === 'peer' || mode === 'peer_smart') ? '' : 'none';
+  if (smart) smart.style.display = (mode === 'smart' || mode === 'peer_smart') ? '' : 'none';
+}
+window.toggleDnsBlocks = toggleDnsBlocks;
+if ($('proxy-dns-mode')) $('proxy-dns-mode').addEventListener('change', toggleDnsBlocks);
+toggleDnsBlocks();
+
 /* 代理表单：下拉 → 按钮组；域名框限宽 */
 [
   'proxy-enabled', 'proxy-local-only', 'proxy-role',
   'proxy-region', 'proxy-policy', 'proxy-full-tunnel', 'proxy-foreign-dns',
-  'proxy-dns-mode', 'proxy-dns-hijack', 'proxy-doh-mode',
+  'proxy-dns-mode', 'proxy-doh-mode', 'proxy-dns-peer-source', 'proxy-dns-smart-source',
   'proxy-upstream-proxied', 'proxy-acl-mode'
 ].forEach((id) => segify(id));
 ['proxy-domains-proxied', 'proxy-domains-direct', 'proxy-domains-clean', 'proxy-acl-names']
@@ -2331,7 +2644,8 @@ function ensureConsole() {
 
   /* 连接 Tab */
   $('c-gateway').innerHTML = badge(session.gateway ? session.gateway : '本机转发', logged ? 'ok' : '');
-  $('c-relay').textContent = session.api_base || '本机 /gui/';
+  // 不展示 api.mynet.club（back 部署地址只属内部）；展示中转链路本机→gateway→back
+  $('c-relay').textContent = session.gateway ? ('经 gateway → back') : '本机 /gui/';
   $('c-last').textContent = logged ? (session.user_id ? 'uid ' + session.user_id : nowHM()) : '—';
 }
 function openLoginModal() {
@@ -2379,6 +2693,9 @@ $('btn-space-logout').onclick = () => confirmDlg(
 /* 向导 */
 function openWizard() {
   $('wizard').classList.remove('hidden');
+  // gateway 只读展示（本机服务的转发出口，不是用户输入）
+  const gw = $('wiz-gateway');
+  if (gw) gw.value = session.gateway || 'wss://gw.mynet.club/v1/node/connect';
   wizStep(1);
 }
 window.openWizard = openWizard;
@@ -2389,7 +2706,6 @@ $('wiz-finish').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-skip').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-skip2').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-online').onclick = () => {
-  if ($('wiz-api') && !$('wiz-api').value) $('wiz-api').value = 'https://api.mynet.club';
   wizStep(2);
 };
 $('wiz-local').onclick = async () => {
@@ -2399,8 +2715,8 @@ $('wiz-local').onclick = async () => {
   wizStep(2);
 };
 $('wiz-login').onclick = (e) => busy(e.currentTarget, async () => {
+  // 本机页不传 api_base_url —— 平台请求经 gateway 中继，api_base 由服务端定
   const r = await api('/api/v1/wizard/login', 'POST', {
-    api_base_url: $('wiz-api').value.trim(),
     email: $('wiz-email').value.trim(),
     password: $('wiz-pass').value
   });

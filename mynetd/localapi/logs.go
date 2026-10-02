@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // handleLogs —— 本机运行日志（诊断页「日志」）。

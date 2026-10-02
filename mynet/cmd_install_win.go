@@ -2,10 +2,12 @@ package mynet
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // installWindows — Windows **服务安装**（V5-2 / T5-1）。
@@ -35,6 +37,8 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	if enable {
 		fmt.Println("  注册 Windows 服务 mynetd（SCM，start= auto）")
 		fmt.Println("  （gnb 不单独立服务：由 mynetd auto_restore_tunnel 拉起）")
+		fmt.Println(`  托盘自启: reg add HKLM …\Run\MyNetTray（mynet_tray.exe 在位才注册）`)
+		fmt.Println("  装完自动打开 WebUI: http://127.0.0.1:8096/ui/（等端口就绪，失败只提示）")
 	}
 	if dry {
 		fmt.Println("\n--dry-run：以上都没有执行")
@@ -48,6 +52,10 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 			fmt.Fprintln(os.Stderr, "  文件落地归安装包（MSI/dist），mynet install 只装服务")
 			return 1
 		}
+	}
+	// 0b) 清下载来源标记（浏览器下载 zip 解出来带 MOTW，SCM/Defender 可能拦）
+	for _, w := range clearDownloadMarks([]string{mynetExe, mynetdExe}) {
+		fmt.Fprintln(os.Stderr, "⚠", w)
 	}
 
 	// 1) 停掉可能在跑的 mynetd（服务安装要改 env/注册服务）
@@ -98,11 +106,63 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		if rc := registerWindowsService(home, mynetdExe); rc != 0 {
 			return rc
 		}
+		// 安装器形态（与 macOS 对齐）：托盘随登录起 + 装完立刻开配置页
+		installTrayRunKey(binDir, home)
+		openWebUIBestEffort()
 	} else {
 		fmt.Println("（--no-enable：跳过服务注册；稍后可 mynet install 或 sc create）")
 	}
 	_ = gnbBin
 	return 0
+}
+
+// trayRunKeyPath 托盘自启注册位。HKLM\...\Run = **每个用户登录都拉**，
+// 语义对齐 macOS 的 /Library/LaunchAgents —— 托盘是 GUI 进程，
+// 不能塞进 mynetd 服务（session 0 里没有桌面）。
+const trayRunKeyPath = `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+
+// installTrayRunKey 注册托盘登录自启。mynet_tray.exe 不在位（服务器形态）静默跳过。
+func installTrayRunKey(binDir, home string) {
+	tray := filepath.Join(binDir, "mynet_tray.exe")
+	if !fileExists(tray) {
+		return
+	}
+	// -home 显式传：注册表 Run 给不了环境变量，而托盘的默认猜测
+	// （ProgramData\MyNet）与 install 的 home（默认 Program Files\MyNet）不同树 ——
+	// intent 文件不同树，托盘的启停按钮就是摆设。
+	data := `"` + tray + `" -home "` + home + `"`
+	out, err := exec.Command("reg", "add", trayRunKeyPath, "/v", "MyNetTray",
+		"/t", "REG_SZ", "/d", data, "/f").CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 托盘自启注册失败（不影响服务）: %v %s\n", err, strings.TrimSpace(string(out)))
+		return
+	}
+	fmt.Println(`托盘自启已注册: HKLM …\Run\MyNetTray（用户登录即出现在通知区）`)
+}
+
+// openWebUIBestEffort 等本机 API 就绪后弹默认浏览器打开引导页。
+// 失败/超时只提示，不 fail 安装。
+// ⚠️ 若本进程是 MSI custom action（SYSTEM、session 0），start 会开在看不见的会话里 ——
+// 那种形态归 MSI 收尾阶段以交互用户执行（packaging/windows 待建时处理）。
+func openWebUIBestEffort() {
+	ready := false
+	for i := 0; i < 12; i++ {
+		c, err := net.DialTimeout("tcp", DefaultLocalAPI, time.Second)
+		if err == nil {
+			_ = c.Close()
+			ready = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	url := "http://" + DefaultLocalAPI + "/ui/"
+	if !ready {
+		fmt.Println("⚠ API 端口未就绪，未自动打开浏览器 —— 手动访问", url)
+		return
+	}
+	if err := exec.Command("cmd", "/c", "start", "", url).Run(); err != nil {
+		fmt.Println("⚠ 自动打开失败:", err, "—— 手动访问", url)
+	}
 }
 
 // registerWindowsService 注册/更新 mynetd 服务（SCM）。
@@ -146,6 +206,29 @@ func registerWindowsService(home, exe string) int {
 	fmt.Println("  gnb 由 mynetd 的 auto_restore_tunnel 随服务拉起（agent.json）")
 	_ = home
 	return 0
+}
+
+// uninstallWindowsService 停删 mynetd 服务、清托盘自启与 env 文件。
+// home 下的 conf/var 是业务数据，与其它平台口径一致：**不动**。
+func uninstallWindowsService(home string) error {
+	_ = execCommand("sc.exe", "stop", "mynetd")
+	var firstErr error
+	if out, err := exec.Command("sc.exe", "delete", "mynetd").CombinedOutput(); err != nil {
+		// 服务本就不存在（从没 enable 过）不算错；其余报错留给上层打警告
+		if !strings.Contains(string(out), "1060") { // ERROR_SERVICE_DOES_NOT_EXIST
+			firstErr = fmt.Errorf("sc delete mynetd: %v %s", err, strings.TrimSpace(string(out)))
+		}
+	} else {
+		fmt.Println("deleted service mynetd")
+	}
+	if err := exec.Command("reg", "delete", trayRunKeyPath, "/v", "MyNetTray", "/f").Run(); err == nil {
+		fmt.Println(`removed 托盘自启 HKLM …\Run\MyNetTray`)
+	}
+	p := filepath.Join(home, "mynetd.env")
+	if err := os.Remove(p); err == nil {
+		fmt.Println("removed", p)
+	}
+	return firstErr
 }
 
 // replaceEnvFile 里 MYNET_BIN 要带 .exe；writeEnvFile 是 linux 口径，

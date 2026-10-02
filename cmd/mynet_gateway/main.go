@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/gateway"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/gateway"
+	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // DefaultListen 网关默认监听（AGENTS.md §1.5：gateway 默认 8710）。

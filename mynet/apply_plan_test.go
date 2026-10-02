@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 func snapIP() *shared.SystemSnapshot {

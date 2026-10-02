@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdAuth — 账号态（登录/状态/登出）。
@@ -201,6 +201,12 @@ func authLogin(args []string) int {
 func authStatus() int {
 	c := LoadCredential()
 	if c == nil {
+		if e := CredentialErr(); e != "" {
+			// 权限不足/损坏 ≠ 未登录：说清真实原因，避免误导人重登覆盖好 token
+			fmt.Println("✗", e)
+			fmt.Println("  （不是未登录 —— 凭证在，只是当前用户读不了）")
+			return 1
+		}
 		fmt.Println("未登录（无 credential.json 或 token 为空）")
 		fmt.Println("  登录: mynet auth login --api https://… --email you@example.com --password-stdin")
 		return 1

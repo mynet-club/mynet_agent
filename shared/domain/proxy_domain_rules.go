@@ -20,17 +20,40 @@ const (
 	DNSUpstreamBalanced = "balanced" // 竞速 / 过滤污染（SmartDNS）
 )
 
-// PlatformDNSDefault 平台智能 DNS（目标态）。过渡期可被配置覆盖为公共 DNS。
+// PlatformDNSDefault 平台智能 DNS —— 外部/非大陆（D1，2026-09-30 用户定案）。
+// 与 back 的 DnsUpstreamResolver 同源：
+//
+//	dns.mynet.club  外部 DNS（支持 DoH）
+//	dns.dsplat.com  大陆 DNS（支持 DoH）
+//
+// 租户未配置 → 继承平台默认；services 表可按租户覆盖。
 const PlatformDNSDefault = "dns.mynet.club"
+
+// PlatformDNSDomestic 大陆智能 DNS（大陆客户端 region=domestic）。
+const PlatformDNSDomestic = "dns.dsplat.com"
+
+// PlatformDNSForRegion 按客户端 region 选平台默认 DNS。
+// region=domestic → dns.dsplat.com；其余 → dns.mynet.club。
+func PlatformDNSForRegion(region string) string {
+	if region == "domestic" {
+		return PlatformDNSDomestic
+	}
+	return PlatformDNSDefault
+}
 
 // DefaultDomesticDNS 国内公共 DNS 兜底。
 var DefaultDomesticDNS = []string{"223.5.5.5", "119.29.29.29"}
 
 type ProxyDomainRules struct {
 	// Proxied 走代理的域名（精确或 `.suffix` / `*.suffix`）。
+	// 基础清单（ctl 下发 proxy-domains.txt）落这里。
 	Proxied []string `json:"proxied,omitempty"`
-	// Direct 直连域名。
+	// Direct 直连域名（ctl 下发 direct-domains.txt 白名单）。
 	Direct []string `json:"direct,omitempty"`
+	// CustomDomains 用户本机追加的代理域名（D5）。叠加在 Proxied 之上，不回写云端。
+	CustomDomains []string `json:"custom_domains,omitempty"`
+	// CustomDirect 用户本机追加的直连域名。优先级最高。
+	CustomDirect []string `json:"custom_direct,omitempty"`
 	// UpstreamProxied fast|clean|balanced。空 = fast。
 	UpstreamProxied string `json:"upstream_proxied,omitempty"`
 	// UpstreamClean 仅这些域名的 DNS 走隧道/出口（clean）。
@@ -45,11 +68,73 @@ type ProxyDomainRules struct {
 	ExitDNS string `json:"exit_dns,omitempty"`
 }
 
+// MergePriority 合并优先级（D5，钉死）：
+//
+//	自定义直连 > 直连白名单 > 自定义代理 > 基础清单 > 默认
+//
+// EffectiveProxied / EffectiveDirect 按此算出最终两组。
+// 自定义不回写云端，只在本机叠加。
+
+// EffectiveDirect 直连并集：CustomDirect ∪ Direct。
+func (r *ProxyDomainRules) EffectiveDirect() []string {
+	if r == nil {
+		return nil
+	}
+	return unionDomains(r.CustomDirect, r.Direct)
+}
+
+// EffectiveProxied 代理并集：(Proxied ∪ CustomDomains) − EffectiveDirect。
+// 直连优先：命中的从代理组剔除。
+func (r *ProxyDomainRules) EffectiveProxied() []string {
+	if r == nil {
+		return nil
+	}
+	all := unionDomains(r.Proxied, r.CustomDomains)
+	direct := r.EffectiveDirect()
+	if len(direct) == 0 {
+		return all
+	}
+	var out []string
+	for _, d := range all {
+		if !matchDomainList(normalizeDomain(d), direct) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func unionDomains(lists ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, list := range lists {
+		for _, raw := range list {
+			d := normalizeDomain(raw)
+			if d == "" || seen[d] {
+				continue
+			}
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func (r *ProxyDomainRules) EffectivePlatformDNS() string {
 	if r == nil || r.PlatformDNS == "" {
 		return PlatformDNSDefault
 	}
 	return r.PlatformDNS
+}
+
+// ApplyTenantDNS D1：把租户智能 DNS 塞进 PlatformDNS（未显式配置时）。
+// 解析优先级：显式 PlatformDNS > profile.TenantDNS / <tenant>.dns.mynet.club > 默认。
+func (r *ProxyDomainRules) ApplyTenantDNS(tenantDNS string) {
+	if r == nil {
+		return
+	}
+	if r.PlatformDNS == "" && tenantDNS != "" {
+		r.PlatformDNS = tenantDNS
+	}
 }
 
 func (r *ProxyDomainRules) EffectiveUpstreamProxied() string {
@@ -75,16 +160,25 @@ func (r *ProxyDomainRules) IsClean(domain string) bool {
 	return matchDomainList(d, r.UpstreamClean)
 }
 
-// IsProxied 是否在 proxied 规则内。
+// IsProxied 是否在 proxied 规则内（含自定义叠加，D5 优先级）。
 func (r *ProxyDomainRules) IsProxied(domain string) bool {
 	if r == nil {
 		return false
 	}
 	d := normalizeDomain(domain)
-	if matchDomainList(d, r.Direct) {
+	// 优先级：自定义直连 > 白名单 > 自定义代理 > 基础清单
+	if matchDomainList(d, r.EffectiveDirect()) {
 		return false
 	}
-	return matchDomainList(d, r.Proxied)
+	return matchDomainList(d, r.EffectiveProxied())
+}
+
+// IsDirect 是否强制直连（CustomDirect ∪ Direct）。
+func (r *ProxyDomainRules) IsDirect(domain string) bool {
+	if r == nil {
+		return false
+	}
+	return matchDomainList(normalizeDomain(domain), r.EffectiveDirect())
 }
 
 func normalizeDomain(d string) string {

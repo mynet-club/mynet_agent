@@ -7,7 +7,7 @@
 //
 // 用法：
 //
-//	mynet_tray [-api 127.0.0.1:8096] [-mynetd PATH]
+//	mynet_tray [-api 127.0.0.1:8096] [-mynetd PATH] [-home DIR]
 //
 // 面板与 API 同址（http://127.0.0.1:8096/），与 mynetd.DefaultLocalAPI 一致。
 package main
@@ -23,8 +23,23 @@ import (
 var version = "dev" // -ldflags 注入
 
 func main() {
-	// 托盘在 /Applications/MyNet.app/Contents/MacOS/，GetMyNetHome 会猜错。
-	// 与 LaunchDaemon 的 MYNET_HOME 对齐：未设时用 /var/lib/mynet（安装约定）。
+	api := flag.String("api", "", "本机 API host:port（默认取 MYNET_LOCAL_API，再默认 "+LocalAPI+"）")
+	mynetd := flag.String("mynetd", "", "mynetd 路径（覆盖默认探测；开发用）")
+	home := flag.String("home", "", "MYNET_HOME 覆盖（注册表 Run 给不了环境变量时用）")
+	showVer := flag.Bool("version", false, "打印版本并退出")
+	flag.Parse()
+
+	if *showVer {
+		fmt.Printf("mynet_tray %s\n", version)
+		return
+	}
+
+	// -home 优先（launchd/计划任务之外的自启通道）；其次环境变量；
+	// 最后按安装约定猜：托盘在 /Applications/MyNet.app/… 时 GetMyNetHome 会猜错，
+	// 未设时用 /var/lib/mynet（darwin/linux）或 ProgramData\MyNet（windows）。
+	if *home != "" {
+		_ = os.Setenv("MYNET_HOME", *home)
+	}
 	if os.Getenv("MYNET_HOME") == "" {
 		switch runtime.GOOS {
 		case "darwin", "linux":
@@ -37,15 +52,8 @@ func main() {
 			}
 		}
 	}
-
-	api := flag.String("api", envOr("MYNET_LOCAL_API", LocalAPI), "本机 API host:port")
-	mynetd := flag.String("mynetd", "", "mynetd 路径（覆盖默认探测；开发用）")
-	showVer := flag.Bool("version", false, "打印版本并退出")
-	flag.Parse()
-
-	if *showVer {
-		fmt.Printf("mynet_tray %s\n", version)
-		return
+	if *api == "" {
+		*api = envOr("MYNET_LOCAL_API", LocalAPI)
 	}
 
 	// 菜单用的 API 基址与状态机探针同一个，避免「面板 8096、托盘 8711」

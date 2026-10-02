@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func TestEffectiveExitsSortAndCap(t *testing.T) {
@@ -32,18 +32,53 @@ func TestEffectiveExitsSortAndCap(t *testing.T) {
 
 func TestRenderGnbProxyConf(t *testing.T) {
 	c := &domain.PluginProxyConfig{
+		Role:     "client",
 		Outbound: domain.PluginProxyOutbound{Mode: "rule", Via: "tun"},
 		Exits: []domain.ProxyExit{
 			{NodeID: "3002", Weight: 20, Order: 1, Enabled: true},
-			{NodeID: "3003", Weight: 5, Enabled: true},
+			{NodeID: "3003", Weight: 5, Enabled: true}, // order=0 合法最低层
+		},
+		Groups: []domain.ProxyGroup{
+			{
+				Name:    "dns",
+				Targets: []string{"8.8.8.0/24", "0.0.0.0/0"}, // /0 必须被跳过
+				Exits:   []domain.ProxyExit{{NodeID: "3003", Weight: 20, Order: 1, Enabled: true}},
+			},
 		},
 	}
 	s := RenderGnbProxyConf(c)
-	// gnb p2-route-proxy 认 proxy.conf 的 `proxy on`（与 node.conf 同语义）
-	for _, want := range []string{"proxy on", "exit 1|3002|20", "via tun"} {
+
+	// P2 真格式（p2-route-proxy TEST-REPORT §2）
+	for _, want := range []string{
+		"role client",
+		"proxy on",
+		"[default]",
+		"exit 3002 w=20 order=1",
+		"exit 3003 w=5", // order=0 不写 order=
+		"[group dns]",
+		"target 8.8.8.0/24",
+		"exit 3003 w=20 order=1",
+	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("proxy.conf 缺 %q:\n%s", want, s)
 		}
+	}
+	// 反例：P2 不认的键/格式
+	for _, bad := range []string{"mode rule", "via tun", "max_exits", "exit 1|", "0.0.0.0/0"} {
+		if strings.Contains(s, bad) {
+			t.Fatalf("proxy.conf 不该含 %q:\n%s", bad, s)
+		}
+	}
+	// client 不写 ingress_open
+	if strings.Contains(s, "ingress_open") {
+		t.Fatalf("client 不该写 ingress_open:\n%s", s)
+	}
+}
+
+func TestRenderGnbProxyConfServerRole(t *testing.T) {
+	s := RenderGnbProxyConf(&domain.PluginProxyConfig{Role: "server"})
+	if !strings.Contains(s, "role server") || !strings.Contains(s, "ingress_open on") {
+		t.Fatalf("server 应写 ingress_open on:\n%s", s)
 	}
 }
 
@@ -87,6 +122,9 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 	defer func() { GNBProxySupported = old }()
 
 	if rc := cmdSetupV2([]string{"--local", "--node-id", "3001", "--overlay", "10.0.0.1/32"}); rc != 0 {
+		t.Fatal(rc)
+	}
+	if rc := configFaceKeysGenerate([]string{"--vpn", "gnb", "--node-id", "3001"}); rc != 0 {
 		t.Fatal(rc)
 	}
 	if rc := cmdPlugin([]string{"install", "proxy"}); rc != 0 {
@@ -183,5 +221,66 @@ func TestProbeGNBProxyParsesFeaturesLine(t *testing.T) {
 	ok, reason = probeGNBProxySupport()
 	if ok || !strings.Contains(reason, "Features") {
 		t.Fatalf("ok=%v reason=%q", ok, reason)
+	}
+}
+
+// 现网 gnb（p2 只有 0001-proxy-conf-v3，无 Features 行）必须被认成支持 ——
+// 旧探测只认 0005 的 Features 行，会把打了 P2 的构建误判成没打。
+func TestProbeGNBProxyFallbackMarker(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
+	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho 'GNB 1.6.8'\n# proxy.conf loaded gen=%llu\n"
+	if err := os.WriteFile(filepath.Join(gnbDir, "gnb"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	ok, reason := probeGNBProxySupport()
+	if !ok {
+		t.Fatalf("含 mark_p2 行为字符串应判支持: %s", reason)
+	}
+}
+
+// Features 行存在但不含 proxy 是明确否定，不得被兜底翻案。
+func TestProbeGNBProxyFeaturesLineDenies(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
+	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho 'Features: zip'\n# proxy.conf loaded gen=%llu\n"
+	if err := os.WriteFile(filepath.Join(gnbDir, "gnb"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	ok, reason := probeGNBProxySupport()
+	if ok {
+		t.Fatalf("Features 行无 proxy 必须判不支持（兜底不得翻案）: %s", reason)
+	}
+}
+
+func TestProvisionProxyPlugin(t *testing.T) {
+	home := t.TempDir()
+	created, err := provisionProxyPlugin(home)
+	if err != nil || !created {
+		t.Fatalf("首次应置备: created=%v err=%v", created, err)
+	}
+	mf := filepath.Join(home, "plugins", domain.PluginNameProxy, "manifest.json")
+	data, err := os.ReadFile(mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), domain.PluginNameProxy) || !strings.Contains(string(data), "p2-route-proxy") {
+		t.Fatalf("manifest 内容应含插件名与补丁栈说明:\n%s", data)
+	}
+	created, err = provisionProxyPlugin(home)
+	if created || err != nil {
+		t.Fatalf("复跑应幂等不动: created=%v err=%v", created, err)
 	}
 }

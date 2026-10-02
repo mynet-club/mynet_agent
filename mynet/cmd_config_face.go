@@ -10,7 +10,7 @@ package mynet
 //	mynet config tenants --json
 //	mynet config keys --json
 //	mynet config keys generate --vpn gnb|wireguard --json
-//	mynet config keys set --private HEX --public HEX [--node-id N] [--algorithm A] [--json]
+//	mynet config keys set --private HEX [--public HEX] [--node-id N] [--algorithm A] [--json]
 //	mynet config plugins --json
 
 import (
@@ -22,10 +22,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func printJSON(v any) int {
@@ -64,11 +64,19 @@ type remoteTenant struct {
 	Name string
 }
 
+// fetchRemoteTenants 不再直连 back（架构：请求走 WS relay）。
+// executor 是独立进程，无法走 WS —— 远程租户列表由 localapi 经 relay 补，
+// 这里只出本地缓存（profile 里的名字）。直连 api.mynet.club 会拖死首屏 30s。
 func fetchRemoteTenants(cred *Credential) []remoteTenant {
+	return nil // 本地缓存优先；远程补名走 WS relay（localapi）
+}
+
+// fetchRemoteTenantsDirectHTTP 仅诊断/CLI 显式用；UI 路径禁止。
+func fetchRemoteTenantsDirectHTTP(cred *Credential) []remoteTenant {
 	if cred == nil {
 		return nil
 	}
-	c := newBackClientFor(cred)
+	c := newBackClientQuick(cred)
 	raw, _, err := c.doJSON("GET", "/api/v1/user/tenants/", nil)
 	if err != nil {
 		return nil
@@ -115,7 +123,7 @@ func fetchRemoteNodeName(cred *Credential, nodeID string) string {
 	if cred == nil || nodeID == "" {
 		return ""
 	}
-	rows, err := allCloudNodes(newBackClientFor(cred))
+	rows, err := allCloudNodes(newBackClientQuick(cred))
 	if err != nil {
 		return ""
 	}
@@ -284,21 +292,43 @@ func configFaceKeysDir() (src string, mode *domain.ModeFile, err error) {
 }
 
 // configFaceKeysDirWrite **写入**一律用节点级路径，不回退 legacy。
-func configFaceKeysDirWrite() (src, dir string, mode *domain.ModeFile, err error) {
+// nodeIDHint：CLI --node-id 显式给出时用它；否则用 mode.Active.NodeID。
+// 二者皆空才报错 —— 导入/新建密钥不应被「mode 还没写 node」卡死。
+func configFaceKeysDirWrite(nodeIDHint string) (src, dir string, mode *domain.ModeFile, err error) {
 	store := &config.Store{}
 	src, mode, err = store.ActiveSource()
 	if err != nil {
 		return "", "", nil, err
 	}
-	nodeID := ""
-	if mode != nil {
+	nodeID := nodeIDHint
+	if nodeID == "" && mode != nil {
 		nodeID = mode.Active.NodeID
 	}
 	if nodeID == "" {
-		return "", "", mode, fmt.Errorf("当前空间没有 node_id，无法定位密钥目录")
+		return "", "", mode, fmt.Errorf("无法定位密钥目录：请传 --node-id，或先 setup/claim 激活节点")
 	}
 	dir, err = utils.NodeKeysDir(src, nodeID)
 	return src, dir, mode, err
+}
+
+// backFacePubFor 在线模式尽力拉 back 节点面公钥（写进 meta.json 的 back_pub_hex）。
+//
+// 历史断链：keys set/generate 曾把它硬写成空串，mynetd 节点面因此装配不了
+// （transport 报「NodeID 必填」，WS/自动起隧道全废）。拉不到（未登录/网络不通）
+// 返回警告不阻断密钥写入 —— 密钥缺失是硬错误，back 公钥缺失可事后 keys sync 回填。
+func backFacePubFor(mode *domain.ModeFile) (string, string) {
+	if mode == nil || mode.Mode != domain.ModeOnline {
+		return "", "" // local 模式没有节点面，空是正确值
+	}
+	cred := LoadCredential()
+	if cred == nil || cred.Token == "" {
+		return "", "未登录：back 节点面公钥未取到 —— 登录后 mynet config keys sync 会回填"
+	}
+	pub, err := fetchBackFacePub(cred.APIBaseURL)
+	if err != nil {
+		return "", "取 back 节点面公钥失败（" + err.Error() + "）—— 可稍后 mynet config keys sync 回填"
+	}
+	return pub, ""
 }
 
 // configFaceKeysShow 只回公钥指纹与是否存在，**绝不回 private**。
@@ -353,7 +383,7 @@ func configFaceKeysGenerate(args []string) int {
 			}
 		}
 	}
-	_, keysDir, mode, err := configFaceKeysDirWrite()
+	_, keysDir, mode, err := configFaceKeysDirWrite(nodeID)
 	if err != nil {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
@@ -370,16 +400,21 @@ func configFaceKeysGenerate(args []string) int {
 	if err != nil {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
-	if err := keys.WriteNodeKeys(keysDir, priv, pub, algo, nodeID, ""); err != nil {
+	backPub, backWarn := backFacePubFor(mode)
+	if err := keys.WriteNodeKeys(keysDir, priv, pub, algo, nodeID, backPub); err != nil {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
-	return printJSON(map[string]any{
+	out := map[string]any{
 		"public_hex": pub,
 		"algorithm":  algo,
 		"node_id":    nodeID,
 		"path":       keysDir,
 		"note":       "private 仅本机；联网模式请把 public_hex 上传到 back",
-	})
+	}
+	if backWarn != "" {
+		out["warning"] = backWarn
+	}
+	return printJSON(out)
 }
 
 func configFaceKeysSet(args []string) int {
@@ -408,25 +443,116 @@ func configFaceKeysSet(args []string) int {
 			}
 		}
 	}
-	if priv == "" || pub == "" {
-		return printJSON(map[string]any{"error": "需要 --private 与 --public"})
+	if priv == "" {
+		return printJSON(map[string]any{"error": "需要 --private（--public 可省略，服务端从私钥推导）"})
 	}
-	_, keysDir, mode, err := configFaceKeysDirWrite()
+
+	// ── 配对验证（spec：私钥是身份源）──
+	// 1. 未给公钥 → 直接从私钥推导
+	// 2. 从私钥推导公钥；导入公钥与推导值不一致 → **以私钥为准**生成公钥并告警
+	// 3. 一致 → OK
+	if algo == "" {
+		algo = keys.InferAlgorithmFromPrivateHex(priv)
+	}
+	derived, derr := keys.DerivePublicKeyFromPrivateHex(priv, algo)
+	pub = strings.TrimSpace(pub)
+	pairMatch := derr == nil && strings.EqualFold(derived, pub)
+	warnings := []string{}
+	switch {
+	case derr != nil && pub == "":
+		return printJSON(map[string]any{"error": "无法从私钥推导公钥（" + derr.Error() + "），请显式提供 --public"})
+	case derr != nil:
+		warnings = append(warnings, "无法从私钥推导公钥（"+derr.Error()+"），按导入公钥写入")
+	case pub == "":
+		pub = derived
+	case !pairMatch:
+		warnings = append(warnings, "公私钥不配对：导入公钥与私钥推导值不一致，**以私钥为准**已生成公钥")
+		pub = derived // 私钥是身份源，推导值覆盖导入公钥
+	}
+
+	_, keysDir, mode, err := configFaceKeysDirWrite(nodeID)
 	if err != nil {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
 	if nodeID == "" && mode != nil {
 		nodeID = mode.Active.NodeID
 	}
-	if err := keys.WriteNodeKeys(keysDir, priv, pub, algo, nodeID, ""); err != nil {
+	backPub, backWarn := backFacePubFor(mode)
+	if backWarn != "" {
+		warnings = append(warnings, backWarn)
+	}
+	if err := keys.WriteNodeKeys(keysDir, priv, pub, algo, nodeID, backPub); err != nil {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
-	return printJSON(map[string]any{
-		"public_hex": pub,
-		"node_id":    nodeID,
-		"path":       keysDir,
-		"note":       "private 仅本机；联网模式请把 public_hex 上传到 back",
-	})
+
+	// ── 与云端公钥比对 ──
+	// 一致 → 无事；不一致 → 通知建联对端更新（bundle 重发布）
+	cloudState := "skip"
+	if cred := LoadCredential(); cred != nil && cred.Token != "" && nodeID != "" {
+		c := newBackClientFor(cred)
+		var node struct {
+			CustomPublicKey string `json:"custom_public_key"`
+			PublicKey       string `json:"public_key"`
+		}
+		if err := c.getEnveloped("/api/v1/nodes/"+nodeID, &node); err == nil {
+			cloudPub := strings.TrimSpace(node.CustomPublicKey)
+			if cloudPub == "" {
+				cloudPub = strings.TrimSpace(node.PublicKey)
+			}
+			if cloudPub == "" {
+				cloudState = "cloud_empty"
+				warnings = append(warnings, "云端无公钥记录，建议 mynet config keys sync 上传")
+			} else if strings.EqualFold(cloudPub, strings.TrimSpace(pub)) {
+				cloudState = "match"
+			} else {
+				cloudState = "mismatch"
+				warnings = append(warnings, "公钥与云端不一致 —— 通知建联对端刷新配置")
+				// 通知对端：重发布 bundle（对端拿到新公钥）
+				if rerr := notifyPeersKeyChanged(nodeID); rerr != nil {
+					warnings = append(warnings, "通知对端失败: "+rerr.Error())
+				}
+			}
+		} else {
+			cloudState = "unreachable"
+			warnings = append(warnings, "云端比对跳过: "+err.Error())
+		}
+	}
+
+	out := map[string]any{
+		"public_hex":  pub,
+		"node_id":     nodeID,
+		"path":        keysDir,
+		"pair_match":  pairMatch,
+		"algorithm":   algo,
+		"cloud_state": cloudState,
+		"note":        "private 仅本机；联网模式请把 public_hex 上传到 back",
+	}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
+	}
+	return printJSON(out)
+}
+
+// notifyPeersKeyChanged 公钥变更后通知建联对端更新（bundle 重发布）。
+func notifyPeersKeyChanged(nodeID string) error {
+	// 复用 BundleInvalidator：密钥变更影响本节点 + 所有对端的地址/密钥投影
+	defer func() {
+		if r := recover(); r != nil {
+			// BundleInvalidator 需要 back 环境；失败不阻断密钥写入
+			_ = r
+		}
+	}()
+	// 只在有 credential 时尝试；失败仅告警
+	if cred := LoadCredential(); cred == nil || cred.Token == "" {
+		return fmt.Errorf("未登录，无法通知对端")
+	}
+	// 通过 back 的 bundle publish 触发对端刷新（与 keys sync 同路径）
+	// 这里轻量调用：POST /nodes/{id}/bundle/publish
+	c := newBackClientFor(LoadCredential())
+	if _, _, err := c.doJSON("POST", "/api/v1/nodes/"+nodeID+"/bundle/publish", map[string]any{}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // configFacePlugins 插件清单（配置面，不含进程）。
@@ -506,6 +632,12 @@ func configFaceUse(args []string) int {
 }
 
 // configFaceIdentity 空间/用户/节点名 —— 供面板展示。
+// localAPIBase 本机 localapi 基址（WebUI/客户端唯一入口）。
+func localAPIBase() string {
+	// 与 mynetd.DefaultLocalAPI 同值（避免 import cycle）
+	return "http://127.0.0.1:8096"
+}
+
 func configFaceIdentity() int {
 	store := &config.Store{}
 	m, _ := store.LoadMode()
@@ -513,14 +645,15 @@ func configFaceIdentity() int {
 		"logged_in": false,
 	}
 	cfg := utils.LoadAgentCfg()
-	out["api_base"] = cfg.APIBase
+	// 架构口径：客户端/浏览器只打本机 localapi，请求经 WS relay 到 back。
+	// api_base 不该是 api.mynet.club（那是 back 部署地址，诊断用 back_url）。
+	out["api_base"] = localAPIBase()
 	out["gateway"] = cfg.Gateway
 	cred := LoadCredential()
 	if cred != nil {
 		out["logged_in"] = true
 		out["user_email"] = cred.UserEmail
 		out["user_id"] = normalizeSnowflake(cred.UserID)
-		out["api_base"] = cred.APIBaseURL
 	}
 	if m != nil {
 		out["mode"] = m.Mode
@@ -530,26 +663,11 @@ func configFaceIdentity() int {
 		if p, err := store.LoadOnlineProfile(m.Active.TenantID); err == nil {
 			out["tenant_name"] = p.TenantName
 			out["node_name"] = p.NodeName
-			if p.APIBase != "" {
-				out["api_base"] = p.APIBase
-			}
+
 		}
 	}
-	// 节点名为空时从云端补：profile 在 claim/迁移时常只写 node_id。
-	if name, _ := out["node_id"].(string); name != "" {
-		if cur, _ := out["node_name"].(string); cur == "" {
-			if remote := fetchRemoteNodeName(LoadCredential(), name); remote != "" {
-				out["node_name"] = remote
-				// 回写 profile，下次不必再打云端
-				if tid, _ := out["tenant_id"].(string); tid != "" {
-					if p, err := store.LoadOnlineProfile(tid); err == nil && p != nil {
-						p.NodeName = remote
-						_ = store.SaveOnlineProfile(p)
-					}
-				}
-			}
-		}
-	}
+	// ⚠️ 不直连云端补节点名（架构：请求走 WS relay；直连 api.mynet.club 违规，
+	// 且网络慢会拖死 wizard/state 30s）。显示名由 localapi 经 relay 补或用本地缓存。
 	// 联网：拉租户列表补名字（本地有缓存 profile 优先，云端补显示名）
 	remote := fetchRemoteTenants(cred)
 	remoteByID := map[string]remoteTenant{}

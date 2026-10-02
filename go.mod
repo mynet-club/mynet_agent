@@ -1,4 +1,4 @@
-module github.com/mynet-club/mynet_agent-V2
+module github.com/mynet-club/mynet_agent
 
 go 1.22
 

@@ -192,3 +192,42 @@ func TestWriteNodeKeysOverwrite(t *testing.T) {
 		t.Fatalf("旧值残留: %s", raw)
 	}
 }
+
+// 断链回归：早期 keys set/generate 把 back_pub_hex 写死空串，
+// mynetd 节点面因此永远装配不了。回填必须容错（meta 缺/目录缺）且不动私钥面。
+func TestUpdateNodeMetaBackPub(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteNodeKeys(dir, "aa", "bb", "ed25519", "n1", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 空值 = no-op，不报错也不清已有值
+	if err := UpdateNodeMetaBackPub(dir, "n1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateNodeMetaBackPub(dir, "n1", "cc"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadNodeMeta(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.BackPubHex != "cc" || m.NodeID != "n1" || m.SignAlgorithm != "hmac-sha256-dh" {
+		t.Fatalf("meta 回填结果不对: %+v", m)
+	}
+	// 私钥面不许被碰
+	if b, _ := os.ReadFile(filepath.Join(dir, "node.private")); string(b) != "aa\n" {
+		t.Fatalf("node.private 被动过: %q", b)
+	}
+	// meta 不存在：按已知信息重建（node claim 先于 keys 写入的场景）
+	dir2 := filepath.Join(t.TempDir(), "keys")
+	if err := UpdateNodeMetaBackPub(dir2, "n2", "dd"); err != nil {
+		t.Fatal(err)
+	}
+	m2, err := LoadNodeMeta(dir2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m2.NodeID != "n2" || m2.BackPubHex != "dd" {
+		t.Fatalf("重建 meta 不对: %+v", m2)
+	}
+}

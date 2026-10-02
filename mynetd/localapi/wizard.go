@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // relayToBack 经 gateway /v1/relay 打 back 路径（本机 WebUI 的唯一出网方式）。

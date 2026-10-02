@@ -87,7 +87,7 @@ jobs:
           VER: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent-V2/mynet.Version=${VER} -X main.version=${VER}"
+          LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent/mynet.Version=${VER} -X main.version=${VER}"
           PKG=mynet_openwrt
           mkdir -p "$PKG/files"
           go build -ldflags "$LDFLAGS" -o "$PKG/files/mynet" ./cmd/mynet

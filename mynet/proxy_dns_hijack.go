@@ -15,7 +15,7 @@ package mynet
 import (
 	"fmt"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 // DNS hijack 范围。

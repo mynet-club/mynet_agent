@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // localResultReporter 把 /api/v1/command-result（Lua / 本地执行器回报）转成

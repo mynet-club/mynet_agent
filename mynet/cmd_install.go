@@ -1,12 +1,15 @@
 package mynet
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdInstall — **服务安装**（不是安装包安装）。
@@ -25,6 +28,10 @@ import (
 // 历史坑：早期 install 只写二进制不写单元，报成功但服务不存在；后补全单元时
 // 又把 copy 混进来。现在两条线分开：包放文件，install 装服务。
 func cmdInstall(args []string) int {
+	// C3：install 写服务单元与配置树，必须显式 MYNET_HOME
+	if _, code := requireHome(); code != 0 {
+		return code
+	}
 	prefix := defaultPrefix()
 	home := ""
 	gateways := ""
@@ -104,12 +111,15 @@ func cmdInstall(args []string) int {
 		}
 	}
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
+	fmt.Printf("  置备 gnb 四件套到标准位 %s/driver/gnb/bin（源: 包内位 → /usr/local/bin → --gnb-bin 同目录）\n", home)
 	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
 		envPath, home, gateways, binDir)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
 	if enable {
 		if runtime.GOOS == "darwin" {
 			fmt.Println("  launchctl bootstrap system（com.mynet.mynetd；gnb 由 mynetd 拉起）")
+			fmt.Printf("  写 %s/%s.plist 并 bootstrap 到控制台用户 gui 域（托盘；mynet_tray 不在位则跳过）\n",
+				launchAgentsDir, LabelTray)
 		} else {
 			fmt.Println("  systemctl daemon-reload")
 			fmt.Println("  systemctl enable --now mynetd mynet_gnb")
@@ -146,6 +156,12 @@ func cmdInstall(args []string) int {
 		}
 	}
 
+	// 0b) 清除「从互联网下载」标记 —— 不清 launchd/SCM 可能拒绝执行二进制
+	//（浏览器下载的 tgz/zip 解出来的文件带 quarantine / MOTW；curl/scp 不带）
+	for _, w := range clearDownloadMarks([]string{mynetPath, mynetdPath}) {
+		fmt.Fprintln(os.Stderr, "⚠", w)
+	}
+
 	// 1) 先停服务（改 env/单元时旧进程不能占着文件）
 	if runtime.GOOS == "darwin" {
 		_, _ = launchctl("bootout", "system/"+LabelMynetd)
@@ -160,6 +176,46 @@ func cmdInstall(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+	}
+
+	// 2b) detector —— 装完文件的第一件事：写 var/system.json（L6 素材）。
+	// 不跑则 apply --auto 读不到 system.json，路由装不全（「启动漏 apply route」的根因之一）。
+	{
+		det := filepath.Join(binDir, "mynet")
+		if runtime.GOOS == "windows" {
+			det += ".exe"
+		}
+		cmd := exec.Command(det, "detector")
+		cmd.Env = append(os.Environ(), "MYNET_HOME="+home)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ detector 失败（install 继续，但 apply 会缺 system.json）: %v %s\n",
+				err, strings.TrimSpace(string(out)))
+		} else {
+			fmt.Println("detector: 已写", filepath.Join(home, "var", "system.json"))
+		}
+	}
+
+	// 2c) 出厂补丁栈判定：编译期声明含 p2-route-proxy → 置备 proxy 插件包，
+	// 装完即「已安装」（是否启用由用户决定）。老出厂（无 P2）不置备，不误报。
+	if strings.Contains(utils.GnbPatchStack, "p2-route-proxy") {
+		created, err := provisionProxyPlugin(home)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ proxy 插件置备失败: %v\n", err)
+		} else if created {
+			fmt.Println("proxy 插件已置备（出厂补丁栈 p2-route-proxy）")
+		}
+	}
+
+	// 2d) gnb 四件套置备到「标准位」$MYNET_HOME/driver/gnb/bin ——
+	// resolveGNBBinary/subject 的第一优先查找位。历史上没有任何一方写它，
+	// 运行时只能沿 PATH 到处捡（「装完还在别的地方找工具二进制」的根因）。
+	copied, gone := provisionDriverGnbBin(prefix, home, gnbBin)
+	for _, c := range copied {
+		fmt.Println("gnb 标准位已置备:", c)
+	}
+	for _, g := range gone {
+		fmt.Fprintf(os.Stderr, "⚠ 标准位缺 %s（包内位//usr/local/bin/gnbBin 同目录都没有）——"+
+			"gnb_ctl 计数等同目录探测会跳过它\n", g)
 	}
 
 	// 3) 环境文件 + 4) 单元（抽成 writeEnvFile / writeSystemdUnits 以便测试）
@@ -195,6 +251,11 @@ func cmdInstall(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
+		// 托盘（macOS = 安装器形态，GUI 装机装完菜单栏必须有图标）：
+		// 失败只警告 —— 服务已装好，托盘下次登录还能拉起
+		if err := installTrayAgent(home, binDir, enable); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ 托盘 LaunchAgent 安装失败（不影响服务）: %v\n", err)
+		}
 	}
 
 	// 6) gnb 位置校验：单元里写死了绝对路径，位置不对就只在启动那一刻才炸
@@ -204,10 +265,15 @@ func cmdInstall(args []string) int {
 	}
 
 	fmt.Println("\n下一步（节点身份，install 不代劳）：")
-	fmt.Printf("  1) sudo %s setup --vpn-type gnb --back-pub <back 的公钥 hex>\n", filepath.Join(binDir, "mynet"))
-	fmt.Println("  2) 把 setup 打印出的 public_hex 用**用户 token** 上传到 back")
-	fmt.Println("     PUT /api/v1/nodes/<id>/keys  {\"custom_public_key\":\"<hex>\",\"key_type\":\"gnbkey\"}")
-	fmt.Println("  3) sudo systemctl restart mynetd   # 触发启动生命周期：拉 bundle → 渲染配置 → 装路由")
+	fmt.Printf("  1) sudo %s auth login --email … --password-stdin\n", filepath.Join(binDir, "mynet"))
+	fmt.Printf("  2) sudo %s setup --online --tenant T --node-id ID   # 不生成密钥\n", filepath.Join(binDir, "mynet"))
+	fmt.Println("     密钥：mynet config keys set（导入）或 keys generate（新建）")
+	fmt.Println("  3) mynet config keys sync && mynet config pull")
+	fmt.Println("  4) mynet apply --active --auto && mynet service start gnb")
+	fmt.Println("  （detector 已在 install 时跑过；system.json 就绪）")
+	if runtime.GOOS == "darwin" {
+		fmt.Println("  图形化路径：菜单栏托盘 → 打开控制台；未自动弹出时浏览器访问 http://127.0.0.1:8096/ui/")
+	}
 	return 0
 }
 
@@ -251,11 +317,16 @@ func cmdUninstall(args []string) int {
 	}
 
 	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" {
+		fmt.Println("  sc stop/delete mynetd + 删注册表托盘自启（HKLM …\\Run\\MyNetTray）")
+		fmt.Printf("  删 %s\\mynetd.env\n", home)
+	} else if runtime.GOOS == "darwin" {
 		fmt.Println("  launchctl bootout system/com.mynet.{mynetd,gnb}")
 		for _, label := range []string{LabelMynetd, LabelGNB} {
 			fmt.Printf("  删 %s/%s.plist\n", launchdPlistDir, label)
 		}
+		fmt.Println("  launchctl asuser <控制台uid> bootout gui/<uid>/" + LabelTray)
+		fmt.Printf("  删 %s/%s.plist（托盘）\n", launchAgentsDir, LabelTray)
 	} else {
 		fmt.Println("  systemctl disable --now mynetd mynet_gnb")
 		for _, u := range SystemdUnitNames {
@@ -276,7 +347,11 @@ func cmdUninstall(args []string) int {
 		return 1
 	}
 
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "windows" {
+		if err := uninstallWindowsService(home); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️ uninstall 服务/托盘自启: %v（继续删文件）\n", err)
+		}
+	} else if runtime.GOOS == "darwin" {
 		if err := uninstallLaunchd(keepBin, home); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️ uninstall launchd: %v（继续删文件）\n", err)
 		}
@@ -299,7 +374,7 @@ func cmdUninstall(args []string) int {
 	}
 	if !keepBin {
 		for _, b := range []string{"mynet", "mynetd"} {
-			p := filepath.Join(home, "bin", b)
+			p := filepath.Join(home, "bin", utils.ExeName(b)) // windows 是 .exe，之前漏了删不掉
 			if err := os.Remove(p); err == nil {
 				fmt.Println("removed", p)
 			}
@@ -317,6 +392,36 @@ func fileExists(p string) bool {
 	_, err := os.Stat(p)
 
 	return err == nil
+}
+
+// clearDownloadMarks 清除二进制的下载来源标记，返回警告（不中止安装）：
+//   - darwin：com.apple.quarantine xattr —— 不清 launchd 起不来、报错还不直观
+//   - windows：Zone.Identifier ADS（MOTW）—— 不清 SCM/Defender 可能拦
+//   - 其它平台：无对应概念，no-op
+func clearDownloadMarks(paths []string) []string {
+	var warnings []string
+	for _, p := range paths {
+		switch runtime.GOOS {
+		case "darwin":
+			if out, err := exec.Command("xattr", "-p", "com.apple.quarantine", p).Output(); err == nil && len(out) > 0 {
+				if out2, err2 := exec.Command("xattr", "-d", "com.apple.quarantine", p).CombinedOutput(); err2 != nil {
+					warnings = append(warnings, fmt.Sprintf("清除 quarantine 失败 %s: %v %s", p, err2, strings.TrimSpace(string(out2))))
+				} else {
+					fmt.Println("已清除 com.apple.quarantine:", p)
+				}
+			}
+		case "windows":
+			zone := p + ":Zone.Identifier"
+			if _, err := os.Stat(zone); err == nil {
+				if err := os.Remove(zone); err != nil {
+					warnings = append(warnings, fmt.Sprintf("清除 Zone.Identifier 失败 %s: %v", p, err))
+				} else {
+					fmt.Println("已清除 Zone.Identifier (MOTW):", p)
+				}
+			}
+		}
+	}
+	return warnings
 }
 
 // runSystemctl 调 systemd。driver 包的 execCombined 在另一个包里、未导出，
@@ -369,4 +474,75 @@ func copyFile(src, dst string, perm os.FileMode) error {
 	}
 
 	return os.WriteFile(dst, b, perm)
+}
+
+// gnbSuite 出厂四件套（与 mynet_gnb BASELINE 的 PROGRAMS 一致）。
+var gnbSuite = []string{"gnb", "gnb_ctl", "gnb_es", "gnb_crypto"}
+
+// provisionDriverGnbBin 把 gnb 四件套落进 $MYNET_HOME/driver/gnb/bin「标准位」。
+//
+// 源优先级（同一次 install 只认第一个找到的位，保证四件套同树 —— R2）：
+//  1. $prefix/driver/gnb/bin     —— pkg 落地位（darwin pkg / dist 布局）
+//  2. /usr/local/bin             —— deb/rpm 常规位
+//  3. dirname(--gnb-bin)         —— 自定义位
+//
+// 内容 sha256 一致就跳过（幂等；包升级后重跑 install 会跟着刷新），
+// 不一致才覆盖。返回 copied（已写标准位）与 missing（哪都没找到/写失败）。
+func provisionDriverGnbBin(prefix, home, gnbBin string) (copied, missing []string) {
+	dstDir := filepath.Join(home, "driver", "gnb", "bin")
+	srcDirs := []string{
+		filepath.Join(prefix, "driver", "gnb", "bin"),
+		"/usr/local/bin",
+		filepath.Dir(gnbBin),
+	}
+	for _, prog := range gnbSuite {
+		src := ""
+		for _, d := range srcDirs {
+			p := filepath.Join(d, prog)
+			if fileExists(p) {
+				src = p
+				break
+			}
+		}
+		if src == "" {
+			missing = append(missing, prog)
+			continue
+		}
+		dst := filepath.Join(dstDir, prog)
+		if sameFile(src, dst) {
+			continue
+		}
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			missing = append(missing, prog+" (建目录失败: "+err.Error()+")")
+			continue
+		}
+		if err := copyFile(src, dst, 0o755); err != nil {
+			missing = append(missing, prog+" (复制失败: "+err.Error()+")")
+			continue
+		}
+		copied = append(copied, dst)
+	}
+	return copied, missing
+}
+
+// sameFile src 与 dst 内容一致（dst 不存在/读失败都算不一致）。
+func sameFile(src, dst string) bool {
+	a, err := hashFile(src)
+	if err != nil {
+		return false
+	}
+	b, err := hashFile(dst)
+	if err != nil {
+		return false
+	}
+	return a == b
+}
+
+func hashFile(p string) (string, error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return string(sum[:]), nil
 }

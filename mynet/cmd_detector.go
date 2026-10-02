@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/detector"
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/mynet/detector"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 // cmdDetector — F-1/F-6：探测系统能力并写 system.json。
@@ -127,6 +127,10 @@ func buildSnapshot(result *detector.DetectionResult) *shared.SystemSnapshot {
 	for _, tool := range []string{"iptables", "nft", "uci", "ip", "ss", "wg"} {
 		snap.Capabilities[tool] = commandExists(tool)
 	}
+	// D3：本地解析器探测（网关 DNS 接管要用）
+	// 有智能 DNS 用之；没有 → 接平台 DNS
+	snap.Capabilities["dnsmasq"] = commandExists("dnsmasq")
+	snap.Capabilities["smartdns"] = commandExists("smartdns")
 	snap.Fingerprint = shared.ComputeFingerprint(snap.Interfaces)
 
 	if raw, err := json.Marshal(result.System); err == nil {

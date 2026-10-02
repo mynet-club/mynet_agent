@@ -9,8 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // ApplyPlan 是 L6 写入计划：只含系统网络语义，不含驱动原生语法。
@@ -81,6 +82,8 @@ func readApplyPlan(path string) (*ApplyPlan, error) {
 type routeCmd struct {
 	argv     []string
 	optional bool
+	// note 仅诊断用（如「macOS 跳过 fwmark」），不参与执行
+	note string
 }
 
 // executeApply 按 system.json 能力选择工具执行。唯一写入入口（F-5）。
@@ -227,6 +230,32 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 				}
 				fmt.Fprintf(os.Stderr, "proxy %v: %v\n", c.argv, err)
 				log.Error("proxy 命令失败", "argv", strings.Join(c.argv, " "), "err", err)
+				fail = 1
+			}
+		}
+	} else if st, err := LoadProxyState(); err == nil && st != nil && (st.Local != nil || st.Cloud != nil) {
+		// proxy 已禁用，但本机曾管理过它（intent 有记录）：撤销历史钉扎。
+		// 不清理的话，禁用后国外 DNS /32 仍指向已消失的隧道 —— 实测症状是
+		// 整机 DNS 黑洞。清理命令全部 optional：没装过/已失效属正常。
+		var cleanupPolicy domain.ProxyPolicy
+		if eff := st.Effective(); eff != nil {
+			cleanupPolicy = eff.Policy
+		}
+		tunDev := ""
+		for _, r := range plan.Routes {
+			if r.Device != "" {
+				tunDev = r.Device
+				break
+			}
+		}
+		crt := ProxyRuntime{TunDevice: resolveDevice(tunDev, plan.LocalAddresses)}
+		cleanup := proxyCleanupCmds(snap, &cleanupPolicy, crt)
+		if len(cleanup) > 0 {
+			log.Info("proxy cleanup（已禁用）", "cmds", len(cleanup))
+		}
+		for _, c := range cleanup {
+			if err := runOp(dry, c.argv); err != nil && !c.optional {
+				fmt.Fprintf(os.Stderr, "proxy cleanup %v: %v\n", c.argv, err)
 				fail = 1
 			}
 		}
@@ -466,6 +495,17 @@ func firewallArgv(snap *shared.SystemSnapshot, f FirewallOp) []string {
 		}
 		return nil
 	case "open-port":
+		// N5：nft 优先（fw4/nftables 主机），iptables 兜底（fw3/legacy）。
+		// 原先只写 iptables 路径，纯 nft 主机上 open-port 会静默变成 no-op。
+		if snap.Capabilities["nft"] {
+			// inet filter INPUT：与 fw4 的 input 链同表，reload 后由 nftables.d 重建。
+			argv := []string{"nft", "add", "rule", "ip", "filter", "INPUT",
+				"ip", "protocol", f.Proto, f.Proto, "dport", fmt.Sprintf("%d", f.Port), "accept"}
+			if f.Comment != "" {
+				argv = append(argv, "comment", fmt.Sprintf("%q", f.Comment))
+			}
+			return argv
+		}
 		if snap.Capabilities["iptables"] {
 			argv := []string{"iptables", "-A", "INPUT", "-p", f.Proto, "--dport", fmt.Sprintf("%d", f.Port), "-j", "ACCEPT"}
 			if f.Comment != "" {

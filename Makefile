@@ -54,9 +54,18 @@ endif
 # 导致所有产物 `--version` 恒输出 dev。
 # -s -w 是**链接器**标志，必须经 -ldflags 传（直接给 go build 会报
 # "flag provided but not defined: -s"）。-s 去符号表、-w 去 DWARF，产物小一半。
+# B4 版本戳：基线 / 补丁 / 构建者（mynet version 输出三句话）
+# ⚠️ BUILD_INFO 不得含空格 —— -ldflags 会按空格拆参数（实测炸过）
+GNB_BASELINE ?= 1.6.8-c411f14ee647
+GNB_PATCHES  ?= p1-hot-restart-v2,p2-route-proxy
+BUILD_INFO   ?= $(shell whoami)@$(shell hostname)_$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
 GO_LDFLAGS := -s -w \
-	-X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=$(VERSION) \
-	-X github.com/mynet-club/mynet_agent-V2/mynet.Version=$(VERSION) \
+	-X github.com/mynet-club/mynet_agent/shared/utils.AppVersion=$(VERSION) \
+	-X github.com/mynet-club/mynet_agent/shared/utils.GnbBaseline=$(GNB_BASELINE) \
+	-X github.com/mynet-club/mynet_agent/shared/utils.GnbPatchStack=$(GNB_PATCHES) \
+	-X github.com/mynet-club/mynet_agent/shared/utils.BuildStamp=$(BUILD_INFO) \
+	-X github.com/mynet-club/mynet_agent/mynet.Version=$(VERSION) \
 	-X main.version=$(VERSION)
 
 # 平台矩阵：goos goarch <ctl 侧 arch 名>
@@ -95,7 +104,6 @@ dist:
 		ext=""; if [ "$$goos" = windows ]; then ext=".exe"; fi; \
 		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet$$ext ./cmd/mynet; \
 		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd$$ext ./cmd/mynetd; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_gateway$$ext ./cmd/mynet_gateway; \
 		case "$$goos" in \
 		  darwin) \
 		    if [ "$$(uname -s)" = Darwin ]; then \
@@ -109,6 +117,11 @@ dist:
 		    ;; \
 		esac; \
 		cp mynetd/localapi/webui/index.html $$out/webui.html; \
+		if [ -f packaging/$$goos/INSTALL.md ]; then \
+		  cp packaging/$$goos/INSTALL.md $$out/INSTALL.md; \
+		else \
+		  echo "  ✗ 缺 packaging/$$goos/INSTALL.md —— 分平台安装文档是产物一部分"; exit 1; \
+		fi; \
 		$(PACK) $$out; \
 		echo "  $$name"; \
 	done
@@ -118,6 +131,14 @@ dist:
 # version 打印当前版本（供脚本与排障使用）
 version:
 	@echo $(VERSION)
+
+# pkg-darwin —— macOS 图形化安装产物（.pkg + .dmg，Installer.app 双击装）。
+# 文件落地归 pkg，服务装配仍走 `mynet install`（postinstall 调用）。
+# 必须在 macOS 宿主机上跑（pkgbuild/productbuild/hdiutil + tray 的 CGO）。
+.PHONY: pkg-darwin
+pkg-darwin:
+	@echo "▸ pkg-darwin（VERSION=$(VERSION)）"
+	@VERSION=$(VERSION) GNB_BASELINE=$(GNB_BASELINE) LDFLAGS='$(GO_LDFLAGS)' sh packaging/darwin/build_pkg.sh
 
 # checksums.txt —— 校验和 SSOT。ctl 上传时服务端会再算一遍（ReleaseService.php:34），
 # 这里生成一份是为了：① 离线分发时客户端可核；② 上传前自检产物完整。

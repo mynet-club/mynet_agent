@@ -1,4 +1,4 @@
-# mynet_agent-V2
+# mynet_agent
 
 MyNet 节点侧控制面（Go）。**一份源码，多套构建**。
 

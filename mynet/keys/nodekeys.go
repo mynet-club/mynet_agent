@@ -154,3 +154,92 @@ func LoadNodeMeta(keysDir string) (*NodeKeyMeta, error) {
 	}
 	return &m, nil
 }
+
+// UpdateNodeMetaBackPub 回填 meta.json 的 back 节点面公钥（服务器侧公开参数，非秘密）。
+//
+// 背景：早期 keys set/generate 把 back_pub_hex 硬写成空串，节点面因此永远装配
+// 不了（mynetd transport 报「NodeID 必填」，隧道只能靠手工 start 活着）。
+// meta 不存在或解析失败时按已知信息重建 —— 不覆盖 node_id（传空则保留原值）。
+func UpdateNodeMetaBackPub(keysDir, nodeID, backPubHex string) error {
+	if backPubHex == "" {
+		return nil
+	}
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		return err
+	}
+	meta, err := LoadNodeMeta(keysDir)
+	if err != nil {
+		meta = &NodeKeyMeta{SignAlgorithm: "hmac-sha256-dh"}
+	}
+	if nodeID != "" {
+		meta.NodeID = nodeID
+	}
+	if meta.BackPubHex == backPubHex {
+		return nil
+	}
+	meta.BackPubHex = backPubHex
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(keysDir, "meta.json"), append(raw, '\n'), 0o600)
+}
+
+// DerivePublicKeyFromPrivateHex 从私钥推导公钥（按算法）。
+//   - ed25519/gnb：私钥 128 hex（processed）→ GNBPublicKeyFromPrivateHex
+//   - x25519/wireguard：私钥 64 hex → ecdh X25519
+//
+// 导入密钥时用于**配对验证**（spec：公私钥必须一对，不一致以私钥推导为准）。
+func DerivePublicKeyFromPrivateHex(privHex, algorithm string) (string, error) {
+	privHex = strings.TrimSpace(privHex)
+	switch algorithm {
+	case "ed25519", "gnbkey", "gnb", "":
+		// 128 hex = gnb processed key；32 字节 hex（64 chars）也按 ed25519 seed 试
+		if len(privHex) == 64 {
+			// 64 hex = 32 字节 seed → 按 gnb 处理后再推
+			pub, err := GNBPublicKeyFromPrivateHex(privHex)
+			if err != nil {
+				return "", err
+			}
+			return hex.EncodeToString(pub), nil
+		}
+		if len(privHex) == 128 {
+			pub, err := GNBPublicKeyFromPrivateHex(privHex)
+			if err != nil {
+				return "", err
+			}
+			return hex.EncodeToString(pub), nil
+		}
+		return "", fmt.Errorf("ed25519 私钥长度应为 64/128 hex，得到 %d", len(privHex))
+	case "x25519", "curve25519", "wireguard", "wg":
+		if len(privHex) != 64 {
+			return "", fmt.Errorf("x25519 私钥长度应为 64 hex，得到 %d", len(privHex))
+		}
+		b, err := hex.DecodeString(privHex)
+		if err != nil {
+			return "", err
+		}
+		var sk [32]byte
+		copy(sk[:], b)
+		priv, err := ecdh.X25519().NewPrivateKey(sk[:])
+		if err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(priv.PublicKey().Bytes()), nil
+	default:
+		return "", fmt.Errorf("未知算法 %q", algorithm)
+	}
+}
+
+// InferAlgorithmFromPrivateHex 从私钥长度推断算法（导入时算法未知的场景）。
+func InferAlgorithmFromPrivateHex(privHex string) string {
+	privHex = strings.TrimSpace(privHex)
+	switch len(privHex) {
+	case 128:
+		return "ed25519" // gnb processed
+	case 64:
+		return "x25519" // wg 或 gnb seed，先按 x25519 试；失败再按 ed25519
+	default:
+		return ""
+	}
+}

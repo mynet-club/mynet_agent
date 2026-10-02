@@ -19,9 +19,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func fx(t *testing.T, name string) []byte {

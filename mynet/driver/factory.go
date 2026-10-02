@@ -3,7 +3,7 @@ package driver
 import (
 	"fmt"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // Factory — A-4：按 type 创建驱动；DetectDriver 自动识别。

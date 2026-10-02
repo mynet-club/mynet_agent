@@ -22,6 +22,9 @@ const (
 
 // GetMyNetHome 安装/数据根目录。
 // 优先级: MYNET_HOME > 可执行文件上推（…/bin → …）> 当前目录
+//
+// ⚠️ 仅供探测/迁移工具使用。**装服务、起进程、写配置**必须走 RequireMyNetHome
+// —— 无 env 时静默回退 exe/cwd 会写进错误的树（evidence/20260930-subject）。
 func GetMyNetHome() string {
 	if mynetHome := os.Getenv(envHome); mynetHome != "" {
 		return mynetHome
@@ -37,6 +40,40 @@ func GetMyNetHome() string {
 		return exeDir
 	}
 	return "."
+}
+
+// ErrHomeUnset MYNET_HOME 未设置时的错误（装服务/起进程/写配置拒绝）。
+var ErrHomeUnset = fmt.Errorf("MYNET_HOME 未设置 —— 禁止静默回退 exe/cwd（会写进错误的配置树）；" +
+	"请显式 export MYNET_HOME=... 或用 mynet install 写入服务单元")
+
+// RequireMyNetHome 要求 MYNET_HOME 已设置。
+// install / service / apply / claim 等**改变状态**的入口必须走这里。
+func RequireMyNetHome() (string, error) {
+	h := os.Getenv(envHome)
+	if h == "" {
+		return "", ErrHomeUnset
+	}
+	if !filepath.IsAbs(h) {
+		return "", fmt.Errorf("MYNET_HOME 必须是绝对路径，得到 %q", h)
+	}
+	return h, nil
+}
+
+// HomeSource 返回 home 的来源：env | exe | cwd（诊断用）。
+func HomeSource() string {
+	if os.Getenv(envHome) != "" {
+		return "env"
+	}
+	if exePath, err := os.Executable(); err == nil {
+		if realPath, err := filepath.EvalSymlinks(exePath); err == nil {
+			exePath = realPath
+		}
+		if filepath.Base(filepath.Dir(exePath)) == "bin" {
+			return "exe"
+		}
+		return "exe"
+	}
+	return "cwd"
 }
 
 // ── v2 配置树 ─────────────────────────────────────────────────

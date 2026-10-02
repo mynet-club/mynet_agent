@@ -8,6 +8,18 @@ package mynet
 //	mynet plugin status [name]
 //	mynet plugin exits list|add|rm|weight …
 //
+// ── proxy 双层命名（C6，见 spec/paths.md §5）────────────────
+//
+//	① intent.listen.proxy / node.conf 的 `proxy on`
+//	   = GNB 数据面准出开关（P2：未登记目的走出口对端）
+//	   「开不开」
+//
+//	② plugins/proxy.json → driver/gnb/conf/<id>/proxy.conf
+//	   = 出口选点 / 权重 / 顺序（role/exit/w/order）
+//	   「走谁」
+//
+// 两者不是同一件事的两个名字。插件 enable 会同时管 ①（强制 true）和 ②。
+//
 // **proxy 插件是 proxy 的唯一入口**：是否启用、从哪些 peer 出去、权重/顺序。
 // enable 后 apply 会：
 //   1. 探测 gnb 是否支持 proxy（P2）—— 不支持则高声提醒、不写配置
@@ -24,9 +36,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // PluginPackage plugins/{name}/manifest.json
@@ -41,7 +53,7 @@ type PluginPackage struct {
 
 func cmdPlugin(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet plugin list|enable|disable|install|status|apply|exits …")
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin list|enable|disable|install|status|apply|exits|groups …")
 		return 2
 	}
 	switch args[0] {
@@ -60,6 +72,12 @@ func cmdPlugin(args []string) int {
 		return pluginApply(args[1:])
 	case "exits":
 		return pluginExits(args[1:])
+	case "groups":
+		// D7：P2 [group] + target 分流（与 exits 的 [default] 互补）
+		return pluginGroups(args[1:])
+	case "domains":
+		// D5：清单 + 白名单 + 自定义叠加
+		return pluginDomains(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "未知 plugin 子命令 %q\n", args[0])
 		return 2
@@ -214,6 +232,363 @@ func pluginExits(args []string) int {
 	}
 	fmt.Printf("✓ 已更新 %s/proxy.json（%d 个出口）\n", base, len(pp.Exits))
 	return 0
+}
+
+// pluginGroups P2 [group] + target 分流（D7）。
+//
+//	mynet plugin groups list
+//	mynet plugin groups add <name> --target <cidr> [--target …]
+//	mynet plugin groups target <name> --target <cidr> --add|--rm
+//	mynet plugin groups exit <name> <node_id> [--weight N] [--order N] [--rm]
+//	mynet plugin groups rm <name>
+//
+// 语义（P2）：组名是地区/业务标签；组内最长前缀匹配 target；
+// 组内无出口 = DROP，不回落 [default]。
+func pluginGroups(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin groups list|add|target|exit|rm …")
+		return 2
+	}
+	base, store, err := activePluginBase()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	pc, err := loadPluginAt(base, domain.PluginNameProxy)
+	if err != nil {
+		np := domain.NewPluginProxy()
+		pc = &np
+	}
+	pp, err := domain.DecodePluginProxy(pc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	save := func() int {
+		raw, err := json.Marshal(pp)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		pc.Config = raw
+		if err := store.SavePlugin(base, pc); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("✓ 已更新 %s/proxy.json（%d 组）\n", base, len(pp.Groups))
+		return 0
+	}
+	find := func(name string) *domain.ProxyGroup {
+		for i := range pp.Groups {
+			if pp.Groups[i].Name == name {
+				return &pp.Groups[i]
+			}
+		}
+		return nil
+	}
+
+	switch args[0] {
+	case "list":
+		fmt.Printf("proxy groups（%d）\n", len(pp.Groups))
+		for _, g := range pp.Groups {
+			fmt.Printf("  [%s]\n", g.Name)
+			for _, t := range g.Targets {
+				fmt.Printf("    target %s\n", t)
+			}
+			if len(g.Exits) == 0 {
+				fmt.Println("    （无出口 —— 组内无出口 = DROP）")
+			}
+			for _, e := range g.Exits {
+				mark := ""
+				if e.Enabled {
+					mark = " ← 生效"
+				}
+				fmt.Printf("    exit %s w=%d order=%d%s\n", e.NodeID, e.Weight, e.Order, mark)
+			}
+		}
+		if len(pp.Groups) == 0 {
+			fmt.Println("  （空 —— mynet plugin groups add <name> --target <cidr>）")
+		}
+		return 0
+
+	case "add":
+		// groups add <name> --target <cidr> [--target …] [--exit <node>] [--weight N]
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin groups add <name> --target <cidr> [--target …]")
+			return 2
+		}
+		name := args[1]
+		if find(name) != nil {
+			fmt.Fprintf(os.Stderr, "组已存在: %s（用 groups target/exit 追加）\n", name)
+			return 1
+		}
+		g := domain.ProxyGroup{Name: name}
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--target":
+				if i+1 < len(args) {
+					i++
+					g.Targets = append(g.Targets, args[i])
+				}
+			case "--exit":
+				if i+1 < len(args) {
+					i++
+					g.Exits = append(g.Exits, domain.ProxyExit{NodeID: args[i], Weight: 10, Enabled: true})
+				}
+			}
+		}
+		pp.Groups = append(pp.Groups, g)
+		return save()
+
+	case "target":
+		// groups target <name> --target <cidr> --add|--rm
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin groups target <name> --target <cidr> --add|--rm")
+			return 2
+		}
+		g := find(args[1])
+		if g == nil {
+			fmt.Fprintf(os.Stderr, "无组 %s\n", args[1])
+			return 1
+		}
+		t, mode := "", "add"
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--target":
+				if i+1 < len(args) {
+					i++
+					t = args[i]
+				}
+			case "--add":
+				mode = "add"
+			case "--rm":
+				mode = "rm"
+			}
+		}
+		if t == "" {
+			fmt.Fprintln(os.Stderr, "需要 --target")
+			return 2
+		}
+		if t == "0.0.0.0/0" || t == "0/0" {
+			fmt.Fprintln(os.Stderr, "target /0 被 P2 拒载，跳过")
+			return 1
+		}
+		if mode == "rm" {
+			var keep []string
+			for _, x := range g.Targets {
+				if x != t {
+					keep = append(keep, x)
+				}
+			}
+			g.Targets = keep
+		} else {
+			g.Targets = append(g.Targets, t)
+		}
+		return save()
+
+	case "exit":
+		// groups exit <name> <node_id> [--weight N] [--order N] [--rm]
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin groups exit <name> <node_id> [--weight N] [--order N] [--rm]")
+			return 2
+		}
+		g := find(args[1])
+		if g == nil {
+			fmt.Fprintf(os.Stderr, "无组 %s\n", args[1])
+			return 1
+		}
+		nodeID := args[2]
+		rm := false
+		w, order := 10, 0
+		for i := 3; i < len(args); i++ {
+			switch args[i] {
+			case "--weight":
+				if i+1 < len(args) {
+					i++
+					fmt.Sscanf(args[i], "%d", &w)
+				}
+			case "--order":
+				if i+1 < len(args) {
+					i++
+					fmt.Sscanf(args[i], "%d", &order)
+				}
+			case "--rm":
+				rm = true
+			}
+		}
+		if rm {
+			var keep []domain.ProxyExit
+			for _, e := range g.Exits {
+				if e.NodeID != nodeID {
+					keep = append(keep, e)
+				}
+			}
+			g.Exits = keep
+			return save()
+		}
+		upserted := false
+		for i := range g.Exits {
+			if g.Exits[i].NodeID == nodeID {
+				g.Exits[i].Weight = w
+				g.Exits[i].Order = order
+				g.Exits[i].Enabled = true
+				upserted = true
+			}
+		}
+		if !upserted {
+			g.Exits = append(g.Exits, domain.ProxyExit{NodeID: nodeID, Weight: w, Order: order, Enabled: true})
+		}
+		return save()
+
+	case "rm":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin groups rm <name>")
+			return 2
+		}
+		var keep []domain.ProxyGroup
+		for _, g := range pp.Groups {
+			if g.Name != args[1] {
+				keep = append(keep, g)
+			}
+		}
+		pp.Groups = keep
+		return save()
+
+	default:
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin groups list|add|target|exit|rm …")
+		return 2
+	}
+}
+
+// pluginDomains D5：清单 + 白名单 + 自定义叠加。
+//
+//	mynet plugin domains list
+//	mynet plugin domains add <domain>       # 加自定义代理
+//	mynet plugin domains rm <domain>
+//	mynet plugin domains direct add <domain>
+//	mynet plugin domains direct rm <domain>
+//
+// 合并优先级：自定义直连 > 白名单 > 自定义代理 > 基础清单。
+// 自定义只在本机（proxy.json），不回写云端。
+func pluginDomains(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin domains list|add|rm|direct …")
+		return 2
+	}
+	base, _, err := activePluginBase()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	_, _ = loadPluginAt(base, domain.PluginNameProxy) // 确保插件壳存在；失败则下面用空规则
+
+	// 读 intent 上的 DomainRules（基础清单）+ 插件自定义
+	rules := &domain.ProxyDomainRules{}
+	if p := EffectiveProxyPolicy(); p != nil && p.DomainRules != nil {
+		rules = p.DomainRules
+	}
+
+	saveCustoms := func(customP, customD []string) int {
+		if err := SetProxyCustomDomains(customP, customD); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Printf("✓ 自定义域名已更新（proxy %d / direct %d）\n", len(customP), len(customD))
+		return 0
+	}
+
+	switch args[0] {
+	case "list":
+		fmt.Println("域名规则（D5 合并优先级：自定义直连 > 白名单 > 自定义代理 > 基础清单）")
+		fmt.Printf("  基础代理清单: %d 条\n", len(rules.Proxied))
+		fmt.Printf("  直连白名单  : %d 条\n", len(rules.Direct))
+		fmt.Printf("  自定义代理  : %d 条\n", len(rules.CustomDomains))
+		fmt.Printf("  自定义直连  : %d 条\n", len(rules.CustomDirect))
+		fmt.Println("  —— 合并结果 ——")
+		effP := rules.EffectiveProxied()
+		effD := rules.EffectiveDirect()
+		fmt.Printf("  最终代理: %d 条\n", len(effP))
+		for i, d := range effP {
+			if i >= 20 {
+				fmt.Printf("    … 共 %d 条\n", len(effP))
+				break
+			}
+			fmt.Printf("    %s\n", d)
+		}
+		fmt.Printf("  最终直连: %d 条\n", len(effD))
+		for i, d := range effD {
+			if i >= 10 {
+				fmt.Printf("    … 共 %d 条\n", len(effD))
+				break
+			}
+			fmt.Printf("    %s\n", d)
+		}
+		return 0
+
+	case "add":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains add <domain>")
+			return 2
+		}
+		cp := append([]string{}, rules.CustomDomains...)
+		cp = append(cp, args[1])
+		return saveCustoms(uniqStrings(cp), rules.CustomDirect)
+
+	case "rm":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains rm <domain>")
+			return 2
+		}
+		var cp []string
+		for _, d := range rules.CustomDomains {
+			if normalizeDomainName(d) != normalizeDomainName(args[1]) {
+				cp = append(cp, d)
+			}
+		}
+		return saveCustoms(cp, rules.CustomDirect)
+
+	case "direct":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains direct add|rm <domain>")
+			return 2
+		}
+		cd := append([]string{}, rules.CustomDirect...)
+		switch args[1] {
+		case "add":
+			cd = append(cd, args[2])
+		case "rm":
+			var keep []string
+			for _, d := range cd {
+				if normalizeDomainName(d) != normalizeDomainName(args[2]) {
+					keep = append(keep, d)
+				}
+			}
+			cd = keep
+		default:
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains direct add|rm <domain>")
+			return 2
+		}
+		return saveCustoms(rules.CustomDomains, uniqStrings(cd))
+
+	default:
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin domains list|add|rm|direct …")
+		return 2
+	}
+}
+
+func uniqStrings(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		k := normalizeDomainName(s)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	return out
 }
 
 // activePluginBase 当前激活源下的插件配置目录。

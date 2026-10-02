@@ -17,8 +17,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ProxyIntentLoader / Saver — 双控意图读写（注入，避免 localapi 碰配置文件格式）。

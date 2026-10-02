@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // NodeTypeGNB / NodeTypeWireGuard —— 字符串形态，供按字符串比较的调用方使用。

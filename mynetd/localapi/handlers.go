@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 // handleSystemJSON — mynetd 本机态直读 system.json（不 fork，AGENTS.md §1.1）
@@ -96,6 +96,7 @@ func allowedSubcommand(cmd string) bool {
 	switch cmd {
 	case "detector", "metrics", "apply", "service", "driver",
 		"setup", "install", "uninstall", "update", "config",
+		"refresh-config", "refresh-routes", "refresh-address",
 		"status", "monitor", "check", "nodes", "platform", "plugin",
 		// 向导用到的账号态/节点归属原语
 		"auth", "tenants", "node":

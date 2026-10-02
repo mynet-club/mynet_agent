@@ -13,6 +13,18 @@ const (
 // 原注释写着「构建时由 -ldflags 覆盖」但它是 const，所以从未生效过。
 var AppVersion = "dev"
 
+// B4：版本戳三句话 —— 基线 / 补丁 / 构建者。
+// 均由 -ldflags 注入；dev 为默认（未注入时如实说 dev，不编故事）。
+//
+//	GnbBaseline   opengnb 基线（如 1.6.8-c411f14ee647）
+//	GnbPatchStack 补丁栈（如 p1-hot-restart-v2,p2-route-proxy）
+//	BuildStamp    构建者/主机/时间（如 ci@gh-actions 2026-09-30）
+var (
+	GnbBaseline   = "dev"
+	GnbPatchStack = "dev"
+	BuildStamp    = "dev"
+)
+
 // Configuration constants
 const (
 	ConfigDirName  = ".mynet"

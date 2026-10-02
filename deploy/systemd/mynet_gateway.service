@@ -2,7 +2,7 @@
 #
 # 为什么绑回环而不是 0.0.0.0：
 #   `gw.mynet.club` 由**主机 nginx** 反代到 `127.0.0.1:8710`
-#   （`mynet_back/deploy/nginx.conf:165,183`）。绑回环有两个直接好处：
+#   （`mynet_api/deploy/nginx.conf:165,183`）。绑回环有两个直接好处：
 #     1. 不把 8710 暴露到公网 —— gateway **自身不鉴权**（C-3：纯透传 + 连接状态表），
 #        敞开等于把节点面入口送给任何人
 #     2. 按 `cmd/mynet_gateway/main.go:113` 的 fail-fast 规则，**回环监听不需要

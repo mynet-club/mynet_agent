@@ -23,8 +23,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/config"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // backupManifest 导出包元数据。版本用来做兼容判断。
@@ -59,7 +59,12 @@ var backupSkip = []string{
 
 func cmdConfig(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet config export | import | use | status | tenants | keys | plugins")
+		fmt.Fprintln(os.Stderr, "用法: mynet config export | import | use | status | tenants | keys | plugins | pull | sync | parity")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "配置同步语义（U2）:")
+		fmt.Fprintln(os.Stderr, "  pull   从 back 下载 bundle + 投影 driver/**（不装 OS 路由）")
+		fmt.Fprintln(os.Stderr, "  sync   pull + apply --active --auto（下载+投影+OS 路由，推荐）")
+		fmt.Fprintln(os.Stderr, "  refresh-*  只渲染**本地** bundle，不访问网络（要拉新先 pull）")
 		return 2
 	}
 	switch args[0] {
@@ -93,6 +98,28 @@ func cmdConfig(args []string) int {
 		return configFaceRuntime()
 	case "pull":
 		return configFacePull()
+	case "sync":
+		// U2：pull（下载+投影）再装 OS 路由 —— 一条龙
+		if rc := configFacePull(); rc != 0 {
+			return rc
+		}
+		fmt.Println("→ 继续 apply --auto（OS 路由/防火墙）")
+		rc := cmdApply([]string{"--auto"})
+		// N6：parity 必查 —— critical 不一致（zip/crypto/passcode）高声告警
+		if items := currentParity(); len(items) > 0 {
+			critical := 0
+			for _, it := range items {
+				if it.Critical && !it.Match {
+					critical++
+					fmt.Fprintf(os.Stderr, "⚠ parity critical 不一致: %s local=%s remote=%s\n",
+						it.Key, it.Local, it.Remote)
+				}
+			}
+			if critical > 0 {
+				fmt.Fprintf(os.Stderr, "⚠ %d 个 critical 对等项不一致 —— 大包/TCP 可能静默丢（见 troubleshoot §5.3）\n", critical)
+			}
+		}
+		return rc
 	case "cloud":
 		return configFaceCloud()
 	default:

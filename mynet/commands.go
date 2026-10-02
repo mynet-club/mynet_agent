@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // 子命令面（D-7 / AGENTS.md §1.2）：
@@ -20,7 +22,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
 系统能力（由 mynetd 分派）:
   detector          探测系统能力 → 写 $MYNET_HOME/var/system.json
   metrics           采集系统指标 + VPN/peer 状态（--json，心跳数据源）
-  apply             应用配置：驱动原生配置 + OS 路由/防火墙
+  apply             应用配置：--active 写驱动投影 · --auto 装 OS 路由/防火墙 · --clear 清理
   service           进程生命周期（start|stop|reload|status <gnb|wireguard>）
   driver            驱动管理（列/装/升）
 
@@ -32,11 +34,17 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   install           安装到系统
   uninstall         卸载
   update            自更新 / 组件升级
-  config            export | import | use local|online
+  config            export | import | use | pull | sync | parity
+                    pull=下载+投影 · sync=pull+OS 路由 · refresh-*=只渲染本地 bundle
   plugin            list | install | enable | disable | status
 
 只读状态:
   status            节点/链路状态
+  subject           定位 gnb 主体（bin/conf/map/ctl，脚本排障入口）
+  route doctor      连通性机测（路由/回程/计数/对等，判读见排错手册）
+  firewall doctor   防火墙两层检查（云侧清单 + 机内 nft/iptables + fw4 持久化）
+  gate              再部署门禁（G-subject/route/fw/sync/update 五闸）
+  tree              配置树诊断/收敛（doctor | consolidate）
   monitor           持续监控输出
   check             自检
   nodes             节点列表
@@ -80,6 +88,27 @@ func Run(args []string) int {
 		return cmdNode(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "subject":
+		return cmdSubject(rest)
+	case "route":
+		// route doctor —— 连通性机测子集（N4）
+		if len(rest) > 0 && rest[0] == "doctor" {
+			return cmdRouteDoctor(rest[1:])
+		}
+		fmt.Fprintln(os.Stderr, "用法: mynet route doctor [--json] [--peer VIP]...")
+		return 2
+	case "firewall":
+		// firewall doctor —— 两层检查：云侧清单 + 机内 nft/iptables（N5）
+		if len(rest) > 0 && rest[0] == "doctor" {
+			return cmdFirewallDoctor(rest[1:])
+		}
+		fmt.Fprintln(os.Stderr, "用法: mynet firewall doctor [--json] [--port N]")
+		return 2
+	case "gate":
+		// P7 再部署门禁：G-subject/route/fw/sync/update
+		return cmdGate(rest)
+	case "tree":
+		return cmdTree(rest)
 	case "check":
 		return cmdCheck(rest)
 	case "nodes":
@@ -96,8 +125,13 @@ func Run(args []string) int {
 		return cmdUpdate(rest)
 	case "config":
 		return cmdConfig(rest)
+	case "dns":
+		// DNS 接管诊断/紧急恢复（保险丝③）
+		return cmdDNS(rest)
 	case "plugin":
 		return cmdPlugin(rest)
+	case "proxy":
+		return cmdProxy(rest)
 	case "monitor":
 		return cmdStub(cmd, rest)
 	case "help", "-h", "--help":
@@ -105,6 +139,10 @@ func Run(args []string) int {
 		return 0
 	case "version", "-v", "--version":
 		fmt.Println(Version)
+		// B4：版本戳三句话 —— 基线 / 补丁 / 构建者（ldflags 注入，dev 为默认）
+		fmt.Printf("baseline: %s\n", utils.GnbBaseline)
+		fmt.Printf("patches:  %s\n", utils.GnbPatchStack)
+		fmt.Printf("builder:  %s\n", utils.BuildStamp)
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n%s", cmd, usage)

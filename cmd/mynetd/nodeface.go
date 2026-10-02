@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // 节点面（node ↔ back）签名与命令结果上行帧。

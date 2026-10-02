@@ -90,7 +90,18 @@ jobs:
           NAME="mynet_agent_${GOOS}_${{ matrix.ctlarch }}_${VER}"
           OUT="dist/${NAME}"
           mkdir -p "$OUT"
-          LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent-V2/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent-V2/mynet.Version=${VER} -X main.version=${VER}"
+          # B4 版本戳：基线 / 补丁 / 构建者（mynet version 三句话）
+          GNB_BASELINE="1.6.8-c411f14ee647"
+          GNB_PATCHES="p1-hot-restart-v2,p2-route-proxy"
+          # ⚠️ 不得含空格 —— -ldflags 按空格拆参数
+          BUILD_INFO="ci@gh-actions_$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="-s -w \
+            -X github.com/mynet-club/mynet_agent/shared/utils.AppVersion=${VER} \
+            -X github.com/mynet-club/mynet_agent/shared/utils.GnbBaseline=${GNB_BASELINE} \
+            -X github.com/mynet-club/mynet_agent/shared/utils.GnbPatchStack=${GNB_PATCHES} \
+            -X github.com/mynet-club/mynet_agent/shared/utils.BuildStamp=${BUILD_INFO} \
+            -X github.com/mynet-club/mynet_agent/mynet.Version=${VER} \
+            -X main.version=${VER}"
 
           # mynet 执行器（含 proxy：proxy_*.go 默认编入）
           go build -ldflags "$LDFLAGS" -o "${OUT}/mynet${EXT}" ./cmd/mynet
@@ -100,12 +111,17 @@ jobs:
           else
             go build -ldflags "$LDFLAGS" -tags embed -o "${OUT}/mynetd${EXT}" ./cmd/mynetd
           fi
-          go build -ldflags "$LDFLAGS" -o "${OUT}/mynet_gateway${EXT}" ./cmd/mynet_gateway
+          # 客户端包**不含** mynet_gateway（服务端组件，不进用户安装包）
 
           # sanity：proxy 能力必须在（「带 proxy 的」）
           # -s -w 会剥符号表，不能用 go tool nm；改查运行时类型名/字符串面
           if ! strings "${OUT}/mynet${EXT}" | grep -q 'mynet.ApplyProxy'; then
             echo "ERROR: mynet 产物缺少 proxy 能力（ApplyProxy*）" >&2
+            exit 1
+          fi
+          # B4：版本戳三句话必须在
+          if ! strings "${OUT}/mynet${EXT}" | grep -q "$GNB_BASELINE"; then
+            echo "ERROR: 产物缺 GnbBaseline 版本戳" >&2
             exit 1
           fi
           echo "built $NAME"
@@ -114,9 +130,18 @@ jobs:
       - name: Pack
         env:
           VER: ${{ steps.ver.outputs.version }}
+          GOOS: ${{ matrix.goos }}
         run: |
           set -euo pipefail
           NAME="mynet_agent_${{ matrix.goos }}_${{ matrix.ctlarch }}_${VER}"
+          OUT="dist/${NAME}"
+          # 分平台 INSTALL.md 是产物一部分（pack.sh 强制校验）
+          if [ -f "packaging/${GOOS}/INSTALL.md" ]; then
+            cp "packaging/${GOOS}/INSTALL.md" "$OUT/INSTALL.md"
+          else
+            echo "ERROR: 缺 packaging/${GOOS}/INSTALL.md" >&2
+            exit 1
+          fi
           if [ "${{ matrix.goos }}" = "darwin" ] || [ "${{ matrix.goos }}" = "windows" ]; then
             (cd dist && zip -r "${NAME}.zip" "${NAME}")
           else

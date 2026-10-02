@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/gateway/relaypolicy"
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/gateway/relaypolicy"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // /api/v1/relay —— GUI → mynetd → gateway → back 的**两跳**中继。
@@ -45,6 +45,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// firstGateway 已归一成 scheme://host；relay 挂在根路径 /v1/relay
 	target, err := url.Parse(strings.TrimRight(gw, "/") + "/v1/relay?path=" + url.QueryEscape(rawPath))
 	if err != nil {
 		writeJSON(w, 502, map[string]any{"success": false, "message": "gateway 地址非法: " + err.Error()})
@@ -97,6 +98,13 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 
 const relayTimeout = 30 * time.Second // 与 gateway 侧一致
 
+// firstGateway 返回 gateway **relay 基址**（形如 https://gw.mynet.club，无尾斜杠、无路径）。
+//
+// MYNET_GATEWAYS / agent.json 是 WS 拨号 URL（wss://host/v1/node/connect）。
+// relay 是同主机的 HTTPS 面，挂在 **根路径** `/v1/relay`（gateway/server.go），
+// 不能把 WS 路径原样拼上去 —— 否则打到
+// `https://gw.mynet.club/v1/node/connect/v1/relay`，gateway 返回 Go 默认 404。
+// 与 cmd/mynetd/backclient.go 的 newBackClient 同一推导：scheme 映射 + 只取 Host。
 func firstGateway() string {
 	gw := os.Getenv("MYNET_GATEWAYS")
 	if gw == "" {
@@ -107,16 +115,30 @@ func firstGateway() string {
 	if gw == "" {
 		return ""
 	}
-	gw = strings.Split(gw, ",")[0]
-	// MYNET_GATEWAYS / agent.json 是 WS 入口（wss://…）；relay 是同主机的 HTTPS 面。
-	// 不换协议会得到 `unsupported protocol scheme "wss"` —— 实测撞过。
-	if strings.HasPrefix(gw, "wss://") {
-		return "https://" + strings.TrimPrefix(gw, "wss://")
+	return wsToRelayBase(strings.Split(gw, ",")[0])
+}
+
+// wsToRelayBase 把 WS/HTTP 网关 URL 归一成 relay 基址 `scheme://host`。
+// 非法 URL 返回空串（调用方报 502）。
+func wsToRelayBase(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-	if strings.HasPrefix(gw, "ws://") {
-		return "http://" + strings.TrimPrefix(gw, "ws://")
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
 	}
-	return gw
+	scheme := "http"
+	switch u.Scheme {
+	case "ws", "http":
+		scheme = "http"
+	case "wss", "https":
+		scheme = "https"
+	default:
+		return ""
+	}
+	return scheme + "://" + u.Host
 }
 
 // agentGatewayExplicit 只读 agent.json 文件里写明的 gateway，不读代码默认。

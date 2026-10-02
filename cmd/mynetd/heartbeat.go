@@ -44,7 +44,7 @@ type metricsSnapshot struct {
 
 // ── back 的心跳请求体 ──────────────────────────────────────────
 //
-// 契约来源：`mynet_back/app/Modules/VPN/Requests/HeartbeatRequest.php:58-103`。
+// 契约来源：`mynet_api/app/Modules/VPN/Requests/HeartbeatRequest.php:58-103`。
 // 六个必填字段 + 可选的 vpn_interfaces / node_monitor。
 //
 // ⚠️ **单位**：`cpu_usage` / `memory_usage` / `disk_usage` 都是 0-100 的百分比

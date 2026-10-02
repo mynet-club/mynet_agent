@@ -10,10 +10,11 @@ package mynet
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // DefaultForeignDNSServers 公共国外 DNS（spec/proxy.md 的 SSOT 列表）。
@@ -79,44 +80,65 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	cmds = append(cmds, proxySelfExemptCmds(snap, rt)...)
 
 	// 2) 策略路由表：default via exit dev tun table N
-	if rt.ExitVia != "" {
-		cmds = append(cmds, routeCmd{argv: []string{
-			"ip", "route", "replace", "default", "via", rt.ExitVia, "dev", dev, "table", fmt.Sprintf("%d", table),
-		}})
+	// Linux：ip route replace（支持 table）；macOS/BSD：route 方言（无 table 概念）
+	if !preferBSDNetTools(snap) {
+		if rt.ExitVia != "" {
+			cmds = append(cmds, routeCmd{argv: []string{
+				"ip", "route", "replace", "default", "via", rt.ExitVia, "dev", dev, "table", fmt.Sprintf("%d", table),
+			}})
+		} else {
+			cmds = append(cmds, routeCmd{argv: []string{
+				"ip", "route", "replace", "default", "dev", dev, "table", fmt.Sprintf("%d", table),
+			}})
+		}
 	} else {
-		// 无 VIP 时钉设备（对端用 on-link）
-		cmds = append(cmds, routeCmd{argv: []string{
-			"ip", "route", "replace", "default", "dev", dev, "table", fmt.Sprintf("%d", table),
-		}})
+		// BSD/macOS 没有策略路由表，Linux 的 fwmark+table 语义在这里**没有对应物**。
+		// 历史事故：这里曾发 `route -n delete -net default` + add 到隧道 —— BSD route
+		// 删 default 不带网关会删掉**全部** IPv4 默认路由（含物理网关），随后 add 经
+		// 隧道 VIP 失败即成黑洞：「装完/同步后系统默认路由被干掉」的根因。
+		// 契约（181 裁定）：mac 的分流只靠 DNS/域名清单把命中项 /32 钉进隧道
+		// （下面 ForeignDNS 步 + dns-split），**绝不触碰主表 default**。
+		cmds = append(cmds, routeCmd{
+			argv:     []string{"true"},
+			optional: true,
+			note:     "macOS/BSD 无策略表：不改主表默认路由，分流靠 DNS/域名清单 /32 钉隧道",
+		})
 	}
 
-	// 3) ip rule: fwmark → table
-	// 先删后加，幂等；del 失败可忽略
-	cmds = append(cmds,
-		routeCmd{argv: []string{
-			"ip", "rule", "del", "fwmark", fmt.Sprintf("%#x", fw), "lookup", fmt.Sprintf("%d", table),
-		}, optional: true},
-		routeCmd{argv: []string{
-			"ip", "rule", "add", "fwmark", fmt.Sprintf("%#x", fw), "lookup", fmt.Sprintf("%d", table), "prio", fmt.Sprintf("%d", proxyPrio),
-		}},
-	)
+	// 3) ip rule: fwmark → table（Linux 独有）
+	if preferBSDNetTools(snap) {
+		cmds = append(cmds, routeCmd{
+			argv:     []string{"true"},
+			optional: true,
+			note:     "macOS/BSD 无 fwmark 策略路由，代理分流靠 DNS/域名清单",
+		})
+	} else {
+		cmds = append(cmds,
+			routeCmd{argv: []string{
+				"ip", "rule", "del", "fwmark", fmt.Sprintf("%#x", fw), "lookup", fmt.Sprintf("%d", table),
+			}, optional: true},
+			routeCmd{argv: []string{
+				"ip", "rule", "add", "fwmark", fmt.Sprintf("%#x", fw), "lookup", fmt.Sprintf("%d", table), "prio", fmt.Sprintf("%d", proxyPrio),
+			}},
+		)
+	}
 
 	// 4) WAN 网关 /32 修复：防隧道 /24 盖住物理直连
 	if rt.WANGateway != "" && rt.WANDevice != "" {
-		cmds = append(cmds, routeCmd{argv: []string{
-			"ip", "route", "replace", rt.WANGateway + "/32", "dev", rt.WANDevice,
-		}, optional: true})
+		cmds = append(cmds, routeCmds(snap, RouteOp{
+			Action: "replace", Destination: rt.WANGateway + "/32", Device: rt.WANDevice,
+		})...)
 	}
 
-	// 5) mangle 打标
+	// 5) mangle 打标（Linux nft/iptables；macOS 无 —— 由 proxyMarkCmds 自己判）
 	cmds = append(cmds, proxyMarkCmds(snap, p, rt, fw)...)
 
 	// 6) 国外 DNS /32 强制进隧道（写主表，无条件）
 	if p.ForeignDNSRoute {
 		for _, ip := range DefaultForeignDNSServers {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"ip", "route", "replace", ip + "/32", "dev", dev,
-			}})
+			cmds = append(cmds, routeCmds(snap, RouteOp{
+				Action: "replace", Destination: ip + "/32", Device: dev,
+			})...)
 		}
 	}
 
@@ -324,17 +346,29 @@ func proxyDNSCmds(p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
 			return nil
 		}
 		return []routeCmd{{
-			argv: []string{"mynet", "proxy", "resolv", p.DNS.Server},
+			argv: []string{mynetBinPath(), "proxy", "resolv", p.DNS.Server},
 		}}
 	case "split":
 		// dnsmasq 分流：domestic 默认上游 + 国外域名走 Server
 		// 完整 dns_split 见 proxy_dnssplit.go；这里给 reload 入口
 		return []routeCmd{{
-			argv: []string{"mynet", "proxy", "dns-split",
+			argv: []string{mynetBinPath(), "proxy", "dns-split",
 				strings.Join(p.DNS.DomesticServers, ","), p.DNS.Server},
 		}}
 	}
 	return nil
+}
+
+// mynetBinPath mynet 可执行文件绝对路径（apply 内部 exec 用）。
+// 裸 "mynet" 依赖 PATH —— 服务环境/最小 PATH 下会 not found（macOS 实测）。
+func mynetBinPath() string {
+	if v := os.Getenv("MYNET_BIN"); v != "" {
+		return v
+	}
+	if exe, err := os.Executable(); err == nil {
+		return exe
+	}
+	return "mynet"
 }
 
 // proxyAllCmds 一次拼齐 client+server+dns+hijack+bypass（apply 用）。
@@ -358,20 +392,26 @@ func proxyAllCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRu
 }
 
 // proxyCleanupCmds 禁用时的清理（stop/disable）。del 均 optional。
-func proxyCleanupCmds(p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
+func proxyCleanupCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
 	if p == nil {
 		return nil
 	}
+	var cmds []routeCmd
+	// 国外 DNS /32：与 proxyClientCmds 第 6 步同一构造器，方言对称
+	// （历史上这里是 linux-only 死代码，禁用后 mac/win 的钉扎永久残留）。
+	for _, ip := range DefaultForeignDNSServers {
+		for _, c := range routeCmds(snap, RouteOp{
+			Action: "del", Destination: ip + "/32", Device: rt.TunDevice,
+		}) {
+			c.optional = true // 清理幂等：没装过 / 已失效都不算失败
+			cmds = append(cmds, c)
+		}
+	}
+	if preferBSDNetTools(snap) || (snap != nil && snap.OS == "windows") {
+		return cmds
+	}
 	fw := p.EffectiveFwmark()
 	table := p.EffectiveTable()
-	var cmds []routeCmd
-	// 国外 DNS /32
-	for _, ip := range DefaultForeignDNSServers {
-		cmds = append(cmds, routeCmd{
-			argv:     []string{"ip", "route", "del", ip + "/32", "dev", rt.TunDevice},
-			optional: true,
-		})
-	}
 	cmds = append(cmds,
 		routeCmd{argv: []string{"ip", "rule", "del", "fwmark", fmt.Sprintf("%#x", fw), "lookup", fmt.Sprintf("%d", table)}, optional: true},
 		routeCmd{argv: []string{"ip", "route", "flush", "table", fmt.Sprintf("%d", table)}, optional: true},
@@ -398,7 +438,14 @@ var WellKnownDoHIPs = []string{
 }
 
 // FullTunnelCmds 全量进隧道：默认路由/主表指向隧道（保留 WAN /32 修复）。
-func FullTunnelCmds(rt ProxyRuntime, table int) []routeCmd {
+//
+// ⚠️ 仅 Linux（iproute2）：BSD/macOS 下全量隧道等于把主表 default 换到 utun
+// （见 proxyClientCmds 的事故记录），而 mac 的分流契约根本不改 default，
+// 所以 BSD 快照直接返回空。
+func FullTunnelCmds(snap *shared.SystemSnapshot, rt ProxyRuntime, table int) []routeCmd {
+	if preferBSDNetTools(snap) {
+		return nil
+	}
 	if table <= 0 {
 		table = domain.DefaultProxyTable
 	}
@@ -491,7 +538,7 @@ func ProxyAllBypassCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt P
 	// 国外 DNS /32（已有主路径在 proxyClientCmds；此处不重复）
 	cmds = append(cmds, DoHBypassCmds(snap, p.DoHMode, rt)...)
 	if p.FullTunnel {
-		cmds = append(cmds, FullTunnelCmds(rt, p.EffectiveTable())...)
+		cmds = append(cmds, FullTunnelCmds(snap, rt, p.EffectiveTable())...)
 	}
 	return cmds
 }

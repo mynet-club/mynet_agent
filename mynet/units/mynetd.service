@@ -34,7 +34,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/mynet/mynetd.env
-ExecStart=/opt/mynet/bin/mynetd -listen 127.0.0.1:8711
+ExecStart=/opt/mynet/bin/mynetd -listen 127.0.0.1:8096
 
 # 收到 SIGTERM 后优雅退出：main.go 的 defer cancel() 会收尾 WS 与 localapi。
 # ⚠️ mynetd 退出**不会**停 gnb —— 隧道由 gnb 自己 daemon 化持有（node.conf 的

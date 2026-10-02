@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func (s *Server) registerConfigRoutes() {
@@ -169,11 +169,8 @@ func (s *Server) handleConfigKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var argv []string
-	if body.Generate || body.PrivateHex == "" {
-		if !body.Generate && (body.PrivateHex == "" || body.PublicHex == "") {
-			writeJSON(w, 400, map[string]any{"success": false, "message": "需要 generate=true 或同时给 private_hex 与 public_hex"})
-			return
-		}
+	switch {
+	case body.Generate:
 		argv = []string{"config", "keys", "generate", "--json"}
 		if body.VPNType != "" {
 			argv = append(argv, "--vpn", body.VPNType)
@@ -181,16 +178,18 @@ func (s *Server) handleConfigKeys(w http.ResponseWriter, r *http.Request) {
 		if body.NodeID != "" {
 			argv = append(argv, "--node-id", body.NodeID)
 		}
-	} else {
-		if body.PublicHex == "" {
-			writeJSON(w, 400, map[string]any{"success": false, "message": "需要 generate=true 或同时给 private_hex 与 public_hex"})
-			return
+	case body.PrivateHex != "":
+		// 公钥可省略 —— 执行器从私钥推导并做配对校验（私钥是身份源）
+		argv = []string{"config", "keys", "set", "--json", "--private", body.PrivateHex}
+		if body.PublicHex != "" {
+			argv = append(argv, "--public", body.PublicHex)
 		}
-		argv = []string{"config", "keys", "set", "--json",
-			"--private", body.PrivateHex, "--public", body.PublicHex}
 		if body.NodeID != "" {
 			argv = append(argv, "--node-id", body.NodeID)
 		}
+	default:
+		writeJSON(w, 400, map[string]any{"success": false, "message": "需要 generate=true 或 private_hex（公钥由私钥自动推导）"})
+		return
 	}
 
 	data, err := s.opsJSON(argv)
@@ -258,14 +257,19 @@ func (s *Server) handleConfigTenants(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/v1/config/active {"tenant":"t_1","node":"n1"}  同租户切节点
+//
+// setup_only=true —— 配置向导第②步「选节点」：只落 profile + mode.json
+// （setup --online 的语义），**不**停旧驱动 / apply / start。此刻本机往往还没有
+// 密钥与 bundle，走全量切换会停在 apply 阶段报缺密钥 —— 那不是失败，是流程没走完。
 func (s *Server) handleConfigActive(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
 		return
 	}
 	var body struct {
-		Tenant string `json:"tenant"`
-		Node   string `json:"node"`
+		Tenant    string `json:"tenant"`
+		Node      string `json:"node"`
+		SetupOnly bool   `json:"setup_only"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "bad json"})
@@ -273,6 +277,21 @@ func (s *Server) handleConfigActive(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Tenant == "" {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "需要 tenant"})
+		return
+	}
+	if body.SetupOnly {
+		if body.Node == "" {
+			writeJSON(w, 400, map[string]any{"success": false, "message": "setup_only 需要 node"})
+			return
+		}
+		out, err := s.execMynetStd([]string{"setup", "--online",
+			"--tenant", body.Tenant, "--node-id", body.Node})
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"success": false, "stage": "setup",
+				"message": "选节点失败: " + err.Error(), "data": sanitizeWizardOut(out)})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"success": true, "data": sanitizeWizardOut(out)})
 		return
 	}
 	argv := []string{"config", "use", "online", "--json", "--tenant", body.Tenant}

@@ -183,8 +183,27 @@ type OnlineProfile struct {
 	Driver   VPNDriverType `json:"driver"`
 	NodeID   string        `json:"node_id"`
 	NodeName string        `json:"node_name,omitempty"`
+	// TenantDNS 每租户智能 DNS（D1）。空则回退 PlatformDNSDefault。
+	// 形如 <tenant>.dns.mynet.club 或 IP；客户端/网关都指到这里做判路。
+	TenantDNS string `json:"tenant_dns,omitempty"`
 	// CreatedAt 首次 claim。
 	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// EffectiveTenantDNS 租户智能 DNS（D1）。
+//
+// 优先级：显式 TenantDNS > 全局默认 dns.mynet.club。
+// ⚠️ 不再自动生成 `<tenant>.dns.mynet.club` —— 那个约定域名**不一定存在**
+// （实测：networksetup 报 not a valid IP，因为域名解析不出来）。
+// 每租户实例部署后填 TenantDNS 才生效；未填用全局 dns.mynet.club（已验证可用）。
+func (p *OnlineProfile) EffectiveTenantDNS() string {
+	if p == nil {
+		return PlatformDNSDefault
+	}
+	if p.TenantDNS != "" {
+		return p.TenantDNS
+	}
+	return PlatformDNSDefault
 }
 
 func (p *OnlineProfile) Validate() error {
@@ -264,9 +283,23 @@ type PluginProxyConfig struct {
 	Rules    []string            `json:"rules,omitempty"`
 	// Exits 出站 peer 列表：选谁、几个、权重、顺序。
 	// gnb 侧：出口对端 = 数据目标 / 下一跳（不写 address.conf / ForwardNodes）。
+	// 落到 proxy.conf 的 [default] 段。
 	Exits []ProxyExit `json:"exits,omitempty"`
+	// Groups 按目的地区域分流（P2 `[group name]` + `target`）。
+	// 组名是地区/业务标签，**不是** client/server 角色。
+	Groups []ProxyGroup `json:"groups,omitempty"`
 	// MaxExits 最多同时启用几个出口（0=不限）。权重加权选点时的上限。
 	MaxExits int `json:"max_exits,omitempty"`
+}
+
+// ProxyGroup 一组按目的 CIDR 分流的出口（P2 proxy.conf 的 [group]）。
+type ProxyGroup struct {
+	// Name 组名（地区/业务），写进 [group <name>]。
+	Name string `json:"name"`
+	// Targets 目的 IPv4 CIDR。/0 拒载（由 P2 解析层把关，这里也校验）。
+	Targets []string `json:"targets,omitempty"`
+	// Exits 该组的出口；组内无出口 = DROP，不回落 default。
+	Exits []ProxyExit `json:"exits,omitempty"`
 }
 
 // ProxyExit 一个出站 peer。

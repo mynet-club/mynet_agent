@@ -58,7 +58,8 @@ load_config() {
 		log "ERROR: VPN_INTERFACE 未配置，bundle 里也没有接口名（先同步配置，或在 $CONFIG_FILE 设 MYNET_VPN_INTERFACE）"
 		return 1
 	}
-	ROUTE_CONFIG="${MYNET_ROUTE_CONFIG:-${ROUTE_CONFIG:-$MYNET_HOME/conf/route.conf}}"
+	# OS 路由 SSOT = bundle.network.routes，由 `mynet apply --auto` 唯一写入；
+	# 这里不再解析 route.conf（历史死变量，gnb 的 L5 宣告走 confdir/node.conf）
 	return 0
 }
 

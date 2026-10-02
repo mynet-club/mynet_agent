@@ -23,8 +23,8 @@ log "1) tokens A=${#TA} B=${#TB}"
 # 绑租户（register 后 tenant 为空）
 php <<PHP
 <?php
-require "/Users/arthur/Devel/WorkSpaceAI/mynet-club/mynet_back/vendor/autoload.php";
-\$app = require "/Users/arthur/Devel/WorkSpaceAI/mynet-club/mynet_back/bootstrap/app.php";
+require "/Users/arthur/Devel/WorkSpaceAI/mynet-club/mynet_api/vendor/autoload.php";
+\$app = require "/Users/arthur/Devel/WorkSpaceAI/mynet-club/mynet_api/bootstrap/app.php";
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 use MultiTenantSaas\Modules\Auth\Models\User;
 use Illuminate\Support\Facades\DB;

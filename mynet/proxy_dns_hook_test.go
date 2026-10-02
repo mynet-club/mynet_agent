@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 func TestDynamicIPSetAddAnswer(t *testing.T) {
@@ -124,7 +124,8 @@ func TestDoHTunnelCmds(t *testing.T) {
 }
 
 func TestFullTunnelCmds(t *testing.T) {
-	cmds := FullTunnelCmds(ProxyRuntime{
+	// FullTunnel 仅 Linux：必须带 ip 能力的快照（#21：BSD 快照下返回空）
+	cmds := FullTunnelCmds(snapNft(), ProxyRuntime{
 		TunDevice:  "gnb_tun",
 		WANDevice:  "eth0",
 		WANGateway: "192.0.2.1",
@@ -136,10 +137,14 @@ func TestFullTunnelCmds(t *testing.T) {
 	if !strings.Contains(text, "192.0.2.1/32 dev eth0") {
 		t.Fatal("WAN /32 修复")
 	}
+	if got := FullTunnelCmds(&shared.SystemSnapshot{OS: "darwin", Capabilities: map[string]bool{}},
+		ProxyRuntime{TunDevice: "gnb_tun"}, 200); len(got) != 0 {
+		t.Fatalf("BSD 下 FullTunnel 必须为空（不得碰主表 default）: %v", got)
+	}
 }
 
 func TestProxyAllBypassCombines(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
+	snap := snapNft() // 需要 ip 能力：full tunnel 是 Linux 独有（#21 门禁）
 	p := &domain.ProxyPolicy{
 		Enabled:         true,
 		Role:            "client",

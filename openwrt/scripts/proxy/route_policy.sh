@@ -395,6 +395,17 @@ start_nftables() {
         '{ type filter hook prerouting priority mangle; }'
     nft add set inet mynet_proxy exclude_ips \
         '{ type ipv4_addr; flags interval; }' 2>/dev/null || true
+    # 代理出口公网 IP 必须剔除：它们落在 mynet_proxy 的大段里（如 17.235/16-23.133/16
+    # 覆盖 18.141.199.14），一旦被 mark 0xc8 就会塞进 mynet_proxy 表（经 gnb_tun
+    # 回到出口自己），底层 UDP 形成环路。exclude_ips 吃 PROXY_PUBLIC_IPS（逗号分隔）。
+    if [ -n "${PROXY_PUBLIC_IPS:-}" ]; then
+        local _pip
+        for _pip in $(echo "$PROXY_PUBLIC_IPS" | tr ',' ' '); do
+            [ -n "$_pip" ] || continue
+            nft add element inet mynet_proxy exclude_ips "{ $_pip }" 2>/dev/null || true
+        done
+        echo "[INFO] ✓ exclude_ips 已加载代理公网 IP: $PROXY_PUBLIC_IPS"
+    fi
     # rule1: LAN 网段回包直接放行（排除 LAN 客户端的目的地址）
     nft add rule inet mynet_proxy mangle_prerouting ip daddr @exclude_ips return
     # rule2: VPN 接口入方向的 established/related 包直接 return，不打 mark

@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // Controller 启停本实例（由 MYNET_HOME / 服务标识钉住）。

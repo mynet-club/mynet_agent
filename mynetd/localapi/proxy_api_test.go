@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // 测试用 store：内存 + 落一个占位文件（部分用例断言「落盘」）。

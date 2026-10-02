@@ -26,4 +26,4 @@ id_ed25519*
 webui/*.bak
 dist/
 mynetd/localapi/conf/credential.json
-mynet_agent/secure-backup/
+secure-backup/

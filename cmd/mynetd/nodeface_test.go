@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/keys"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 // 这组密钥取自 mynet/keys/testdata/node_face_vectors.json —— 即 C-2 的

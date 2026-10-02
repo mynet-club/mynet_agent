@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	mynet "github.com/mynet-club/mynet_agent-V2/mynet"
+	mynet "github.com/mynet-club/mynet_agent/mynet"
 )
 
 func main() {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/mynet/driver"
-	"github.com/mynet-club/mynet_agent-V2/shared/domain"
+	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // R5-3：proxy 是业务意图——能力分叉（gnb 有 / wg 无），不在业务对象里写驱动语法

@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/localapi"
-	"github.com/mynet-club/mynet_agent-V2/mynetd/transport"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/localapi"
+	"github.com/mynet-club/mynet_agent/mynetd/transport"
 )
 
 func main() {

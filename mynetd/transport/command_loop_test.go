@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent-V2/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 )
 
 // R1-5：帧 → Plan → Executor → Result（不经真 WS）

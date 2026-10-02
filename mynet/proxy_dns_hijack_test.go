@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mynet-club/mynet_agent-V2/shared"
+	"github.com/mynet-club/mynet_agent/shared"
 )
 
 func TestDNSHijackLocalPC(t *testing.T) {
