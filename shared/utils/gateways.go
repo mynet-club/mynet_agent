@@ -51,8 +51,8 @@ func ResolveGateways() (list []string, source string, err error) {
 	}
 	// 4. 都没有
 	return nil, "empty", fmt.Errorf(
-		"MYNET_GATEWAYS 未配置且无回退 —— 心跳/WS/拉 bundle 都不会启动；" +
-			"请 export MYNET_GATEWAYS=wss://gw.mynet.club/v1/node/connect，" +
+		"MYNET_GATEWAYS 未配置且无回退 —— 心跳/WS/拉 bundle 都不会启动；"+
+			"请 export MYNET_GATEWAYS=wss://gw.mynet.club/v1/node/connect，"+
 			"或写入 %s，或配置 conf/agent.json 的 gateway", GatewaysEnvFile())
 }
 

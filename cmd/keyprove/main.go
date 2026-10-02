@@ -1,6 +1,7 @@
 // 实验：私钥 → 公钥 可推导性（GNB ed25519 + WireGuard X25519）
 // 用法: go run ./cmd/keyprove --gnb-priv HEX_OR_FILE --gnb-pub HEX_OR_FILE
-//       [--wg-priv B64_OR_FILE --wg-pub B64_OR_FILE]
+//
+//	[--wg-priv B64_OR_FILE --wg-pub B64_OR_FILE]
 package main
 
 import (

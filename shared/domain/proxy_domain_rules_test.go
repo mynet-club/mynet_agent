@@ -11,7 +11,7 @@ import (
 func TestEffectiveDomainsPriority(t *testing.T) {
 	r := &ProxyDomainRules{
 		Proxied:       []string{"google.com", "github.com", "example.com"},
-		Direct:        []string{"qq.com", "github.com"}, // 白名单压掉基础清单里的 github
+		Direct:        []string{"qq.com", "github.com"},  // 白名单压掉基础清单里的 github
 		CustomDomains: []string{"abc.com", "google.com"}, // 自定义代理
 		CustomDirect:  []string{"google.com"},            // 自定义直连压掉一切
 	}

@@ -8,15 +8,15 @@ import "testing"
 // 与 cmd/mynetd/backclient.go 的 newBackClient 同一推导：scheme 映射 + 只取 Host。
 func TestWsToRelayBase(t *testing.T) {
 	cases := map[string]string{
-		"wss://gw.mynet.club/v1/node/connect": "https://gw.mynet.club",
-		"wss://gw.mynet.club":                 "https://gw.mynet.club",
-		"wss://gw.mynet.club/":                "https://gw.mynet.club",
-		"ws://127.0.0.1:8710/v1/node/connect": "http://127.0.0.1:8710",
+		"wss://gw.mynet.club/v1/node/connect":   "https://gw.mynet.club",
+		"wss://gw.mynet.club":                   "https://gw.mynet.club",
+		"wss://gw.mynet.club/":                  "https://gw.mynet.club",
+		"ws://127.0.0.1:8710/v1/node/connect":   "http://127.0.0.1:8710",
 		"https://gw.mynet.club/v1/node/connect": "https://gw.mynet.club",
-		"http://127.0.0.1:8710/v1/relay":      "http://127.0.0.1:8710",
-		"":                                    "",
-		"not-a-url":                           "",
-		"ftp://gw.example.com":                "",
+		"http://127.0.0.1:8710/v1/relay":        "http://127.0.0.1:8710",
+		"":                                      "",
+		"not-a-url":                             "",
+		"ftp://gw.example.com":                  "",
 	}
 	for in, want := range cases {
 		if got := wsToRelayBase(in); got != want {
