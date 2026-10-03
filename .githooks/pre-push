@@ -2,7 +2,19 @@
 # pre-push：重量守护（lint + test）——「不推坏东西」的关口
 # DoD 要求「测试通过」，这里强制执行
 echo "▸ pre-push: make check"
-ROOT=$(git rev-parse --show-toplevel) || exit 0
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -z "$ROOT" ]; then
+  # bare 仓没有工作树，--show-toplevel 必然失败（mynet_gnb 就是 bare + linked worktree）。
+  # ⚠️ 这里此前写的是 `ROOT=$(...) || exit 0` —— **静默通过**。
+  #    同 guard.sh 开头那条教训：「没东西可查」型门禁等于没有门禁，它把「没跑」
+  #    伪装成「通过」。2026-10-04 的事故里，含生产节点与公司网关私钥的 .tgz
+  #    正是从 bare 仓目录直接 push 上去的，pre-push 一次都没跑过。
+  #    所以：跳过**必须响**，让推送日志里看得见这次没查。
+  echo "  ⚠⚠ pre-push 跳过：当前在 bare 仓里（无工作树，取不到 --show-toplevel）"
+  echo "  ⚠⚠ 本次推送**没有跑过任何守护**（guard / lint / test 全部未执行）"
+  echo "  ⚠⚠ 要查请去任一 linked worktree 跑：git worktree list && make check"
+  exit 0
+fi
 cd "$ROOT" || exit 0
 if [ -f Makefile.guard ]; then
   exec make -f Makefile.guard check

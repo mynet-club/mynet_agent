@@ -26,7 +26,10 @@ ok()  { printf '  ✓ %s\n' "$1"; }
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$ROOT"
-EXEMPT_LOG="$ROOT/.git/guard-exempt.log"
+# 用 --git-dir 而不是 "$ROOT/.git"：worktree 的 .git 是个**文件**，mkdir -p 会直接失败，
+# 于是含 GUARD-OK 的合法提交被守护自己撞死（--no-verify 绕过恰恰是该被避免的后果）。
+# 上面已 cd 到 ROOT，相对路径（普通仓返回 .git）同样可用 ⇒ 普通仓行为不变。
+EXEMPT_LOG="$(git rev-parse --git-dir)/guard-exempt.log"
 
 # ── 确定检查范围 ─────────────────────────────────────────────
 STAGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
@@ -123,6 +126,99 @@ for f in $FILES; do
   esac
 done
 [ "$a3" -eq 0 ] && ok "A3 无敏感文件"
+
+# A4 归档内容扫描 —— A2/A3 都看不见压缩包**里面**
+# 2026-10-04 真实事故：mynet_gnb 的 packages/*/itest/backup-*/ 把生产节点
+# (10.182.236.180) 与公司整网网关 (192.168.0.2) 的 *.private、credential.json
+# 打进 .tgz 提交并推到 GitHub。三层全瞎：
+#   A2 只匹配 PEM 文本 `BEGIN … PRIVATE KEY`，而 GNB 的 .private 是裸 32 字节
+#      ed25519 二进制（AGENTS.md §1.1：clamp(SHA512(seed))），**没有 PEM 头**；
+#   A3 只匹配**入库文件名**，而入库的文件名是 `_etc_opengnb.tgz`；
+#   .gitignore 只挡 dist/，泄露路径是 itest/backup-*/。
+# 修法：把 A3 的敏感名规则套到归档的**内容清单**上。
+# ⚠️ A4 **不支持 GUARD-OK 行内豁免** —— 二进制没有「违规那一行」可标注。
+#    被 A4 拦下的归档本就不该入库，正确处置是加进 .gitignore。
+#    超大归档确需放行时改 A4_MAX_BYTES；**不许静默跳过**（同开头「没东西可查
+#    型门禁等于没有门禁」那条教训：跳过必须响）。
+A4_MAX_BYTES=67108864 # 64MB。guard 必须秒级；实测全 workspace 仅 gnb 两个 0.68MB 的 author zip
+
+# 归档内条目是否敏感。判据与 A3 同一套，另加 credential*.json（事故里真有）
+a4_sensitive() {
+  _p=$1
+  case "$_p" in
+    */) return 1 ;; # 目录条目
+  esac
+  _b=${_p##*/}
+  [ -n "$_b" ] || return 1
+  case "$_b" in
+    .env.example | .env.sample | .env.template) return 1 ;; # 无密钥模板，与 A3 一致
+  esac
+  case "$_b" in
+    .env | .env.* | *.pem | *.key | *.pkey | *.p12 | *.pfx | *.private | id_rsa* | id_ed25519* | credential*.json) return 0 ;;
+  esac
+  return 1
+}
+
+# 列出归档内容清单。取字节要分模式：暂存区的内容在索引里，工作区的在盘上。
+a4_list() {
+  _f=$1
+  _t=$(mktemp) || return 1
+  if [ "$MODE" = staged ]; then
+    git show ":$_f" >"$_t" 2>/dev/null || { rm -f "$_t"; return 1; }
+  else
+    cat "$_f" >"$_t" 2>/dev/null || { rm -f "$_t"; return 1; }
+  fi
+  case "$_f" in
+    *.zip) _o=$(unzip -Z1 "$_t" 2>/dev/null) || { rm -f "$_t"; return 1; } ;;
+    # bsdtar / GNU tar 都会自动识别 gz/bz2/xz/zst，不需要按后缀分派解压器
+    *) _o=$(tar tf "$_t" 2>/dev/null) || { rm -f "$_t"; return 1; } ;;
+  esac
+  rm -f "$_t"
+  printf '%s\n' "$_o"
+}
+
+a4=0
+a4_n=0
+for f in $FILES; do
+  case "$f" in
+    *.tgz | *.tar | *.tar.* | *.zip) ;;
+    *) continue ;;
+  esac
+  a4_n=$((a4_n + 1))
+  if [ "$MODE" = staged ]; then
+    a4_sz=$(git cat-file -s ":$f" 2>/dev/null || true)
+  else
+    a4_sz=$(wc -c <"$f" 2>/dev/null | tr -d '[:space:]' || true)
+  fi
+  # 取不到大小按 0 处理 → 继续走 a4_list，让它自己失败并报出来（fail-closed）
+  case "$a4_sz" in '' | *[!0-9]*) a4_sz=0 ;; esac
+  if [ "$a4_sz" -gt "$A4_MAX_BYTES" ]; then
+    bad "A4 归档 ${a4_sz} 字节超上限 ${A4_MAX_BYTES}，未能扫描内容（跳过不算通过）: $f"
+    a4=1
+    continue
+  fi
+  if ! a4_entries=$(a4_list "$f"); then
+    bad "A4 列不出归档内容，未能扫描（跳过不算通过）: $f"
+    a4=1
+    continue
+  fi
+  while IFS= read -r a4_e; do
+    [ -n "$a4_e" ] || continue
+    if a4_sensitive "$a4_e"; then
+      bad "A4 归档内含敏感文件，不得入库: $f → $a4_e"
+      a4=1
+    fi
+  done <<A4EOF
+$a4_entries
+A4EOF
+done
+if [ "$a4" -eq 0 ]; then
+  if [ "$a4_n" -eq 0 ]; then
+    ok "A4 本批无归档文件（未触发内容扫描）"
+  else
+    ok "A4 已扫描 $a4_n 个归档的内容清单，无敏感文件"
+  fi
+fi
 
 # ── B 结构红线（架构约束，违反会静默扩散）──────────────────
 # B1 mynet_gnb/src/ 只读 —— 补丁包机制依赖上游树原样
