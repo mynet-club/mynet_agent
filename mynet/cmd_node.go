@@ -11,6 +11,18 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
+// termZone 是产品概念 Zone 的中文界面用词（2026-10-04 裁定叫「网络区」）。
+//
+// linux/openwrt 形态没有 WebUI，CLI 输出就是界面，所以这里也要跟着换词。
+// 全仓换词清单共四处，彼此不共享，改词要一起改：
+//   - mynet_gui/src/config/terms.ts       （平台前端 zh-CN）
+//   - mynet_api/config/mynet.php          （API 返回给前端的中文消息）
+//   - mynetd/localapi/webui/terms.js      （节点 WebUI 的 JS 文案）
+//   - 本常量                               （节点 CLI 的中文输出）
+//
+// 命令名 `mynet tenants`、JSON 字段 tenant_id、代码标识符都不动 —— 界面词 ≠ 代码名。
+const termZone = "网络区"
+
 // cmdTenants / cmdNode —— 首次运行向导的第 2、3 步（账号态操作）。
 //
 //	mynet tenants
@@ -41,7 +53,7 @@ func cmdTenants(args []string) int {
 	// 实测踩过：别的端点 data 是对象，这里不是。
 	raw, code, err := c.doJSON("GET", "/api/v1/user/tenants/", nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "取租户失败（HTTP %d）: %v\n", code, err)
+		fmt.Fprintf(os.Stderr, "取%s失败（HTTP %d）: %v\n", termZone, code, err)
 		return 1
 	}
 	var env struct {
@@ -49,7 +61,7 @@ func cmdTenants(args []string) int {
 		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil || !env.Success {
-		fmt.Fprintln(os.Stderr, "取租户失败: 响应异常")
+		fmt.Fprintf(os.Stderr, "取%s失败: 响应异常\n", termZone)
 		return 1
 	}
 	var list []any
@@ -59,13 +71,13 @@ func cmdTenants(args []string) int {
 			Data []any `json:"data"`
 		}
 		if err2 := json.Unmarshal(env.Data, &nested); err2 != nil {
-			fmt.Fprintf(os.Stderr, "解析租户列表失败: %v\n", err)
+			fmt.Fprintf(os.Stderr, "解析%s列表失败: %v\n", termZone, err)
 			return 1
 		}
 		list = nested.Data
 	}
 	if len(list) == 0 {
-		fmt.Println("(没有可用租户)")
+		fmt.Printf("(没有可用的%s)\n", termZone)
 		return 0
 	}
 

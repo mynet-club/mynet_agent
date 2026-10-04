@@ -537,7 +537,7 @@ details.raw pre{
   .choice{grid-template-columns:1fr}
   .choice button{min-height:88px}
 
-  /* 网络空间 iframe */
+  /* 网络区 iframe */
   .console-frame{height:360px}
 
   /* Toast 避开底部安全区 */
@@ -582,7 +582,7 @@ details.raw pre{
   <button data-page="config">配置</button>
   <button data-page="routes">路由</button>
   <button data-page="diag">诊断与日志</button>
-  <button data-page="space">网络空间</button>
+  <button data-page="space">网络区</button>
 </nav>
 
 <!-- ══════════ 概览 ══════════ -->
@@ -601,7 +601,7 @@ details.raw pre{
       </div>
     </div>
     <div class="facts">
-      <div class="f"><small>空间</small><b id="f-net">—</b></div>
+      <div class="f"><small>网络区</small><b id="f-net">—</b></div>
       <div class="f"><small>节点名</small><b id="f-node">—</b></div>
       <div class="f"><small>隧道类型</small><b id="f-tun">—</b></div>
       <div class="f"><small>转发</small><b id="f-proxy">—</b></div>
@@ -902,11 +902,11 @@ details.raw pre{
 
         <div id="dns-peer-block" class="form-grid g2" style="display:none">
           <div class="field span2"><label>① 隧道节点 DNS（peer VIP，查询进 gnb 隧道）</label>
-            <p class="note">来源：租户下发 / 用户自建 / 朋友分享。填 peer 的隧道 VIP（如 10.182.236.180），系统 DNS 会指向它。</p>
+            <p class="note">来源：网络区下发 / 用户自建 / 朋友分享。填 peer 的隧道 VIP（如 10.182.236.180），系统 DNS 会指向它。</p>
           </div>
           <div class="field"><label>来源</label>
             <select id="proxy-dns-peer-source">
-              <option value="tenant">租户下发</option>
+              <option value="tenant">网络区下发</option>
               <option value="self">用户自建</option>
               <option value="friend">朋友分享</option>
             </select>
@@ -918,12 +918,12 @@ details.raw pre{
 
         <div id="dns-smart-block" class="form-grid g2" style="display:none">
           <div class="field span2"><label>② 智能 DNS（兜底）</label>
-            <p class="note">来源：租户下发 / 自建 / 平台。公网 UDP:53 可被链路劫持 —— 仅作兜底，不作安全路径。</p>
+            <p class="note">来源：网络区下发 / 自建 / 平台。公网 UDP:53 可被链路劫持 —— 仅作兜底，不作安全路径。</p>
           </div>
           <div class="field"><label>来源</label>
             <select id="proxy-dns-smart-source">
               <option value="platform">平台</option>
-              <option value="tenant">租户下发</option>
+              <option value="tenant">网络区下发</option>
               <option value="self">自建</option>
             </select>
           </div>
@@ -1114,7 +1114,7 @@ details.raw pre{
   </div>
 </section>
 
-<!-- ══════════ 网络空间 ══════════ -->
+<!-- ══════════ 网络区 ══════════ -->
 <section class="page" id="page-space">
   <div class="hero" id="space-hero">
     <div class="hero-head">
@@ -1127,7 +1127,7 @@ details.raw pre{
       </div>
     </div>
     <div class="facts">
-      <div class="f"><small>空间</small><b id="sp-tenant">—</b><div class="sub">租户</div></div>
+      <div class="f"><small>网络区</small><b id="sp-tenant">—</b></div>
       <div class="f"><small>用户</small><b id="sp-user">—</b></div>
       <div class="f"><small>节点</small><b id="sp-node">—</b></div>
     </div>
@@ -1142,7 +1142,7 @@ details.raw pre{
     <div class="card">
       <div class="cardhead"><h3>控制台</h3></div>
       <p class="note">固定高度，内容超出时在框内滚动。</p>
-      <iframe class="console-frame" id="console-frame" title="MyNet 网络空间"></iframe>
+      <iframe class="console-frame" id="console-frame" title="MyNet 网络区"></iframe>
     </div>
   </div>
 
@@ -1172,7 +1172,7 @@ details.raw pre{
   <div id="err-log"><div class="err-log-empty mut">（暂无）</div></div>
 </div>
 
-<!-- 登录小框（网络空间 · 登录） -->
+<!-- 登录小框（网络区 · 登录） -->
 <div class="modalbg hidden" id="login-modal">
   <div class="modal" style="max-width:420px">
     <div class="cardhead">
@@ -1235,6 +1235,18 @@ details.raw pre{
 </div>
 
 <script>
+/* 界面用词单一真相：产品概念 Zone 在中文界面叫「网络区」（2026-10-04 用户裁定）。
+ * 同源还有三处，换词要一起改：
+ *   mynet_gui/src/config/terms.ts（平台前端 zh-CN）、
+ *   mynet_api/config/mynet.php 的 terms.zone（API 返回的中文消息）、
+ *   mynet/cmd_node.go 的 termZone（节点 CLI 输出）。
+ * 界面词 ≠ 代码名：tenant_id / zone_* wire 字段 / page-space 这些标识符不动。
+ * 本常量只覆盖 JS 拼出来的文案；index.html 的静态标签（导航按钮、`<small>`、`<option>`、
+ * iframe `title`）按 webui-context.js 头注释的约定保持原生 HTML，不做 DOM 改写填占位符，
+ * 检索口径 `grep -n 网络区 mynetd/localapi/webui/index.html`。
+ */
+const TERM = window.TERM = { zone: '网络区' };
+
 /* ── 基础工具 ── */
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v == null ? '—' : v).replace(/[&<>"']/g, (c) => (
@@ -1368,7 +1380,7 @@ const PAGES = {
   config:   { el: 'page-config',   label: '配置' },
   routes:   { el: 'page-routes',   label: '路由' },
   diag:     { el: 'page-diag',     label: '诊断与日志' },
-  space:    { el: 'page-space',    label: '网络空间' }
+  space:    { el: 'page-space',    label: TERM.zone }
 };
 const DEFAULT_TAB = {
   overview: 'nodes', config: 'keys',
@@ -1453,7 +1465,7 @@ let status = {};
 let modeInfo = {};
 let identity = {};
 let peers = [];
-/* 登录态：用户 + 租户/空间。relay 转发本就依赖本地 token，加载时必查。 */
+/* 登录态：用户 + 网络区。relay 转发本就依赖本地 token，加载时必查。 */
 let session = {
   logged_in: false, user_email: '', user_id: '',
   tenant_id: '', tenant_name: '', node_id: '', node_name: '',
@@ -1481,7 +1493,7 @@ async function loadSession() {
   try { renderConfigGate(); } catch (_) {}
   // 登录态一到就用缓存的就绪态重画流程条（loadSettings 可能已先跑过一次）
   try { renderConfigFlow(window.__nodeReady, window.__rtReady); } catch (_) {}
-  /* 登录态一到就刷新空间页；失败不得拖垮 refresh */
+  /* 登录态一到就刷新网络区页；失败不得拖垮 refresh */
   try { if (typeof ensureConsole === 'function') ensureConsole(); } catch (_) {}
   return session;
 }
@@ -2194,7 +2206,7 @@ function renderConfigGate() {
   if (!session.logged_in) {
     body.innerHTML =
       '<div class="gate-title"><b>第 1 步 · 登录 MyNet 账号</b>' +
-      '<small>配置操作要先确认「你归哪个云端空间」，登录后才能选节点。</small></div>' +
+      '<small>配置操作要先确认「你归哪个' + TERM.zone + '」，登录后才能选节点。</small></div>' +
       '<div class="actions" style="margin-top:8px"><button class="btn primary" id="gate-login">登录</button></div>';
     $('gate-login').onclick = () => openLoginModal();
   } else {
@@ -2227,7 +2239,7 @@ function renderGateNodes(nodes) {
   const box = $('gate-node-list');
   if (!box) return;
   if (!nodes.length) {
-    box.innerHTML = '<div class="placeholder" style="padding:12px">云端空间里还没有设备 —— 请先在平台侧登记本设备，再回来刷新。</div>';
+    box.innerHTML = '<div class="placeholder" style="padding:12px">' + TERM.zone + '里还没有设备 —— 请先在平台侧登记本设备，再回来刷新。</div>';
     return;
   }
   box.innerHTML = nodes.map((n) => {
@@ -2251,7 +2263,7 @@ function renderGateNodes(nodes) {
 
 async function useGateNode(tenant, node, btn) {
   if (!tenant) {
-    toast('缺少空间 ID', '该节点没有 tenant 信息，无法激活', 'err');
+    toast('缺少' + TERM.zone + ' ID', '该节点没有' + TERM.zone + '信息，无法激活', 'err');
     return;
   }
   await busy(btn, async () => {
@@ -2625,7 +2637,7 @@ $('btn-proxy-reload').onclick = (e) => busy(e.currentTarget, async () => {
   toast('已刷新', '重新读取本地与云端意图。', 'ok');
 });
 
-/* 网络空间 */
+/* 网络区 */
 function ensureConsole() {
   const f = $('console-frame');
   if (f && !f.getAttribute('src')) {
@@ -2679,7 +2691,7 @@ $('login-modal').addEventListener('click', (e) => {
   if (e.target.id === 'login-modal') $('login-modal').classList.add('hidden');
 });
 $('btn-space-logout').onclick = () => confirmDlg(
-  '退出登录？', '退出后无法访问云端空间，需要重新登录。', '退出',
+  '退出登录？', '退出后无法访问' + TERM.zone + '，需要重新登录。', '退出',
   async () => {
     const r = await api('/api/v1/wizard/logout', 'POST', {});
     logAction('退出登录', r.success, r.message || '');
