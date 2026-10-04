@@ -59,14 +59,18 @@ P0（领域合同 + fixtures）**已经做完**，不要再当新建工作排期
 
 用户原话「干净，可以删掉」。⚠️ 这是**双仓联动**：`mynet_api` 侧
 `TenantController` 的 `zone_*` 响应字段是对齐 `mynet_gui`
-`useZones.getZoneStatistics()` / `fetchOverview()` 的契约，删字段必须同步改
-GUI。实测范围：`mynet_gui/src` 下 46 个文件提到 zone，`mynet_api` 的
-app/database/routes 下 9 个。
+`useTenants.getTenantStatistics()` / `fetchOverview()` 的契约（第 1 步改名前的旧名是
+`useZones.*`），删字段必须同步改 GUI。实测范围（2026-10-04，改名前）：`mynet_gui/src` 下
+46 个文件提到 zone，`mynet_api` 的 app/database/routes 下 9 个。
 
 **2026-10-04 取证后，这个条目的性质变了 —— 别再当「删一个业务对象」执行。**
 详见决策包 `mynet_ctl/docs/knowledge-base/spec/zone-removal.md`（**已裁决**：议题 1 = A 改名保留，
-议题 2 = B 改指真实平台租户 `9007199254740991`；用户原话「zone 就是 tenant，防火墙那个 zone
-是另外一回事，从这个上来看，确实不能粗暴说删 zone」）。
+议题 2 = B 改指真实平台租户 `9007199254740991`，追加议题 3 = 界面中文叫**「网络区」**且必须是可替换的
+单点变量 `mynet_gui/src/config/terms.ts` 的 `TERM_ZONE`；用户原话「zone 就是 tenant，防火墙那个 zone
+是另外一回事，从这个上来看，确实不能粗暴说删 zone」，以及「『租户』太技术腔……先叫网络区，用个变量名
+替代吧，这样我们后续想到好词可以替换」）。
+⚠️ 用词分三层，别再混：**中文界面 = 网络区**（只从 `TERM_ZONE` 取值）、
+**代码标识符 = Tenant**、**接口 wire 字段 = `zone_*`**（第 2 步才翻，翻前不许单边改）。
 三条必须先知道的事实：
 
 1. **Zone 在代码里已经不是业务对象，只剩一层名字。** 服务端早就 tenant-native
@@ -83,10 +87,13 @@ app/database/routes 下 9 个。
    正是把这个值当 `X-Tenant-ID` 头发给 broadcasting auth。**api 与 gui 必须同批改、
    同批发**，不允许存在只改一边的中间态。
 
-待裁决的两个议题：`ZoneListPage`/`ZoneSharingPage`/`/zones` 路由/`ZoneSelector`
-是删还是改名保留（删会连带砍掉 §7 P7 要求的租户管理界面）；以及
-`DEFAULT_GLOBAL_ZONE`（GUI 硬编码 `zone_id: 999999999`，服务端零对应物）
-这个假租户兜底怎么处理。
+（以上取证写于裁决前，文件当时还叫 `pages/zone/ZoneListPage.vue` 等；第 1 步改名后的
+现名见 `spec/zone-removal.md` 的「旧名对照」。）
+
+原先待裁决的议题已全部裁定（2026-10-04）：`ZoneListPage`/`ZoneSharingPage`/`/zones`/
+`ZoneSelector` **改名保留**（不砍 §7 P7 的租户管理界面）；`DEFAULT_GLOBAL_ZONE` 硬编码的
+假租户 `999999999` **改指真实平台租户 `9007199254740991`**；界面中文用词定为**「网络区」**，
+且必须是单点可替换变量。剩余 5 条未决项（含 `pivot.is_admin: 1` 权限语义）记在决策包末尾。
 
 ### 0.6 mynet_gnb 布局迁移已收口（2026-10-04）
 
@@ -303,7 +310,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 - 旧数据若含 Zone，先做一次性映射到租户、节点池或路由范围；迁移前备份，验证后再删除旧字段。
 - 不允许新 API、GUI 或 agent 继续创建 Zone。
 
-⚠️ **这是双仓联动，不是清注释。** `mynet_api` 侧 `TenantController` 的 `zone_*` 响应字段是 `mynet_gui` `useZones.getZoneStatistics()` / `fetchOverview()` 的契约；只删 API 字段会直接打穿 GUI。实测范围：`mynet_gui/src` 46 个文件、`mynet_api` 的 app/database/routes 下 9 个文件。动手前先按 §0.5 重新量一次（`mynet_web` 骨架里另有 1 处，别漏）。
+⚠️ **这是双仓联动，不是清注释。** `mynet_api` 侧 `TenantController` 的 `zone_*` 响应字段是 `mynet_gui` `useTenants.getTenantStatistics()` / `fetchOverview()` 的契约（第 1 步改名前的旧名是 `useZones.*`）；只删 API 字段会直接打穿 GUI。实测范围（改名前）：`mynet_gui/src` 46 个文件、`mynet_api` 的 app/database/routes 下 9 个文件。动手前先按 §0.5 重新量一次（`mynet_web` 骨架里另有 1 处，别漏）。
+✅ **2026-10-04 状态**：本条目标已由用户改判为「改名保留 + 界面叫网络区」，不再是「彻底删除 Zone 语义」；执行进度与剩余的第 2 步契约翻转见 §0.5 与 `spec/zone-removal.md`。
 
 ### 单协议到双数据面
 
@@ -558,4 +566,4 @@ v1 只有在以下条件同时满足时才算完成：
 - **API 状态机地雷**：缺 `node_configs` 行即被判「未配置」，任意一次基本信息 PUT 会把在线节点打成 `-1`。这是 P1/P3 的前置——节点状态不可信，自动组网的 shadow/enforce 都无从验证。
   **状态（2026-10-04）：三层全部收口，无待裁决项。** 已修：模型侧判据（`Node::checkConfigurationStatus`）、服务侧判据（`NodeService::checkNodeConfigurationStatus`，把 `has_config` 降为可选项，只算必选项）、基本信息 PUT 不再无条件评估配置判据（`updateNodeBasicInfoWithStatusCheck` 只在请求显式带 `node_status` 时才走闸门）。**关键教训：同一个误判有两张脸——只修模型侧不修服务侧，两个判据口径不一致，缺陷照样活着；判据改动务必两侧同时改。** 第三层两条已裁定：GET `/nodes/{id}/status` **改为只读**（`mynet_api` `4df87e3`，附 2 个真请求测试锁住「不写 `node_status`、不碰 `updated_at`」）；心跳无条件写 `STATUS_ENABLED` **保持不动**（它是唯一自愈通道，`.184` 已证明「卡在错误状态且无人纠正」比「状态偶尔偏乐观」危险得多），`node_status`/`presence` 拆字段记为 v1 之后方向，须走 §11 合同冻结流程。详见 `mynet_ctl/docs/knowledge-base/spec/node-status-gate.md`。
 - **Zone 彻底删除**：跨 api + gui 双仓（§0.5、§6）。拖得越久，`zone_*` 契约上粘的 GUI 代码越多。
-  **状态（2026-10-04）：已裁决，按「改名保留」执行中。** 取证发现前提错了——Zone 已不是业务对象只剩名字，盲删会出两类事故（抹掉现网 182 的 gnb/防火墙 zone 知识、单方面改名静默断掉全站 WebSocket）。用户裁定：议题 1 = A（改名保留，不删页面）、议题 2 = B（`DEFAULT_GLOBAL_ZONE` 改指真实平台租户 `9007199254740991`）。第 0 步与议题 2 已落地（`mynet_api df6c4da`、`mynet_gui 44f389d`+`68b273f`），第 1 步 GUI 内部改名、第 2 步 `zone_id`→`tenant_id` 契约翻转（api+gui 同批原子）待做。详见 `spec/zone-removal.md`。
+  **状态（2026-10-04）：已裁决，按「改名保留」执行中。** 取证发现前提错了——Zone 已不是业务对象只剩名字，盲删会出两类事故（抹掉现网 182 的 gnb/防火墙 zone 知识、单方面改名静默断掉全站 WebSocket）。用户裁定：议题 1 = A（改名保留，不删页面）、议题 2 = B（`DEFAULT_GLOBAL_ZONE` 改指真实平台租户 `9007199254740991`）。追加裁定：界面中文用词叫「网络区」，且要做成可替换的单点变量（`mynet_gui/src/config/terms.ts` 的 `TERM_ZONE`，代码层仍叫 Tenant、wire 字段仍叫 `zone_*`）。已落地：第 0 步与议题 2（`mynet_api df6c4da`、`mynet_gui 44f389d`+`68b273f`）、第 1 步 GUI 内部改名（`mynet_gui cf00de3`）、界面用词（`mynet_gui 61d6b86`）、API 契约注释同步（`mynet_api 1e42a4d`）；**只剩第 2 步 `zone_id`→`tenant_id` 契约翻转**（api+gui 必须同批原子，否则静默断掉全站 WebSocket）。另有 4 条待裁决（en-US 用词、LocalStorage `current_zone`、cluster B 命名、5 个无路由孤儿页面）与 1 条权限语义（`pivot.is_admin: 1`），详见 `spec/zone-removal.md`。
