@@ -227,7 +227,9 @@ worktree 也算，这条红线在 gnb 上才第一次真的生效。
 
 > 这一轮已于 2026-10-04 做完：八个仓共 25 个提交，逐个按**显式路径**入暂存（不用 `git add -A`），入库前先扫敏感文件名/PEM/凭据文本。三件**故意留白**待用户裁定：`mynet_api/database/sql/migrate-tenant-to-platform.sql`（破坏性 + 属 DBA 交接路径，提交即等于排队一次生产数据操作）、`mynet_utc` Phase 7 全部产品代码（挂载不动）、`mynet_gui` 里 12 个被跟踪的 `.quasar` 生成物（`.gitignore` 从未提到 `.quasar`，是策略问题不单方改）。
 >
-> ⚠️ 已知门禁缺口：`mynet_gui` **没有 `.githooks`**，A4 与所有红线在该仓完全不设防。
+> ✅ 门禁缺口已于 2026-10-04 收口：`mynet_gui` 装上守护链（`Makefile` + `.githooks/`，`core.hooksPath=.githooks`），七仓红线不设防的最后一处补齐。两处实测细节：
+> - 该仓四个 `.env*`（`.env`/`.env.dev`/`.env.embed`/`.env.prod`）**必须入库**（Quasar 按固定文件名查找 env，改名即失效），里面只有 API 域名与 Reverb 的**客户端公开值**，但 A3 只按**文件名**拦 → 每次编辑都撞一次红线。给 A3 加了**文件级豁免判据**（① 已在 `HEAD` ② 文件内带 `GUARD-OK <理由>`，两条同时成立才降级为 ⚠；**新增**敏感名文件即使带标注仍硬拦），不放宽红线也不留 `--no-verify` 的口子。判据全文见 AGENTS.md §2.6，自测见 `templates/.githooks/guard_test.sh`（35 用例）。
+> - `mynet_gui/Makefile` 是 Vue 适配版：`lint` = `eslint` + `check:i18n`，`test` = `vitest run`，且**自己数套件**——零用例时打印 `⚠⚠ 未执行任何测试` 并按 M0 记未达标，不用 `--passWithNoTests` 装作跑过。
 
 ## 4. 冻结的领域合同
 
@@ -510,7 +512,7 @@ P0
 
 **七仓**（五仓契约口径 + `mynet_ctl` + `mynet_desktop`，见 §0.1）guard、lint、单元测试可运行；未提交改动已分类；无凭据和私钥泄露。
 
-已知不达标项：`mynet_gui` 缺 `.githooks`（`core.hooksPath` 未设），该仓红线全部不设防——M0 通过前必须补。`mynet_openwrt` 的 `make check` 需要 buildroot，本地用 `make -f Makefile.guard check`。`mynet_desktop/nsis/mynet-agent.nsi` 无法本地编译验证（homebrew `makensis 3.12` 对纯 ASCII 四行脚本也 `std::bad_alloc`）。
+已知不达标项：~~`mynet_gui` 缺 `.githooks`~~ —— **2026-10-04 已补**（`Makefile` + `.githooks/{guard.sh,pre-commit,pre-push}`，`core.hooksPath=.githooks`，`make check` 实测 guard 通过、`eslint` 0 errors／194 warnings、`check:i18n` 通过）。**仍不达标：该仓 `vitest` 零用例**，「单元测试可运行」在这仓是空壳 —— `make test` 现在自己数套件数，为 0 就打印两行 `⚠⚠ 未执行任何测试`（不用 `--passWithNoTests` 装绿），补进第一个 `*.test.*` 即撤销告警。gui 侧另外三条验证盲区待办：无类型检查（`vue-tsc`）、`check:i18n` 漏检带参 key、`quasar build` 抓不到断链的 `import type`。`mynet_openwrt` 的 `make check` 需要 buildroot，本地用 `make -f Makefile.guard check`。`mynet_desktop/nsis/mynet-agent.nsi` 无法本地编译验证（homebrew `makensis 3.12` 对纯 ASCII 四行脚本也 `std::bad_alloc`）。
 
 ### M1：双数据面
 
