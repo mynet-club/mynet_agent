@@ -123,18 +123,48 @@ else
 fi
 
 # A3 敏感文件名
+#
+# ⚠️ A3 判的是**文件名**，所以「在违规那一行加 GUARD-OK」这条通用豁免口径对它不成立
+# （文件名不在文件的任何一行里）。A3 的豁免因此另立一条**更严**的判据，两条同时成立才放行：
+#   ① 文件**已在 HEAD 里** —— 只豁免「历史上已入库、这次只是被改动」的文件；
+#      **新入库的敏感名文件一律硬拦**（2026-10-04 gnb 事故正是「新文件」形态，不能开这条路）；
+#   ② 文件内容里带 `GUARD-OK <原因>` 标注 —— 理由写在文件里，随 diff 可见并进审计日志。
+# 真实场景：mynet_gui 的 `.env` / `.env.dev` / `.env.embed` / `.env.prod` 是**前端构建期
+# 公开配置**（Quasar 按固定文件名查找，`@quasar/app-vite/lib/utils/env.js:31`，改不了名），
+# 里面只有 API 域名与 Reverb 的**客户端公开值**（app key/id，签发用的 app secret 从不进前端），
+# 但每次编辑都要撞 A3 一次 —— 没有这条路就会变成「教人用 --no-verify」。
 a3=0
+a3_ex=0
+a3_exempted() { # 0 = 可豁免（历史在库 + 文件内标注）
+  _f=$1
+  git cat-file -e "HEAD:$_f" 2>/dev/null || return 1
+  if [ "$MODE" = staged ]; then
+    git show ":$_f" 2>/dev/null | grep -q 'GUARD-OK'
+  else
+    grep -q 'GUARD-OK' -- "$_f" 2>/dev/null
+  fi
+}
 for f in $FILES; do
   b=$(basename "$f")
   case "$b" in
     .env|.env.*|*.pem|*.key|id_rsa*|id_ed25519*|*.private)
       case "$b" in
         .env.example|.env.sample|.env.template) ;; # 无密钥模板，允许
-        *) bad "A3 敏感文件不得入库: $f"; a3=1 ;;
+        *)
+          if a3_exempted "$f"; then
+            printf '  ⚠ A3 已豁免（历史上已入库 + 文件内标注理由）: %s\n' "$f"
+            mkdir -p "$(dirname "$EXEMPT_LOG")"
+            printf '%s | A3 %s\n' "$(date -u +%FT%TZ)" "$f" >> "$EXEMPT_LOG"
+            a3_ex=$((a3_ex + 1))
+          else
+            bad "A3 敏感文件不得入库: $f"; a3=1
+          fi ;;
       esac ;;
   esac
 done
-[ "$a3" -eq 0 ] && ok "A3 无敏感文件"
+if [ "$a3" -eq 0 ]; then
+  if [ "$a3_ex" -eq 0 ]; then ok "A3 无敏感文件"; else ok "A3 无新增敏感文件（$a3_ex 个历史文件按标注豁免）"; fi
+fi
 
 # A4 归档内容扫描 —— A2/A3 都看不见压缩包**里面**
 # 2026-10-04 真实事故：mynet_gnb 的 packages/*/itest/backup-*/ 把生产节点
