@@ -377,6 +377,26 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **必须交付：** JSON schema/示例、版本字段、错误码、权限矩阵、GNB/WireGuard 双驱动 fixture、密钥脱敏测试。真实缺口是权限矩阵与稳定错误码清单，不是 envelope 本身。
 
+**缺口落地（2026-10-04，两份 P0 冻结件已成文）：**
+- **权限矩阵** → `mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`：R1–R6 边界规则 +
+  六个表面（公开/登录/节点/用户/console/本机 + LuCI）× 操作域的判据矩阵，每条带 `file:line`。
+  审计出 **9 条洞**（跨用户写 `PUT /users/{id}`、`GET /users` 返回全站列表、悬空 `DELETE /users/{id}`→500、
+  客户端 `X-Tenant-ID` 在用户面**不经归属校验**即被 20+ 调用点直采 等），逐条分级后
+  进决策包 **F-22 / F-23 / F-24 / F-27**；只有 #8（GUI 残留 `admin_name`，沿用 10-04「用户面不表达 tenant 权限」
+  既有裁定）是能立刻执行的。**#4 是本组唯一带真实跨租户读风险的洞**，且它**全仓测试抓不到**
+  —— `tests/TestCase.php:73` 把 `IdentifyTenant` 只推进测试态的 api 组（同 dev-plan **B-6**），
+  套件里那批「先补 `tenant_users` active 记录才敢发头」的用例测的是生产根本不跑的护栏。
+- **稳定错误码** → `mynet_ctl/docs/knowledge-base/spec/v1-error-codes.md`：登记 **7 套并存信封**（E1–E7）
+  与现有码注册表，证实 `code` 这一个键在 back / OpenWrt / 文档里是**三种不同语义**（HTTP 整数 / shell 退出码 / 0–6 业务码），
+  所以 §11「代理不得静默改变错误码语义」当前**无从判定**。冻结口径 C1–C6；待裁定进 **F-25 / F-26**。
+  顺带修掉 13 处实参槽错位（`NodeConfigController` 11 处把数组当 `$statusCode`、两个 Monitor service 的
+  `DomainException` 把 `0` 喂给 `array $context`）—— 原判据是「命中即 `TypeError`」，属于文档说的合同在、代码不兑现。
+- **无需裁定、本轮已清的三处**：`ApiTenantMiddleware` + `FrontendTenantMiddleware`（**两个零注册的租户中间件**；
+  后者实现的优先级是「URL 参数 > 表单 > 会话 > 用户默认」，与 R4/R6 正好相反，还带改写请求体的能力 ——
+  挂上即给全站装「参数定租户」）；`ModuleServiceProvider.php:43-54` 那句「api 组已 prepend `IdentifyTenant`」的假记载。
+  验证：`make check` 全绿（guard / pint 325 files / 369 tests 3559 assertions）。
+- 仍缺：**GNB 已落地版本写入兼容基线**、**密钥脱敏测试**（`BundleEnvelope` 侧尚无 redact 断言）。
+
 **禁止：** 不改 UI 流程、不添加新驱动能力、不重新引入 Zone。
 
 ### P1：租户成员、邀请码和节点池配额
@@ -579,6 +599,7 @@ v1 只有在以下条件同时满足时才算完成：
 > 进度（2026-10-04）：仓库基线分类已完成（§3「当前改动和基线处理」）。下面第 1、2 条已按 §0.2 / §0.4 改写口径。
 
 1. P0：**审计并补冻结**已有领域合同——`BundleEnvelope` 两侧与双驱动 intent 已在，真正要补的是权限矩阵与稳定错误码清单，再把已落地 GNB 版本写入兼容基线。
+   **状态（2026-10-04）：◐ 两份冻结件已成文**（`mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`、`v1-error-codes.md`，逐条带 `file:line` + 复现命令）；剩三件：兼容基线登记、`BundleEnvelope` 密钥脱敏测试、以及 §7 P0 里点名的 **6 个待裁定项（F-22/F-23/F-24/F-27 权限面，F-25/F-26 信封面）** —— 冻结件的「冻结列」要等这些落地方向才成立。
 2. P1：邀请码入租链路已提交（`/api/v1/social/invitation/use`）；剩下核对租户迁移改动，补齐过期、撤销、跨租户和并发配额测试。**配额计费按 §0.4 不做。**
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
 4. P3：设计自动组网 planner 的 shadow 输出和容量指标，先不扩大默认租户范围。
