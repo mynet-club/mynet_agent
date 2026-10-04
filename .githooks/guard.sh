@@ -369,5 +369,54 @@ else
   ok "C3 命名无漂移"
 fi
 
+# C4 编译产物不得入库（2026-10-04 裁定：源码仓只提交源码，中间编译产物一概过滤）
+# 判据两层，缺一层就会漏：
+#   ① 路径/后缀：dist/ bin/ build/ out/ 之下的一律算产物；再列常见产物与归档后缀。
+#   ② 内容魔数：**没有扩展名的裸二进制**才是真窟窿 —— `go build -o mynet` 落在仓库根
+#      就是这一形态，而它**不能**靠 .gitignore 解决：无尾斜杠的模式同时匹配目录，
+#      写 `/mynet` 会把同名源码目录 `mynet/` 下的新文件静默挡掉 —— 实测 `git add mynet`
+#      只说「already up to date」并以 rc=0 结束，不报错、文件也进不去，比拦下来更糟。
+#      所以这条路只能由 guard 用魔数拦（ELF / Mach-O 单 arch 与 fat / PE）。
+# 已跟踪的合法二进制资产（png/ico 图标）不在魔数表里，不会被误伤。
+# ⚠️ 与 A4 同口径：**不支持 GUARD-OK 行内豁免** —— 二进制没有「违规那一行」可标注。
+#    被拦下的东西本就不该入库，处置是删掉或把构建输出指到仓库外；
+#    确需入库的非产物二进制走 C4_ALLOW，且必须在提交说明里写明理由。
+#      C4_ALLOW 可用环境变量覆盖（自测与临时放行用），默认空 —— 实测 api/ctl/gui/agent 四仓零命中。
+C4_ALLOW="${C4_ALLOW:-}" # 空格分隔的路径前缀白名单
+c4=0
+for f in $FILES; do
+  c4_allow_hit=0
+  for c4_allow in $C4_ALLOW; do
+    case "$f" in "$c4_allow"*) c4_allow_hit=1; break ;; esac
+  done
+  [ "$c4_allow_hit" -eq 1 ] && continue
+
+  c4_hit=""
+  case "$f" in
+    dist/* | */dist/* | bin/* | */bin/* | build/* | */build/* | out/* | */out/*) c4_hit="产物目录" ;;
+    *.pkg | *.dmg | *.ipk | *.deb | *.rpm | *.exe | *.dll | *.so | *.dylib | *.wasm | *.o | *.a | *.bin) c4_hit="产物后缀" ;;
+    *.gz | *.tgz | *.tar | *.tar.* | *.zip | *.xz | *.bz2 | *.zst) c4_hit="归档（内容另由 A4 查）" ;;
+    *)
+      # 取首 4 字节魔数：暂存区的内容在索引里，工作区的在盘上（同 A4 的取字节分派）
+      if [ "$MODE" = staged ]; then
+        c4_magic=$(git show ":$f" 2>/dev/null | head -c 4 | od -An -tx1 2>/dev/null | tr -d ' \n')
+      else
+        c4_magic=$(head -c 4 "$f" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n')
+      fi
+      case "$c4_magic" in
+        7f454c46) c4_hit="ELF 可执行" ;;
+        cffaedfe | cefaedfe | feedface | feedfacf) c4_hit="Mach-O 可执行" ;;
+        cafebabe | bebafeca) c4_hit="Mach-O fat" ;;
+        4d5a9000) c4_hit="PE/COFF 可执行" ;;
+      esac
+      ;;
+  esac
+  if [ -n "$c4_hit" ]; then
+    bad "C4 编译产物不得入库（$c4_hit）: $f —— 删掉，或把构建输出指到仓库外"
+    c4=1
+  fi
+done
+[ "$c4" -eq 0 ] && ok "C4 无编译产物（后缀/产物目录 + 裸二进制魔数）"
+
 # ── 汇总 ─────────────────────────────────────────────────────
 [ "$fail" -eq 0 ] && echo "  ✓ guard 通过" || { echo "  ✗ guard 拦下（若确为误报，在违规那一行加 'GUARD-OK <原因>'）"; exit 1; }
