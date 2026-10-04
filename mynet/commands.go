@@ -29,7 +29,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
 配置工具:
   setup            --local | --online --tenant T（配置树 v2）
   auth              账号态：login | status | logout（向导第 1 步）
-  tenants           列出可用租户（向导第 2 步）
+  tenants           列出可用` + termZone + `（向导第 2 步）
   node              节点归属：claim（向导第 3 步：选节点 + 密钥 + 上传公钥）
   install           安装到系统
   uninstall         卸载

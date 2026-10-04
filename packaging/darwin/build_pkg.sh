@@ -53,7 +53,9 @@ mkdir -p "$STAGE/opt/mynet/bin" "$STAGE/opt/mynet/driver/gnb/bin" "$STAGE/usr/lo
 # 才带补丁包（patches/apply/revert/README）与 MANIFEST 对账件；未声明不带，
 # 安装器不谎称出厂带 P2。
 if grep -q '^patch_stack=.*p2-route-proxy' "$GNB_SRC/MANIFEST" 2>/dev/null; then
-  P2_SRC="../mynet_gnb/packages/${GNB_BASELINE:-1.6.8-c411f14ee647}/p2-route-proxy"
+  # 默认相对路径要求 mynet_gnb 是有工作树的普通仓；它现在是 bare 仓（只有 .git），
+  # 所以补丁内容从外部传 P2_DIR（与 GNB_DIR 同一套路，都是把来源交给调用方）。
+  P2_SRC="${P2_DIR:-../mynet_gnb/packages/${GNB_BASELINE:-1.6.8-c411f14ee647}/p2-route-proxy}"
   if [ -d "$P2_SRC/patches" ]; then
     P2_DST="$STAGE/opt/mynet/gnb/packages/${GNB_BASELINE:-1.6.8-c411f14ee647}/p2-route-proxy"
     mkdir -p "$P2_DST"
