@@ -380,12 +380,22 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 **缺口落地（2026-10-04，两份 P0 冻结件已成文）：**
 - **权限矩阵** → `mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`：R1–R6 边界规则 +
   六个表面（公开/登录/节点/用户/console/本机 + LuCI）× 操作域的判据矩阵，每条带 `file:line`。
-  审计出 **9 条洞**（跨用户写 `PUT /users/{id}`、`GET /users` 返回全站列表、悬空 `DELETE /users/{id}`→500、
+  审计出 **10 条洞**（跨用户写 `PUT /users/{id}`、`GET /users` 返回全站列表、悬空 `DELETE /users/{id}`→500、
   客户端 `X-Tenant-ID` 在用户面**不经归属校验**即被 20+ 调用点直采 等），逐条分级后
-  进决策包 **F-22 / F-23 / F-24 / F-27**；只有 #8（GUI 残留 `admin_name`，沿用 10-04「用户面不表达 tenant 权限」
+  进决策包 **F-22 / F-23 / F-24 / F-27 / F-28**；只有 #8（GUI 残留 `admin_name`，沿用 10-04「用户面不表达 tenant 权限」
   既有裁定）是能立刻执行的。**#4 是本组唯一带真实跨租户读风险的洞**，且它**全仓测试抓不到**
   —— `tests/TestCase.php:73` 把 `IdentifyTenant` 只推进测试态的 api 组（同 dev-plan **B-6**），
   套件里那批「先补 `tenant_users` active 记录才敢发头」的用例测的是生产根本不跑的护栏。
+- **端别判定（同日追加，回答「用户面可操作没鉴权是哪一端的问题」）** → 矩阵 §4-10 + 决策包 **F-28**：
+  要分清两种鉴权 —— **租户归属**（我是不是这个区的成员）vs **资源属主**（这条路由/节点/池是不是我的）。
+  框架**只给前者、且刻意不给后者**：`IdentifyTenant::resolveWithOwnershipCheck()` 查的是 `tenant_users`/`operator_tenants`
+  成员关系（输入里没有资源），`RbacService::check()` 对非 Operator 主体直接 `return false`，
+  框架铁律 `identity-model.md` §4 还明写「User 不得持角色，要区分 User 侧能力走套餐/功能开关」。
+  ⇒ **「框架层的问题」只对一半**：框架不是漏了，是把它划给下游 —— **缺陷端在 back**（全仓 `Gate::`/`Policies`/`->authorize(` **0 命中**，
+  归属靠 15 处零散 `where('user_id')`，且 7 处归属列 nullable）。**GUI 不是缺陷端**（恒 `true` 的 `hasNodeEditPermission` 桩按 R1 本就不算防线），
+  但它现在也没有可依据的数据源：点名的五个字段里只有 `credits` 真有列（在 `tenant_users` pivot，不在 `users`），
+  `level`/`score`/`right` **库里根本不存在**，而框架指定的替代（`feature_flags`）在 back **链是断的**
+  （依赖的 `FeatureFlagService` 属未安装的 module-platform ⇒ 恒 fail-closed 404，且 `feature.flag` 别名都没注册）。
 - **稳定错误码** → `mynet_ctl/docs/knowledge-base/spec/v1-error-codes.md`：登记 **7 套并存信封**（E1–E7）
   与现有码注册表，证实 `code` 这一个键在 back / OpenWrt / 文档里是**三种不同语义**（HTTP 整数 / shell 退出码 / 0–6 业务码），
   所以 §11「代理不得静默改变错误码语义」当前**无从判定**。冻结口径 C1–C6；待裁定进 **F-25 / F-26**。
@@ -599,7 +609,7 @@ v1 只有在以下条件同时满足时才算完成：
 > 进度（2026-10-04）：仓库基线分类已完成（§3「当前改动和基线处理」）。下面第 1、2 条已按 §0.2 / §0.4 改写口径。
 
 1. P0：**审计并补冻结**已有领域合同——`BundleEnvelope` 两侧与双驱动 intent 已在，真正要补的是权限矩阵与稳定错误码清单，再把已落地 GNB 版本写入兼容基线。
-   **状态（2026-10-04）：◐ 两份冻结件已成文**（`mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`、`v1-error-codes.md`，逐条带 `file:line` + 复现命令）；剩三件：兼容基线登记、`BundleEnvelope` 密钥脱敏测试、以及 §7 P0 里点名的 **6 个待裁定项（F-22/F-23/F-24/F-27 权限面，F-25/F-26 信封面）** —— 冻结件的「冻结列」要等这些落地方向才成立。
+   **状态（2026-10-04）：◐ 两份冻结件已成文**（`mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`、`v1-error-codes.md`，逐条带 `file:line` + 复现命令）；剩三件：兼容基线登记、`BundleEnvelope` 密钥脱敏测试、以及 §7 P0 里点名的 **7 个待裁定项（F-22/F-23/F-24/F-27/F-28 权限面，F-25/F-26 信封面）** —— 冻结件的「冻结列」要等这些落地方向才成立。
 2. P1：邀请码入租链路已提交（`/api/v1/social/invitation/use`）；剩下核对租户迁移改动，补齐过期、撤销、跨租户和并发配额测试。**配额计费按 §0.4 不做。**
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
 4. P3：设计自动组网 planner 的 shadow 输出和容量指标，先不扩大默认租户范围。
