@@ -440,6 +440,12 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 > ⚠️ 已知的测试盲区：`max_uses` 的**真并发**窗口测不出来——测试库是 SQLite（整库写锁只会串行化），要 MySQL + 两条连接才行。现有 `test_exhausted_invitation_cannot_join_tenant` 是顺序用例，只钉住对外契约，证明不了服务里那段事务内重核还在。别把它当并发回归网。
 
+**实施记录（2026-10-05，P1 测试补齐）：§13 第 2 条点名的「过期 / 撤销」两半已补。** 此前无用例，现加 4 条（`mynet_api/app/Modules/VPN/tests/Feature/Api/ZoneInviteJoinTest.php`）——
+- **注册路径**（过期码 / 停用码 → 422 且**不建用户**）：钉住框架 `UserAuthController::register()` 的「建用户 + `consume()` 同事务」——`assertRegistrationAllowed` 在 open 模式不校验过期/停用，唯一拦截点是事务内的 `consume()`，失败即整体回滚、不留「已建用户但未入区」的孤儿。测试断言 `users` 无行 + `used_count` 不动。
+- **入区路径**（过期 / 停用 → 422、不改归属、不核销）：`ZoneInviteDomainService::join()` 的 `inviteCodes->validate()` 在**事务外**前置拒绝，`users.tenant_id` 与 `tenant_users` 都不动。
+
+**跨租户**此前已覆盖（`test_join_rejects_code_of_another_zone_when_already_bound`）；**真并发**（`max_uses` 竞态）仍是不测的盲区（同上条）。验证：默认 sqlite 套件 **441 tests 全绿**（较上批 +4 例 / +14 断言）；隔离 MySQL 子集 `deploy/test-mysql.sh` **150 tests 全绿**；`pint` 通过。**仍未做**：单独「核对租户迁移改动」。
+
 **禁止：** 不把用户创建为租户、不把朋友关系直接变成节点互通。
 
 ### P2：双数据面和 bundle 合同
@@ -646,6 +652,7 @@ v1 只有在以下条件同时满足时才算完成：
    **状态（2026-10-05，B 批 / 先B后A）：两件均已收口到「可裁决」** —— ① **密钥脱敏测试 ✅ 已落**（`BundleEnvelope::redactSecrets()` + `BundleEnvelopeV2Test` 三例 + `diag-bundle.php` 诊断面接线，`make check` 437 tests 全绿）；② **GNB 兼容基线 ⏸ 决策包已成文** `mynet_ctl/docs/knowledge-base/spec/gnb-compat-baseline.md`（四个碎片逐条 `file:line` + 待裁 D1–D4 + 建议默认「先落文字表、零行为风险」，索引挂 dev-plan #75 行）。详见上文 §7 P0 的两条实施记录。
    **状态（2026-10-05，B1 裁定后）：⇒ P0 两件全部收口 ✅。** ① 密钥脱敏测试已落；② **GNB 兼容基线已裁并落**（**D1-A** 知识库文档 + **D2-E2** 表 + **D3-iv** 不动运行时 + **D4** 只读取证工单）：冻结基线表（三档）+ 取证工单见 `spec/gnb-compat-baseline.md` §6，**运行时一行未动**；现网实际版本待运维跑 `mynet version` 回填。
 2. P1：邀请码入租链路已提交（`/api/v1/social/invitation/use`）；剩下核对租户迁移改动，补齐过期、撤销、跨租户和并发配额测试。**配额计费按 §0.4 不做。**
+   **状态（2026-10-05）：◐ 过期 / 撤销两半已补。** 入租链路现走框架码空间 + `/api/v1/user/tenants/join`（旧 `/social/invitation/use` 已随 invitations 表下架）；新增 4 条用例（注册 × 过期/停用 → 422 不建用户；入区 × 过期/停用 → 422 不改归属不核销），见 §7 P1 实施记录。跨租户此前已覆盖；**真并发（`max_uses` 竞态）** 仍是不测盲区（sqlite 串行化，需 MySQL 双连接），**「核对租户迁移改动」尚未单独做**。
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
    **状态（2026-10-05，B 批）：回滚合同 ✅ 已落** —— `executeApply` 加 `applyJournal` + `rollbackCmds()`（失败时逆序回滚本轮已应用 route/firewall/iface、全 `optional` 不掩盖原始失败、刻意排除 `pinDefaultGateway`/Proxy/`ExtraExec`），用例三支，`make check` 全绿。版本/容量两半仍在 §7 P2（版本半边与 GNB 兼容基线决策包相邻）。详见 §7 P2 实施记录。
 4. P3：设计自动组网 planner 的 shadow 输出和容量指标，先不扩大默认租户范围。
