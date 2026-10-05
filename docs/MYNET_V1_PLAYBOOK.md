@@ -498,6 +498,15 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **实施记录（2026-10-05）：P4 开发计划已成文（设计 + 决策包，未写运行时码）。** 正文 `mynet_ctl/docs/knowledge-base/spec/p4-forwarding-proxy-plan.md`。实测：① 网络到网络转发合同 = `GnbForwarding`（api `Domain/Bundle/GnbForwarding.php:7-53` ↔ agent `shared/domain/bundle_envelope.go:171-177`，消费 `driver/gnb.go:688-730`）；② 转发开关在 `NodeConfigController.php:384-386`；③ 实体网关**隐式**（无 `peer_gateway` 模型，表达为 `source:"lan"` 路由，装配在 OpenWrt）；④ Proxy 合同 `shared/domain/proxy_policy.go:12-44` + 落地 `proxy_apply.go`（策略路由/DNS/清理 `:394-420`/fail-closed ACL `:546-590`）。**三处真缺口**：**(a) §13 第 5 条未达标** —— OpenWrt `proxy.lua` **自读本地 `proxy_role.conf`/`proxy_route.conf`、不消费 bundle `network.proxy`**（`proxy.lua:16,60,411,439`）；**(b) 回程路由无实现**（只有诊断文案 `cmd_route_doctor.go:99-102`）；**(c) fail-closed / 网关离线无用例**、OpenWrt 无可执行测试。另 `Acceleration`/`service_policy` **全仓零命中**（`Service` 只是已发布服务目录）。**待裁 D1–D5**：统一合同形状 / OpenWrt lua 处置 / `Acceleration` 是否立项 / 回程处置 / fail-closed 用例落点。分步 P4-1…P4-6 与测试计划见正文。
 
+**实施记录（2026-10-05，第二～六轮裁定 + 执行）：上条「未写运行时码」口径作废 —— P4 的 wire/许可面已落码。** 裁定与落地全文见 `spec/p4-forwarding-proxy-plan.md` §7.4–§7.8。四件事：
+
+1. **bundle 的 `network.proxy` 收窄为「出口许可」** `ProxyPermission{enabled, acl}`；客户端策略（role/exits/dns/split/domain_rules/…）**移出 wire**，归节点 Local 轨（agent `ProxyIntentState`，`proxy_unify.go`），L6 按职责合成而非按 revision 仲裁（agent `76ef49f`、api `d38aa36`、ctl `24834a0` schema + fixture 重算 checksum）。同批删掉 `gnb.forwarding.proxy` 位（api `480f183`、ctl `914a3db`、agent `214284e`）与 node.conf `proxy` 字段（api `31027cc`）；gnb 代理开关的落点是独立 `driver/gnb/conf/<id>/proxy.conf`，云端不渲染。
+2. **许可权威 = 节点级专表 `proxy_exit_grants`**（裁定不复用 `connection_grants`：那张表 `permission` 仅 varchar(32)、`connection_id` 非空且入唯一键，装不下节点级「允许谁」；`ConnectionGrant::RESOURCE_PROXY` 已撤）。迁移 `2026_10_05_000001` + `ProxyExitGrant` 模型 + `ProxyAuthDomainService::grant()/revoke()`（替换语义）。**§7.6 裁定：空白名单 = 组织内放开**（`ProxyAuthDomainService.php:52` → `MODE_OPEN`；出口侧无 `allowed_cidrs` 即不装规则，`proxy_apply.go:554-556`）。节点回写的 `node_configs.config.proxy` 仍留档，但**不再当作许可来源**（避免节点把自己误当出口）。
+3. **「允许谁」在出口侧 L6 真生效**：云端把消费端解算成 overlay `/32` 写进 `acl.allowed_cidrs`，Go 侧 `ProxyACLCmds` **一行未动**（本就吃 `allowed_cidrs`）。
+4. **用户面写面已开（§7.8）**：`GET|PUT|DELETE /api/v1/nodes/{id}/proxy-exit`（`ProxyExitController.php`、`Routes/api.php:141-143`，openapi `back.yaml` 新增 `node-proxy` tag）。语义 = **属主授权好友**，自己的节点不需要授权、自动并入白名单（`ProxyAuthDomainService.php:64,84`）；`friend_ids: []` / DELETE = 回默认「本网络区开放」（清空是放开，不是关闭）。两条 fail-closed：非好友拒绝（403 `DOMAIN_FORBIDDEN`）、好友无可连节点拒绝而**不是**误开成全网络区（否则空名单会退化成 NULL 行 = 全组织开放）。api `b38c36a`，`phpunit` 454 用例全绿（新增 `ProxyExitApiTest` 7 例 + `ProxyExitGrantTest` 第 6 例）。
+
+**P4 仍未收口的四处（M4 因此未达标）**：**(a)** OpenWrt `proxy.lua` 仍自读本地 `proxy_role.conf`/`proxy_route.conf`、不消费 bundle（`proxy.lua:16,60,411,439`）—— §13 第 5 条字面仍未达标；**(b)** 回程路由仍无实现（只有诊断文案 `cmd_route_doctor.go:99-102`）；**(c)** 错误出口 fail-closed / 网关离线仍无用例，OpenWrt 无可执行测试；**(d)** **console 面「网络区提供 proxy 公共服务、授权出口」是独立线，未开**（受 console 写路径闸门约束：`Controllers/Console/V1/NodeController.php:23-24` 要求带审计与操作者身份，落点与审计接法待裁）。`Acceleration` 契约仍全仓零命中（待裁 D3）。
+
 ### P5：OpenWrt LuCI 产品壳和弱设备适配
 
 **目标：** LuCI 原生完成登录、节点、连接、网关、服务、Proxy、诊断和备份恢复；提供轻量执行路径。
@@ -601,6 +610,8 @@ GNB 和 WireGuard 都有真实 fixture、配置生成、应用/回滚和最小�
 
 真实 peer 网关完成节点到网络、网络到网络、回程和 Proxy 启停；错误出口、规则清理和敏感日志测试通过。
 
+> **2026-10-05 进度：未达标。** 已具备的是 **Proxy 出口授权链**（节点级专表 `proxy_exit_grants` + 用户面写面 `PUT /api/v1/nodes/{id}/proxy-exit` + L6 按 `acl.allowed_cidrs` 真生效 + 空白名单=组织内放开）与 **bundle 许可收窄**（`network.proxy` = `ProxyPermission{enabled,acl}`，客户端策略归 Local 轨）。仍缺四条：① OpenWrt `proxy.lua` 不消费 bundle；② 回程路由无实现；③ 错误出口 fail-closed / 网关离线无用例；④ console 面「网络区公共代理授权出口」未开。见 §7 P4 与 `spec/p4-forwarding-proxy-plan.md` §7.4–§7.8。
+
 ### M5：OpenWrt
 
 LuCI 原生流程在弱设备模式通过安装、注册、配置同步、转发、Proxy、备份恢复和重启恢复。
@@ -663,6 +674,7 @@ v1 只有在以下条件同时满足时才算完成：
    **追加裁定（2026-10-05 同日）：该护栏保持代码层逻辑判断、不加唯一索引、不动表结构（软删语义会使唯一键更难缠）⇒ P3 收口，无新增运行时码。** 详见 `spec/auto-mesh-planner.md` §8.1。
 5. P4：把现有 OpenWrt Proxy 实现接入统一的 Service/Forwarding/Acceleration 合同。
    **状态（2026-10-05）：◐ 开发计划已成文**（`mynet_ctl/docs/knowledge-base/spec/p4-forwarding-proxy-plan.md`，现状实测 + 三处缺口 + 待裁 D1–D5 + 分步 P4-1…P4-6）；**未写运行时码**。**关键实测：本条字面未达标** —— OpenWrt `proxy.lua` 自读本地 `proxy_role.conf`/`proxy_route.conf`（`:16,60,411,439`），**不消费 bundle `network.proxy`**；且 **`Acceleration` 契约全仓零命中**（`Service` 只是已发布服务目录）。详见 §7 P4 实施记录。
+   **状态（2026-10-05，第二～六轮裁定后）：◐ wire/许可面已落码，本条字面仍未达标。** `Forwarding` 半边已按裁定收敛（`gnb.forwarding.proxy` 位删除、node.conf `proxy` 字段删除），`network.proxy` 收窄为出口许可 `ProxyPermission{enabled,acl}`，权威改节点级专表 `proxy_exit_grants`，并开出用户面写面 `PUT /api/v1/nodes/{id}/proxy-exit`（属主授权好友，自己的节点自动并入）。**但 OpenWrt `proxy.lua` 仍不消费 bundle**（`proxy.lua:16,60,411,439` 自读本地 conf），`Acceleration` 仍零命中 ⇒ 「接入统一合同」这条**未完成**；`Service` 侧也仍未与 Proxy 打通。详见 §7 P4 两条实施记录与 `spec/p4-forwarding-proxy-plan.md` §7.4–§7.8。
 6. P5/P6：以真实 LuCI 和真 WebSocket 作为集成入口，避免只依赖 mock 或独立 8096 页面。
 7. P7：合同稳定后再统一 GUI 的“我的节点/节点池/可访问网络/加速”用户路径。
 
