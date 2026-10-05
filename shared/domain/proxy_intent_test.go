@@ -48,39 +48,44 @@ func TestEffectiveLocalLaterWins(t *testing.T) {
 	}
 }
 
-func TestEffectiveCloudLaterWins(t *testing.T) {
+// D1 收窄后 Cloud 轨只带出口许可：与 Local 客户端策略**正交合成**，不再按 revision 抢胜负。
+func TestEffectiveComposesLocalClientWithCloudPermission(t *testing.T) {
 	now := time.Now()
 	s := &ProxyIntentState{}
 	if err := s.ApplyLocal(mustOKPolicy(), now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ApplyCloud(mustOKPolicy(), 20, now.Add(time.Second)); err != nil {
+	perm := ProxyPolicy{
+		Enabled: true,
+		Role:    ProxyRoleServer,
+		ACL:     &ProxyACL{Mode: ProxyACLAllowlist, AllowedNodeIDs: []string{"9001"}},
+	}
+	if err := s.ApplyCloud(perm, 20, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	eff := s.Effective()
-	if eff == nil || eff.Source != ProxySourceCloud {
-		t.Fatalf("云端后写应胜: %+v", eff)
+	if eff == nil {
+		t.Fatal("应合成出 effective")
+	}
+	// client 侧字段来自 Local
+	if eff.Policy.Region != ProxyRegionDomestic || eff.Policy.Split == nil || len(eff.Policy.Exits) != 1 {
+		t.Fatalf("client 侧字段应来自 Local: %+v", eff.Policy)
+	}
+	// server 侧（ACL）来自 Cloud 许可，角色合成为 both
+	if eff.Policy.ACL == nil || eff.Policy.Role != ProxyRoleBoth {
+		t.Fatalf("server 许可应合入且 role=both: %+v", eff.Policy)
 	}
 }
 
-func TestEffectiveSameRevisionCloudWins(t *testing.T) {
-	now := time.Now()
+// 仅云端许可、无 Local：纯 server 侧，不装 client 策略路由。
+func TestEffectiveCloudPermissionOnlyIsServer(t *testing.T) {
 	s := &ProxyIntentState{}
-	// 同 revision 1
-	if err := s.ApplyLocal(mustOKPolicy(), now); err != nil {
+	if err := s.ApplyCloud(ProxyPolicy{Enabled: true, Role: ProxyRoleServer}, 3, time.Now()); err != nil {
 		t.Fatal(err)
-	}
-	// 强行把 cloud 设成同 revision
-	if err := s.ApplyCloud(mustOKPolicy(), 1, now); err != nil {
-		t.Fatal(err)
-	}
-	// 本地 revision 被 ApplyLocal 设为 1；cloud 也是 1
-	if s.Local.Revision != s.Cloud.Revision {
-		t.Fatalf("测试前提应同 revision: local=%d cloud=%d", s.Local.Revision, s.Cloud.Revision)
 	}
 	eff := s.Effective()
-	if eff == nil || eff.Source != ProxySourceCloud {
-		t.Fatalf("同时刻应云优先: %+v", eff)
+	if eff == nil || !eff.Policy.IsServerLike() || eff.Policy.IsClientLike() {
+		t.Fatalf("仅许可应 server-like 且非 client-like: %+v", eff)
 	}
 }
 

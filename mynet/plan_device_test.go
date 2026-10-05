@@ -67,8 +67,9 @@ func TestPlanFromBundleKeepsDeclaredDevice(t *testing.T) {
 // proxy 段用 TunDevice 做 iif 匹配与默认路由（proxy_apply.go），名字错就是
 // 「分流看着生效、包从物理口出去」。与 routes[].dev 同源，不能各读各的字段。
 func TestPlanFromBundleProxyUsesAuthority(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir()) // intent 落轨写本机状态，隔离
 	env := planEnv("gnb_tun_16", "gnb_tun_16")
-	env.Network.Proxy = mustPolicy(t, "domestic", "whitelist")
+	env.Network.Proxy = &domain.ProxyPermission{Enabled: true}
 
 	plan, err := planFromBundle(env)
 	if err != nil {

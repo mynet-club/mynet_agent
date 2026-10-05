@@ -43,14 +43,16 @@ type NodeRef struct {
 // NetworkIntent 操作系统网络状态意图（地址 / FIB / rule / firewall / NAT）。
 // 不包含 GNB route.conf 语义，也不包含 WG AllowedIPs。
 //
-// Proxy 是节点级分流意图（主线⑦）；L6 把它翻译成 fwmark/ipset/DNS 等系统写入。
+// Proxy 是云端下发的**出口许可**（T11）：本节点被授权作出口吗、对谁开放。
+// 客户端分流策略（role/region/split/exits/dns/…）与本机环境相关，不走 wire，
+// 归节点 Local 轨（见 proxy_intent.go / proxy_unify.go）。
 type NetworkIntent struct {
-	Addresses []string     `json:"addresses,omitempty"`
-	Routes    []OsRoute    `json:"routes,omitempty"`
-	Rules     []any        `json:"rules,omitempty"`
-	Firewall  []any        `json:"firewall,omitempty"`
-	NAT       []any        `json:"nat,omitempty"`
-	Proxy     *ProxyPolicy `json:"proxy,omitempty"`
+	Addresses []string         `json:"addresses,omitempty"`
+	Routes    []OsRoute        `json:"routes,omitempty"`
+	Rules     []any            `json:"rules,omitempty"`
+	Firewall  []any            `json:"firewall,omitempty"`
+	NAT       []any            `json:"nat,omitempty"`
+	Proxy     *ProxyPermission `json:"proxy,omitempty"`
 }
 
 // OsRoute 一条 OS FIB 路由。

@@ -43,6 +43,44 @@ type ProxyPolicy struct {
 	Table int `json:"table,omitempty"`
 }
 
+// 节点角色（ProxyPolicy.Role）。显式配置，不由是否存在 group 推断。
+const (
+	ProxyRoleClient = "client" // 仅按地区策略选择出口
+	ProxyRoleServer = "server" // 仅作为出口节点放行（NAT 出网）
+	ProxyRoleBoth   = "both"   // 同时具备两种能力
+)
+
+// ProxyPermission 云端下发的**出口许可**——wire 上 `network.proxy` 的唯一语义（T11）。
+//
+// 只回答「本节点被授权作为出口吗、对谁开放」。客户端分流策略（role/region/policy/
+// split/exits/dns/domain_rules/doh_mode/full_tunnel/foreign_dns_route/fwmark/table）
+// 高度依赖本机运行环境（系统 DNS / fwmark / ipset / dnsmasq / 网关形态），不走 wire，
+// 由节点 Local 轨承载（见 proxy_intent.go）。两条轨道在 L6 落地时合成（proxy_unify.go）。
+type ProxyPermission struct {
+	// Enabled 本节点是否被授权作出口。false 时 L6 不装 server 侧 NAT/ACL。
+	Enabled bool `json:"enabled"`
+	// ACL 出口授权：对谁开放（对端级，T11）。空 = open（组织内）。
+	ACL *ProxyACL `json:"acl,omitempty"`
+}
+
+// Validate 形状校验。
+func (p *ProxyPermission) Validate() error {
+	if p == nil {
+		return nil
+	}
+	return p.ACL.Validate()
+}
+
+// AsCloudPolicy 把许可投影成 Cloud 轨可存的 ProxyPolicy（只带 Enabled + server 角色 + ACL）。
+// 角色固定 server：许可就是「作为出口」的授权，不含 client 语义，这样 ProxyPolicy.Validate
+// 不会把它当 client 策略要求 region/policy。
+func (p *ProxyPermission) AsCloudPolicy() ProxyPolicy {
+	if p == nil {
+		return ProxyPolicy{}
+	}
+	return ProxyPolicy{Enabled: p.Enabled, Role: ProxyRoleServer, ACL: p.ACL}
+}
+
 // ProxySplit 地域分流参数。ListSource/MatchMode 由 ResolveProxySplit 解算，
 // **调用方不得自行拼**——旧线曾因「只按 region 选数据源」导致 domestic+blacklist 失效。
 type ProxySplit struct {

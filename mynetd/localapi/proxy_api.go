@@ -173,9 +173,10 @@ func (s *Server) postPluginProxy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ApplyCloudIntent 云端 envelope 到达时合并（后覆盖先），返回是否该重投影。
+// ApplyCloudIntent 云端 envelope 到达时合并出口许可（后覆盖先），返回是否该重投影。
 // 读写经注入的 store，保持 localapi 不碰 shared/config。
-func ApplyCloudIntent(load ProxyIntentLoader, save ProxyIntentSaver, dir string, p domain.ProxyPolicy, revision int64) (needApply bool, st *domain.ProxyIntentState, err error) {
+// D1 收窄：云端只带许可（enabled + acl），落 Cloud 轨时投影为 server 角色策略。
+func ApplyCloudIntent(load ProxyIntentLoader, save ProxyIntentSaver, dir string, p domain.ProxyPermission, revision int64) (needApply bool, st *domain.ProxyIntentState, err error) {
 	st, err = load(dir)
 	if err != nil {
 		return false, nil, err
@@ -184,7 +185,7 @@ func ApplyCloudIntent(load ProxyIntentLoader, save ProxyIntentSaver, dir string,
 	if eff := st.Effective(); eff != nil {
 		before = string(eff.Source) + "#" + itoa64(eff.Revision)
 	}
-	if err := st.ApplyCloud(p, revision, time.Now()); err != nil {
+	if err := st.ApplyCloud(p.AsCloudPolicy(), revision, time.Now()); err != nil {
 		return false, nil, err
 	}
 	after := ""

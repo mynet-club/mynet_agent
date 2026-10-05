@@ -19,39 +19,7 @@
         "firewall": [],
         "nat": [],
         "proxy": {
-            "enabled": true,
-            "role": "client",
-            "region": "domestic",
-            "policy": "whitelist",
-            "split": {
-                "list_source": "international",
-                "match_mode": "normal",
-                "ip_list": {
-                    "source": "international",
-                    "url": "https://cdn.mynet.club/proxy-lists/interip.txt",
-                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "bytes": 123456
-                }
-            },
-            "exits": [
-                {
-                    "node_id": "9001",
-                    "weight": 20,
-                    "order": 1,
-                    "enabled": true
-                }
-            ],
-            "dns": {
-                "mode": "split",
-                "server": "8.8.8.8",
-                "domestic_servers": [
-                    "223.5.5.5",
-                    "119.29.29.29"
-                ]
-            },
-            "foreign_dns_route": true,
-            "fwmark": 200,
-            "table": 200
+            "enabled": true
         }
     },
     "gnb": {
@@ -88,5 +56,5 @@
         }
     },
     "wireguard": null,
-    "checksum": "sha256:86763fbe0c2ad4ecf942e8b21d1478f5ccc56632e86065f131a820ff082c46ca"
+    "checksum": "sha256:de373a12fffc045296043620d40a64d3d402c79c01bb3819d61b8d8e0e42fa55"
 }

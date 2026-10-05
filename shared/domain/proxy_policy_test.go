@@ -80,27 +80,17 @@ func TestProxyPolicyValidateAndDefaults(t *testing.T) {
 	}
 }
 
-func TestProxyPolicyJSONRoundTrip(t *testing.T) {
-	src, mode, _ := ResolveProxySplit(ProxyRegionIntl, ProxyPolicyBlacklist)
-	in := &ProxyPolicy{
+// TestProxyPermissionWireRoundTrip —— D1 收窄后 wire 的 network.proxy 只带许可。
+//
+// 契约：wire 只序列化 {enabled, acl}；客户端分流策略（role/region/split/exits/dns…）
+// 属本机环境相关，绝不能出现在 wire 上（否则又变成「bundle 管分流」）。
+func TestProxyPermissionWireRoundTrip(t *testing.T) {
+	in := &ProxyPermission{
 		Enabled: true,
-		Role:    "both",
-		Region:  ProxyRegionIntl,
-		Policy:  ProxyPolicyBlacklist,
-		Split: &ProxySplit{
-			ListSource: src,
-			MatchMode:  mode,
-			IPList:     &ProxyIPListRef{Source: src, URL: "https://x/interip.txt", SHA256: "aa", Bytes: 10},
+		ACL: &ProxyACL{
+			Mode:           ProxyACLAllowlist,
+			AllowedNodeIDs: []string{"9001"},
 		},
-		Exits: []ProxyExit{{NodeID: "9001", Weight: 20, Order: 1, Enabled: true}},
-		DNS: &ProxyDNS{
-			Mode:            "redirect",
-			RedirectTarget:  "10.20.0.250",
-			DomesticServers: []string{"223.5.5.5", "119.29.29.29"},
-		},
-		ForeignDNSRoute: true,
-		Fwmark:          0xc8,
-		Table:           200,
 	}
 	env := &BundleEnvelope{
 		SchemaVersion: 2,
@@ -120,23 +110,31 @@ func TestProxyPolicyJSONRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if out.Network.Proxy == nil {
-		t.Fatal("proxy 段未解出")
+		t.Fatal("proxy 许可段未解出")
 	}
 	got := out.Network.Proxy
-	if got.Split == nil || got.Split.ListSource != src || got.Split.MatchMode != mode {
-		t.Fatalf("split 往返丢失: %#v", got.Split)
+	if !got.Enabled {
+		t.Fatal("许可 enabled 往返丢失")
 	}
-	if len(got.Exits) != 1 || got.Exits[0].NodeID != "9001" {
-		t.Fatalf("exits 往返丢失: %#v", got.Exits)
+	if got.ACL == nil || got.ACL.Mode != ProxyACLAllowlist || len(got.ACL.AllowedNodeIDs) != 1 {
+		t.Fatalf("acl 往返丢失: %#v", got.ACL)
 	}
-	if got.DNS == nil || got.DNS.Mode != "redirect" || got.DNS.RedirectTarget != "10.20.0.250" {
-		t.Fatalf("dns 往返丢失: %#v", got.DNS)
-	}
-	// 编码里字段名稳定（双端契约）
+	// wire 只带许可：客户端策略字段不得出现
 	text := string(raw)
-	for _, part := range []string{`"proxy"`, `"list_source"`, `"match_mode"`, `"foreign_dns_route"`} {
-		if !json.Valid(raw) || !strings.Contains(text, part) {
-			t.Fatalf("JSON 形状不对（缺 %s）: %s", part, text)
+	if !json.Valid(raw) {
+		t.Fatalf("非法 JSON: %s", text)
+	}
+	for _, forbidden := range []string{
+		`"exits"`, `"split"`, `"dns"`, `"role"`, `"region"`,
+		`"policy"`, `"foreign_dns_route"`, `"full_tunnel"`, `"fwmark"`, `"table"`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("wire 不应带客户端策略字段 %s: %s", forbidden, text)
+		}
+	}
+	for _, part := range []string{`"proxy"`, `"enabled"`, `"allowed_node_ids"`} {
+		if !strings.Contains(text, part) {
+			t.Fatalf("wire 形状不对（缺 %s）: %s", part, text)
 		}
 	}
 }

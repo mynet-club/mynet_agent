@@ -213,19 +213,20 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 
 	// 代理分流（主线⑦）：intent 是唯一真相。
 	//
-	// 历史断链：这里曾直接拿 bundle 的 ProxyPolicy 建计划，本地关掉的开关会被
-	// 下一次 config sync 用云端策略复活。现在先把云端下发 stamp 进 intent 的
-	// Cloud 轨，再由 Effective() 按 revision 仲裁（本地更新则压制云端）；
-	// intent 无任何记录时才回落 bundle 原策略（升级路径兼容）。
+	// D1 收窄后 wire 的 network.proxy 只带**出口许可**（enabled + acl）；客户端策略
+	// （role/region/split/exits/dns…）归 Local 轨。先把云端许可 stamp 进 Cloud 轨，
+	// 再由 Effective() 按职责合成：server 侧←许可、client 侧←Local。
+	// intent 无任何记录时才回落 bundle 原许可（升级路径兼容）。
 	stampRev, _ := strconv.ParseInt(env.Generation, 10, 64)
 	StampCloudIntent(env.Network.Proxy, stampRev)
 	var proxyPolicy *domain.ProxyPolicy
 	if st, err := LoadProxyState(); err == nil && st != nil && (st.Local != nil || st.Cloud != nil) {
-		if eff := st.Effective(); eff != nil && eff.Policy.Enabled {
+		if eff := st.Effective(); eff != nil {
 			proxyPolicy = &eff.Policy
 		}
 	} else if env.Network.Proxy != nil && env.Network.Proxy.Enabled {
-		proxyPolicy = env.Network.Proxy
+		p := env.Network.Proxy.AsCloudPolicy()
+		proxyPolicy = &p
 	}
 	if proxyPolicy != nil {
 		rt := ProxyRuntime{

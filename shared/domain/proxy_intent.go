@@ -2,13 +2,14 @@ package domain
 
 // Proxy 双控合并（本地 WebUI ↔ 云端 envelope）。
 //
-// 规则：
-//   1. 后覆盖先：比 Revision（generation/单调递增），大者胜
-//   2. Revision 相同时刻 → 云优先（防离线老页面冲掉紧急策略）
-//   3. 本地写成功即先生效，并标 Dirty；回写成功才清 Dirty
-//   4. Effective 是唯一生效出口——执行器只认它，不认 local/cloud 原始片段
+// D1 收窄后两轨**职责正交**，不再同型抢胜负：
+//   - Cloud 轨 = 云端出口许可（enabled + acl，T11），云端权威
+//   - Local 轨 = 客户端分流策略（role/region/split/exits/dns…），本机环境相关
 //
-// 回写的是业务意图（region/policy/exits/dns…），不是 L6 投影（fwmark/nft）。
+// Effective() 按职责合成：client 侧字段全取 Local，server 侧（ACL/出口能力）取 Cloud。
+//
+// 本地写成功即先生效，并标 Dirty；回写成功才清 Dirty。
+// Effective 是唯一生效出口——执行器只认它，不认 local/cloud 原始片段。
 
 import (
 	"fmt"
@@ -52,28 +53,41 @@ type ProxyIntentState struct {
 	Status ProxyWriteback      `json:"status"`
 }
 
-// Effective 合并出唯一生效意图。两边都空 → nil。
+// Effective 合成唯一生效策略：client 侧取 Local 轨，server 侧（出口许可）取 Cloud 轨。
+// 两轨都空 / 合成后未启用 → nil（执行器据此清理）。
 //
-// 后覆盖先：Revision 大者胜；Revision 相等时云优先。
+// 旧模型是「Local/Cloud 同型、按 revision 抢胜负」；D1 收窄后 Cloud 只带许可、
+// Local 只带客户端策略，二者不再冲突，故改为按职责合成。
 func (s *ProxyIntentState) Effective() *StampedProxyPolicy {
 	if s == nil {
 		return nil
 	}
 	l, c := s.Local, s.Cloud
-	switch {
-	case l == nil && c == nil:
+	if l == nil && c == nil {
 		return nil
-	case l == nil:
-		return c
-	case c == nil:
-		return l
-	case l.Revision > c.Revision:
-		return l
-	case c.Revision >= l.Revision:
-		// 含相等：云优先
-		return c
 	}
-	return c
+	var base StampedProxyPolicy
+	switch {
+	case l != nil:
+		base = *l
+	case c != nil:
+		base = *c
+	}
+	// server 侧：合入云端出口许可（enabled + acl）
+	if c != nil && c.Policy.Enabled {
+		base.Policy.Enabled = true
+		base.Policy.ACL = c.Policy.ACL
+		// client 侧是否同时开，决定角色是 both 还是纯 server
+		if l != nil && l.Policy.Enabled {
+			base.Policy.Role = ProxyRoleBoth
+		} else {
+			base.Policy.Role = ProxyRoleServer
+		}
+	}
+	if !base.Policy.Enabled {
+		return nil
+	}
+	return &base
 }
 
 // ApplyLocal 本地写入：revision 自增（在当前最大上 +1），标 Dirty。

@@ -52,6 +52,14 @@ func samplePolicy() domain.ProxyPolicy {
 	}
 }
 
+// samplePermission 云端下发的出口许可（D1 收窄后 wire 的 network.proxy）。
+func samplePermission() domain.ProxyPermission {
+	return domain.ProxyPermission{
+		Enabled: true,
+		ACL:     &domain.ProxyACL{Mode: domain.ProxyACLAllowlist, AllowedNodeIDs: []string{"9001"}},
+	}
+}
+
 func TestPluginProxyGetEmpty(t *testing.T) {
 	dir := t.TempDir()
 	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: dir})
@@ -129,7 +137,7 @@ func TestPluginProxyWritebackFailKeepsDirty(t *testing.T) {
 func TestApplyCloudIntentMarksNeedApply(t *testing.T) {
 	dir := t.TempDir()
 	load, save := memProxyStore()
-	need, st, err := ApplyCloudIntent(load, save, dir, samplePolicy(), 3)
+	need, st, err := ApplyCloudIntent(load, save, dir, samplePermission(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +145,7 @@ func TestApplyCloudIntentMarksNeedApply(t *testing.T) {
 		t.Fatal("云端首次写入应触发 apply")
 	}
 	// 同 revision 再写，effective 不变 → 不必 apply
-	need2, _, err := ApplyCloudIntent(load, save, dir, samplePolicy(), 3)
+	need2, _, err := ApplyCloudIntent(load, save, dir, samplePermission(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}

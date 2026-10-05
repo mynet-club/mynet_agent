@@ -98,8 +98,8 @@ func SetProxyEnabled(on bool) error {
 		return err
 	}
 	var p domain.ProxyPolicy
-	if eff := st.Effective(); eff != nil {
-		p = eff.Policy
+	if st.Local != nil {
+		p = st.Local.Policy
 	}
 	// intent 尚无出口时，从插件壳继承一次，避免 enable 清空
 	if len(p.Exits) == 0 {
@@ -146,8 +146,8 @@ func SetProxyExits(exits []domain.ProxyExit) error {
 		return err
 	}
 	var p domain.ProxyPolicy
-	if eff := st.Effective(); eff != nil {
-		p = eff.Policy
+	if st.Local != nil {
+		p = st.Local.Policy
 	}
 	p.Exits = exits
 	if err := st.ApplyLocal(p, time.Now()); err != nil {
@@ -167,8 +167,8 @@ func SetProxyCustomDomains(customProxied, customDirect []string) error {
 		return err
 	}
 	var p domain.ProxyPolicy
-	if eff := st.Effective(); eff != nil {
-		p = eff.Policy
+	if st.Local != nil {
+		p = st.Local.Policy
 	}
 	if p.DomainRules == nil {
 		p.DomainRules = &domain.ProxyDomainRules{}
@@ -184,38 +184,28 @@ func SetProxyCustomDomains(customProxied, customDirect []string) error {
 	return SyncPluginProxyFromPolicy(&p)
 }
 
-// StampCloudIntent 把云端 bundle 的 proxy 策略记入 intent 的 Cloud 轨。
+// StampCloudIntent 把云端 bundle 的**出口许可**记入 intent 的 Cloud 轨。
 //
-// 历史断链：读取侧（planFromBundle）只看 bundle、写入侧（ApplyCloudIntent）无人调用，
-// 导致「本地页面关掉开关、下一次 config sync 又被云端策略复活」。这里把云端下发
-// 落到 Cloud 轨，Effective() 才能按 revision 仲裁本地覆盖。
+// D1 收窄后 wire 的 network.proxy 只带许可（enabled + acl），客户端策略归 Local 轨；
+// Cloud 轨只存许可投影，不再与 Local 抢胜负（Effective() 按职责合成）。
 //
-// 防复活两道闸（generation 实际是 "rev-…" 字符串，解析不出数字是常态）：
-//  1. Cloud 轨内容与本次下发一致 → 跳过重 stamp。否则会自增 revision 越过
-//     本地关掉的那次写入，每次 sync 都复活一次。
-//  2. revision 未知（<=0）且本地有未回写（Dirty）的修改 → 无法证明云端更新，
-//     保持 Cloud 轨现状，不覆盖。
-//
-// 校验失败仅告警，返回 false，调用方回落 bundle 原策略。
-func StampCloudIntent(p *domain.ProxyPolicy, revision int64) bool {
-	if p == nil {
+// 防重复 stamp：Cloud 轨内容与本次下发一致 → 跳过，避免每次 sync 都写盘。
+// 校验失败仅告警，返回 false，调用方回落 bundle 原许可。
+func StampCloudIntent(perm *domain.ProxyPermission, revision int64) bool {
+	if perm == nil {
 		return false
 	}
 	st, err := LoadProxyState()
 	if err != nil {
-		logger.Comp("apply").Warn("proxy intent 读取失败，云端策略未落轨", "err", err)
+		logger.Comp("apply").Warn("proxy intent 读取失败，云端许可未落轨", "err", err)
 		return false
 	}
-	if st.Cloud != nil && reflect.DeepEqual(st.Cloud.Policy, *p) {
+	pol := perm.AsCloudPolicy()
+	if st.Cloud != nil && reflect.DeepEqual(st.Cloud.Policy, pol) {
 		return true // 内容未变：不动 revision
 	}
-	if revision <= 0 && st.Local != nil && st.Status.Dirty {
-		logger.Comp("apply").Info("proxy 云端下发无版本号且本地有未回写修改，保持本地覆盖",
-			"local_rev", st.Local.Revision)
-		return st.Cloud != nil
-	}
-	if err := st.ApplyCloud(*p, revision, time.Now()); err != nil {
-		logger.Comp("apply").Warn("proxy 云端策略 stamp 失败，回落 bundle", "err", err)
+	if err := st.ApplyCloud(pol, revision, time.Now()); err != nil {
+		logger.Comp("apply").Warn("proxy 云端许可 stamp 失败，回落 bundle", "err", err)
 		return false
 	}
 	if err := SaveProxyState(st); err != nil {

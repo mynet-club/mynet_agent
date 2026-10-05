@@ -47,6 +47,26 @@ func mustPolicy(t *testing.T, region, policy string) *domain.ProxyPolicy {
 	return p
 }
 
+// mustPermission 云端下发的出口许可（D1 收窄后 wire 的 network.proxy）。
+func mustPermission() *domain.ProxyPermission {
+	return &domain.ProxyPermission{Enabled: true}
+}
+
+// seedLocalProxy 把客户端策略落到 intent Local 轨（D1 收窄后客户端策略的唯一来源）。
+func seedLocalProxy(t *testing.T, p *domain.ProxyPolicy) {
+	t.Helper()
+	st, err := LoadProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyLocal(*p, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveProxyState(st); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func joinCmds(cmds []routeCmd) string {
 	var b strings.Builder
 	for _, c := range cmds {
@@ -199,13 +219,15 @@ func TestProxyDNSRedirect(t *testing.T) {
 
 func TestPlanFromBundleIncludesProxy(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir()) // intent 落轨写的是本机状态，测试必须隔离
+	// 客户端策略只在 Local 轨（wire 只带许可），出口解析走 Local 的 exits
+	seedLocalProxy(t, mustPolicy(t, "domestic", "whitelist"))
 	env := &domain.BundleEnvelope{
 		SchemaVersion: 2,
 		Node:          domain.NodeRef{ID: "1001", Interface: "gnb_tun"},
 		Driver:        domain.DriverTypeGNB,
 		Network: domain.NetworkIntent{
 			Addresses: []string{"10.20.0.1/24"},
-			Proxy:     mustPolicy(t, "domestic", "whitelist"),
+			Proxy:     mustPermission(),
 		},
 		Gnb: &domain.GnbIntent{
 			Identity: domain.GnbIdentity{NodeID: "1001"},
@@ -227,8 +249,10 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 	if plan.Proxy.Runtime.TunDevice != "gnb_tun" {
 		t.Fatalf("TunDevice=%q", plan.Proxy.Runtime.TunDevice)
 	}
-	// 出口 VIP 显式给出时优先
-	env.Network.Proxy.Exits[0].Via = "10.20.0.99"
+	// 出口 VIP 显式给出时优先（改 Local 轨出口的 via）
+	lp := mustPolicy(t, "domestic", "whitelist")
+	lp.Exits[0].Via = "10.20.0.99"
+	seedLocalProxy(t, lp)
 	plan2, perr2 := planFromBundle(env)
 	if perr2 != nil {
 		t.Fatal(perr2)
@@ -238,60 +262,75 @@ func TestPlanFromBundleIncludesProxy(t *testing.T) {
 	}
 }
 
-// TestPlanFromBundleLocalDisabledSuppressesCloud 回归 #21-B：
-// 本地页面上的「关闭」（intent local，dirty 未回写）必须压制云端 enabled ——
-// 历史行为是每次 config sync 都把云端策略原样落计划，关掉的开关被复活。
-func TestPlanFromBundleLocalDisabledSuppressesCloud(t *testing.T) {
+// TestPlanFromBundleComposesLocalClientAndCloudPermission —— D1 收窄后两轨分工：
+// client 侧策略取 Local 轨，server 侧许可（ACL）取 Cloud 轨。
+// 历史回归（#21-B「本地关闭被云端复活」）在新模型下结构性消失：wire 本就不再下发
+// client 策略，云端无从复活本地开关；云端许可只驱动 server 侧。
+func TestPlanFromBundleComposesLocalClientAndCloudPermission(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
-	cloud := mustPolicy(t, "domestic", "whitelist")
 	env := &domain.BundleEnvelope{
 		SchemaVersion: 2,
 		Node:          domain.NodeRef{ID: "1001", Interface: "gnb_tun"},
 		Driver:        domain.DriverTypeGNB,
-		Network:       domain.NetworkIntent{Addresses: []string{"10.20.0.1/24"}, Proxy: cloud},
+		Network: domain.NetworkIntent{
+			Addresses: []string{"10.20.0.1/24"},
+			Proxy: &domain.ProxyPermission{
+				Enabled: true,
+				ACL:     &domain.ProxyACL{Mode: domain.ProxyACLAllowlist, AllowedNodeIDs: []string{"9001"}},
+			},
+		},
+		Gnb: &domain.GnbIntent{Identity: domain.GnbIdentity{NodeID: "1001"}},
 	}
-	// 第一次 sync：云端策略落轨
-	if _, err := planFromBundle(env); err != nil {
+	// ① 只给云端许可（无 Local）：纯 server 侧计划，带 ACL
+	plan, err := planFromBundle(env)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// 用户在本地关闭
-	st, err := LoadProxyState()
-	if err != nil || st == nil || st.Cloud == nil {
-		t.Fatalf("首次 sync 后 cloud 轨应存在: %+v err=%v", st, err)
+	if plan.Proxy == nil {
+		t.Fatal("云端许可应生成 proxy 计划（server 侧）")
 	}
-	off := st.Cloud.Policy
+	if plan.Proxy.Policy.Role != domain.ProxyRoleServer {
+		t.Fatalf("只带许可时 role=%q，应为 server", plan.Proxy.Policy.Role)
+	}
+	if !plan.Proxy.Policy.IsServerLike() || plan.Proxy.Policy.IsClientLike() {
+		t.Fatalf("只带许可时应 server-like 且非 client-like: %+v", plan.Proxy.Policy)
+	}
+	if plan.Proxy.Policy.ACL == nil {
+		t.Fatal("ACL 应取自云端许可")
+	}
+
+	// ② 本地开 client：合成 both，client 侧策略来自 Local
+	seedLocalProxy(t, mustPolicy(t, "domestic", "whitelist"))
+	plan2, err := planFromBundle(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan2.Proxy == nil || plan2.Proxy.Policy.Role != domain.ProxyRoleBoth {
+		t.Fatalf("Local client + 云端许可 → role 应为 both: %+v", plan2.Proxy)
+	}
+	if plan2.Proxy.Policy.Split == nil || plan2.Proxy.Policy.Split.ListSource != domain.ProxyListInternational {
+		t.Fatalf("client 侧 split 应来自 Local: %+v", plan2.Proxy.Policy.Split)
+	}
+
+	// ③ 本地关 client：合成退回纯 server，云端许可不受影响
+	st, err := LoadProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := mustPolicy(t, "domestic", "whitelist")
 	off.Enabled = false
-	if err := st.ApplyLocal(off, time.Now()); err != nil {
+	if err := st.ApplyLocal(*off, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := SaveProxyState(st); err != nil {
 		t.Fatal(err)
 	}
-	// 再次 sync（generation 解析为 0）：不得复活
-	plan, err := planFromBundle(env)
+	plan3, err := planFromBundle(env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Proxy != nil {
-		t.Fatal("本地已关闭，plan.Proxy 必须为空")
-	}
-	st2, _ := LoadProxyState()
-	if st2.Cloud == nil || !st2.Cloud.Policy.Enabled || st2.Local == nil || st2.Local.Revision <= st2.Cloud.Revision {
-		t.Fatalf("cloud 轨应保持且 local 版本更高: %+v", st2)
-	}
-	// 云端内容变化但无版本号、本地 dirty：同样不得越过本地覆盖
-	changed := *cloud
-	changed.Region = "international"
-	changed.Policy = "whitelist"
-	if src, mode, err := domain.ResolveProxySplit("international", "whitelist"); err == nil {
-		changed.Split = &domain.ProxySplit{ListSource: src, MatchMode: mode}
-	}
-	if StampCloudIntent(&changed, 0) {
-		t.Log("stamp 返回 true（cloud 轨已有记录）——检查 local 仍压制")
-	}
-	st3, _ := LoadProxyState()
-	if eff := st3.Effective(); eff == nil || eff.Source != domain.ProxySourceLocal {
-		t.Fatalf("dirty 本地覆盖必须仍然生效: %+v", eff)
+	if plan3.Proxy == nil || plan3.Proxy.Policy.Role != domain.ProxyRoleServer || plan3.Proxy.Policy.IsClientLike() {
+		t.Fatalf("本地关 client 后应为纯 server: %+v", plan3.Proxy)
 	}
 }
 
@@ -323,6 +362,31 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 	if env.Network.Proxy == nil {
 		t.Fatal("fixture 缺 network.proxy")
 	}
+	// D1 收窄后 wire 只带许可；client 侧分流策略归 Local 轨。fixture 的 client 意图
+	// （domestic+whitelist → international/normal + split DNS + foreign dns）落 Local。
+	seedLocalProxy(t, &domain.ProxyPolicy{
+		Enabled: true,
+		Role:    domain.ProxyRoleClient,
+		Region:  domain.ProxyRegionDomestic,
+		Policy:  domain.ProxyPolicyWhitelist,
+		Split: &domain.ProxySplit{
+			ListSource: domain.ProxyListInternational,
+			MatchMode:  domain.ProxyMatchNormal,
+			IPList: &domain.ProxyIPListRef{
+				Source: domain.ProxyListInternational,
+				URL:    "https://cdn.mynet.club/proxy-lists/interip.txt",
+			},
+		},
+		Exits: []domain.ProxyExit{{NodeID: "9001", Weight: 20, Order: 1, Enabled: true}},
+		DNS: &domain.ProxyDNS{
+			Mode:            "split",
+			Server:          "8.8.8.8",
+			DomesticServers: []string{"223.5.5.5", "119.29.29.29"},
+		},
+		ForeignDNSRoute: true,
+		Fwmark:          200,
+		Table:           200,
+	})
 	plan, perr := planFromBundle(env)
 	if perr != nil {
 		t.Fatal(perr)
