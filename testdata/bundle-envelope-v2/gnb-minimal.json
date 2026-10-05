@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generation": "rev-20260922-001",
-  "checksum": "sha256:1110eca2554cf31c5b80243bbe98e494adfae541c11c59b1ea4836f855e7da02",
+  "checksum": "sha256:36e16fe5273094ad8e3675bfcc97b8493c4558926be213b414bf3267c31854af",
   "generated_at": "2026-09-22T08:00:00Z",
   "min_agent_version": "0.9.0",
   "node": {
@@ -44,7 +44,6 @@
       "direct": true,
       "standard": true,
       "unified": "auto",
-      "proxy": false,
       "relay_routes": []
     },
     "options": {

@@ -78,7 +78,6 @@
             "direct": true,
             "standard": true,
             "unified": "auto",
-            "proxy": false,
             "relay_routes": []
         },
         "options": {
@@ -89,5 +88,5 @@
         }
     },
     "wireguard": null,
-    "checksum": "sha256:76913a76e0b423a5b526d22d1751e672915a77c08d731c2b90c140cbaf5f348e"
+    "checksum": "sha256:86763fbe0c2ad4ecf942e8b21d1478f5ccc56632e86065f131a820ff082c46ca"
 }
