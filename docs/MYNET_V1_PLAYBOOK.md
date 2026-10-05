@@ -422,6 +422,7 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
   - **故意不动的下载路径**：agent 的 fetch/install/restore 是 §6 所说「明确的配置下发/恢复流程」，此处不脱敏。
   - 验证：`make check` 全绿（pint 337 files、phpunit **437 tests / 4563 assertions**）。
 - **GNB 已落地版本写入兼容基线 ⏸ 待裁（出决策包，不擅自选）** —— 全仓**无「兼容基线」承载物**：`mynet_agent/mynet/parity.go` 的 `fallback` map 只登记**部署 peer 的能力位**（zip / zip-level / crypto / safe-index / multi-socket / unified-forwarding），**不含 gnb 版本**；`Makefile` 里 `GNB_BASELINE ?= 1.6.8-c411f14ee647` + `GNB_PATCHES` 是**构建期 `-ldflags` 注入的字符串**（喂 `mynet version` 三句话），是「我们编的是哪版」而不是「对面可判定的兼容基线」。⇒「写进哪个文件 / 以什么形状 / 谁消费 / 旧节点怎么对齐」至少两条合法路径，按「不自行拍板」出决策包：**正文已成文** `mynet_ctl/docs/knowledge-base/spec/gnb-compat-baseline.md`（四个碎片逐条 `file:line` + 待裁 D1–D4 + 建议默认「先落文字表、零行为风险」），索引挂 `dev-plan.md` #75 行。
+  - **✅ 已裁并落（2026-10-05）**：**D1-A**（知识库文档）+ **D2-E2**（表）+ **D3-iv**（不动运行时）+ **D4**（现网只读取证工单）。冻结基线表（三档：`1.6.8-c411f14ee647` / `v1.6.0.a` / 无 Features 行的旧 p2 构建）+ 只读取证工单见 `spec/gnb-compat-baseline.md` §6；**运行时一行未动**。现网实际版本待用户/运维跑 `mynet version` 回填。
 
 **禁止：** 不改 UI 流程、不添加新驱动能力、不重新引入 Zone。
 
@@ -637,6 +638,7 @@ v1 只有在以下条件同时满足时才算完成：
 1. P0：**审计并补冻结**已有领域合同——`BundleEnvelope` 两侧与双驱动 intent 已在，真正要补的是权限矩阵与稳定错误码清单，再把已落地 GNB 版本写入兼容基线。
    **状态（2026-10-04）：◐ 两份冻结件已成文**（`mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`、`v1-error-codes.md`，逐条带 `file:line` + 复现命令）；§7 P0 点名的 **7 个待裁定项（F-22/F-23/F-24/F-27/F-28 权限面，F-25/F-26 信封面）已于同日全部裁定**（见 `mynet_ctl/docs/knowledge-base/dev-plan.md`「2026-10-04 逐项裁定」表，取向摘要见上文 §7 P0 的「裁定四句话」），所以冻结件的「冻结列」方向已成立，**剩下的是按裁定落码**。仍缺两件：GNB 已落地版本的兼容基线登记、`BundleEnvelope` 密钥脱敏测试。
    **状态（2026-10-05，B 批 / 先B后A）：两件均已收口到「可裁决」** —— ① **密钥脱敏测试 ✅ 已落**（`BundleEnvelope::redactSecrets()` + `BundleEnvelopeV2Test` 三例 + `diag-bundle.php` 诊断面接线，`make check` 437 tests 全绿）；② **GNB 兼容基线 ⏸ 决策包已成文** `mynet_ctl/docs/knowledge-base/spec/gnb-compat-baseline.md`（四个碎片逐条 `file:line` + 待裁 D1–D4 + 建议默认「先落文字表、零行为风险」，索引挂 dev-plan #75 行）。详见上文 §7 P0 的两条实施记录。
+   **状态（2026-10-05，B1 裁定后）：⇒ P0 两件全部收口 ✅。** ① 密钥脱敏测试已落；② **GNB 兼容基线已裁并落**（**D1-A** 知识库文档 + **D2-E2** 表 + **D3-iv** 不动运行时 + **D4** 只读取证工单）：冻结基线表（三档）+ 取证工单见 `spec/gnb-compat-baseline.md` §6，**运行时一行未动**；现网实际版本待运维跑 `mynet version` 回填。
 2. P1：邀请码入租链路已提交（`/api/v1/social/invitation/use`）；剩下核对租户迁移改动，补齐过期、撤销、跨租户和并发配额测试。**配额计费按 §0.4 不做。**
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
    **状态（2026-10-05，B 批）：回滚合同 ✅ 已落** —— `executeApply` 加 `applyJournal` + `rollbackCmds()`（失败时逆序回滚本轮已应用 route/firewall/iface、全 `optional` 不掩盖原始失败、刻意排除 `pinDefaultGateway`/Proxy/`ExtraExec`），用例三支，`make check` 全绿。版本/容量两半仍在 §7 P2（版本半边与 GNB 兼容基线决策包相邻）。详见 §7 P2 实施记录。
