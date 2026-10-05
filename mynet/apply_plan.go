@@ -86,6 +86,25 @@ type routeCmd struct {
 	note string
 }
 
+// applyJournal 记录**本轮真的落下去**的操作，用于失败时回滚。
+//
+// 只收非 dry 的成功 op：dry-run 没动系统，也就没有可回滚的东西。
+// 这是「新配置应用失败不得清除旧配置」（MYNET_V1_PLAYBOOK §6）的落点 ——
+// 回滚只撤本轮新加的，旧一代的路由/规则原样留在系统里。
+type applyJournal struct {
+	routes   []RouteOp
+	firewall []FirewallOp
+	ifaces   []IfaceOp
+}
+
+func (j *applyJournal) recordRoute(r RouteOp)       { j.routes = append(j.routes, r) }
+func (j *applyJournal) recordFirewall(f FirewallOp) { j.firewall = append(j.firewall, f) }
+func (j *applyJournal) recordIface(i IfaceOp)       { j.ifaces = append(j.ifaces, i) }
+
+func (j *applyJournal) empty() bool {
+	return len(j.routes) == 0 && len(j.firewall) == 0 && len(j.ifaces) == 0
+}
+
 // executeApply 按 system.json 能力选择工具执行。唯一写入入口（F-5）。
 //
 // 路由三道闸（对齐 openwrt node.lua:clear_routes / route_policy.sh）：
@@ -102,6 +121,7 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		"routes", len(plan.Routes), "firewall", len(plan.Firewall), "ifaces", len(plan.Interfaces),
 		"execs", len(plan.ExtraExec), "dry", dry)
 	fail := 0
+	var applied applyJournal
 	localNets := localConnectedNets()
 	var routes []RouteOp
 	for _, r := range plan.Routes {
@@ -120,6 +140,7 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			log.Warn("跳过路由（非本配置安装）", "dest", r.Destination, "owner", destOwnerDev(r.Destination))
 			continue
 		}
+		ok := true
 		for _, c := range routeCmds(snap, r) {
 			if err := runOp(dry, c.argv); err != nil {
 				if c.optional {
@@ -128,7 +149,11 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 				fmt.Fprintf(os.Stderr, "route %s %s: %v\n", r.Action, r.Destination, err)
 				log.Error("路由失败", "action", r.Action, "dest", r.Destination, "err", err)
 				fail = 1
+				ok = false
 			}
+		}
+		if ok && !dry {
+			applied.recordRoute(r)
 		}
 	}
 	if err := pinDefaultGateway(snap, dry); err != nil {
@@ -148,6 +173,10 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			fmt.Fprintf(os.Stderr, "firewall %s: %v\n", f.Action, err)
 			log.Error("防火墙失败", "action", f.Action, "err", err)
 			fail = 1
+			continue
+		}
+		if !dry {
+			applied.recordFirewall(f)
 		}
 	}
 	for _, i := range plan.Interfaces {
@@ -156,6 +185,10 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			fmt.Fprintf(os.Stderr, "iface %s %s: %v\n", i.Action, i.Name, err)
 			log.Error("接口操作失败", "action", i.Action, "name", i.Name, "err", err)
 			fail = 1
+			continue
+		}
+		if !dry {
+			applied.recordIface(i)
 		}
 	}
 	if plan.Proxy != nil {
@@ -267,6 +300,32 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			fail = 1
 		}
 	}
+
+	// 失败回滚（§6「新配置应用失败不得清除旧配置」）：撤掉**本轮刚装上的**
+	// 路由/防火墙/接口，让 FIB 回到上一代。三处不在此列，各有理由：
+	//   - pinDefaultGateway 不回滚：它把被隧道盖住的默认网关钉回物理口，
+	//     回滚 = 重新劫持网关，直接断网
+	//   - Proxy 段不回滚：停用时本就有 proxyCleanupCmds 负责收尾
+	//   - ExtraExec 不回滚：逃生舱 argv 不可逆，硬猜逆命令比不回滚更危险
+	if fail != 0 && !dry && !applied.empty() {
+		cmds := rollbackCmds(snap, &applied)
+		log.Warn("apply 失败，回滚本轮已应用的操作（保留上一代配置）",
+			"routes", len(applied.routes), "firewall", len(applied.firewall),
+			"ifaces", len(applied.ifaces), "rollback_cmds", len(cmds))
+		rbFail := 0
+		for _, c := range cmds {
+			if err := runOp(false, c.argv); err != nil {
+				fmt.Fprintf(os.Stderr, "rollback（%s）%v: %v\n", c.note, c.argv, err)
+				rbFail = 1
+			}
+		}
+		if rbFail == 0 {
+			log.Info("回滚完成，已恢复上一代配置")
+		} else {
+			log.Error("回滚部分失败，需人工核对 FIB/防火墙")
+		}
+	}
+
 	if fail == 0 {
 		log.Info("apply 完成", "dry", dry)
 	} else {
@@ -525,6 +584,90 @@ func ifaceArgv(snap *shared.SystemSnapshot, i IfaceOp) []string {
 		return []string{"ifconfig", i.Name, verb}
 	}
 	return []string{"ip", "link", "set", "dev", i.Name, verb}
+}
+
+// ifaceInverseAction 只反转我们做过的那一半：up→down、down→up。
+func ifaceInverseAction(action string) string {
+	switch action {
+	case "up":
+		return "down"
+	case "down":
+		return "up"
+	default:
+		return action
+	}
+}
+
+// firewallRollbackArgv 按**同一 rule spec** 反删防火墙规则（iptables -D / nft delete rule）。
+//
+// 与 firewallArgv 严格对称：同一 table/chain/匹配式/动作，只把安装动词换成删除。
+// 不是「按注释扫一遍删」——那会误删管理员自己写的同规则；这里删的正是本轮刚追加的那条。
+// 只在 rollback（原始 apply 已失败）里调用，因此命令一律 optional：回滚失败要如实报告，
+// 但不能盖掉真正的失败原因。
+func firewallRollbackArgv(snap *shared.SystemSnapshot, f FirewallOp) []string {
+	switch f.Action {
+	case "ensure-masq":
+		if snap.Capabilities["nft"] {
+			return []string{"nft", "delete", "rule", "ip", "nat", "POSTROUTING",
+				"oifname", f.Device, "masquerade"}
+		}
+		if snap.Capabilities["iptables"] {
+			return []string{"iptables", "-t", "nat", "-D", "POSTROUTING",
+				"-o", f.Device, "-j", "MASQUERADE"}
+		}
+		return nil
+	case "open-port":
+		if snap.Capabilities["nft"] {
+			argv := []string{"nft", "delete", "rule", "ip", "filter", "INPUT",
+				"ip", "protocol", f.Proto, f.Proto, "dport", fmt.Sprintf("%d", f.Port), "accept"}
+			if f.Comment != "" {
+				argv = append(argv, "comment", fmt.Sprintf("%q", f.Comment))
+			}
+			return argv
+		}
+		if snap.Capabilities["iptables"] {
+			argv := []string{"iptables", "-D", "INPUT", "-p", f.Proto, "--dport", fmt.Sprintf("%d", f.Port), "-j", "ACCEPT"}
+			if f.Comment != "" {
+				argv = append(argv, "-m", "comment", "--comment", f.Comment)
+			}
+			return argv
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// rollbackCmds 由已应用的操作推出逆操作命令（后装的先撤）。
+//
+// 路由只反转 add/replace → del：del 是「按所有权闸删掉的自己的路由」，
+// 其逆（重装）不在计划里也不该猜 —— 旧一代若要恢复，由「保留上一代配置」
+// 那条路径负责，不由本函数负责重建。
+func rollbackCmds(snap *shared.SystemSnapshot, j *applyJournal) []routeCmd {
+	out := make([]routeCmd, 0, len(j.routes)+len(j.firewall)+len(j.ifaces))
+	for i := len(j.routes) - 1; i >= 0; i-- {
+		r := j.routes[i]
+		if r.Action == "del" {
+			continue
+		}
+		inv := RouteOp{Destination: r.Destination, Gateway: r.Gateway, Device: r.Device, Action: "del"}
+		for _, c := range routeCmds(snap, inv) {
+			c.optional = true
+			c.note = "rollback route"
+			out = append(out, c)
+		}
+	}
+	for i := len(j.firewall) - 1; i >= 0; i-- {
+		if argv := firewallRollbackArgv(snap, j.firewall[i]); len(argv) != 0 {
+			out = append(out, routeCmd{argv: argv, optional: true, note: "rollback firewall"})
+		}
+	}
+	for i := len(j.ifaces) - 1; i >= 0; i-- {
+		op := j.ifaces[i]
+		inv := IfaceOp{Name: op.Name, Action: ifaceInverseAction(op.Action), MTU: op.MTU}
+		out = append(out, routeCmd{argv: ifaceArgv(snap, inv), optional: true, note: "rollback iface"})
+	}
+	return out
 }
 
 // resolveBin 把命令名解析成可执行路径。

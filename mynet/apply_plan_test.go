@@ -271,6 +271,90 @@ func mustCIDR(t *testing.T, s string) *net.IPNet {
 	return n
 }
 
+// 失败回滚：只撤本轮**新装上**的（add/replace → del），del 的逆不猜。
+// 命令必须 optional —— 回滚失败要如实报告，但不能盖掉真正的失败原因。
+func TestRollbackInvertsAppliedRoutes(t *testing.T) {
+	j := &applyJournal{}
+	j.recordRoute(RouteOp{Destination: "10.9.0.0/24", Device: "gnb0", Action: "add"})
+	j.recordRoute(RouteOp{Destination: "10.8.0.0/24", Device: "gnb0", Action: "replace"})
+	j.recordRoute(RouteOp{Destination: "10.7.0.0/24", Device: "gnb0", Action: "del"})
+
+	cmds := rollbackCmds(snapIP(), j)
+	if len(cmds) != 2 {
+		t.Fatalf("del 的逆不该重装（旧配置由上一代保有），got %v", cmds)
+	}
+	// 后装的先撤：replace 的那条排在前
+	if want := []string{"ip", "route", "del", "10.8.0.0/24", "dev", "gnb0"}; !argvEq(cmds[0].argv, want) {
+		t.Fatalf("cmds[0]=%v want %v", cmds[0].argv, want)
+	}
+	if want := []string{"ip", "route", "del", "10.9.0.0/24", "dev", "gnb0"}; !argvEq(cmds[1].argv, want) {
+		t.Fatalf("cmds[1]=%v want %v", cmds[1].argv, want)
+	}
+	for _, c := range cmds {
+		if !c.optional {
+			t.Fatalf("回滚命令必须 optional: %v", c.argv)
+		}
+	}
+}
+
+func TestRollbackFirewallArgvSymmetry(t *testing.T) {
+	snapNft := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true, "iptables": true}}
+	wantNft := []string{"nft", "delete", "rule", "ip", "nat", "POSTROUTING", "oifname", "gnb0", "masquerade"}
+	if got := firewallRollbackArgv(snapNft, FirewallOp{Action: "ensure-masq", Device: "gnb0"}); !argvEq(got, wantNft) {
+		t.Fatalf("nft 逆= %v want %v", got, wantNft)
+	}
+
+	snapIpt := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
+	wantIpt := []string{"iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "wg0", "-j", "MASQUERADE"}
+	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "ensure-masq", Device: "wg0"}); !argvEq(got, wantIpt) {
+		t.Fatalf("iptables masq 逆= %v want %v", got, wantIpt)
+	}
+
+	wantPort := []string{"iptables", "-D", "INPUT", "-p", "tcp", "--dport", "51820", "-j", "ACCEPT", "-m", "comment", "--comment", "mynet"}
+	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "open-port", Proto: "tcp", Port: 51820, Comment: "mynet"}); !argvEq(got, wantPort) {
+		t.Fatalf("open-port 逆= %v want %v", got, wantPort)
+	}
+	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016}); !argvEq(got,
+		[]string{"iptables", "-D", "INPUT", "-p", "udp", "--dport", "9016", "-j", "ACCEPT"}) {
+		t.Fatalf("无 comment 的 open-port 逆= %v", got)
+	}
+
+	// 无可用工具 / 未知动作：没有可对称删除的 rule，返回 nil 而不是瞎删
+	if got := firewallRollbackArgv(&shared.SystemSnapshot{Capabilities: map[string]bool{}}, FirewallOp{Action: "ensure-masq", Device: "x"}); got != nil {
+		t.Fatalf("无工具应返回 nil，got %v", got)
+	}
+	if got := firewallRollbackArgv(snapNft, FirewallOp{Action: "unknown"}); got != nil {
+		t.Fatalf("未知动作应返回 nil，got %v", got)
+	}
+}
+
+func TestRollbackIfaceAndJournalEmpty(t *testing.T) {
+	if ifaceInverseAction("up") != "down" || ifaceInverseAction("down") != "up" || ifaceInverseAction("x") != "x" {
+		t.Fatal("iface 逆动作应为 up↔down，其他原样")
+	}
+	var empty applyJournal
+	if !empty.empty() {
+		t.Fatal("空 journal 应为 empty")
+	}
+	empty.recordIface(IfaceOp{Name: "utun4", Action: "up"})
+	if empty.empty() {
+		t.Fatal("记过 iface 后不该是 empty")
+	}
+	cmds := rollbackCmds(snapNoIP(), &empty)
+	if len(cmds) != 1 || !argvEq(cmds[0].argv, []string{"ifconfig", "utun4", "down"}) {
+		t.Fatalf("iface 逆= %v want [ifconfig utun4 down]", cmds)
+	}
+}
+
+func TestExecuteApplyDryRunDoesNotLeakRollback(t *testing.T) {
+	// dry-run 不落系统，journal 必须为空 —— 否则会打印一堆不存在的逆命令
+	snap := snapIP()
+	plan := &ApplyPlan{Routes: []RouteOp{{Destination: "10.9.0.0/24", Device: "gnb0", Action: "add"}}}
+	if code := executeApply(snap, plan, true); code != 0 {
+		t.Fatalf("dry-run 应成功，got %d", code)
+	}
+}
+
 // 「只删自己配置的」：目的地空闲或挂在自己的隧道口才准 replace/del；
 // 挂在直连口/别人的路由上一律不碰。
 func TestRouteTouchedOnlyOwn(t *testing.T) {

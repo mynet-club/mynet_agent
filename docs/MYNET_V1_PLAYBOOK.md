@@ -416,6 +416,13 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
   验证：`make check` 全绿（guard / pint 325 files / 369 tests 3559 assertions）。
 - 仍缺：**GNB 已落地版本写入兼容基线**、**密钥脱敏测试**（`BundleEnvelope` 侧尚无 redact 断言）。
 
+**实施记录（2026-10-05，B 批 / 先B后A）：**
+- **密钥脱敏测试 ✅ 已落** —— `mynet_api` 侧加 `BundleEnvelope::redactSecrets()`（`app/Modules/VPN/Domain/Bundle/BundleEnvelope.php:127`，按**键名**递归把 `private_key`/`preshared_key` 换成常量 `REDACTED`（`:20`，值 `[redacted]`），**只换非空字符串**、其余原样透传），配套回归 `tests/BundleEnvelopeV2Test.php`（`:131` `test_redact_secrets_replaces_only_secret_keys` 逐 fixture 走结构断言、`:145` `test_redacted_gnb_json_contains_no_private_key_material` 对 gnb fixture 另加**字符串不存在**断言、`:167` `test_redact_secrets_nested_empty_and_pure` 钉嵌套/空值/纯净体）。诊断面 `deploy/diag-bundle.php:20,78-80` 同批改走 `redactSecrets()`（`--full` 输出、工单贴回面 = 私钥不得进诊断输出）。
+  - **为什么不改 fixture、为什么只对 gnb 做字符串缺席断言**：`wireguard-minimal.json` / `wireguard-multi-peer.json` 的 `private_key` 与 `public_key` **本就是同一串**（`dMOaQs…qD4=`，落 fixture 时的既有事实）⇒ 改它会连带 checksum 与 Go 侧用例红，故 WG 只做结构断言、不做「全文无该串」断言。
+  - **故意不动的下载路径**：agent 的 fetch/install/restore 是 §6 所说「明确的配置下发/恢复流程」，此处不脱敏。
+  - 验证：`make check` 全绿（pint 337 files、phpunit **437 tests / 4563 assertions**）。
+- **GNB 已落地版本写入兼容基线 ⏸ 待裁（出决策包，不擅自选）** —— 全仓**无「兼容基线」承载物**：`mynet_agent/mynet/parity.go` 的 `fallback` map 只登记**部署 peer 的能力位**（zip / zip-level / crypto / safe-index / multi-socket / unified-forwarding），**不含 gnb 版本**；`Makefile` 里 `GNB_BASELINE ?= 1.6.8-c411f14ee647` + `GNB_PATCHES` 是**构建期 `-ldflags` 注入的字符串**（喂 `mynet version` 三句话），是「我们编的是哪版」而不是「对面可判定的兼容基线」。⇒「写进哪个文件 / 以什么形状 / 谁消费 / 旧节点怎么对齐」至少两条合法路径，按「不自行拍板」出决策包：**正文已成文** `mynet_ctl/docs/knowledge-base/spec/gnb-compat-baseline.md`（四个碎片逐条 `file:line` + 待裁 D1–D4 + 建议默认「先落文字表、零行为风险」），索引挂 `dev-plan.md` #75 行。
+
 **禁止：** 不改 UI 流程、不添加新驱动能力、不重新引入 Zone。
 
 ### P1：租户成员、邀请码和节点池配额
@@ -443,6 +450,12 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 **依赖：** P0；可与 P1 并行实现，合并需先过 P0 contract。
 
 **必须测试：** 双驱动正常/拒绝、未知版本、checksum、密钥格式、跨协议转发节点能力不足、旧 GNB bundle 回放。
+
+**实施记录（2026-10-05，B 批 / 先B后A）：apply 层路由/防火墙回滚已落。** 落实 §6「新配置应用失败不得清除旧配置、回滚使用上一代」：`executeApply`（`mynet_agent/mynet/apply_plan.go`，仍是 F-5 唯一写入入口）在写入循环前建 `applyJournal`（`:94`），每条 route/firewall/iface **真正落下去才 `recordX`**（`:156,179,191`，`dry` 不记）；失败计数 > 0 时在收尾前调 `rollbackCmds(snap, &applied)`（`:646`）**逆序**回滚本轮已应用项（`:312` 起）。
+- **回滚形状 = 对称逆操作，不是扫描/正则删除**：route 的 add/replace 一律只 `del`、原本就是 `del` 的**跳过**（不反向 add 回去，否则会把别人的路由装回来）；firewall 走 `firewallRollbackArgv`（`:607`，对 ensure-masq 与 open-port 各出 `nft delete rule` / `iptables -D`）；iface 走 `ifaceInverseAction`（`:590`，up↔down，只在有 ip 工具时）。
+- **回滚命令一律 `optional=true`**，失败只记 `Error`、**绝不掩盖原始失败**（原报错始终是本轮失败的原因，回滚失败只是附注「需人工核对 FIB/防火墙」）。
+- **三处刻意排除**（都写进代码注释，不扩大到「看起来更完整」）：`pinDefaultGateway`（回滚它 = 把默认网关重新劫持回去）、Proxy 段（已有自己的 `proxyCleanupCmds`）、`ExtraExec`（不可逆逃生口）。
+- 用例 `mynet/mynet/apply_plan_test.go`：`TestRollbackInvertsAppliedRoutes`（`:276`，del 不再被反向、replace 优先、全 optional）、`TestRollbackFirewallArgvSymmetry`（`:300`，nft/iptables 两种 masq 与 open-port 带/不带 comment、无工具/未知类型返 nil）、`TestRollbackIfaceAndJournalEmpty`（`:331`）。验证：`make check` 全绿（`go test ./...` 全 ok、`check-route-writers.sh` 仍确认唯一写入点）。
 
 **禁止：** 不改 `mynet_gnb/src`，不把驱动字段放进业务对象。
 
@@ -553,6 +566,8 @@ P0
 
 已知不达标项：~~`mynet_gui` 缺 `.githooks`~~ —— **2026-10-04 已补**（`Makefile` + `.githooks/{guard.sh,pre-commit,pre-push}`，`core.hooksPath=.githooks`，`make check` 实测 guard 通过、`eslint` 0 errors／194 warnings、`check:i18n` 通过）。**仍不达标：该仓 `vitest` 零用例**，「单元测试可运行」在这仓是空壳 —— `make test` 现在自己数套件数，为 0 就打印两行 `⚠⚠ 未执行任何测试`（不用 `--passWithNoTests` 装绿），补进第一个 `*.test.*` 即撤销告警。gui 侧另外三条验证盲区待办：无类型检查（`vue-tsc`）、`check:i18n` 漏检带参 key、`quasar build` 抓不到断链的 `import type`。`mynet_openwrt` 的 `make check` 需要 buildroot，本地用 `make -f Makefile.guard check`。`mynet_desktop/nsis/mynet-agent.nsi` 无法本地编译验证（homebrew `makensis 3.12` 对纯 ASCII 四行脚本也 `std::bad_alloc`）。
 
+**2026-10-05 实施记录：`mynet_gui` vitest 零用例这一条已撤销（B 批 / 先B后A）。** 首个套件落地：`vitest.config.ts`（`environment: node`，`include: ['src/**/*.{test,spec}.ts']`，排除 `dist/`/`.quasar/`）+ `src/utils/__tests__/statusMapping.test.ts`（14 例：锁 `NODE_STATUS` 数值契约、逐状态三色语义、字符串状态码归一、谓词互斥、主操作文案与按钮 `disabled`）+ `src/utils/__tests__/vpnType.test.ts`（6 例：老库裸串 / 新库 JSON 数组双形态、空值剔除、标量回退）。此二件是**本仓 `*.test.ts` 的首批**，`make test` 的「零用例就响着放行」分支自此不再触发、真跑 `vitest run`（**20 passed / 2 files**）。同一批不改 `Makefile` 的判据（仍自己数套件、仍不用 `--passWithNoTests`），只把头部那段「当前零用例」的注释改成「首个套件已落地」的史实口径。验证：`make check` 全绿 —— guard PASS、eslint **0 errors / 185 warnings**、`check:i18n` 通过（zh 2171 / en 2006，新增 2 个被测文件未引入任何 i18n 键）、类型棘轮**未升**（vue-tsc 202 条 / 39 文件 = 基线，新文件 0 错）。gui 侧其余三条盲区（`check:i18n` 漏检带参 key、`quasar build` 抓不到断链 `import type`）**不在本批**，仍挂 M0 行上方。
+
 ### M1：双数据面
 
 GNB 和 WireGuard 都有真实 fixture、配置生成、应用/回滚和最小互通证据；业务对象不含驱动术语。
@@ -619,8 +634,10 @@ v1 只有在以下条件同时满足时才算完成：
 
 1. P0：**审计并补冻结**已有领域合同——`BundleEnvelope` 两侧与双驱动 intent 已在，真正要补的是权限矩阵与稳定错误码清单，再把已落地 GNB 版本写入兼容基线。
    **状态（2026-10-04）：◐ 两份冻结件已成文**（`mynet_ctl/docs/knowledge-base/spec/v1-permission-matrix.md`、`v1-error-codes.md`，逐条带 `file:line` + 复现命令）；§7 P0 点名的 **7 个待裁定项（F-22/F-23/F-24/F-27/F-28 权限面，F-25/F-26 信封面）已于同日全部裁定**（见 `mynet_ctl/docs/knowledge-base/dev-plan.md`「2026-10-04 逐项裁定」表，取向摘要见上文 §7 P0 的「裁定四句话」），所以冻结件的「冻结列」方向已成立，**剩下的是按裁定落码**。仍缺两件：GNB 已落地版本的兼容基线登记、`BundleEnvelope` 密钥脱敏测试。
+   **状态（2026-10-05，B 批 / 先B后A）：两件均已收口到「可裁决」** —— ① **密钥脱敏测试 ✅ 已落**（`BundleEnvelope::redactSecrets()` + `BundleEnvelopeV2Test` 三例 + `diag-bundle.php` 诊断面接线，`make check` 437 tests 全绿）；② **GNB 兼容基线 ⏸ 决策包已成文** `mynet_ctl/docs/knowledge-base/spec/gnb-compat-baseline.md`（四个碎片逐条 `file:line` + 待裁 D1–D4 + 建议默认「先落文字表、零行为风险」，索引挂 dev-plan #75 行）。详见上文 §7 P0 的两条实施记录。
 2. P1：邀请码入租链路已提交（`/api/v1/social/invitation/use`）；剩下核对租户迁移改动，补齐过期、撤销、跨租户和并发配额测试。**配额计费按 §0.4 不做。**
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
+   **状态（2026-10-05，B 批）：回滚合同 ✅ 已落** —— `executeApply` 加 `applyJournal` + `rollbackCmds()`（失败时逆序回滚本轮已应用 route/firewall/iface、全 `optional` 不掩盖原始失败、刻意排除 `pinDefaultGateway`/Proxy/`ExtraExec`），用例三支，`make check` 全绿。版本/容量两半仍在 §7 P2（版本半边与 GNB 兼容基线决策包相邻）。详见 §7 P2 实施记录。
 4. P3：设计自动组网 planner 的 shadow 输出和容量指标，先不扩大默认租户范围。
 5. P4：把现有 OpenWrt Proxy 实现接入统一的 Service/Forwarding/Acceleration 合同。
 6. P5/P6：以真实 LuCI 和真 WebSocket 作为集成入口，避免只依赖 mock 或独立 8096 页面。
