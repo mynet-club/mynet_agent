@@ -496,6 +496,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **禁止：** 不实现用户贡献节点市场；不把 Proxy 命名成第三种 VPN 协议。
 
+**实施记录（2026-10-05）：P4 开发计划已成文（设计 + 决策包，未写运行时码）。** 正文 `mynet_ctl/docs/knowledge-base/spec/p4-forwarding-proxy-plan.md`。实测：① 网络到网络转发合同 = `GnbForwarding`（api `Domain/Bundle/GnbForwarding.php:7-53` ↔ agent `shared/domain/bundle_envelope.go:171-177`，消费 `driver/gnb.go:688-730`）；② 转发开关在 `NodeConfigController.php:384-386`；③ 实体网关**隐式**（无 `peer_gateway` 模型，表达为 `source:"lan"` 路由，装配在 OpenWrt）；④ Proxy 合同 `shared/domain/proxy_policy.go:12-44` + 落地 `proxy_apply.go`（策略路由/DNS/清理 `:394-420`/fail-closed ACL `:546-590`）。**三处真缺口**：**(a) §13 第 5 条未达标** —— OpenWrt `proxy.lua` **自读本地 `proxy_role.conf`/`proxy_route.conf`、不消费 bundle `network.proxy`**（`proxy.lua:16,60,411,439`）；**(b) 回程路由无实现**（只有诊断文案 `cmd_route_doctor.go:99-102`）；**(c) fail-closed / 网关离线无用例**、OpenWrt 无可执行测试。另 `Acceleration`/`service_policy` **全仓零命中**（`Service` 只是已发布服务目录）。**待裁 D1–D5**：统一合同形状 / OpenWrt lua 处置 / `Acceleration` 是否立项 / 回程处置 / fail-closed 用例落点。分步 P4-1…P4-6 与测试计划见正文。
+
 ### P5：OpenWrt LuCI 产品壳和弱设备适配
 
 **目标：** LuCI 原生完成登录、节点、连接、网关、服务、Proxy、诊断和备份恢复；提供轻量执行路径。
@@ -660,6 +662,7 @@ v1 只有在以下条件同时满足时才算完成：
    **裁定（2026-10-05）：自己的节点自动组网、不限制（既有行为）。** P3 的**容量闸门/超限拒绝对自家节点作废**，**planner 不立项**；P3 剩余面只剩「并发/重复注册护栏」一条真缺陷 +（可选）尺寸只读统计。详见 §7 P3 裁定与 `spec/auto-mesh-planner.md` §8。
    **追加裁定（2026-10-05 同日）：该护栏保持代码层逻辑判断、不加唯一索引、不动表结构（软删语义会使唯一键更难缠）⇒ P3 收口，无新增运行时码。** 详见 `spec/auto-mesh-planner.md` §8.1。
 5. P4：把现有 OpenWrt Proxy 实现接入统一的 Service/Forwarding/Acceleration 合同。
+   **状态（2026-10-05）：◐ 开发计划已成文**（`mynet_ctl/docs/knowledge-base/spec/p4-forwarding-proxy-plan.md`，现状实测 + 三处缺口 + 待裁 D1–D5 + 分步 P4-1…P4-6）；**未写运行时码**。**关键实测：本条字面未达标** —— OpenWrt `proxy.lua` 自读本地 `proxy_role.conf`/`proxy_route.conf`（`:16,60,411,439`），**不消费 bundle `network.proxy`**；且 **`Acceleration` 契约全仓零命中**（`Service` 只是已发布服务目录）。详见 §7 P4 实施记录。
 6. P5/P6：以真实 LuCI 和真 WebSocket 作为集成入口，避免只依赖 mock 或独立 8096 页面。
 7. P7：合同稳定后再统一 GUI 的“我的节点/节点池/可访问网络/加速”用户路径。
 
