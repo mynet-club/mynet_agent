@@ -54,8 +54,9 @@ func TestApplyFromActiveLocalProjectsGnb(t *testing.T) {
 	if !strings.Contains(string(nc), "nodeid") {
 		t.Fatalf("node.conf 应含 nodeid:\n%s", nc)
 	}
-	if !strings.Contains(string(nc), "proxy on") {
-		t.Fatalf("listen.proxy 应投影为 proxy on:\n%s", nc)
+	// listen.proxy **不再**投影到 node.conf：gnb proxy 开关归独立 proxy.conf
+	if strings.Contains(string(nc), "proxy on") {
+		t.Fatalf("node.conf 不该有 proxy on:\n%s", nc)
 	}
 	// listen 必须是**裸端口**：gnb 按形态分流（gnb_conf.c:71-81 +
 	// gnb_conf_file.c:300-333），纯数字才 v4+v6 同端口，写成 `0.0.0.0:9000`

@@ -8,26 +8,19 @@ package mynet
 //	mynet plugin status [name]
 //	mynet plugin exits list|add|rm|weight …
 //
-// ── proxy 双层命名（C6，见 spec/paths.md §5）────────────────
+// ── proxy 单一入口（C6 修订，见 spec/paths.md §5）────────────
 //
-//	① intent.listen.proxy / node.conf 的 `proxy on`
-//	   = GNB 数据面准出开关（P2：未登记目的走出口对端）
-//	   「开不开」
-//
-//	② plugins/proxy.json → driver/gnb/conf/<id>/proxy.conf
-//	   = 出口选点 / 权重 / 顺序（role/exit/w/order）
-//	   「走谁」
-//
-// 两者不是同一件事的两个名字。插件 enable 会同时管 ①（强制 true）和 ②。
+//	plugins/proxy.json → driver/gnb/conf/<id>/proxy.conf
+//	   = `proxy on` + 出口选点 / 权重 / 顺序（role/exit/w/order）
+//	   「开不开」与「走谁」都在这一份
 //
 // **proxy 插件是 proxy 的唯一入口**：是否启用、从哪些 peer 出去、权重/顺序。
 // enable 后 apply 会：
 //   1. 探测 gnb 是否支持 proxy（P2）—— 不支持则高声提醒、不写配置
-//   2. 写 driver/gnb/conf/<id>/proxy.conf（选点/权重/顺序投影）
-//   3. 出口对端进投影 + node.conf `proxy on`（不写 address.conf 角色）
+//   2. 写 driver/gnb/conf/<id>/proxy.conf（proxy on + 选点/权重/顺序投影）
+//   3. 出口对端进投影（不写 address.conf 角色）
 //
-// 与「intent.listen.proxy」的关系：插件是用户开关；listen.proxy 是意图里的
-// 节点级位，插件 enable 时会被强制为 true。
+// gnb 的 proxy 开关在 proxy.conf 里，**不进 node.conf**。
 
 import (
 	"encoding/json"

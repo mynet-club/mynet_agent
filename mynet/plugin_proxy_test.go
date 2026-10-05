@@ -157,9 +157,10 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 			}
 		}
 	}
+	// node.conf **不得**出现 proxy on：gnb proxy 开关归独立 proxy.conf
 	nc, _ := os.ReadFile(filepath.Join(root, "driver", "gnb", "conf", "3001", "node.conf"))
-	if !strings.Contains(string(nc), "proxy on") {
-		t.Fatalf("启用 proxy 插件后 node.conf 应有 proxy on:\n%s", nc)
+	if strings.Contains(string(nc), "proxy on") {
+		t.Fatalf("node.conf 不该有 proxy on（应只在 proxy.conf）:\n%s", nc)
 	}
 }
 

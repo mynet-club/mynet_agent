@@ -3,19 +3,18 @@ package mynet
 // proxy 插件 → 驱动投影（gnb p2-route-proxy）。
 //
 // ⚠️ 语义：出口对端是**数据路径的目标**，不是 mesh 的 f/forward 中转。
-// gnb address.conf 里该对端的角色码写 `f`（驱动协议事实），
-// 产品含义是「proxy egress（出口）」，不是「forward 节点」。
+// **不写 address.conf 角色、不进 ForwardNodes** —— 出口对端等同把目的网段以
+// 该节点为下一跳写进 route.conf。
 //
 // 用户在插件里决定：开不开、从哪些 peer 出去、权重/顺序。
 // apply 时：
 //   1. 探测当前 gnb 是否支持 proxy（P2 补丁）
-//   2. 不支持 → 高声提醒，不写 proxy.conf，不把 intent 打成 proxy on
-//   3. 支持  → 写 driver/gnb/conf/<id>/proxy.conf，
-//              并把出口对端写入 address.conf（角色码 f，gnb 协议事实；产品上=出口目标）
+//   2. 不支持 → 高声提醒，不写 proxy.conf
+//   3. 支持  → 写 driver/gnb/conf/<id>/proxy.conf（proxy on + [default] exit）
 //
-// GNB（p2-route-proxy）认 node.conf 的 `proxy on` + 出口对端；
-// proxy.conf 是插件意图在驱动目录的投影（选点/权重/顺序），供人读、供排障、
-// 将来 gnb 若扩展 peer 选择也能直接吃。
+// GNB（p2-route-proxy）认**独立 proxy.conf** 的 `proxy on` + 出口对端，
+// **不认 node.conf 的 proxy 键**；proxy.conf 是插件意图在驱动目录的投影
+// （选点/权重/顺序），供人读、供排障。
 
 import (
 	"fmt"
@@ -253,25 +252,24 @@ func ApplyProxyToGnb(confDir string, c *domain.PluginProxyConfig, dry bool) (wri
 	return true, reason, nil
 }
 
-// applyProxyForwarding 设置 gnb proxy 意图（proxy on）。
+// applyProxyForwarding 确保 gnb 出口节点开启直连转发（direct-forwarding）。
 //
-// **不写 address.conf 角色、不进 ForwardNodes**：
-// 出口对端是数据路径的目标，等同把目的网段以该节点为下一跳写入 route.conf。
+// proxy 的开关与出口数据路径全部由独立 proxy.conf 承载；node.conf 不再写
+// `proxy on`。出口对端是数据路径的目标，**不写 address.conf 的 f 角色**、
+// 不进 ForwardNodes。
 func applyProxyForwarding(g *domain.GnbIntent, exits []domain.ProxyExit) {
 	if g == nil || len(exits) == 0 {
 		return
 	}
-	// 出口对端 = 数据路径的目标，**不写 address.conf 的 f 角色**，
-	// 不进 ForwardNodes。数据路径由 node.conf `proxy on` + 出口对端决定（对端即下一跳）。
 	if g.Forwarding == nil {
 		g.Forwarding = &domain.GnbForwarding{}
 	}
-	g.Forwarding.Proxy = true
 	g.Forwarding.Direct = true
 }
 
-// enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent。
-// 不支持时不动 intent（不写 proxy on），只把警告留给 writeProxyProjection。
+// enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent
+// （只动 direct-forwarding；proxy 开关归独立 proxy.conf）。
+// 不支持时不动 intent，只把警告留给 writeProxyProjection。
 func enrichIntentWithProxy(g *domain.GnbIntent) *domain.PluginProxyConfig {
 	store := &config.Store{}
 	src, _, err := store.ActiveSource()
@@ -288,7 +286,7 @@ func enrichIntentWithProxy(g *domain.GnbIntent) *domain.PluginProxyConfig {
 		return nil
 	}
 	if ok, _ := GNBProxySupported(); !ok {
-		// 能力不足：不碰 intent，避免 node.conf 出现无效的 proxy on
+		// 能力不足：不碰 intent
 		return pp
 	}
 	applyProxyForwarding(g, pp.EffectiveExits())

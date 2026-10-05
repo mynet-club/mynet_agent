@@ -168,12 +168,12 @@ type GnbEndpointHint struct {
 	Role     string `json:"role,omitempty"`
 }
 
-// GnbForwarding P2P / Standard / Unified / proxy / 显式 relay。
+// GnbForwarding P2P / Standard / Unified / 显式 relay。**不含 proxy**：
+// gnb 的代理开关归独立 proxy.conf，不进 node.conf（proxy 与 gnb.forwarding 无关）。
 type GnbForwarding struct {
 	Direct      bool            `json:"direct"`
 	Standard    bool            `json:"standard"`
 	Unified     string          `json:"unified,omitempty"`
-	Proxy       bool            `json:"proxy"`
 	RelayRoutes []GnbRelayRoute `json:"relay_routes,omitempty"`
 }
 

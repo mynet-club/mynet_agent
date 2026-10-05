@@ -8,7 +8,7 @@ package domain
 //   var/**      运行态，不进备份
 //
 // 驱动差异不下泄：业务对象不含 node.conf / AllowedIPs；
-// driver/** 只是 Apply 投影。GNB 的 `proxy on` 在 Intent.Listen.Proxy，
+// driver/** 只是 Apply 投影。GNB 的 proxy 开关归独立 proxy.conf（不进 node.conf），
 // 与插件 proxy 配置（PluginProxyConfig）是两回事。
 //
 // 开发期无兼容层：旧 mynet.conf / 扁平 conf 不在此 schema 内。
@@ -115,7 +115,8 @@ type LocalNode struct {
 }
 
 // LocalListen 监听与节点级开关。
-// Proxy 是 GNB `proxy on`（未登记目的送出口对端=下一跳），**不是** proxy 插件。
+// Proxy 为遗留位（原 GNB `proxy on`）；现已不再投影到 node.conf，
+// gnb proxy 开关归独立 proxy.conf —— 留字段仅为兼容存量本地 intent。
 type LocalListen struct {
 	UDPPort int  `json:"udp_port,omitempty"`
 	Forward bool `json:"forward,omitempty"`
@@ -272,8 +273,7 @@ func (p *PluginConfig) Validate() error {
 //
 // 这是 proxy 的**唯一配置入口**：用户是否启用、从哪些 peer 出去、权重/顺序。
 // apply 时投影到驱动侧（gnb → driver/gnb/conf/<id>/proxy.conf；address.conf 不写 f）。
-// 与 node.conf 的 `proxy on` 是同一件事的两层：插件决定「开不开、走谁」，
-// 驱动投影决定「怎么写进 gnb」。
+// gnb 的 proxy 开关（proxy on）就在这份 proxy.conf 里，**不进 node.conf**。
 type PluginProxyConfig struct {
 	// Role 明确节点角色：client、server 或 both。
 	Role     string              `json:"role,omitempty"`

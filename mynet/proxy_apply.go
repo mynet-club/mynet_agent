@@ -6,7 +6,7 @@ package mynet
 // 输出是系统命令计划。驱动无关：gnb0 / wg0 一视同仁。
 //
 // 旧线（spec/proxy.md）的完整语义保留在此，但**不再往 route.conf 灌海量 /8**——
-// 未登记目的地兜底由 gnb `proxy on` 负责；这里只做 OS 策略路由 + IP 集合 + DNS。
+// 未登记目的地兜底由 gnb proxy.conf 的 `proxy on` 负责；这里只做 OS 策略路由 + IP 集合 + DNS。
 
 import (
 	"fmt"

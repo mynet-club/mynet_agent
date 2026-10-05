@@ -179,7 +179,6 @@ func LocalToGnbIntent(li *domain.LocalIntent, privHex, pubHex, algorithm string)
 		}
 		g.Forwarding = &domain.GnbForwarding{
 			Direct: true,
-			Proxy:  li.Listen.Proxy,
 		}
 	}
 	peerPub := map[string]string{}

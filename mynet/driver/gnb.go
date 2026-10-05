@@ -723,12 +723,8 @@ func RenderGNBNodeConf(g *domain.GnbIntent) string {
 		if u := strings.TrimSpace(g.Forwarding.Unified); u != "" {
 			fmt.Fprintf(&b, "unified-forwarding %s\n", u)
 		}
-		// proxy on：未登记目的直接送出口对端（等同 route.conf 下一跳=出口节点）
-		// 只在开启时写键 —— 未打 P2 的 gnb 不认 `proxy` 键，写 `proxy off`
-		// 也会变成配置解析告警。
-		if g.Forwarding.Proxy {
-			b.WriteString("proxy on\n")
-		}
+		// proxy 的 gnb 开关（proxy on）**不在 node.conf**：归独立 proxy.conf
+		// （driver/gnb/conf/<id>/proxy.conf）。此处不再渲染。
 	}
 
 	// zip auto：与线上节点压缩设置对齐。缺 zip 时大包会被对端压成我们解不开的帧，
