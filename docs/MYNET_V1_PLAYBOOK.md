@@ -471,6 +471,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **禁止：** 不实现自研自动选路；不对开放租户默认开启无限全互通。
 
+**实施记录（2026-10-05，A 阶段 / 先B后A）：P3 开发计划已成文（设计 + 决策包，未写运行时码）。** 正文 `mynet_ctl/docs/knowledge-base/spec/auto-mesh-planner.md`。**八条实测**：① 组网入口是人工 `RouteRequest` 审批（`RouteRequestDomainService.php:49,297`，accept 双向写 `Route` `:571-599`）；② 「自家节点默认互通」**已存在但隐式** —— `NetworkSemanticsProjector::fromDatabase()` 现算合成 own-node peer（`:208-256`），不落表、不经审批、**无计数**；③ 该合成直接决定 `route.conf` 规模（`BundleEnvelopePublisher.php:281-315` / WG `:436-459`）；④ **无任何大小/条数上限**（`GnbConfigGeneratorDomainService.php:218-239` 无阈值）；⑤ **无节点数配额**（grep 无命中）；⑥ `NodeCapabilityResolver`（`:41-79`）与 `TransportPlannerDomainService::plan/planAll`（`:25-62`）**全仓零调用方**；⑦ **两套连接模型并存、只有一套进数据面** —— `connections` 有唯一键 `uk_connection_pair`（迁移 `2026_09_23_000001:113`）却**不被 bundle 读**（`BundleEnvelopePublisher.php:198` 恒 `[]`），数据面只认 `routes`；⑧ `routes`/`node_route_requests` **无唯一索引**，仅业务级重入检查（`:179-288`）→ 并发可绕。**设计骨架**：租户级三态 `off/shadow/enforce`（默认 `shadow`，只对显式开启租户）、`MeshPlannerDomainService` 落 domain 层、`TransportPlanner` 作 enforce 第二跳接线、容量三量（每节点对端数/每租户边数/`route.conf` 字节）、回滚复用 P2 apply 回滚 + 上一代 bundle。**待裁 D1–D5 交主线**（D1 planner 与 own-node 合成的关系、D2 shadow 载体、D3 容量初值、D4 并发护栏范围、D5 enforce 作者对象 `routes` vs `Connection`）。分步 P3-1…P3-5 与测试计划见正文。
+
 ### P4：实体网络网关、节点内转发和 Proxy
 
 **目标：** peer 网关接入实体网段；节点到网络、网络到网络；Proxy 路径转发、DNS/策略路由、停止清理。
@@ -639,6 +641,7 @@ v1 只有在以下条件同时满足时才算完成：
 3. P2：对照现有 `BundleEnvelope`、GNB/WireGuard intent 和 agent apply，补齐版本、容量和回滚合同。
    **状态（2026-10-05，B 批）：回滚合同 ✅ 已落** —— `executeApply` 加 `applyJournal` + `rollbackCmds()`（失败时逆序回滚本轮已应用 route/firewall/iface、全 `optional` 不掩盖原始失败、刻意排除 `pinDefaultGateway`/Proxy/`ExtraExec`），用例三支，`make check` 全绿。版本/容量两半仍在 §7 P2（版本半边与 GNB 兼容基线决策包相邻）。详见 §7 P2 实施记录。
 4. P3：设计自动组网 planner 的 shadow 输出和容量指标，先不扩大默认租户范围。
+   **状态（2026-10-05，A 阶段）：◐ 开发计划已成文**（`mynet_ctl/docs/knowledge-base/spec/auto-mesh-planner.md`，八条实测 + 设计骨架 + 待裁 D1–D5 + 分步 P3-1…P3-5 + 测试计划）；**未写运行时码**，等 D1–D5 裁定与步骤 P3-1 的开工指示。详见 §7 P3 实施记录。
 5. P4：把现有 OpenWrt Proxy 实现接入统一的 Service/Forwarding/Acceleration 合同。
 6. P5/P6：以真实 LuCI 和真 WebSocket 作为集成入口，避免只依赖 mock 或独立 8096 页面。
 7. P7：合同稳定后再统一 GUI 的“我的节点/节点池/可访问网络/加速”用户路径。
