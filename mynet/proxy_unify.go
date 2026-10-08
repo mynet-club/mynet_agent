@@ -192,15 +192,19 @@ func SetProxyCustomDomains(customProxied, customDirect []string) error {
 // 防重复 stamp：Cloud 轨内容与本次下发一致 → 跳过，避免每次 sync 都写盘。
 // 校验失败仅告警，返回 false，调用方回落 bundle 原许可。
 func StampCloudIntent(perm *domain.ProxyPermission, revision int64) bool {
-	if perm == nil {
-		return false
-	}
 	st, err := LoadProxyState()
 	if err != nil {
 		logger.Comp("apply").Warn("proxy intent 读取失败，云端许可未落轨", "err", err)
 		return false
 	}
+	if perm == nil && st.Cloud == nil {
+		return true // 没有历史出口许可，无需落盘。
+	}
 	pol := perm.AsCloudPolicy()
+	if perm == nil {
+		// 完整信封省略许可即撤销。保留停用记录供 apply 清理，Local 轨不动。
+		pol = domain.ProxyPolicy{Enabled: false, Role: domain.ProxyRoleServer}
+	}
 	if st.Cloud != nil && reflect.DeepEqual(st.Cloud.Policy, pol) {
 		return true // 内容未变：不动 revision
 	}

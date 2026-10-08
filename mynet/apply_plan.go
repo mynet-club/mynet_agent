@@ -1,6 +1,7 @@
 package mynet
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
@@ -21,9 +23,12 @@ import (
 // （back 从 node_ips 投影），**不是** gnb 的 route.conf —— 后者是 L5 地址宣告，
 // 不进内核。平台只分叉 routeCmds 的命令方言，策略全在 executeApply。
 type ApplyPlan struct {
-	Routes     []RouteOp    `json:"routes,omitempty"`
-	Firewall   []FirewallOp `json:"firewall,omitempty"`
-	Interfaces []IfaceOp    `json:"interfaces,omitempty"`
+	// 保留本节点隧道名，即使撤销后无 Proxy/Routes，也能精确清理出口规则。
+	ProxyExitDevice string       `json:"proxy_exit_device,omitempty"`
+	LegacyProxyExit bool         `json:"legacy_proxy_exit,omitempty"`
+	Routes          []RouteOp    `json:"routes,omitempty"`
+	Firewall        []FirewallOp `json:"firewall,omitempty"`
+	Interfaces      []IfaceOp    `json:"interfaces,omitempty"`
 	// Proxy 代理分流（主线⑦）。非 nil 时 executeApply 追加策略路由/DNS 命令。
 	Proxy     *ProxyApplyPlan `json:"proxy,omitempty"`
 	ExtraExec []ExecOp        `json:"extra_exec,omitempty"` // 兜底；优先结构化字段
@@ -273,12 +278,16 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		var cleanupPolicy domain.ProxyPolicy
 		if eff := st.Effective(); eff != nil {
 			cleanupPolicy = eff.Policy
+		} else if st.Local != nil {
+			cleanupPolicy = st.Local.Policy // 停用后仍用原 mark/table 清理。
 		}
-		tunDev := ""
-		for _, r := range plan.Routes {
-			if r.Device != "" {
-				tunDev = r.Device
-				break
+		tunDev := plan.ProxyExitDevice
+		if tunDev == "" {
+			for _, r := range plan.Routes {
+				if r.Device != "" {
+					tunDev = r.Device
+					break
+				}
 			}
 		}
 		crt := ProxyRuntime{TunDevice: resolveDevice(tunDev, plan.LocalAddresses)}
@@ -301,11 +310,30 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		}
 	}
 
+	// 路由/client 应用成功后再提交出口专表；此前失败时保留上一代出口规则。
+	exitDev := plan.ProxyExitDevice
+	var exitPolicy *domain.ProxyPolicy
+	if plan.Proxy != nil {
+		exitPolicy = plan.Proxy.Policy
+		if exitDev == "" {
+			exitDev = plan.Proxy.Runtime.TunDevice
+		}
+	}
+	if fail == 0 && exitDev != "" {
+		exitDev = resolveDevice(exitDev, plan.LocalAddresses)
+		if err := syncProxyExitFirewall(snap, exitPolicy, exitDev, plan.LegacyProxyExit,
+			func(argv []string, input string) (string, error) { return runProxyFirewall(dry, argv, input) }); err != nil {
+			log.Error("出口 NAT/ACL 应用或清理失败", "err", err)
+			fmt.Fprintf(os.Stderr, "proxy exit firewall: %v\n", err)
+			fail = 1
+		}
+	}
+
 	// 失败回滚（§6「新配置应用失败不得清除旧配置」）：撤掉**本轮刚装上的**
 	// 路由/防火墙/接口，让 FIB 回到上一代。三处不在此列，各有理由：
 	//   - pinDefaultGateway 不回滚：它把被隧道盖住的默认网关钉回物理口，
 	//     回滚 = 重新劫持网关，直接断网
-	//   - Proxy 段不回滚：停用时本就有 proxyCleanupCmds 负责收尾
+	//   - Proxy client 段不回滚；出口 NAT/ACL 在成功收尾时单独原子提交/局部回退
 	//   - ExtraExec 不回滚：逃生舱 argv 不可逆，硬猜逆命令比不回滚更危险
 	if fail != 0 && !dry && !applied.empty() {
 		cmds := rollbackCmds(snap, &applied)
@@ -913,4 +941,26 @@ func normalizeBSDDest(d string) string {
 		}
 		return d
 	}
+}
+
+// firewall 批量写入仍由 L6 的唯一执行入口持有，stdin 不经 shell 插值。
+func runProxyFirewall(dry bool, argv []string, input string) (string, error) {
+	if len(argv) == 0 {
+		return "", fmt.Errorf("empty firewall argv")
+	}
+	if dry {
+		fmt.Printf("DRY-RUN firewall: %v\n%s", argv, input)
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, resolveBin(argv[0]), argv[1:]...)
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s: %w: %s", argv[0], err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }

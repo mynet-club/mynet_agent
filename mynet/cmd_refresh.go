@@ -217,6 +217,10 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	// （role/region/split/exits/dns…）归 Local 轨。先把云端许可 stamp 进 Cloud 轨，
 	// 再由 Effective() 按职责合成：server 侧←许可、client 侧←Local。
 	// intent 无任何记录时才回落 bundle 原许可（升级路径兼容）。
+	plan.ProxyExitDevice = dev
+	if previous, err := LoadProxyState(); err == nil && previous != nil {
+		plan.LegacyProxyExit = previous.Cloud != nil
+	}
 	stampRev, _ := strconv.ParseInt(env.Generation, 10, 64)
 	StampCloudIntent(env.Network.Proxy, stampRev)
 	var proxyPolicy *domain.ProxyPolicy

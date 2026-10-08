@@ -1,0 +1,140 @@
+//go:build linux && proxy_exit_kernel_test
+
+package mynet
+
+import (
+	"errors"
+	"github.com/mynet-club/mynet_agent/shared"
+	"strings"
+	"testing"
+)
+
+// 仅由隔离容器脚本显式装入并执行，不把宿主机单测冒充内核验收。
+func TestProxyExitKernel(t *testing.T) {
+	run := func(argv []string, input string) (string, error) { return runProxyFirewall(false, argv, input) }
+	must := func(argv ...string) string {
+		out, err := run(argv, "")
+		if err != nil {
+			t.Fatalf("%v: %v", argv, err)
+		}
+		return out
+	}
+	dev := "gnb_tun"
+	name := proxyExitName(dev)
+	must("ip", "link", "add", dev, "type", "dummy")
+	t.Run("nft", func(t *testing.T) {
+		snap := &shared.SystemSnapshot{OS: "linux", Capabilities: map[string]bool{"nft": true}}
+		if _, err := run([]string{"nft", "-f", "-"}, `add table ip nat
+add chain ip nat POSTROUTING { type nat hook postrouting priority 100; }
+add rule ip nat POSTROUTING iifname "wg_other" masquerade comment "sentinel"
+add rule ip nat POSTROUTING iifname "gnb_tun" masquerade
+add table ip filter
+add chain ip filter FORWARD { type filter hook forward priority 0; }
+add rule ip filter FORWARD iifname "gnb_tun" ip saddr 10.30.0.3/32 accept
+add rule ip filter FORWARD iifname "gnb_tun" drop
+`); err != nil {
+			t.Fatal(err)
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.3/32"), dev, true, run); err != nil {
+			t.Fatal(err)
+		}
+		before := must("nft", "list", "table", "inet", name)
+		if strings.Contains(must("nft", "list", "table", "ip", "nat"), `iifname "gnb_tun"`) {
+			t.Fatal("旧 NAT 未清")
+		}
+		if strings.Contains(must("nft", "list", "table", "ip", "filter"), `iifname "gnb_tun"`) {
+			t.Fatal("旧 ACL 未清")
+		}
+		if !strings.Contains(before, "drop") {
+			t.Fatal("兜底 DROP 缺失")
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.4/32"), dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+		after := must("nft", "list", "table", "inet", name)
+		if strings.Contains(after, "10.30.0.3") || !strings.Contains(after, "10.30.0.4") {
+			t.Fatal("旧白名单仍在")
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.4/32"), dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+		if must("nft", "list", "table", "inet", name) != after {
+			t.Fatal("重复安装有重复规则")
+		}
+		// 向真实 batch 注入非法命令，验证内核原子性，而不是 fake 的假设。
+		bad := func(argv []string, input string) (string, error) {
+			if input != "" {
+				input += "invalid_nft_command\n"
+			}
+			return run(argv, input)
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.5/32"), dev, false, bad); err == nil {
+			t.Fatal("非法 batch 被接受")
+		}
+		if must("nft", "list", "table", "inet", name) != after {
+			t.Fatal("内核没保留上一代")
+		}
+		if err := syncProxyExitFirewall(snap, nil, dev, true, run); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run([]string{"nft", "list", "table", "inet", name}, ""); err == nil {
+			t.Fatal("撤销后专表仍在")
+		}
+		if !strings.Contains(must("nft", "list", "table", "ip", "nat"), "sentinel") {
+			t.Fatal("误删无关 NAT")
+		}
+		if err := syncProxyExitFirewall(snap, nil, dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+		// 只删除本测试在隔离 namespace 创建的哨兵表，避免 nft 原生表干扰 iptables-nft 子用例。
+		must("nft", "delete", "table", "ip", "nat")
+		must("nft", "delete", "table", "ip", "filter")
+	})
+	t.Run("iptables", func(t *testing.T) {
+		snap := &shared.SystemSnapshot{OS: "linux", Capabilities: map[string]bool{"iptables": true}}
+		must("iptables", "-A", "FORWARD", "-i", "wg_other", "-m", "comment", "--comment", "sentinel", "-j", "ACCEPT")
+		must("iptables", "-A", "FORWARD", "-i", dev, "-s", "10.30.0.3/32", "-j", "ACCEPT")
+		must("iptables", "-A", "FORWARD", "-i", dev, "-j", "DROP")
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.3/32"), dev, true, run); err != nil {
+			t.Fatal(err)
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.4/32"), dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+		before := must("iptables", "-t", "filter", "-S")
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.4/32"), dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+		if must("iptables", "-t", "filter", "-S") != before {
+			t.Fatal("重复安装有重复规则")
+		}
+		failed := false
+		bad := func(argv []string, input string) (string, error) {
+			if !failed && strings.HasPrefix(input, "*mangle") {
+				failed = true
+				return "injected failure", errors.New("mangle failed")
+			}
+			return run(argv, input)
+		}
+		if err := syncProxyExitFirewall(snap, exitTestPolicy("10.30.0.5/32"), dev, false, bad); err == nil {
+			t.Fatal("失败没报错")
+		}
+		if must("iptables", "-t", "filter", "-S") != before {
+			t.Fatal("iptables 没恢复上一代")
+		}
+		if err := syncProxyExitFirewall(snap, nil, dev, true, run); err != nil {
+			t.Fatal(err)
+		}
+		for _, table := range []string{"filter", "mangle", "nat"} {
+			if strings.Contains(must("iptables", "-t", table, "-S"), name) {
+				t.Fatal("撤销残留：" + table)
+			}
+		}
+		if !strings.Contains(must("iptables", "-t", "filter", "-S"), "sentinel") {
+			t.Fatal("误删其他规则")
+		}
+		if err := syncProxyExitFirewall(snap, nil, dev, false, run); err != nil {
+			t.Fatal(err)
+		}
+	})
+}

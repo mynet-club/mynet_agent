@@ -166,7 +166,6 @@ func TestProxyServerCmds(t *testing.T) {
 	text := joinCmds(proxyServerCmds(snapNft(), p, rt))
 	for _, want := range []string{
 		"sysctl -w net.ipv4.ip_forward=1",
-		"nft add rule ip nat POSTROUTING iifname gnb_tun masquerade",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("server 缺 %q\n%s", want, text)
@@ -467,5 +466,78 @@ func TestProxySelfExemptBeforeMark(t *testing.T) {
 	}
 	if acc < 0 || mark < 0 || acc > mark {
 		t.Fatalf("endpoint 豁免须在 mark 之前: exempt=%d mark=%d", acc, mark)
+	}
+}
+
+// 撤销信封省略许可时，旧 Cloud 轨必须失效，Local client 保持原样。
+func TestProxyPermissionRevocationClearsCloud(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	env := &domain.BundleEnvelope{SchemaVersion: 2, Generation: "1", Node: domain.NodeRef{ID: "1001", Interface: "gnb_tun"}, Driver: domain.DriverTypeGNB, Network: domain.NetworkIntent{Proxy: mustPermission()}, Gnb: &domain.GnbIntent{Identity: domain.GnbIdentity{NodeID: "1001"}}}
+	plan, err := planFromBundle(env)
+	if err != nil || plan.Proxy == nil {
+		t.Fatalf("授权应生效: %v", err)
+	}
+	env.Generation = "2"
+	env.Network.Proxy = nil
+	plan, err = planFromBundle(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Proxy != nil {
+		t.Fatal("撤销后旧 Cloud 许可仍生效")
+	}
+	if plan.ProxyExitDevice != "gnb_tun" || !plan.LegacyProxyExit {
+		t.Fatal("撤销且无路由时丢失出口清理目标")
+	}
+	seedLocalProxy(t, mustPolicy(t, "domestic", "whitelist"))
+	plan, err = planFromBundle(env)
+	if err != nil || plan.Proxy == nil || plan.Proxy.Policy.Role != domain.ProxyRoleClient {
+		t.Fatalf("撤销不能删除 Local client: %+v %v", plan, err)
+	}
+}
+
+// API 真实 publisher 的产物跨语言校验并逐代投影到 apply 计划。
+func TestProxyPermissionPublisherLoop(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	for _, state := range []string{"allowlist", "open", "revoked"} {
+		raw, err := os.ReadFile(filepath.Join("..", "testdata", "proxy-permission-loop", state+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = domain.VerifyBundleChecksum(raw); err != nil {
+			t.Fatal(err)
+		}
+		env, err := domain.DecodeBundleEnvelope(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := planFromBundle(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state == "revoked" {
+			if plan.Proxy != nil {
+				t.Fatal("真实撤销信封不能保留 Cloud 出口许可")
+			}
+			continue
+		}
+		if plan.Proxy == nil || plan.Proxy.Policy.Role != domain.ProxyRoleServer {
+			t.Fatalf("%s 未生成 server 计划", state)
+		}
+		if state == "allowlist" {
+			acl := plan.Proxy.Policy.ACL
+			if acl == nil || len(acl.AllowedCIDRs) != 2 {
+				t.Fatalf("真实白名单 CIDR 丢失: %+v", acl)
+			}
+			for _, cidr := range acl.AllowedCIDRs {
+				if !strings.HasSuffix(cidr, "/32") {
+					t.Fatalf("白名单扩大网段: %s", cidr)
+				}
+			}
+		}
+		corrupt := strings.Replace(string(raw), "\"enabled\":true", "\"enabled\":false", 1)
+		if corrupt == string(raw) || domain.VerifyBundleChecksum([]byte(corrupt)) == nil {
+			t.Fatal("篡改许可未被 checksum 拒绝")
+		}
 	}
 }

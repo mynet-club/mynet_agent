@@ -164,7 +164,6 @@ func TestProxyAllBypassCombines(t *testing.T) {
 }
 
 func TestProxyACLCmdsServerAllowCIDR(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
 	p := &domain.ProxyPolicy{
 		Enabled: true,
 		Role:    "server",
@@ -173,18 +172,20 @@ func TestProxyACLCmdsServerAllowCIDR(t *testing.T) {
 			AllowedCIDRs: []string{"10.20.0.0/24"},
 		},
 	}
-	cmds := ProxyACLCmds(snap, p, ProxyRuntime{TunDevice: "gnb_tun"})
-	text := joinCmds(cmds)
+	text, err := proxyExitNftBatch("gnb_tun", p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(text, "ip saddr 10.20.0.0/24 accept") {
 		t.Fatalf("缺放行:\n%s", text)
 	}
-	if !strings.Contains(text, "iifname gnb_tun drop") {
+	if !strings.Contains(text, `iifname "gnb_tun" drop`) {
 		t.Fatalf("缺默认拒:\n%s", text)
 	}
 	// client 不装
 	c := *p
 	c.Role = "client"
-	if got := ProxyACLCmds(snap, &c, ProxyRuntime{TunDevice: "gnb_tun"}); len(got) != 0 {
+	if got, err := proxyExitNftBatch("gnb_tun", &c, false); err != nil || got != "" {
 		t.Fatalf("client 不该装 ACL 准入: %v", got)
 	}
 }

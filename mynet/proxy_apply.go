@@ -298,27 +298,11 @@ func proxyServerCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	if !p.IsServerLike() {
 		return nil
 	}
-	dev := rt.TunDevice
-	cmds := []routeCmd{
-		{argv: []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}},
+	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" {
+		return nil
 	}
-	if snap.Capabilities["nft"] {
-		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "table", "ip", "nat"}},
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "nat", "POSTROUTING",
-				"{ type nat hook postrouting priority 100; }"}, optional: true},
-			routeCmd{argv: []string{"nft", "add", "rule", "ip", "nat", "POSTROUTING",
-				"iifname", dev, "masquerade"}},
-		)
-	} else if snap.Capabilities["iptables"] {
-		cmds = append(cmds,
-			routeCmd{argv: []string{"iptables", "-t", "nat", "-A", "POSTROUTING",
-				"-i", dev, "-j", "MASQUERADE"}},
-			routeCmd{argv: []string{"iptables", "-A", "FORWARD", "-i", dev, "-j", "ACCEPT"}},
-			routeCmd{argv: []string{"iptables", "-A", "FORWARD", "-o", dev, "-j", "ACCEPT"}},
-		)
-	}
-	return cmds
+	// NAT/ACL 由 executeApply 的专表事务统一安装，不能再追加到共享链。
+	return []routeCmd{{argv: []string{"sysctl", "-w", "net.ipv4.ip_forward=1"}}}
 }
 
 // proxyDNSCmds DNS 策略。redirect/resolv 在此；split 写 dnsmasq（单独文件，reload）。
@@ -386,8 +370,6 @@ func proxyAllCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRu
 	}
 	// T16 兜底：DoH/853 + 全量进隧道
 	cmds = append(cmds, ProxyAllBypassCmds(snap, p, rt)...)
-	// T11 出口准入
-	cmds = append(cmds, ProxyACLCmds(snap, p, rt)...)
 	return cmds
 }
 
@@ -547,44 +529,4 @@ func ProxyAllBypassCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt P
 
 // ProxyACLCmds 出口侧只放行 AllowedCIDRs（overlay 来源）。
 // role=server/both 时生效；allowlist 无 CIDR 则不装（只靠云端业务授权）。
-func ProxyACLCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
-	if p == nil || !p.Enabled || !p.IsServerLike() {
-		return nil
-	}
-	if p.ACL == nil || len(p.ACL.AllowedCIDRs) == 0 {
-		return nil
-	}
-	dev := rt.TunDevice
-	var cmds []routeCmd
-	if snap.Capabilities["nft"] {
-		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "table", "ip", "filter"}},
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "filter", "FORWARD",
-				"{ type filter hook forward priority 0; }"}, optional: true},
-		)
-		for _, cidr := range p.ACL.AllowedCIDRs {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "filter", "FORWARD",
-				"iifname", dev, "ip", "saddr", cidr, "accept",
-			}, optional: true})
-		}
-		// 默认丢弃来自隧道且不在名单内的转发
-		cmds = append(cmds, routeCmd{argv: []string{
-			"nft", "add", "rule", "ip", "filter", "FORWARD",
-			"iifname", dev, "drop",
-		}, optional: true})
-		return cmds
-	}
-	if snap.Capabilities["iptables"] {
-		for _, cidr := range p.ACL.AllowedCIDRs {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"iptables", "-A", "FORWARD", "-i", dev, "-s", cidr, "-j", "ACCEPT",
-			}, optional: true})
-		}
-		cmds = append(cmds, routeCmd{argv: []string{
-			"iptables", "-A", "FORWARD", "-i", dev, "-j", "DROP",
-		}, optional: true})
-		return cmds
-	}
-	return cmds
-}
+// 出口 ACL 与 NAT 使用 syncProxyExitFirewall 原子替换，不再独立追加共享链。
