@@ -221,8 +221,9 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	if previous, err := LoadProxyState(); err == nil && previous != nil {
 		plan.LegacyProxyExit = previous.Cloud != nil
 	}
-	stampRev, _ := strconv.ParseInt(env.Generation, 10, 64)
-	StampCloudIntent(env.Network.Proxy, stampRev)
+	// generation 是 `rev-{YmdHis}-{nodeId}-{seq}`，必须映射成单调 revision，
+	// 否则 ParseInt 恒 0、旧 generation 重放会被当成最新。
+	StampCloudIntent(env.Network.Proxy, domain.GenerationRevision(env.Generation))
 	var proxyPolicy *domain.ProxyPolicy
 	if st, err := LoadProxyState(); err == nil && st != nil && (st.Local != nil || st.Cloud != nil) {
 		if eff := st.Effective(); eff != nil {

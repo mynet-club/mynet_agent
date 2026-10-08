@@ -13,6 +13,7 @@ package domain
 
 import (
 	"fmt"
+	"reflect"
 	"time"
 )
 
@@ -115,9 +116,29 @@ func (s *ProxyIntentState) ApplyLocal(p ProxyPolicy, now time.Time) error {
 
 // ApplyCloud 云端写入。已知云端 generation 时用 knownRevision；0 则自增。
 // 云端写入不标 Dirty（它就是权威同步）。
+//
+// knownRevision > 0 时做**单调门禁**：
+//   - 小于当前 Cloud.Revision → 拒绝（旧 generation 乱序/重放）；
+//   - 等于当前且内容不同 → 拒绝（同代改写）；
+//   - 等于当前且内容相同 → 幂等空操作；
+//   - 大于当前 → 接受。
+//
+// knownRevision=0 保持兼容自增，不触发门禁。
 func (s *ProxyIntentState) ApplyCloud(p ProxyPolicy, knownRevision int64, now time.Time) error {
 	if err := p.Validate(); err != nil {
 		return err
+	}
+	if knownRevision > 0 && s.Cloud != nil {
+		if knownRevision < s.Cloud.Revision {
+			return fmt.Errorf("stale cloud revision %d < current %d，拒绝旧 generation 重放",
+				knownRevision, s.Cloud.Revision)
+		}
+		if knownRevision == s.Cloud.Revision {
+			if reflect.DeepEqual(s.Cloud.Policy, p) {
+				return nil
+			}
+			return fmt.Errorf("cloud revision %d 内容不一致，拒绝同代改写", knownRevision)
+		}
 	}
 	rev := knownRevision
 	if rev <= 0 {

@@ -156,3 +156,70 @@ func TestDescribe(t *testing.T) {
 		t.Fatal("Describe 为空")
 	}
 }
+
+// 旧 generation 重放：knownRevision 不大于当前 Cloud.Revision 时必须拒绝，
+// 保留已有许可，不得被乱序/重复推送覆盖。
+func TestApplyCloudRejectsStaleReplay(t *testing.T) {
+	now := time.Now()
+	s := &ProxyIntentState{}
+	newer := ProxyPolicy{Enabled: true, Role: ProxyRoleServer}
+	if err := s.ApplyCloud(newer, 200, now); err != nil {
+		t.Fatal(err)
+	}
+	stale := ProxyPolicy{Enabled: true, Role: ProxyRoleServer,
+		ACL: &ProxyACL{Mode: ProxyACLAllowlist, AllowedNodeIDs: []string{"1"}}}
+	if err := s.ApplyCloud(stale, 100, now.Add(time.Second)); err == nil {
+		t.Fatal("旧 revision 重放应拒绝")
+	}
+	if s.Cloud == nil || s.Cloud.Revision != 200 || s.Cloud.Policy.ACL != nil {
+		t.Fatalf("重放不得覆盖 Cloud 轨: %+v", s.Cloud)
+	}
+	// 同 revision 内容不同也拒（防同代改写）
+	if err := s.ApplyCloud(stale, 200, now.Add(2*time.Second)); err == nil {
+		t.Fatal("同 revision 改写应拒绝")
+	}
+	// 更新的 revision 放行
+	fresh := ProxyPolicy{Enabled: true, Role: ProxyRoleServer,
+		ACL: &ProxyACL{Mode: ProxyACLAllowlist, AllowedNodeIDs: []string{"2"}}}
+	if err := s.ApplyCloud(fresh, 300, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if s.Cloud.Revision != 300 || s.Cloud.Policy.ACL == nil {
+		t.Fatalf("新 revision 应生效: %+v", s.Cloud)
+	}
+}
+
+// knownRevision=0 保持兼容自增，不触发单调门禁。
+func TestApplyCloudZeroRevisionStillAutoIncrements(t *testing.T) {
+	now := time.Now()
+	s := &ProxyIntentState{}
+	if err := s.ApplyCloud(ProxyPolicy{Enabled: true, Role: ProxyRoleServer}, 50, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyCloud(ProxyPolicy{Enabled: true, Role: ProxyRoleServer}, 0, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if s.Cloud.Revision <= 50 {
+		t.Fatalf("0 应自增超过当前: %d", s.Cloud.Revision)
+	}
+}
+
+// GenerationRevision：真实 publisher 格式 `rev-{YmdHis}-{nodeId}-{seq}` 必须可比较，
+// 否则 ParseInt 失败、旧 generation 会被当成最新。
+func TestGenerationRevision(t *testing.T) {
+	older := GenerationRevision("rev-20261008120000-2000000000000001-001")
+	newer := GenerationRevision("rev-20261008120001-2000000000000001-001")
+	if older <= 0 || newer <= older {
+		t.Fatalf("generation 应单调: older=%d newer=%d", older, newer)
+	}
+	sameSec := GenerationRevision("rev-20261008120000-2000000000000001-002")
+	if sameSec <= older {
+		t.Fatalf("同秒 seq 递增应更大: %d vs %d", sameSec, older)
+	}
+	if GenerationRevision("7") != 7 {
+		t.Fatal("纯整数 generation 原样返回")
+	}
+	if GenerationRevision("") != 0 || GenerationRevision("garbage") != 0 {
+		t.Fatal("无法解析应返回 0")
+	}
+}

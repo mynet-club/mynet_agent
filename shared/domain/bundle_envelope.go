@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -414,4 +415,41 @@ func canonicalJSON(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// GenerationRevision 把 envelope.generation 映射成单调 revision。
+//
+// 真实 publisher 的格式是 `rev-{YmdHis}-{nodeId}-{seq}`（见
+// BundleEnvelopePublisher::nextGeneration），**不是纯整数** ——
+// 直接 strconv.ParseInt 永远失败并回落 0，旧 generation 重放因此
+// 每次都「自增成最新」，无法拒绝。这里解析出可比较的数值：
+// YmdHis*100000 + seq（seq 到 99999 够用；YmdHis*1e5 远小于 int64 上限）。
+// 纯整数 generation（测试/旧件）原样返回；无法解析返回 0（调用方自增，保持兼容）。
+func GenerationRevision(gen string) int64 {
+	if gen == "" {
+		return 0
+	}
+	if n, err := strconv.ParseInt(gen, 10, 64); err == nil {
+		return n
+	}
+	// rev-{YmdHis}-{nodeId}-{seq}
+	if !strings.HasPrefix(gen, "rev-") {
+		return 0
+	}
+	parts := strings.Split(gen, "-")
+	if len(parts) < 4 {
+		return 0
+	}
+	ts, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || ts <= 0 {
+		return 0
+	}
+	seq, err := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+	if err != nil || seq < 0 {
+		return 0
+	}
+	if seq > 99999 {
+		seq = 99999
+	}
+	return ts*100000 + seq
 }

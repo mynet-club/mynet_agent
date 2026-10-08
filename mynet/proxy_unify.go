@@ -209,6 +209,7 @@ func StampCloudIntent(perm *domain.ProxyPermission, revision int64) bool {
 		return true // 内容未变：不动 revision
 	}
 	if err := st.ApplyCloud(pol, revision, time.Now()); err != nil {
+		// 旧 generation 重放 / 校验失败：保留现有 Cloud 轨，回落 bundle 原许可。
 		logger.Comp("apply").Warn("proxy 云端许可 stamp 失败，回落 bundle", "err", err)
 		return false
 	}
