@@ -3,6 +3,7 @@ package mynet
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/upgrade"
@@ -45,7 +46,7 @@ func cmdUpdate(args []string) int {
 	}
 	best := pickLatestMynet(all)
 	if best == nil {
-		fmt.Fprintf(os.Stderr, "update: 索引中无 mynet 组件\n")
+		fmt.Fprintf(os.Stderr, "update: 索引中无当前平台 %s/%s 的 mynet 组件\n", runtime.GOOS, runtime.GOARCH)
 		return 1
 	}
 
@@ -83,9 +84,17 @@ func cmdUpdate(args []string) int {
 // 版本比较必须按语义而非字典序：字典序下 "0.10.0" < "0.9.0"，
 // 会把更旧的版本当成「最新」——症状是升级后版本号变小，且不报错。
 func pickLatestMynet(all []upgrade.Artifact) *upgrade.Artifact {
+	return pickLatestMynetForPlatform(all, runtime.GOOS, runtime.GOARCH)
+}
+
+func pickLatestMynetForPlatform(all []upgrade.Artifact, goos, goarch string) *upgrade.Artifact {
+	if goarch == "mipsle" {
+		goarch = "mipsel"
+	}
+	platform := goos + "/" + goarch
 	var best *upgrade.Artifact
 	for i := range all {
-		if all[i].Component != upgrade.ComponentMynet {
+		if all[i].Component != upgrade.ComponentMynet || all[i].Platform != platform {
 			continue
 		}
 		if best == nil || upgrade.CompareVersions(all[i].Version, best.Version) > 0 {
