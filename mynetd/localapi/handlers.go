@@ -106,6 +106,15 @@ func allowedSubcommand(cmd string) bool {
 }
 
 func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
+	if isContextMutation(argv) {
+		if !s.configMutation.TryLock() {
+			w.Header().Set("Retry-After", "2")
+			writeJSON(w, 409, map[string]any{"success": false, "code": "operation_in_progress", "message": "已有配置操作正在执行，请稍后刷新状态再试", "retryable": true})
+			return
+		}
+		defer s.configMutation.Unlock()
+	}
+
 	if s.Ops == nil {
 		// 默认：exec mynet <argv>（桌面/Windows）；OpenWrt 装配时换成 lua
 		s.Ops = defaultExecMynet

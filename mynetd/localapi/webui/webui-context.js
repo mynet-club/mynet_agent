@@ -189,6 +189,11 @@
       };
       return;
     }
+    if (!cloud.success) {
+      box.innerHTML = '<div class="context-empty"><b>设备列表暂不可用</b><p>' + esc(cloud.message || '请稍后重试') + '</p><button class="btn" data-retry>重新加载</button></div>';
+      box.querySelector('[data-retry]').onclick = loadSources;
+      return;
+    }
     const list = cloud.data && Array.isArray(cloud.data.nodes) ? cloud.data.nodes : [];
     const active = (mode.data && mode.data.active) || {};
     box.innerHTML =
@@ -207,12 +212,19 @@
       }).join('') +
       (list.length ? '' : '<div class="context-empty">账号下暂时没有可用设备。</div>');
     box.querySelectorAll('[data-tenant]').forEach((b) => {
-      b.onclick = () => switchOnline(b.dataset.tenant, b.dataset.node);
+      b.onclick = () => switchOnline(b.dataset.tenant, b.dataset.node, list.find(n => String(n.node_id || n.id) === b.dataset.node));
     });
     void active;
   }
 
   async function chooseSource(source) {
+    if (source === 'online') {
+      if (!window.session?.logged_in) { $('context-modal')?.remove(); window.openLoginModal?.(); return; }
+      await loadSources();
+      const box = $('context-sources');
+      if (box) { box.scrollIntoView({block:'nearest'}); box.querySelector('button')?.focus(); }
+      return;
+    }
     if (source === 'local') {
       confirmDlg(
         '切换到自主管理模式？',
@@ -230,17 +242,18 @@
     }
   }
 
-  async function switchOnline(tenant, node) {
+  async function switchOnline(tenant, node, selectedNode) {
     confirmDlg(
-      '切换联网节点？',
-      '将停止当前节点，改用 ' + tenant + ' / ' + (node || '默认节点') + ' 的配置并重新应用。',
-      '切换并应用',
+      '接入此设备？',
+      '选择 ' + (selectedNode?.node_name || node || '设备') + ' 作为本机身份，并自动准备配置与启动连接。已有密钥会保留。',
+      '接入本机',
       async () => {
-        const r = await api('/api/v1/config/active', 'POST', { tenant: tenant, node: node });
-        toast(r.success ? '已切换联网节点' : '切换失败', r.message || '', r.success ? 'ok' : 'err');
-        if (r.success) {
+        if (typeof window.useGateNode !== 'function') { toast('面板暂不可用', '请刷新后重试', 'err'); return; }
+        const selected = await window.useGateNode(tenant, node, document.createElement('button'), selectedNode);
+        if (selected) {
           $('context-modal')?.remove();
-          window.refresh?.();
+          goPage('config');
+          await window.connectLocalDevice();
         }
       }
     );

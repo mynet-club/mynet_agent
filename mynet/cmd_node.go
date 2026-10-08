@@ -177,7 +177,7 @@ func nodeClaim(args []string) int {
 		fmt.Fprintf(os.Stderr, "✗ node-id 含非法字符: %q\n", nodeID)
 		return 2
 	}
-	vpnType := "gnb"
+	vpnType := ""
 	endpoint := ""
 	backPub := ""
 	for i := 1; i < len(args); i++ {
@@ -207,6 +207,20 @@ func nodeClaim(args []string) int {
 
 	cred := requireCred()
 	c := newBackClientFor(cred)
+	rows, err := allCloudNodes(c)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "读取设备类型失败:", err)
+		return 1
+	}
+	actualVPN, err := cloudNodeVPN(rows, nodeID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if vpnType != "" && vpnType != actualVPN {
+		return claimUsage("VPN 类型与云端设备不一致")
+	}
+	vpnType = actualVPN
 
 	// 1) back 的节点面公钥（写 mynet.conf 的 BACK_PUB_HEX）。
 	//    公开端点，向导/装机都靠它；取不到时才允许 --back-pub 显式给。
@@ -231,6 +245,18 @@ func nodeClaim(args []string) int {
 		"--back-pub", backPub,
 	}); rc != 0 {
 		return rc
+	}
+
+	// setup only selects the profile; prepare identity without rotating existing keys.
+	space := filepath.Join(confDir(), "online", tenantOr(cred))
+	dir, err := utils.NodeKeysDir(space, nodeID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := ensureNodeKeys(dir, vpnType, nodeID, backPub); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 
 	// 3) 上传**公钥**（私钥不上传 —— back 的 validateCustomGnbKey 允许只给 public）
@@ -295,13 +321,17 @@ func nodeClaim(args []string) int {
 	}
 
 	fmt.Println("\nclaim 完成：密钥已生成、公钥已上传、配置已渲染。")
-	fmt.Printf("启动隧道: sudo %s service start gnb\n", os.Args[0])
+	fmt.Printf("启动隧道: sudo %s service start %s\n", os.Args[0], vpnType)
 	fmt.Printf("装成服务: sudo %s install --gateways <wss://…>\n", os.Args[0])
 	return 0
 }
 
 // downloadBundle 用用户 token 拉 bundle 并落盘 var/bundle.json。
-func downloadBundle(c *backClient, nodeID string) int {
+func downloadBundle(c *backClient, nodeID string) int { return downloadBundleOutput(c, nodeID, true) }
+func downloadBundleQuiet(c *backClient, nodeID string) int {
+	return downloadBundleOutput(c, nodeID, false)
+}
+func downloadBundleOutput(c *backClient, nodeID string, verbose bool) int {
 	raw, code, err := c.doJSON("GET", "/api/v1/nodes/"+nodeID+"/bundle", nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "下载配置失败（HTTP %d）: %v\n", code, err)
@@ -326,7 +356,9 @@ func downloadBundle(c *backClient, nodeID string) int {
 		fmt.Fprintln(os.Stderr, "写 bundle.json 失败:", err)
 		return 1
 	}
-	fmt.Printf("配置已下载: %s（%d 字节）\n", path, len(envelope))
+	if verbose {
+		fmt.Printf("配置已下载: %s（%d 字节）\n", path, len(envelope))
+	}
 
 	return 0
 }
@@ -435,4 +467,29 @@ func long2ip(v any) string {
 	}
 
 	return fmt.Sprintf("%d.%d.%d.%d", (n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
+}
+
+func cloudNodeVPN(rows []any, nodeID string) (string, error) {
+	for _, row := range rows {
+		n, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fmt.Sprint(n["node_id"]) != nodeID {
+			continue
+		}
+		raw := n["vpn_type"]
+		if types, ok := raw.([]any); ok {
+			if len(types) != 1 {
+				return "", fmt.Errorf("设备需要在专家模式选择 VPN 类型")
+			}
+			raw = types[0]
+		}
+		vpn, _ := raw.(string)
+		if vpn == "gnb" || vpn == "wireguard" {
+			return vpn, nil
+		}
+		return "", fmt.Errorf("不支持的设备 VPN 类型")
+	}
+	return "", fmt.Errorf("账号下找不到设备 %s", nodeID)
 }

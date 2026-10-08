@@ -550,6 +550,7 @@ details.raw pre{
   .crumb{font-size:12.5px}
 }
 </style>
+<link rel="stylesheet" href="experience.css">
 </head>
 <body>
 <p data-aigc-mark="1" style="margin:0 0 8px;font-size:10px;line-height:1.3;color:#6b6560;font-weight:400;">AI生成</p>
@@ -595,11 +596,13 @@ details.raw pre{
       </div>
       <div class="hero-actions">
         <button class="btn" id="btn-cfg">配置</button>
-        <button class="btn primary" id="btn-start">起</button>
-        <button class="btn danger" id="btn-stop">停</button>
-        <button class="btn caution" id="btn-restart">重启</button>
+        <button class="btn primary" id="btn-start">启动连接</button>
+        <button class="btn danger" id="btn-stop">停止连接</button>
+        <button class="btn caution" id="btn-restart">重启连接</button>
       </div>
     </div>
+    <div id="overview-next" class="next-action hidden" role="status"></div>
+    <span id="status-freshness" class="status-freshness"></span>
     <div class="facts">
       <div class="f"><small>网络区</small><b id="f-net">—</b></div>
       <div class="f"><small>节点名</small><b id="f-node">—</b></div>
@@ -690,9 +693,9 @@ details.raw pre{
 
       <!-- 密钥就绪态：折叠四张卡，只留一条状态 + 更换入口 -->
       <div id="key-ready" class="hidden">
-        <span class="badge ok">✓ 密钥已就绪</span>
+        <span class="badge" id="kr-status">本机身份</span>
         <span class="grow kr-pub" id="kr-pub">—</span>
-        <button class="btn" id="kr-change">更换 / 重新同步</button>
+        <button class="btn" id="kr-change">专家设置</button>
       </div>
 
       <!-- 流程闸门：先登录 → 再选节点 → 才放开下面的密钥操作（顺序是用户裁定的） -->
@@ -1161,7 +1164,7 @@ details.raw pre{
 
 </main>
 
-<div id="toasts"></div>
+<div id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 <!-- U6：错误区常驻（可回看最近失败） -->
 <div id="err-panel" class="hidden" style="position:fixed;left:12px;bottom:12px;z-index:40;max-width:360px;background:#2a1515;border:1px solid #5c2222;border-radius:10px;padding:10px 12px;color:#f0caca;font-size:12px;">
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
@@ -1254,25 +1257,23 @@ const esc = (v) => String(v == null ? '—' : v).replace(/[&<>"']/g, (c) => (
 ));
 
 async function api(path, method, body, timeoutMs) {
+  const ctrl = new AbortController();
+  const limit = timeoutMs || 15000;
+  const timer = setTimeout(() => ctrl.abort(), limit);
   try {
-    const ctrl = new AbortController();
-    /* U4：默认 15s 够读状态；命令/apply 给更长，避免「超时假失败」 */
-    const limit = timeoutMs || 15000;
-    const timer = setTimeout(() => ctrl.abort(), limit);
     const r = await fetch(path, {
-      method: method || 'GET',
-      headers: { 'Content-Type': 'application/json', 'Origin': location.origin },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: ctrl.signal
+      method: method || 'GET', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined, signal: ctrl.signal
     });
-    clearTimeout(timer);
-    return await r.json();
+    const data = await r.json();
+    if (!r.ok) return { ...data, success: false, http_status: r.status,
+      message: data.message || (r.status === 401 ? '登录已失效，请重新登录' : '请求未完成，请重试') };
+    return data;
   } catch (e) {
-    const msg = e.name === 'AbortError'
-      ? ('请求超时（' + Math.round((timeoutMs || 15000) / 1000) + 's），服务可能仍在执行')
-      : e.message;
-    return { success: false, message: msg };
-  }
+    return { success: false, retryable: true, code: e.name === 'AbortError' ? 'request_timeout' : e.name === 'SyntaxError' ? 'unexpected_response' : 'network_error',
+      message: e.name === 'AbortError' ? '等待结果超时，操作可能仍在执行。请先刷新状态，避免重复操作。' : e.name === 'SyntaxError' ? '服务返回了异常内容，请刷新或查看诊断。' : '无法连接本机服务，请检查 MyNet 是否运行，再刷新重试。' };
+  } finally { clearTimeout(timer); }
 }
 
 /* U6：错误区常驻（最近失败可回看，不是 toast 一晃就没） */
@@ -1304,27 +1305,41 @@ function toast(title, message, kind) {
   setTimeout(() => e.remove(), kind === 'err' ? 6000 : 4000);
 }
 
-function busy(btn, fn) {
+async function busy(btn, fn) {
+  if (btn.disabled || btn.dataset.busy === 'true') return;
   const old = btn.innerHTML;
+  btn.dataset.busy = 'true';
   btn.disabled = true;
-  btn.innerHTML = '<i class="spin"></i>处理中';
-  return Promise.resolve(fn()).finally(() => {
+  btn.setAttribute('aria-busy', 'true');
+  btn.innerHTML = '<i class="spin" aria-hidden="true"></i>处理中…';
+  try { return await fn(); }
+  finally {
+    delete btn.dataset.busy;
     btn.disabled = false;
+    btn.removeAttribute('aria-busy');
     btn.innerHTML = old;
-  });
+  }
 }
 
 function confirmDlg(title, message, okLabel, fn) {
   const back = document.createElement('div');
   back.className = 'modalbg';
+  const previousFocus = document.activeElement;
   back.innerHTML =
-    '<div class="modal"><h3>' + esc(title) + '</h3>' +
+    '<div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title"><h3 id="confirm-title">' + esc(title) + '</h3>' +
     '<p class="note">' + esc(message) + '</p>' +
     '<div class="actions"><button class="btn" data-cancel>取消</button>' +
     '<button class="btn danger" data-ok>' + esc(okLabel || '继续') + '</button></div></div>';
   document.body.appendChild(back);
-  back.querySelector('[data-cancel]').onclick = () => back.remove();
-  back.querySelector('[data-ok]').onclick = async () => { back.remove(); await fn(); };
+  const close = () => { back.remove(); previousFocus?.focus(); };
+  const cancel = back.querySelector('[data-cancel]'), ok = back.querySelector('[data-ok]');
+  cancel.onclick = close;
+  ok.onclick = async () => { close(); await fn(); };
+  back.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Tab') { e.preventDefault(); (document.activeElement === cancel ? ok : cancel).focus(); }
+  });
+  cancel.focus();
 }
 
 function badge(text, kind) {
@@ -1405,12 +1420,14 @@ function goPage(page, tab) {
   /* 第一层：页面 Tab */
   document.querySelectorAll('#pagetabs button').forEach((b) => {
     b.classList.toggle('on', b.dataset.page === page);
+    b.setAttribute('aria-pressed', String(b.dataset.page === page));
   });
   /* 第二层：功能区 Tab */
   document.querySelectorAll('.tabbar').forEach((bar) => {
     const on = bar.dataset.page === page;
     bar.querySelectorAll('button').forEach((b) => {
       b.classList.toggle('on', on && b.dataset.tab === t);
+      b.setAttribute('aria-pressed', String(on && b.dataset.tab === t));
     });
   });
   document.querySelectorAll('.panel').forEach((p) => {
@@ -1478,8 +1495,10 @@ async function loadSession() {
     api('/api/v1/wizard/state'),
     api('/api/v1/config/identity')
   ]);
-  const w = st.data || {};
-  const i = idn.data || {};
+  if (!st.success && !idn.success) return session;
+  const w = st.success ? st.data || {} : session;
+  const i = idn.success ? idn.data || {} : session;
+  if (idn.success) { identity = i; if (i.driver === 'gnb' || i.driver === 'wireguard') window.__mynetDriver = i.driver; }
   session.logged_in = !!(i.logged_in || w.logged_in);
   session.user_email = i.user_email || w.user_email || '';
   session.user_id = i.user_id || '';
@@ -1498,6 +1517,8 @@ async function loadSession() {
   return session;
 }
 
+let statusReadOk = false;
+let statusUpdatedAt = null;
 async function refresh() {
   const [s, m, d, idn] = await Promise.all([
     api('/api/v1/node-status'),
@@ -1505,9 +1526,10 @@ async function refresh() {
     api('/api/v1/status'),
     api('/api/v1/config/identity')
   ]);
-  status = s.data || {};
-  modeInfo = m.data || {};
-  identity = idn.data || {};
+  statusReadOk = !!s.success;
+  if (s.success) { status = s.data || {}; statusUpdatedAt = new Date(); }
+  if (m.success) modeInfo = m.data || {};
+  if (idn.success) identity = idn.data || {};
   peers = Array.isArray(status.peers) ? status.peers : [];
   window.__mynetDriver = identity.driver === 'wireguard' ? 'wireguard' : 'gnb';
 
@@ -1527,21 +1549,25 @@ window.refresh = refresh;
 /* U3：展示层轻量刷新 —— 只拉 mynetd 已有快照，不重新探测 OS。
    8s 一轮，仅当前台可见时跑，避免后台空转。 */
 let __pollTimer = null;
+let statusPollBusy = false;
 function startStatusPoll() {
   stopStatusPoll();
   __pollTimer = setInterval(async () => {
-    if (document.hidden) return;
+    if (document.hidden || statusPollBusy) return;
+    statusPollBusy = true;
     /* 只刷状态，不拉 identity/session，降低开销 */
     try {
       const [s, d] = await Promise.all([
         api('/api/v1/node-status'),
         api('/api/v1/status')
       ]);
-      status = s.data || status;
+      statusReadOk = !!s.success;
+      if (s.success) { status = s.data || status; statusUpdatedAt = new Date(); }
       const daemonOk = !!d.success;
       $('net-dot').className = 'dot ' + (daemonOk ? 'ok' : 'bad');
       renderOverview(daemonOk);
     } catch (_) {}
+    finally { statusPollBusy = false; }
   }, 8000);
 }
 function stopStatusPoll() {
@@ -1554,7 +1580,7 @@ document.addEventListener('visibilitychange', () => {
 
 function renderOverview(daemonOk) {
   const s = status;
-  const k = s.state === 'RUNNING' ? 'ok' : s.state === 'DEGRADED' ? 'warn' : s.state === 'FAILED' ? 'bad' : '';
+  const k = !daemonOk || !statusReadOk ? 'warn' : s.state === 'RUNNING' ? 'ok' : s.state === 'DEGRADED' ? 'warn' : s.state === 'FAILED' ? 'bad' : '';
   const hero = $('hero');
   hero.className = 'hero ' + k;
 
@@ -1568,7 +1594,7 @@ function renderOverview(daemonOk) {
   /* 紧挨状态灯的原因一句话（如「启动失败：gnb 已退出」） */
   const detailEl = $('status-detail');
   if (detailEl) {
-    detailEl.textContent = s.one_line || s.detail || '';
+    detailEl.textContent = (!statusReadOk && (s.one_line || s.detail) ? '上次状态：' : '') + (s.one_line || s.detail || '');
     detailEl.style.display = detailEl.textContent ? '' : 'none';
   }
   $('net-name').textContent = !modeInfo.initialized
@@ -1595,8 +1621,8 @@ function renderOverview(daemonOk) {
   $('mode-badge').textContent = modeInfo.mode === 'online' ? 'MyNet 云端模式' : '自主管理模式';
   $('mode-badge').className = 'badge ' + (modeInfo.mode === 'online' ? 'ok' : '');
   $('s-daemon').innerHTML = daemonOk ? badge('正常', 'ok') : badge('不可用', 'bad');
-  $('s-proc').innerHTML = s.process_up ? badge('正常', 'ok') : badge('未运行', 'warn');
-  $('s-routes').innerHTML = s.routes_ok ? badge('正常', 'ok') : badge('未就绪', 'warn');
+  $('s-proc').innerHTML = !statusReadOk ? badge('暂不可查', 'warn') : s.process_up ? badge('正常', 'ok') : badge('未运行', 'warn');
+  $('s-routes').innerHTML = !statusReadOk ? badge('暂不可查', 'warn') : s.routes_ok ? badge('正常', 'ok') : badge('未就绪', 'warn');
   $('s-traffic').textContent = bytes(s.rx_bytes) + ' / ' + bytes(s.tx_bytes);
 
   /* 概览 · 连接 */
@@ -1613,15 +1639,40 @@ function renderOverview(daemonOk) {
     ).join('') : '<tr><td colspan="5" class="placeholder" style="border:0">暂无对端</td></tr>';
   }
 
+  const fresh = $('status-freshness');
+  fresh.textContent = statusReadOk ? '状态更新于 ' + (statusUpdatedAt ? statusUpdatedAt.toLocaleTimeString() : '刚刚')
+    : '暂时无法读取状态' + (statusUpdatedAt ? ' · 上次更新 ' + statusUpdatedAt.toLocaleTimeString() : '');
+  const next = $('overview-next');
+  let title = '', detail = '', label = '', action = null;
+  if (!daemonOk || !statusReadOk) {
+    $('status-title').textContent = '本机服务暂不可用';
+    title = '先恢复本机服务'; detail = '请确认 MyNet 正在运行。保留上次状态供参考，恢复后刷新。'; label = '重新检查'; action = () => busy($('overview-next-btn'), refresh);
+  } else if (!modeInfo.initialized || (modeInfo.mode === 'online' && !session.node_id)) {
+    title = '接入你的第一台设备'; detail = '登录账号，创建或选择设备，剩余配置自动完成。'; label = '开始接入'; action = () => { goPage('config'); if (!session.logged_in) openLoginModal(); };
+  } else if (s.state === 'DEGRADED' || s.state === 'FAILED') {
+    title = s.state === 'DEGRADED' ? '连接需要检查' : '连接未正常运行'; detail = s.one_line || '查看检查结果，按提示处理后重试。'; label = '查看原因'; action = () => goPage('diag');
+  } else if (modeInfo.mode === 'online' && connectResult && connectResult.success && s.state !== 'RUNNING') {
+    title = '连接已启动，等待状态确认'; detail = '状态会自动更新，也可以手动刷新检查。'; label = '刷新状态'; action = () => busy($('overview-next-btn'), refresh);
+  } else if (modeInfo.mode === 'online' && !['RUNNING', 'STOPPED'].includes(s.state)) {
+    title = '完成本机接入'; detail = '自动准备身份、加载配置并启动连接。'; label = '继续接入'; action = () => goPage('config');
+  }
+  next.classList.toggle('hidden', !title);
+  const nextHTML = title ? '<div class="grow"><b>' + esc(title) + '</b><p>' + esc(detail) + '</p></div><button class="btn primary" id="overview-next-btn">' + esc(label) + '</button>' : '';
+  if (next.innerHTML !== nextHTML) next.innerHTML = nextHTML;
+  if (action) $('overview-next-btn').onclick = action;
+
   /* 主操作：配置 · 起 · 停 · 重启
      ⚠️ 不要用 e.currentTarget 进 confirm 回调：事件分发结束后 currentTarget 为 null，
      doAction 会静默失败（点了没反应）。一律按 id 取按钮。 */
   const drv = window.__mynetDriver || 'gnb';
-  const running = s.state === 'RUNNING' || s.state === 'DEGRADED';
+  const running = statusReadOk && (s.state === 'RUNNING' || s.state === 'DEGRADED' || s.process_up === true);
   $('btn-cfg').onclick = () => goPage('config');
-  $('btn-start').disabled = running;
-  $('btn-stop').disabled = !running;
-  $('btn-restart').disabled = !running;
+  $('btn-start').disabled = running || !statusReadOk || !modeInfo.initialized || $('btn-start').dataset.busy === 'true';
+  $('btn-start').classList.toggle('hidden', !modeInfo.initialized || (modeInfo.mode === 'online' && !running && s.state !== 'STOPPED'));
+  $('btn-stop').classList.toggle('hidden', !running);
+  $('btn-restart').classList.toggle('hidden', !running);
+  $('btn-stop').disabled = !running || $('btn-stop').dataset.busy === 'true';
+  $('btn-restart').disabled = !running || $('btn-restart').dataset.busy === 'true';
   $('btn-start').onclick = () => doAction($('btn-start'), '启动', ['service', 'start', drv]);
   $('btn-stop').onclick = () => confirmDlg('停止网络连接？', '停止后这台设备无法访问 MyNet 网络，直到再次启动。', '确认停止',
     () => doAction($('btn-stop'), '停止', ['service', 'stop', drv]));
@@ -1632,7 +1683,7 @@ function renderOverview(daemonOk) {
 /** doAction 执行一条 mynet 命令：过程 toast + 按钮忙态 + 结果日志。 */
 async function doAction(btn, label, argv) {
   const target = btn || document.createElement('button');
-  toast(label + '中…', Array.isArray(argv) ? argv.join(' ') : '', 'info');
+  toast(label + '中…', '操作完成后会自动更新状态', 'info');
   await busy(target, async () => {
     let r = { success: true };
     if (argv) {
@@ -1858,6 +1909,11 @@ async function loadSettings() {
     api('/api/v1/config/runtime'),
     api('/api/v1/plugins')
   ]);
+  if (!k.success || !r.success) {
+    $('cfg-state').textContent = '配置暂时不可读';
+    $('cfg-artifacts').textContent = k.message || r.message || '请恢复服务后刷新，上次配置会保留';
+    return;
+  }
   loadParity();
   const kd = k.data || {};
   const rd = r.data || {};
@@ -2198,7 +2254,7 @@ function renderConfigGate() {
   const gate = $('cfg-gate');
   const grid = $('key-grid');
   if (!gate) return;
-  const pass = !!session.logged_in && !!session.node_id;
+  const pass = (modeInfo.initialized && modeInfo.mode === 'local') || (modeInfo.mode === 'online' && !!session.logged_in && !!session.node_id);
   if (grid) grid.classList.toggle('gated', !pass);
   gate.classList.toggle('hidden', pass);
   if (pass) { $('gate-body').innerHTML = ''; cloudNodesCache = null; return; }
@@ -2218,6 +2274,7 @@ function renderConfigGate() {
       '<div id="gate-node-list" class="gate-list"></div>';
     $('gate-nodes').onclick = loadGateNodes;
     if (cloudNodesCache) renderGateNodes(cloudNodesCache);
+    else loadGateNodes({ currentTarget: $('gate-nodes') });
   }
 }
 
@@ -2239,7 +2296,8 @@ function renderGateNodes(nodes) {
   const box = $('gate-node-list');
   if (!box) return;
   if (!nodes.length) {
-    box.innerHTML = '<div class="placeholder" style="padding:12px">' + TERM.zone + '里还没有设备 —— 请先在平台侧登记本设备，再回来刷新。</div>';
+    box.innerHTML = '<div class="placeholder" style="padding:12px">' + TERM.zone + '里还没有设备 —— 点击「创建设备」，只需名称和 VPN 类型；地址与首个资源池会自动分配。</div><div class="actions"><button class="btn primary" id="gate-create">创建设备</button></div>';
+    $('gate-create').onclick = () => { goPage('space'); ensureConsole(); $('console-frame').src = '/gui/app/nodes/create'; };
     return;
   }
   box.innerHTML = nodes.map((n) => {
@@ -2261,27 +2319,62 @@ function renderGateNodes(nodes) {
   });
 }
 
-async function useGateNode(tenant, node, btn) {
+async function useGateNode(tenant, node, btn, selectedNode) {
   if (!tenant) {
     toast('缺少' + TERM.zone + ' ID', '该节点没有' + TERM.zone + '信息，无法激活', 'err');
     return;
   }
-  await busy(btn, async () => {
-    const r = await api('/api/v1/config/active', 'POST', { tenant, node, setup_only: true });
+  return busy(btn, async () => {
+    const selected = selectedNode || (cloudNodesCache || []).find(n => String(n.node_id ?? n.id) === String(node));
+    const types = selected && selected.vpn_type;
+    const vpnType = Array.isArray(types) ? types[0] : types;
+    if (!['gnb', 'wireguard'].includes(vpnType)) {
+      toast('无法确定设备类型', '请刷新设备列表后重试，或使用专家模式', 'err'); return;
+    }
+    if (connectBusy) { toast('正在接入', '接入完成后再切换设备', 'warn'); return; }
+    const r = await api('/api/v1/config/active', 'POST', { tenant, node, vpn_type: vpnType, setup_only: true });
     logAction('选择节点 ' + node, r.success, r.message || '');
     if (!r.success) {
       toast('选节点失败', r.message || '', 'err');
       return;
     }
+    connectResult = null;
     await loadSession();
     await loadSettings();
-    toast('节点已选定', '现在可以导入或生成密钥了', 'ok');
+    toast('设备已选定', '点击「接入本机」完成密钥、配置与启动', 'ok');
+    return true;
   });
 }
+
+// Accept explicit connect actions only from our same-origin embedded console.
+let deviceBridgeBusy = false;
+window.addEventListener('message', async event => {
+  const frame = $('console-frame');
+  if (event.origin !== location.origin || !frame || event.source !== frame.contentWindow ||
+      event.data?.type !== 'mynet:connect-device' || deviceBridgeBusy) return;
+  const node = String(event.data.nodeId || '');
+  if (!/^\d+$/.test(node)) return;
+  deviceBridgeBusy = true;
+  try {
+    const r = await api('/api/v1/config/cloud');
+    if (!r.success) throw new Error(r.message || '读取设备列表失败');
+    cloudNodesCache = r.data?.nodes || [];
+    const selected = cloudNodesCache.find(n => String(n.node_id ?? n.id) === node);
+    if (!selected) throw new Error('账号下找不到此设备，请刷新后重试');
+    goPage('config');
+    const selectedOK = await useGateNode(String(selected.tenant_id || session.tenant_id || ''), node, document.createElement('button'));
+    if (selectedOK && String(session.node_id) === node && $('flow-connect')?.onclick) {
+      await $('flow-connect').onclick({ currentTarget: $('flow-connect') });
+    }
+  } catch (err) { toast('接入失败', err.message, 'err'); }
+  finally { deviceBridgeBusy = false; }
+});
 
 /* ── 闸门过后的流程台阶：③ 密钥 → ④ 加载配置 → ⑤ 启动 ──
  * 与后端 node-status 状态机同源：这里只做「现在该做什么」的引导，
  * 真正的启停仍走概览页那套按钮，避免两处逻辑打架。 */
+let connectBusy = false;
+let connectResult = null;
 let keySectionOpen = false;   // 密钥就绪后用户是否主动展开四张卡
 
 function flowStep(n, title, desc, actions) {
@@ -2299,54 +2392,87 @@ function renderConfigFlow(nodeReady, rtReady) {
   const grid = $('key-grid');
   const note = $('key-intro-note');
   const ready = $('key-ready');
-  const gatePass = !!session.logged_in && !!session.node_id;
+  const localMode = modeInfo.initialized && modeInfo.mode === 'local';
+  const gatePass = localMode || (modeInfo.mode === 'online' && !!session.logged_in && !!session.node_id);
   const s = status || {};
-  const running = s.state === 'RUNNING' || s.state === 'DEGRADED';
+  const running = s.state === 'RUNNING';
 
   // 密钥区折叠：nodeReady 且未主动展开时，收起四张卡换成状态条
   if (ready) {
-    const collapsed = gatePass && nodeReady && !keySectionOpen;
-    ready.classList.toggle('hidden', !(gatePass && nodeReady));
+    const collapsed = gatePass && !keySectionOpen && (nodeReady || !localMode);
+    ready.classList.toggle('hidden', !gatePass);
     if (grid) grid.classList.toggle('collapsed', collapsed);
     if (note) note.classList.toggle('hidden', collapsed);
-    if (gatePass && nodeReady) {
+    if (gatePass) {
+      $('kr-status').textContent = nodeReady ? '✓ 密钥已就绪' : '密钥将在接入时自动准备';
       const pub = window.__lastKeyPub || '';
       $('kr-pub').textContent = '公钥 ' + (pub ? pub.slice(0, 16) + '…' : '—');
     }
     const kr = $('kr-change');
-    if (kr) kr.onclick = () => { keySectionOpen = true; renderConfigFlow(nodeReady, rtReady); };
+    if (kr) { kr.textContent = keySectionOpen ? '收起专家设置' : '专家设置'; kr.setAttribute('aria-expanded', String(keySectionOpen)); kr.onclick = () => { keySectionOpen = !keySectionOpen; renderConfigFlow(nodeReady, rtReady); }; }
   }
 
   if (!flow || !body) return;
   if (!gatePass) { flow.classList.add('hidden'); body.innerHTML = ''; return; }
   flow.classList.remove('hidden');
 
-  if (!nodeReady) {
-    body.innerHTML = flowStep(3, '导入或生成密钥',
-      '身份密钥决定「这台设备是谁」。完成后即可从云端加载本节点的网络配置。', '');
-    return;
-  }
-  if (!rtReady) {
-    body.innerHTML = flowStep(4, '加载网络配置',
-      '密钥已就绪。从 MyNet 云端拉取本节点的对端、网段与路由，并应用到本机。',
-      '<button class="btn primary" id="flow-pull">加载并应用配置</button>');
-    $('flow-pull').onclick = (e) => busy(e.currentTarget, flowPullApply);
+  if (localMode) {
+    body.innerHTML = flowStep('本机', '自主管理网络', '使用本机维护的网络配置。身份与网络参数在专家设置中管理。',
+      '<button class="btn" id="flow-local-expert">专家设置</button>' +
+      (nodeReady && !running ? '<button class="btn primary" id="flow-local-start">应用并启动</button>' : ''));
+    $('flow-local-expert').onclick = () => { keySectionOpen = true; renderConfigFlow(nodeReady, rtReady); };
+    if ($('flow-local-start')) $('flow-local-start').onclick = e => busy(e.currentTarget, async () => {
+      const r = await api('/api/v1/config/apply', 'POST', { start: true }, 60000);
+      toast(r.success ? '本机网络已启动' : '应用失败', r.message || '', r.success ? 'ok' : 'err');
+      await refresh(); await loadSettings();
+    });
     return;
   }
   if (!running) {
-    body.innerHTML = flowStep(5, '启动网络连接',
-      '配置已就绪。启动后本设备加入 MyNet 网络，可与对端互通。',
-      '<button class="btn primary" id="flow-start">启动网络</button>' +
-      '<button class="btn" id="flow-goto-ov">前往概览</button>');
-    $('flow-start').onclick = (e) => doAction(e.currentTarget, '启动',
-      ['service', 'start', window.__mynetDriver || 'gnb']);
-    $('flow-goto-ov').onclick = () => goPage('overview');
+    body.innerHTML = flowStep(3, '接入本机',
+      '自动准备本机密钥、同步公钥、加载配置并启动连接。已有密钥会保留；失败后可重试。手动导入请展开专家设置。',
+      '<button class="btn primary" id="flow-connect">接入本机</button>');
+    body.innerHTML += '<div id="connect-feedback" class="connection-feedback hidden" role="status" aria-live="polite"></div>';
+    renderConnectFeedback();
+    $('flow-connect').disabled = connectBusy;
+    $('flow-connect').textContent = connectBusy ? '正在接入…' : connectResult && !connectResult.success ? '重试接入' : '接入本机';
+    $('flow-connect').onclick = e => busy(e.currentTarget, connectLocalDevice);
     return;
   }
   body.innerHTML = '<div class="flow-done"><span class="flow-chip">✓</span>' +
     '<b>网络连接运行中</b><small>' + esc(s.one_line || '本设备已加入 MyNet 网络') + '</small>' +
     '<div class="flow-actions"><button class="btn" id="flow-view-ov">查看概览</button></div></div>';
   $('flow-view-ov').onclick = () => goPage('overview');
+}
+
+function renderConnectFeedback() {
+  const box = $('connect-feedback');
+  if (!box) return;
+  box.classList.toggle('hidden', !connectBusy && !connectResult);
+  if (connectBusy) {
+    box.innerHTML = '<b>正在接入本机</b><p>自动准备身份、同步公钥、加载配置并启动。请稍候，已有密钥会保留。</p>';
+    return;
+  }
+  if (!connectResult) return;
+  const r = connectResult;
+  box.innerHTML = '<b>' + esc(r.success ? '连接已启动' : '接入尚未完成') + '</b>' +
+    (Array.isArray(r.steps) ? '<ol>' + r.steps.map(step => '<li data-state="' + esc(step.state) + '">' +
+      esc(step.name) + ' · ' + (step.state === 'done' ? '已完成' : step.state === 'failed' ? '未完成' : '处理中') + '</li>').join('') + '</ol>' : '') +
+    '<p>' + esc(r.message || '') + '</p><p>' + (r.success ? '以概览中的实际连接状态为准。' : '已完成步骤与本机身份会保留。可查看原因后重试。') + '</p>';
+  if (r.need_login) { box.innerHTML += '<button class="btn primary" id="connect-login">重新登录</button>'; $('connect-login').onclick = openLoginModal; }
+}
+
+async function connectLocalDevice() {
+  if (connectBusy) return;
+  connectBusy = true; connectResult = null;
+  renderConnectFeedback();
+  try {
+    connectResult = await api('/api/v1/config/connect', 'POST', {}, 180000);
+    logAction('接入本机', connectResult.success, connectResult.message || '');
+    toast(connectResult.success ? '连接已启动' : '接入尚未完成', connectResult.message || '', connectResult.success ? 'ok' : 'err');
+  } finally { connectBusy = false; renderConnectFeedback(); }
+  await refresh(); await loadSettings();
+  if (connectResult.success) goPage('overview');
 }
 
 // flowPullApply：拉取 bundle → 生成驱动投影并安装路由，一步到位。
@@ -2703,7 +2829,9 @@ $('btn-space-logout').onclick = () => confirmDlg(
 );
 
 /* 向导 */
+let wizardOnline = true;
 function openWizard() {
+  wizardOnline = true;
   $('wizard').classList.remove('hidden');
   // gateway 只读展示（本机服务的转发出口，不是用户输入）
   const gw = $('wiz-gateway');
@@ -2718,13 +2846,15 @@ $('wiz-finish').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-skip').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-skip2').onclick = () => $('wizard').classList.add('hidden');
 $('wiz-online').onclick = () => {
+  wizardOnline = true;
   wizStep(2);
 };
 $('wiz-local').onclick = async () => {
+  wizardOnline = false;
   const r = await api('/api/v1/config/mode', 'POST', { mode: 'local' });
   logAction('切换自主管理', r.success, r.message || '');
   toast(r.success ? '已切换到自主管理模式' : '切换失败', r.message || '', r.success ? '' : 'err');
-  wizStep(2);
+  if (r.success) { $('wizard').classList.add('hidden'); await refresh(); goPage('config'); }
 };
 $('wiz-login').onclick = (e) => busy(e.currentTarget, async () => {
   // 本机页不传 api_base_url —— 平台请求经 gateway 中继，api_base 由服务端定
@@ -2738,6 +2868,12 @@ $('wiz-login').onclick = (e) => busy(e.currentTarget, async () => {
   if (r.success) {
     await loadSession();
     refresh();
+    if (wizardOnline) {
+      $('wizard').classList.add('hidden');
+      goPage('config');
+      await loadSettings();
+      return;
+    }
     const gen = $('wiz-key-gen');
     const mk = $('wiz-rt-make');
     if (gen) gen.disabled = false;

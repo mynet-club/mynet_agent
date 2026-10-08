@@ -263,11 +263,18 @@ func configFaceKeys(args []string) int {
 	switch sub {
 	case "show", "status":
 		return configFaceKeysShow()
+	case "ensure":
+		return configFaceKeysEnsure()
 	case "generate":
 		return configFaceKeysGenerate(args)
 	case "set":
 		return configFaceKeysSet(args)
 	case "sync":
+		for _, arg := range args {
+			if arg == "--connect" {
+				return configFaceKeysSyncConnect(true)
+			}
+		}
 		return configFaceKeysSync()
 	default:
 		fmt.Fprintf(os.Stderr, "config keys: 未知子命令 %q\n", sub)
@@ -898,7 +905,8 @@ func fetchRemoteParityOptions() map[string]any {
 }
 
 // configFacePull 从服务端拉 bundle（需登录）→ 落 var/bundle.json → apply 投影。
-func configFacePull() int {
+func configFacePull() int { return configFacePullOnly(false) }
+func configFacePullOnly(downloadOnly bool) int {
 	cred := LoadCredential()
 	if cred == nil || cred.Token == "" {
 		// 未登录：明确标记，UI 跳登录页
@@ -920,7 +928,7 @@ func configFacePull() int {
 		return printJSON(map[string]any{"error": "无激活节点 node_id"})
 	}
 	c := newBackClientFor(cred)
-	if rc := downloadBundle(c, nodeID); rc != 0 {
+	if rc := downloadBundleQuiet(c, nodeID); rc != 0 {
 		return printJSON(map[string]any{
 			"error":      "下载 bundle 失败（可能未登录或会话过期）",
 			"need_login": true,
@@ -932,6 +940,9 @@ func configFacePull() int {
 		if b, err := os.ReadFile(filepath.Join(utils.VarDir(), "bundle.json")); err == nil {
 			_ = os.WriteFile(filepath.Join(src, "bundle.json"), b, 0o600)
 		}
+	}
+	if downloadOnly {
+		return printJSON(map[string]any{"pulled": true, "node_id": nodeID})
 	}
 	// 投影
 	if err := ApplyFromActive(false); err != nil {
@@ -951,4 +962,19 @@ func configFacePull() int {
 		"parity":   par,
 		"message":  "已从服务端拉取并生成运行配置",
 	})
+}
+
+// ensure preserves existing identity and refuses incomplete/corrupt key files.
+func configFaceKeysEnsure() int {
+	dir, mode, err := configFaceKeysDir()
+	if err != nil {
+		return printJSON(map[string]any{"error": err.Error()})
+	}
+	if mode == nil || mode.Mode != domain.ModeOnline || mode.Active.NodeID == "" {
+		return printJSON(map[string]any{"error": "请先选择云端设备"})
+	}
+	if err := ensureNodeKeys(dir, string(mode.Active.Driver), mode.Active.NodeID, ""); err != nil {
+		return printJSON(map[string]any{"error": err.Error()})
+	}
+	return configFaceKeysShow()
 }

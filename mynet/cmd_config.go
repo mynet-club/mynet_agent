@@ -97,6 +97,11 @@ func cmdConfig(args []string) int {
 	case "runtime":
 		return configFaceRuntime()
 	case "pull":
+		for _, arg := range args[1:] {
+			if arg == "--download-only" {
+				return configFacePullOnly(true)
+			}
+		}
 		return configFacePull()
 	case "sync":
 		// U2：pull（下载+投影）再装 OS 路由 —— 一条龙

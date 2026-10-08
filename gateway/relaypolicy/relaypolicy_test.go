@@ -34,3 +34,11 @@ func TestCustomPrefixStillHonorsDeny(t *testing.T) {
 		t.Fatal("deny must win over wide allow")
 	}
 }
+
+func TestSimplifiedDeviceFlowPaths(t *testing.T) {
+	for _, path := range []string{"/api/v1/nodes/quick-create", "/api/v1/nodes/42/keys", "/api/v1/nodes/42/status", "/api/v1/nodes/42/bundle/publish", "/api/v1/nodes/42/bundle"} {
+		if !IsAllowed(path) {
+			t.Fatalf("device flow blocked: %s", path)
+		}
+	}
+}

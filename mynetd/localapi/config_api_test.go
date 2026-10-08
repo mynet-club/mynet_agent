@@ -219,3 +219,64 @@ func TestConfigActiveSetupOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigPrepareStopsAtBusinessError(t *testing.T) {
+	var calls []string
+	s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
+	s.Ops = func(argv []string) (any, error) {
+		calls = append(calls, strings.Join(argv, " "))
+		if len(calls) == 2 {
+			return opsOut(`{"error":"need_login"}`), nil
+		}
+		return opsOut(`{"has_private":true}`), nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/prepare", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:8096"
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 502 || len(calls) != 2 || strings.Contains(strings.Join(calls, " "), "pull") {
+		t.Fatalf("unexpected pipeline: %d %v", rec.Code, calls)
+	}
+}
+func TestConfigActiveWireGuard(t *testing.T) {
+	for _, vpn := range []string{"wireguard", "invalid"} {
+		var called string
+		s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
+		s.Ops = func(argv []string) (any, error) { called = strings.Join(argv, " "); return opsOut(`{}`), nil }
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/config/active", strings.NewReader(`{"tenant":"t1","node":"42","setup_only":true,"vpn_type":"`+vpn+`"}`))
+		req.Host = "127.0.0.1:8096"
+		rec := httptest.NewRecorder()
+		s.mux.ServeHTTP(rec, req)
+		if vpn == "wireguard" {
+			if rec.Code != 200 || !strings.Contains(called, "--vpn-type wireguard") {
+				t.Fatalf("lost vpn: %s", called)
+			}
+		} else if rec.Code != 400 || called != "" {
+			t.Fatal("invalid VPN invoked executor")
+		}
+	}
+}
+
+func TestConfigPrepareSequence(t *testing.T) {
+	var calls []string
+	s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
+	s.Ops = func(argv []string) (any, error) {
+		calls = append(calls, strings.Join(argv, " "))
+		return opsOut(`{"ok":true}`), nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/config/prepare", strings.NewReader(`{}`))
+	req.Host = "127.0.0.1:8096"
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	want := "config keys ensure --json|config keys sync --connect --json|config pull --download-only --json"
+	if rec.Code != 200 || strings.Join(calls, "|") != want {
+		t.Fatalf("unexpected prepare %d %v", rec.Code, calls)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/config/prepare", nil)
+	req.Host = "127.0.0.1:8096"
+	rec = httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 405 || len(calls) != 3 {
+		t.Fatal("read request caused mutations")
+	}
+}

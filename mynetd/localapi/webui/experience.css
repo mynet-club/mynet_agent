@@ -1,0 +1,56 @@
+/* Shared MyNet tone: quiet blue, readable surfaces, visible keyboard focus. */
+:root{--bg:#f5f7fb;--card:#fff;--soft:#edf2f8;--line:#dce3ed;--ink:#172438;--mut:#56667c;--brand:#2563eb;--brand-soft:#eaf1ff;--ok:#16734c;--r:12px;color-scheme:light}
+body{background:var(--bg);line-height:1.65}
+.topbar{background:var(--card);backdrop-filter:none}
+.wrap{max-width:1120px}
+.hero,.card{box-shadow:none}
+.hero{padding:24px;border-color:var(--line)}
+.hero h1{font-size:24px;letter-spacing:-.025em}
+.btn{min-height:40px;box-shadow:none!important;transition:background .12s ease}
+.btn.primary:hover{filter:none;background:#1d4ed8}
+.pagetabs{background:var(--soft);gap:6px}
+.pagetabs button.on,.tabbar button.on{box-shadow:none;background:var(--card)}
+:where(button,a,input,select,textarea,summary):focus-visible{outline:3px solid var(--brand);outline-offset:3px}
+:where(input,select,textarea){color:var(--ink);background:var(--card)!important;border-color:var(--line)!important;font:inherit}
+input::placeholder,textarea::placeholder{color:var(--mut)}
+.next-action{display:flex;align-items:center;gap:20px;padding:16px 18px;background:var(--brand-soft);border:1px solid var(--line);border-radius:12px;margin:18px 0 0}
+.next-action .grow{flex:1;min-width:0}
+.next-action b{display:block;font-size:15px}
+.next-action p{margin:3px 0 0;color:var(--mut)}
+.next-action .btn{flex:none}
+.connection-feedback{margin:14px 0;padding:16px;background:var(--soft);border-radius:10px;overflow-wrap:anywhere}
+.connection-feedback b{display:block;margin-bottom:6px}
+.connection-feedback ol{margin:8px 0;padding-left:22px}
+.connection-feedback li{margin:5px 0}
+.connection-feedback [data-state=failed]{color:var(--bad);font-weight:600}
+.connection-feedback [data-state=done]{color:var(--ok)}
+.connection-feedback p{margin:8px 0 0;color:var(--mut)}
+.status-freshness{display:block;margin-top:10px;color:var(--mut);font-size:12px}
+.key-card{box-shadow:none!important;text-align:left}
+#err-panel{position:static!important;max-width:1064px!important;margin:0 auto 24px;background:var(--bad-bg)!important;color:var(--ink)!important;border-color:var(--line)!important}
+#err-panel button{color:var(--ink)!important}
+#toasts{pointer-events:none}
+.toast{box-shadow:0 4px 18px #17243818}
+.mut,.note,.placeholder{color:var(--mut)}
+@media(prefers-color-scheme:dark){
+ :root{--bg:#111827;--card:#192337;--soft:#243146;--line:#37455b;--ink:#eef3fc;--mut:#b1bfd4;--brand:#5590ff;--brand-soft:#243b62;--ok:#6cd5a1;--warn:#f5c86b;--warn-bg:#3a3122;--bad:#ffada8;--bad-bg:#402b32;color-scheme:dark}
+ .badge{background:var(--soft);border-color:var(--line);color:var(--mut)}
+ .badge.ok{color:var(--ok);background:#1d3b35}.badge.warn{color:var(--warn);background:var(--warn-bg)}
+ .btn.caution{color:var(--warn);border-color:var(--line)}.btn.danger{color:var(--bad);border-color:var(--line)}
+ .btn.primary{background:#2862c9;color:#fff}.btn.primary:hover{background:#3273df}
+ .toast,.modal,.key-card,.key-card.on{background:var(--card);color:var(--ink)}
+ pre,.raw,.gate-list,.flow-step,.flow-done{background:var(--soft);color:var(--ink)}
+}
+@media(max-width:640px){
+ .wrap{padding:16px 14px 32px}.topbar{padding:0 14px;gap:8px;height:auto;min-height:60px;flex-wrap:wrap;padding-block:10px}
+ .top-right{gap:6px}.crumb .tab-name,.crumb-tab-sep{display:none}
+ .net-chip{max-width:150px;padding:5px 8px}.net-chip span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .pagetabs{overflow-x:auto;scrollbar-width:thin}.pagetabs button{flex:none;padding:10px 13px;white-space:nowrap;min-width:72px}
+ .hero{padding:18px}.hero-head{flex-wrap:wrap}.hero-actions{width:100%;justify-content:flex-start}
+ .facts{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.facts .f b{font-size:14px;overflow-wrap:anywhere}
+ .next-action{align-items:flex-start;flex-direction:column;gap:12px}.next-action .btn{width:100%}
+ .tabbar{overflow-x:auto}.tabbar button{flex:none;white-space:nowrap;min-width:88px}
+ .gate-row{flex-wrap:wrap}.gate-row .grow{min-width:55%}.creation-actions{flex-wrap:wrap}
+ .modal{max-height:calc(100dvh - 40px);overflow-y:auto}#err-panel{margin-inline:14px}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

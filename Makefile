@@ -77,6 +77,7 @@ DIST_MATRIX := darwin:arm64:arm64 darwin:amd64:amd64 linux:amd64:amd64 linux:arm
 
 # 打包器：darwin/windows 用 zip，其余 tgz（对齐 ctl PLATFORMS 的 ext）
 PACK = sh scripts/pack.sh
+GUI_DIST ?= ../mynet_gui/dist/spa
 
 # ── R4-1 / V2-3 / V2-4 产物 ─────────────────────────────────
 #
@@ -96,7 +97,12 @@ PACK = sh scripts/pack.sh
 dist:
 	@echo "▸ dist（VERSION=$(VERSION)）"
 	@rm -rf dist && mkdir -p dist
-	@set -e; for triple in $(DIST_MATRIX); do \
+	@set -e; test -f "$(GUI_DIST)/index.html" || { echo "缺 GUI embed 构建: $(GUI_DIST)"; exit 1; }; \
+		grep -q '/gui/assets/' "$(GUI_DIST)/index.html" || { echo "GUI 必须使用 .env.embed 构建"; exit 1; }; \
+		mkdir -p mynetd/localapi/webui/gui; \
+		cp -R "$(GUI_DIST)/." mynetd/localapi/webui/gui/; \
+		trap 'rm -rf mynetd/localapi/webui/gui' EXIT; \
+		for triple in $(DIST_MATRIX); do \
 		goos=$${triple%%:*}; rest=$${triple#*:}; goarch=$${rest%%:*}; ctlarch=$${rest#*:}; \
 		name=mynet_agent_$${goos}_$${ctlarch}_$(VERSION); \
 		out=dist/$$name; \

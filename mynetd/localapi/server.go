@@ -35,12 +35,13 @@ type Config struct {
 }
 
 type Server struct {
-	cfg Config
-	mu  sync.Mutex
-	tok string
-	mux *http.ServeMux
-	ln  net.Listener
-	srv *http.Server
+	cfg            Config
+	mu             sync.Mutex
+	configMutation sync.Mutex
+	tok            string
+	mux            *http.ServeMux
+	ln             net.Listener
+	srv            *http.Server
 	// Ops 执行器命令分派（mynet <子命令>），由 mynetd 装配注入。
 	Ops func(argv []string) (any, error)
 	// Relay 向导登录等平台调用：经 gateway 打 back。可注入便于测试。
@@ -66,7 +67,7 @@ func NewServer(cfg Config) *Server {
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
 	}
-	s := &Server{cfg: cfg, tok: cfg.Token, mux: http.NewServeMux(), sessions: NewSessionTable()}
+	s := &Server{cfg: cfg, tok: cfg.Token, mux: http.NewServeMux(), sessions: NewSessionTable(), Ops: defaultExecMynet}
 	s.routes()
 	return s
 }
@@ -78,11 +79,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/api/v1/command", s.handleCommand)
-	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult) // E-4
-	s.mux.HandleFunc("/api/v1/nodes/switch", s.handleNodesSwitch)     // D-10 / R5-1 焦点切换
-	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)              // R5-1 并行会话
-	s.mux.HandleFunc("/api/v1/relay", s.handleRelay)                  // GUI→mynetd→gateway→back 平台面
-	s.mux.HandleFunc("/gui/", s.handleGUI)                            // mynet_gui 控制台（API 走 relay）
+	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult)                   // E-4
+	s.mux.HandleFunc("/api/v1/nodes/switch", s.withConfigMutation(s.handleNodesSwitch)) // D-10 / R5-1 焦点切换
+	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)                                // R5-1 并行会话
+	s.mux.HandleFunc("/api/v1/relay", s.handleRelay)                                    // GUI→mynetd→gateway→back 平台面
+	s.mux.HandleFunc("/gui/", s.handleGUI)                                              // mynet_gui 控制台（API 走 relay）
 	// 向导端点是 **API 不是 UI**，不随 embed 构建标签开合：
 	// 没有内嵌 webui 的构建（D-11 的 OpenWrt 形态）照样要能被 LuCI/脚本调用。
 	s.registerWizardRoutes()

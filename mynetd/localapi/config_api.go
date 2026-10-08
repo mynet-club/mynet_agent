@@ -22,15 +22,17 @@ import (
 )
 
 func (s *Server) registerConfigRoutes() {
-	s.mux.HandleFunc("/api/v1/config/mode", s.handleConfigMode)
-	s.mux.HandleFunc("/api/v1/config/tenants", s.handleConfigTenants)
-	s.mux.HandleFunc("/api/v1/config/active", s.handleConfigActive)
-	s.mux.HandleFunc("/api/v1/config/keys", s.handleConfigKeys)
-	s.mux.HandleFunc("/api/v1/config/identity", s.handleConfigIdentity)
-	s.mux.HandleFunc("/api/v1/config/runtime", s.handleConfigRuntime)
-	s.mux.HandleFunc("/api/v1/config/cloud", s.handleConfigCloud)
-	s.mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
-	s.mux.HandleFunc("/api/v1/config/apply", s.handleConfigApply)
+	s.mux.HandleFunc("/api/v1/config/mode", s.withConfigMutation(s.handleConfigMode))
+	s.mux.HandleFunc("/api/v1/config/tenants", getOnly(s.handleConfigTenants))
+	s.mux.HandleFunc("/api/v1/config/active", s.withConfigMutation(s.handleConfigActive))
+	s.mux.HandleFunc("/api/v1/config/keys", s.withConfigMutation(s.handleConfigKeys))
+	s.mux.HandleFunc("/api/v1/config/identity", getOnly(s.handleConfigIdentity))
+	s.mux.HandleFunc("/api/v1/config/runtime", getOnly(s.handleConfigRuntime))
+	s.mux.HandleFunc("/api/v1/config/cloud", getOnly(s.handleConfigCloud))
+	s.mux.HandleFunc("/api/v1/config/connect", s.withConfigMutation(s.handleConfigConnect))
+	s.mux.HandleFunc("/api/v1/config/prepare", s.withConfigMutation(s.handleConfigPrepare))
+	s.mux.HandleFunc("/api/v1/plugins", getOnly(s.handlePlugins))
+	s.mux.HandleFunc("/api/v1/config/apply", s.withConfigMutation(s.handleConfigApply))
 }
 
 // GET /api/v1/config/cloud — 账号下完整的云端设备清单。
@@ -270,6 +272,7 @@ func (s *Server) handleConfigActive(w http.ResponseWriter, r *http.Request) {
 		Tenant    string `json:"tenant"`
 		Node      string `json:"node"`
 		SetupOnly bool   `json:"setup_only"`
+		VPNType   string `json:"vpn_type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "bad json"})
@@ -284,8 +287,15 @@ func (s *Server) handleConfigActive(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]any{"success": false, "message": "setup_only 需要 node"})
 			return
 		}
-		out, err := s.execMynetStd([]string{"setup", "--online",
-			"--tenant", body.Tenant, "--node-id", body.Node})
+		argv := []string{"setup", "--online", "--tenant", body.Tenant, "--node-id", body.Node}
+		if body.VPNType != "" {
+			if body.VPNType != "gnb" && body.VPNType != "wireguard" {
+				writeJSON(w, 400, map[string]any{"success": false, "message": "不支持的 VPN 类型"})
+				return
+			}
+			argv = append(argv, "--vpn-type", body.VPNType)
+		}
+		out, err := s.execMynetStd(argv)
 		if err != nil {
 			writeJSON(w, 400, map[string]any{"success": false, "stage": "setup",
 				"message": "选节点失败: " + err.Error(), "data": sanitizeWizardOut(out)})
@@ -451,4 +461,27 @@ func markTunnelWantDriver(on bool, driver string) {
 		"updated_at":   time.Now().UTC().Format(time.RFC3339),
 	}, "", "  ")
 	_ = os.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+// prepare is a thin structured wrapper: key sync and pull stay in the executor.
+// Unlike the generic command endpoint, it checks JSON business errors too.
+func (s *Server) handleConfigPrepare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
+		return
+	}
+	for _, step := range []struct {
+		name string
+		argv []string
+	}{
+		{"keys", []string{"config", "keys", "ensure", "--json"}},
+		{"sync", []string{"config", "keys", "sync", "--connect", "--json"}},
+		{"pull", []string{"config", "pull", "--download-only", "--json"}},
+	} {
+		if _, err := s.opsJSON(step.argv); err != nil {
+			writeJSON(w, 502, map[string]any{"success": false, "stage": step.name, "message": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"success": true})
 }
