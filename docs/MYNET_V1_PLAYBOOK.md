@@ -525,6 +525,10 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **禁止：** 不创建第二套租户模型、不复制 API 业务权威、不要求独立 8096 WebUI。
 
+**规划记录（2026-10-10）：** 用户要求先核当前情况再制定 OpenWrt 规划；现状证据与 O0–O8 工作包已形成于 [OpenWrt Agent 接入实施规划](../../mynet_openwrt/docs/AGENT_INTEGRATION_PLAYBOOK.md)。先收敛实际执行合同/init，再接 LuCI/ubus、生命周期、统一 Proxy、出包与资源验证，最后现网迁移。规划已成文，运行时尚未实施，不勾 P5/M4。
+
+**跨平台前置（2026-10-10 用户追加）：** .178 是公司当前网络主路由，.182 是家庭旁路由；安装/接口/运行/更新须分层，mynet 系统实现须平台条件编译。新 [跨平台规划](../../mynet_ctl/docs/knowledge-base/spec/platform-lifecycle-build-playbook.md) H0–H2 为 OpenWrt O1 前置，H4 为 O6 前置；[workspace review](../../mynet_ctl/docs/knowledge-base/workspace-review-20261010.md) 登记安装器与CLI的服务/路径/权限、更新与分发断层，运行时均未修复。
+
 **实施记录（2026-10-10 核对）：本节仍无立项实施记录。** 已存在的相关资产是 `mynet_openwrt` 里 **10 条未推送**的 LuCI 批（Token Binding `X-Device-Fingerprint`、`route.conf` 注入废弃 —— 对端路由唯一写入者归 `mynet apply`、postinst 改 procd 启停、断开隧道二次确认、QEMU 联调脚本收编），分叉点 `de765cf`（09-30）、自 10-04 起未再动。**Proxy 侧仍是旧 Lua 路径**（与 P4 的 (a) 同源）。这些提交属"做完没推"，不算本节达标；弱设备实机验证仍无证据。
 
 ### P6：Gateway 和部署闭环
