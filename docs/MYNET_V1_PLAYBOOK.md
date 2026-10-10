@@ -507,6 +507,12 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **P4 仍未收口的四处（M4 因此未达标）**：**(a)** OpenWrt `proxy.lua` 仍自读本地 `proxy_role.conf`/`proxy_route.conf`、不消费 bundle（`proxy.lua:16,60,411,439`）—— §13 第 5 条字面仍未达标；**(b)** 回程路由仍无实现（只有诊断文案 `cmd_route_doctor.go:99-102`）；**(c)** 错误出口 fail-closed / 网关离线仍无用例，OpenWrt 无可执行测试；**(d)** **console 面「网络区提供 proxy 公共服务、授权出口」是独立线，未开**（受 console 写路径闸门约束：`Controllers/Console/V1/NodeController.php:23-24` 要求带审计与操作者身份，落点与审计接法待裁）。`Acceleration` 契约仍全仓零命中（待裁 D3）。
 
+**实施记录（2026-10-08，出口授权小闭环 L0–L2 闭合）：上面 (c) 里「规则清理」那一半已落码，但 (a)(b)(d) 不变。** 详见 `mynet_ctl/docs/knowledge-base/spec/proxy-permission-loop-playbook.md`（上位基线挂在本节）与 `spec/proxy-exit-contract-lock.md`。三件事：
+
+1. **代码结构闭环成立**（用户 10-08 确认主链）：用户授权 → API 原子写入（事务 + 行锁）→ 发布新 bundle（checksum/generation）→ agent 校验并拒旧代 → 应用出口 NAT/ACL → 撤销时停用许可并清理规则；重复请求/重复 apply 不叠加，写入失败保留旧授权，规则应用失败回退上一代。落点：api `5eb08d0`（写面原子化 + 跨租户/并发/合同门禁）、agent `3e3d464`（出口 NAT/ACL 作用域清理与回滚）、`9f20e45`（`GenerationRevision` 解析 + `ApplyCloud` 单调门禁，此前 `ParseInt` 恒 0 导致重放被当最新）。
+2. **出口 NAT/ACL 专项**（原判「无清理、兜底 DROP 被当 optional」两个阻断）：改为接口独立 nft 专表 / iptables 链，带替换、幂等、撤销、故障回退与精确历史规则迁移；独立门禁 7 例 + OrbStack Alpine 里 nft 1.0.9 / iptables 1.8.10(nf_tables) 内核实测通过。
+3. **仍未验（故 M4/M6 不勾）**：E/O/C/U 真实流量矩阵、真 gateway 通知与拉取、**出口离线 fail-closed**、撤销后 conntrack 旧连接是否续走出口、并发 apply 互斥、iptables-legacy / OpenWrt 版本兼容、实机乱序重放 —— 七项逐条见该 playbook §10。**「出口规则撤销已验」≠「L2 全部通过」≠「可发布」**。
+
 ### P5：OpenWrt LuCI 产品壳和弱设备适配
 
 **目标：** LuCI 原生完成登录、节点、连接、网关、服务、Proxy、诊断和备份恢复；提供轻量执行路径。
@@ -518,6 +524,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 **必须测试：** ubus/ACL、弱设备启动、配置恢复、代理启停、脚本参数转义、LuCI/API 行为一致。
 
 **禁止：** 不创建第二套租户模型、不复制 API 业务权威、不要求独立 8096 WebUI。
+
+**实施记录（2026-10-10 核对）：本节仍无立项实施记录。** 已存在的相关资产是 `mynet_openwrt` 里 **10 条未推送**的 LuCI 批（Token Binding `X-Device-Fingerprint`、`route.conf` 注入废弃 —— 对端路由唯一写入者归 `mynet apply`、postinst 改 procd 启停、断开隧道二次确认、QEMU 联调脚本收编），分叉点 `de765cf`（09-30）、自 10-04 起未再动。**Proxy 侧仍是旧 Lua 路径**（与 P4 的 (a) 同源）。这些提交属"做完没推"，不算本节达标；弱设备实机验证仍无证据。
 
 ### P6：Gateway 和部署闭环
 
@@ -531,6 +539,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 **禁止：** 不在 gateway 增加租户授权或业务查询。
 
+**实施记录（2026-10-10 核对）：部分能力已有代码，真链路仍未验。** gateway **二进制已存在**（`cmd/mynet_gateway/main.go`），跨实例 presence 已接线 —— `NewRedisPresence` 被 `main.go:90` 调用（口令走 `MYNET_GATEWAY_REDIS_PASSWORD`），并有 `gateway/cross_instance_test.go`；`agent 2212e47` 落了「一键接入设备与统一本机界面」，`48b84f6` 落了「升级按本机 OS/架构选包」。**仍未验**：真实 WS/relay 端到端、跨机 WS 补拉与 ETag、通知丢失窗口、多实例 presence 真共享（见 `spec/proxy-permission-loop-playbook.md` §10「真实 gateway 通知与拉取」）。**本节达标判据未满足。**
+
 ### P7：GUI 产品化和发布验收
 
 **目标：** 让普通用户看到“我的节点/节点池/可访问网络/服务/加速”，让管理员看到成员、配额、自动组网和诊断。
@@ -542,6 +552,8 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 **必须测试：** API 错误映射、权限菜单、密钥遮罩、邀请流程、节点池配额、协议/转发能力、WebSocket 状态、SPA 构建和 embed 产物。
 
 **禁止：** 不把 zone、AllowedIPs、route.conf 作为普通用户主流程。
+
+**实施记录（2026-10-10 核对）：设备与连接这一层已起步，四条用户路径尚未统一。** 10-09 落了：`mynet_gui 3a1b53d` 简化设备与连接流程并统一交互样式、`26d8562` 区分「首次创建设备」与「首次加载引导」、`5896fe4` 修正生产 API 代理回环与 WebSocket 域名；M0 侧另有 `922f18e` 首批 vitest + 类型棘轮（见 §10 M0）。**本节目标（统一「我的节点／节点池／可访问网络／加速」四条用户路径）仍无实施记录**，P1–P6 契约也未全部稳定（P1 真并发盲区、P2 版本/容量、P4 四处未收口）。
 
 ## 8. 并行与集成顺序
 
@@ -612,6 +624,8 @@ GNB 和 WireGuard 都有真实 fixture、配置生成、应用/回滚和最小�
 
 > **2026-10-05 进度：未达标。** 已具备的是 **Proxy 出口授权链**（节点级专表 `proxy_exit_grants` + 用户面写面 `PUT /api/v1/nodes/{id}/proxy-exit` + L6 按 `acl.allowed_cidrs` 真生效 + 空白名单=组织内放开）与 **bundle 许可收窄**（`network.proxy` = `ProxyPermission{enabled,acl}`，客户端策略归 Local 轨）。仍缺四条：① OpenWrt `proxy.lua` 不消费 bundle；② 回程路由无实现；③ 错误出口 fail-closed / 网关离线无用例；④ console 面「网络区公共代理授权出口」未开。见 §7 P4 与 `spec/p4-forwarding-proxy-plan.md` §7.4–§7.8。
 
+> **2026-10-10 进度：仍未达标（M6 同样不勾）。** 相对上一条的增量只有「规则清理」这半边：出口 NAT/ACL 改为接口独立 nft 专表 / iptables 链，带替换/幂等/撤销/故障回退，独立门禁 7 例 + OrbStack Alpine 内核测试通过；代码结构小闭环（授权→发布→应用→撤销→回退）已成立，有测试守护。**①②④ 三条不变**；③ 只解决了一半 —— **规则能撤了，但「撤销后 conntrack 旧连接是否续走出口」「出口离线时消费端是否回落本地公网」这两个 fail-closed 判据一件没验**。七项上线前实机验收逐条见 `spec/proxy-permission-loop-playbook.md` §10。
+
 ### M5：OpenWrt
 
 LuCI 原生流程在弱设备模式通过安装、注册、配置同步、转发、Proxy、备份恢复和重启恢复。
@@ -675,6 +689,7 @@ v1 只有在以下条件同时满足时才算完成：
 5. P4：把现有 OpenWrt Proxy 实现接入统一的 Service/Forwarding/Acceleration 合同。
    **状态（2026-10-05）：◐ 开发计划已成文**（`mynet_ctl/docs/knowledge-base/spec/p4-forwarding-proxy-plan.md`，现状实测 + 三处缺口 + 待裁 D1–D5 + 分步 P4-1…P4-6）；**未写运行时码**。**关键实测：本条字面未达标** —— OpenWrt `proxy.lua` 自读本地 `proxy_role.conf`/`proxy_route.conf`（`:16,60,411,439`），**不消费 bundle `network.proxy`**；且 **`Acceleration` 契约全仓零命中**（`Service` 只是已发布服务目录）。详见 §7 P4 实施记录。
    **状态（2026-10-05，第二～六轮裁定后）：◐ wire/许可面已落码，本条字面仍未达标。** `Forwarding` 半边已按裁定收敛（`gnb.forwarding.proxy` 位删除、node.conf `proxy` 字段删除），`network.proxy` 收窄为出口许可 `ProxyPermission{enabled,acl}`，权威改节点级专表 `proxy_exit_grants`，并开出用户面写面 `PUT /api/v1/nodes/{id}/proxy-exit`（属主授权好友，自己的节点自动并入）。**但 OpenWrt `proxy.lua` 仍不消费 bundle**（`proxy.lua:16,60,411,439` 自读本地 conf），`Acceleration` 仍零命中 ⇒ 「接入统一合同」这条**未完成**；`Service` 侧也仍未与 Proxy 打通。详见 §7 P4 两条实施记录与 `spec/p4-forwarding-proxy-plan.md` §7.4–§7.8。
+   **状态（2026-10-10 对齐）：◐ 不变，另起了一条小闭环。** 本条（接入统一合同）没有新进展；独立立项的是 `spec/proxy-permission-loop-playbook.md` 的**出口授权小闭环**，其 **L0–L2 代码结构已闭合**（api `5eb08d0`、agent `3e3d464`/`9f20e45`、ctl `1208561`），但**上线前七项实机验收未做**，故 M4/M6 不勾。当前 HEAD：agent `db398d2`、api `76e1214`、ctl `8fc5e6e`、gui `26d8562`，四仓已推送；`mynet_openwrt` 10 条 / `mynet_gnb` 2 条仍压在本地。
 6. P5/P6：以真实 LuCI 和真 WebSocket 作为集成入口，避免只依赖 mock 或独立 8096 页面。
 7. P7：合同稳定后再统一 GUI 的“我的节点/节点池/可访问网络/加速”用户路径。
 
