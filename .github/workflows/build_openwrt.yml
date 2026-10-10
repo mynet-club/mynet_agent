@@ -13,6 +13,11 @@ on:
     branches: [main]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      openwrt_ref:
+        description: "mynet_openwrt 的 git ref（tag/branch/sha）；留空用该仓默认分支"
+        required: false
+        default: ""
 
 env:
   SDK_VERSION: "24.10.0"
@@ -32,11 +37,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 包树在 mynet_openwrt-V2（私有）—— 用与建仓相同的账号 token（repo secret GH_PAT）
+      # 包树在 mynet_openwrt（私有）—— 用建仓账号 token（repo secret GH_PAT）。
+      # ⚠️ 仓名不带 -V2：2026-10 已去掉迁移期后缀（旧的 -V2 名靠 GitHub 重定向才不炸）。
+      # ref 留空=默认分支；workflow_dispatch 可 pin 具体 SHA/tag（O6：禁浮动 HEAD）。
       - uses: actions/checkout@v4
         with:
-          repository: mynet-club/mynet_openwrt-V2
+          repository: mynet-club/mynet_openwrt
           path: mynet_openwrt
+          ref: ${{ inputs.openwrt_ref }}
           token: ${{ secrets.GH_PAT }}
 
       - uses: actions/setup-go@v5
