@@ -79,7 +79,25 @@ func cmdInstall(args []string) int {
 		// （无 WS、无节点身份、不碰驱动），装了等于没装。
 		return usageInstall("需要 --gateways wss://…（节点模式的 WS 入口；不给则 mynetd 只有 localapi，隧道起不来）")
 	}
-	return platformInstall(prefix, resolved, gateways, gnbBin, enable, dry)
+	code = platformInstall(prefix, resolved, gateways, gnbBin, enable, dry)
+	if code == 0 {
+		// O4：把旧 Lua 权威 proxy_role.conf 折叠进统一 Local 意图（幂等）。
+		// 失败只告警：迁移是过渡桥，不该挡住安装本身；非旧部署时是 no-op。
+		reportLegacyProxyMigration(resolved, dry)
+	}
+	return code
+}
+
+// reportLegacyProxyMigration 跑一次旧 proxy conf 迁移并报告（best-effort）。
+func reportLegacyProxyMigration(home string, dry bool) {
+	res, err := MigrateLegacyProxyConf(home, dry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 旧 proxy conf 迁移未做（不猜，留待人工处理）: %v\n", err)
+		return
+	}
+	if res.Migrated {
+		fmt.Println("proxy 意图迁移:", res.Reason)
+	}
 }
 
 // resolveInstallHome 解析 install/uninstall 的**唯一** home。

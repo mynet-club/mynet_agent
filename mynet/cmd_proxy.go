@@ -20,7 +20,7 @@ import (
 
 func cmdProxy(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-split <domestic-csv> <foreign> | resolv <server> | status")
+		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-split <domestic-csv> <foreign> | resolv <server> | status | migrate [--dry-run]")
 		return 2
 	}
 	switch args[0] {
@@ -38,10 +38,41 @@ func cmdProxy(args []string) int {
 		return proxyResolv(args[1])
 	case "status":
 		return proxyStatus()
+	case "migrate":
+		// O4：旧 proxy_role.conf → 统一 Local 意图（幂等，失败关闭）
+		dry := len(args) > 1 && args[1] == "--dry-run"
+		return proxyMigrate(dry)
 	default:
 		fmt.Fprintf(os.Stderr, "proxy: 未知子命令 %q\n", args[0])
 		return 2
 	}
+}
+
+// proxyMigrate 折叠旧 Lua 权威 conf 到统一意图（CLI 入口）。
+func proxyMigrate(dry bool) int {
+	home, code := requireHome()
+	if code != 0 {
+		return code
+	}
+	res, err := MigrateLegacyProxyConf(home, dry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy migrate: %v\n", err)
+		return 1
+	}
+	switch {
+	case res.Migrated:
+		fmt.Printf("proxy migrate: %s%s\n", res.Reason, drySuffix(dry))
+	case res.Skipped:
+		fmt.Printf("proxy migrate: 跳过 —— %s\n", res.Reason)
+	}
+	return 0
+}
+
+func drySuffix(dry bool) string {
+	if dry {
+		return "（--dry-run：未写盘）"
+	}
+	return ""
 }
 
 // proxyDNSSplit 写 dnsmasq 分流片段并 reload（网关形态）。
