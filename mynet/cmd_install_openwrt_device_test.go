@@ -1,3 +1,5 @@
+//go:build linux && openwrt
+
 package mynet
 
 import (

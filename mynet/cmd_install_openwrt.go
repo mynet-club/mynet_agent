@@ -1,3 +1,5 @@
+//go:build linux && openwrt
+
 package mynet
 
 import (
@@ -11,18 +13,28 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// isOpenWrt — 运行期判定 OpenWrt（不依赖 runtime.GOOS：OpenWrt 也是 linux）。
-func isOpenWrt() bool {
-	if _, err := os.Stat("/etc/openwrt_release"); err == nil {
-		return true
+// OpenWrt 装配后端 —— 编译期只进 `-tags openwrt` 的产物（playbook §4.1：
+// `linux && openwrt` 与 `linux && !openwrt` 互斥）。与通用 Linux 后端**不共享**：
+// 目录（/etc/mynet、/sbin）、服务（procd）、防火墙（fw4/UCI zone）都不同。
+// 通用 Linux 二进制在 OpenWrt 上会探测到并**拒绝装配**（cmd_install_systemd.go）。
+
+// platformInstall 是 OpenWrt 产物的 `mynet install` 入口。
+func platformInstall(prefix, home, gateways, gnbBin string, enable, dry bool) int {
+	return installOpenWrt(prefix, home, gateways, gnbBin, enable, dry)
+}
+
+// platformUninstall 是 OpenWrt 产物的 `mynet uninstall` 入口。
+func platformUninstall(home string, keepBin, dry bool) int {
+	return uninstallOpenWrt(home, keepBin, dry)
+}
+
+func platformDescriptor() PlatformDescriptor {
+	return PlatformDescriptor{
+		Platform:     "openwrt",
+		PkgManager:   "opkg",
+		ServiceMgr:   "procd",
+		Capabilities: []string{"service.procd", "install.openwrt", "apply.osroute"},
 	}
-	// 兜底：ubus / fw4 存在且无 systemd（ImmortalWrt 同口径）
-	if _, err := os.Stat("/sbin/procd"); err == nil {
-		if _, err := os.Stat("/etc/systemd/system"); err != nil {
-			return true
-		}
-	}
-	return false
 }
 
 // installOpenWrt — OpenWrt **服务安装**（E-1）。
@@ -36,7 +48,7 @@ func isOpenWrt() bool {
 //
 // 进程生命周期归 procd（E-1），配置见 mynet.conf 的 VPN_TYPE（gnb|wireguard）。
 func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int {
-	if err := assertUnitsEmbedded(); err != nil {
+	if err := assertOpenWrtInitEmbedded(); err != nil {
 		fmt.Fprintln(os.Stderr, "内嵌 init 异常：", err)
 		return 1
 	}
@@ -153,9 +165,7 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		fmt.Println("enabled: mynet（gnb 待配置后 /etc/init.d/mynet start）")
 	}
 
-	if _, err := os.Stat(gnbBin); err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️ %s 不存在 —— mynet 服务会起不来。请装 gnb 或 --gnb-bin 指定。\n", gnbBin)
-	}
+	warnGnbMissing(gnbBin, "mynet 服务会起不来。请装 gnb 或 --gnb-bin 指定。")
 
 	fmt.Println("\n下一步（节点身份，install 不代劳）：")
 	fmt.Printf("  1) %s setup --local --node-id <ID>   # 或 --online\n", mynetBin)
@@ -237,21 +247,44 @@ func installTunDevice(home string) (string, error) {
 
 // openWrtUciSteps 生成 UCI 兜底命令序列，dev == "" 时**不含任何 device 写入**。
 //
+// 幂等契约（G-11）：首装成功建 zone + 两条 forwarding；重复执行不新增任何 section。
+//
 // dev 直接拼进 `sh -c` 的那段，安全性来自 domain.ValidateTunDevice：字符集
 // 限定 `[A-Za-z0-9._-]{1,15}`，不含空格/引号/分号。别在这里再放宽。
-func openWrtUciSteps(dev string) [][]string {
-	zoneBody := `s=$(uci show firewall | grep "name='mynet'" | cut -d. -f2 | cut -d= -f1 | head -1); \
-		[ -n "$s" ] || exit 1; \
-		uci set firewall.$s.name=mynet; \
-		uci set firewall.$s.input=ACCEPT; \
-		uci set firewall.$s.output=ACCEPT; \
-		uci set firewall.$s.forward=ACCEPT; \
-		uci set firewall.$s.masq=1`
+//
+// section 名一律用 awk -F"[.=]" 取第 2 字段 —— `uci show` 的 section 行形如
+// `firewall.cfg000009=forwarding`，用 `-F.` 会把 `=类型` 粘进字段 2，
+// 拿到伪 id 后 `uci get firewall.<id>.src` 全失败，幂等判据失效。
+const uciLoopForwarding = `for x in $(uci show firewall | awk -F"[.=]" '/^firewall\..*=forwarding$/ {print $2}'); do `
+
+// openWrtZoneLookup 幂等找 zone：已有 `name='mynet'` 的 section 复用，否则新建并
+// **捕获** `uci add firewall zone` 打印的 section 名（旧实现把它丢进 /dev/null、
+// 再按 name 反查，而新 section 此时还没有 name → 首装必 exit 1）。
+const openWrtZoneLookup = `s=$(uci show firewall | awk -F"[.=]" '/^firewall\..*\.name=.mynet.$/ {print $2; exit}'); [ -n "$s" ] || s=$(uci add firewall zone); `
+
+func openWrtZoneStep(dev string) string {
+	s := openWrtZoneLookup +
+		`uci set firewall.$s.name=mynet; uci set firewall.$s.input=ACCEPT; ` +
+		`uci set firewall.$s.output=ACCEPT; uci set firewall.$s.forward=ACCEPT; uci set firewall.$s.masq=1`
 	if dev != "" {
-		zoneBody += `; \
-		uci set firewall.$s.device=` + dev
+		s += `; uci set firewall.$s.device=` + dev
 	}
 
+	return s
+}
+
+// openWrtForwardingStep 幂等建 src→dest forwarding。
+// 判据不能写成 `grep "src='lan'.*dest='mynet'"`：`uci show` 每条 option 单独一行，
+// 单行里永远不会同时出现 src 与 dest → 永不命中、重复添加。改为逐 section 读 src/dest 比对。
+// src/dest 是调用方传入的常量（lan / mynet / wan）。
+func openWrtForwardingStep(src, dest string) string {
+	return `f(){ ` + uciLoopForwarding +
+		`[ "$(uci get firewall.$x.src 2>/dev/null)" = "` + src + `" ] && [ "$(uci get firewall.$x.dest 2>/dev/null)" = "` + dest + `" ] && return 0; ` +
+		`done; return 1; }; f ` + src + ` ` + dest + ` || { s=$(uci add firewall forwarding); ` +
+		`uci set firewall.$s.src=` + src + `; uci set firewall.$s.dest=` + dest + `; }`
+}
+
+func openWrtUciSteps(dev string) [][]string {
 	steps := [][]string{
 		{"uci", "set", "network.mynet=interface"},
 		{"uci", "set", "network.mynet.proto=none"},
@@ -261,17 +294,9 @@ func openWrtUciSteps(dev string) [][]string {
 	}
 
 	return append(steps,
-		// zone 已存在则跳过创建（uci add 会重复）
-		[]string{"sh", "-c", `uci show firewall | grep -q "name='mynet'" || uci add firewall zone >/dev/null`},
-		[]string{"sh", "-c", zoneBody},
-		[]string{"sh", "-c", `uci show firewall | grep -q "src='lan'.*dest='mynet'" || { \
-			s=$(uci add firewall forwarding); \
-			uci set firewall.$s.src=lan; \
-			uci set firewall.$s.dest=mynet; }`},
-		[]string{"sh", "-c", `uci show firewall | grep -q "src='mynet'.*dest='wan'" || { \
-			s=$(uci add firewall forwarding); \
-			uci set firewall.$s.src=mynet; \
-			uci set firewall.$s.dest=wan; }`},
+		[]string{"sh", "-c", openWrtZoneStep(dev)},
+		[]string{"sh", "-c", openWrtForwardingStep("lan", "mynet")},
+		[]string{"sh", "-c", openWrtForwardingStep("mynet", "wan")},
 		[]string{"uci", "commit", "network"},
 		[]string{"uci", "commit", "firewall"},
 	)
@@ -279,4 +304,50 @@ func openWrtUciSteps(dev string) [][]string {
 
 func runInit(name, action string) ([]byte, error) {
 	return exec.Command("/etc/init.d/"+name, action).CombinedOutput()
+}
+
+// uninstallOpenWrt 停用并移除自有 procd init 登记与 env；不擦 LAN/WAN
+// （network.mynet 与 firewall zone 的删除归 LuCI / firewall.mynet）。
+//
+// 被两处复用：OpenWrt 专用产物（cmd_install_openwrt_only.go）与通用 Linux 包在
+// OpenWrt 上的 legacy 卸载（cmd_install_systemd.go 的 isOpenWrt 分支）—— 修 G-15，
+// 避免通用包在 OpenWrt 上卸载时走 systemd 路径、遗留 init/zone。
+func uninstallOpenWrt(home string, keepBin, dry bool) int {
+	fmt.Println("将执行以下动作（OpenWrt 卸载，--dry-run 只看不做）：")
+	fmt.Println("  /etc/init.d/mynetd stop && disable")
+	fmt.Println("  /etc/init.d/mynet  stop && disable")
+	for _, name := range OpenWrtInitNames {
+		fmt.Printf("  删 /etc/init.d/%s\n", name)
+	}
+	fmt.Println("  删 /etc/mynet/mynetd.env")
+	fmt.Println("  （network.mynet / firewall zone 不在此删：归 LuCI 或 firewall.mynet uninstall）")
+	fmt.Printf("  保留 %s/{conf,var}（节点身份与密钥）\n", home)
+	if dry {
+		fmt.Println("\n--dry-run：以上都没有执行")
+		return 0
+	}
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "uninstall 需要 root。请 sudo mynet uninstall …")
+		return 1
+	}
+
+	for _, name := range OpenWrtInitNames {
+		if out, err := runInit(name, "stop"); err != nil {
+			fmt.Fprintf(os.Stderr, "  init stop %s（首次可忽略）: %v %s\n", name, err, string(out))
+		}
+		if out, err := runInit(name, "disable"); err != nil {
+			fmt.Fprintf(os.Stderr, "  init disable %s: %v %s\n", name, err, string(out))
+		}
+		p := filepath.Join("/etc/init.d", name)
+		if err := os.Remove(p); err == nil {
+			fmt.Println("removed", p)
+		}
+	}
+	if err := os.Remove("/etc/mynet/mynetd.env"); err == nil {
+		fmt.Println("removed /etc/mynet/mynetd.env")
+	}
+
+	removeOwnBinaries(home, keepBin)
+	uninstallTail(home)
+	return 0
 }

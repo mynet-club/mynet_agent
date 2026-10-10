@@ -6,6 +6,7 @@ package mynet
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // gnbKeyType back 的 putKeys 白名单是 gnbkey,ed25519,wireguard,x25519,curve25519
@@ -74,6 +75,11 @@ func cmdNodes(rest []string) int {
 
 func cmdPlatform(_ []string) int {
 	fmt.Printf("%s/%s\n", goos(), goarch())
+	d := platformDescriptor()
+	fmt.Printf("platform:  %s\n", d.Platform)
+	fmt.Printf("pkg:       %s\n", d.PkgManager)
+	fmt.Printf("service:   %s\n", d.ServiceMgr)
+	fmt.Printf("capab:     %s\n", strings.Join(d.Capabilities, ","))
 	return 0
 }
 

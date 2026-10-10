@@ -90,11 +90,17 @@ jobs:
           LDFLAGS="-s -w -X github.com/mynet-club/mynet_agent/shared/utils.AppVersion=${VER} -X github.com/mynet-club/mynet_agent/mynet.Version=${VER} -X main.version=${VER}"
           PKG=mynet_openwrt
           mkdir -p "$PKG/files"
-          go build -ldflags "$LDFLAGS" -o "$PKG/files/mynet" ./cmd/mynet
-          go build -ldflags "$LDFLAGS" -o "$PKG/files/mynetd" ./cmd/mynetd
+          # -tags openwrt：选 procd/UCI 装配后端；通用 Linux 后端（systemd）在此构建被排除。
+          go build -tags openwrt -ldflags "$LDFLAGS" -o "$PKG/files/mynet" ./cmd/mynet
+          go build -tags openwrt -ldflags "$LDFLAGS" -o "$PKG/files/mynetd" ./cmd/mynetd
           file "$PKG/files/mynet" "$PKG/files/mynetd"
           strings "$PKG/files/mynet" | grep -q 'mynet.ApplyProxy' \
             || { echo "ERROR: 缺 proxy 能力"; exit 1; }
+
+      # OpenWrt 后端（linux && openwrt）只能在 linux 上跑测；本机 darwin 只能编译。
+      # 这里跑 openwrt 标签单测，覆盖 UCI 步骤首装/幂等（G-11）等。
+      - name: Unit tests (openwrt backend)
+        run: go test -count=1 -tags openwrt ./mynet/
 
       - name: Package via OpenWrt SDK (ipk)
         run: |

@@ -168,7 +168,7 @@ fi
 
 # A4 归档内容扫描 —— A2/A3 都看不见压缩包**里面**
 # 2026-10-04 真实事故：mynet_gnb 的 packages/*/itest/backup-*/ 把生产节点
-# (10.182.236.180) 与公司整网网关 (192.168.0.2) 的 *.private、credential.json
+# (10.182.236.180) 与旁路网关 (192.168.0.2) 的 *.private、credential.json
 # 打进 .tgz 提交并推到 GitHub。三层全瞎：
 #   A2 只匹配 PEM 文本 `BEGIN … PRIVATE KEY`，而 GNB 的 .private 是裸 32 字节
 #      ed25519 二进制（AGENTS.md §1.1：clamp(SHA512(seed))），**没有 PEM 头**；

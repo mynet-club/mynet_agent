@@ -2,6 +2,6 @@
 
 package mynet
 
-// defaultPrefix Windows 系统安装目录（INSTALL.md / PlatformDefaultHome 一致）。
-// SCM 服务以 SYSTEM 跑，Program Files 是惯例且受 ACL 保护。
+// defaultPrefix Windows **程序安装目录**（放 mynet.exe/mynetd.exe）。
+// 注意：这是 prefix 不是 home —— home 见 utils.PlatformDefaultHome（C:\ProgramData\MyNet）。
 func defaultPrefix() string { return `C:\Program Files\MyNet` }

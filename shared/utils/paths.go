@@ -345,14 +345,19 @@ func SafeCreateDir(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
 }
 
-// PlatformDefaultHome 平台默认 HOME（未设 MYNET_HOME 且无 exe 可推断时的文档说明）。
+// PlatformDefaultHome 平台默认 **home（Store Root）** —— 只作文档/诊断，
+// 不是 install 的回退值：install 必须显式给 --home 或 MYNET_HOME（见 lifecycle-contract §2.1）。
+//
+// 注意与 defaultPrefix（二进制安装前缀 /opt/mynet、C:\Program Files\MyNet）**不是一回事**：
+// home 存的是节点身份/密钥/配置，prefix 放程序文件。历史上把两者混用导致 CLI 与安装器各写一棵树。
 func PlatformDefaultHome() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/opt/mynet"
+		return "/var/lib/mynet"
 	case "windows":
-		return `C:\Program Files\MyNet`
+		return `C:\ProgramData\MyNet`
 	default:
-		return "/opt/mynet"
+		// OpenWrt 的 home 是 /etc/mynet，由 ipk/安装器显式指定；通用 Linux 用 /var/lib/mynet。
+		return "/var/lib/mynet"
 	}
 }

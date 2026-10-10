@@ -9,7 +9,7 @@ package main
 //
 // 环境变量：服务进程不读用户环境。启动时从 `%MYNET_HOME%\mynetd.env`
 // 注入 MYNET_HOME / MYNET_GATEWAYS / MYNET_BIN（缺省 HOME 为
-// `C:\Program Files\MyNet`）。
+// `C:\ProgramData\MyNet`，见 utils.PlatformDefaultHome）。
 // gnb 不单独注册服务（gnb.exe 不是 SCM 程序）——由 mynetd 的
 // auto_restore_tunnel 在服务启动后拉起（tunnel_restore.go）。
 
@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mynet-club/mynet_agent/shared/utils"
 	"golang.org/x/sys/windows/svc"
 )
 
@@ -79,8 +80,8 @@ func (m *winService) Execute(args []string, r <-chan svc.ChangeRequest, s chan<-
 func loadServiceEnv() {
 	home := os.Getenv("MYNET_HOME")
 	if home == "" {
-		// 与 mynet.defaultPrefix / utils.PlatformDefaultHome 一致
-		home = `C:\Program Files\MyNet`
+		// 与 utils.PlatformDefaultHome 一致（home 是 ProgramData，不是程序目录）
+		home = utils.PlatformDefaultHome()
 		_ = os.Setenv("MYNET_HOME", home)
 	}
 	for _, p := range []string{

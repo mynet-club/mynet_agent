@@ -2,8 +2,9 @@
 
 > **安装形态**：mac = 安装器（pkg/dmg）+ 托盘 + 装完自动开 WebUI。
 >
-> **图形化安装（推荐）**：`make pkg-darwin` 产出 `dist/MyNet_Agent_<ver>.dmg` →
-> 双击挂载 → 双击 `MyNet_Agent_<ver>.pkg` → 系统安装向导点「继续 → 安装」。
+> **图形化安装（推荐）**：由 **`mynet_desktop`** 出包 —— `cd mynet_desktop && make pack-pkg`
+> 产出 `.pkg`/`.dmg` → 双击挂载 → 双击 `.pkg` → 系统安装向导点「继续 → 安装」。
+> 服务登记**委托 `mynet install`**（pkg 只落文件，不自己写 launchd；label `com.mynet.mynetd`）。
 > pkg 负责文件落地（mynet/mynetd/mynet_tray → /opt/mynet/bin，gnb 四件套 →
 > /usr/local/bin 与 /opt/mynet/driver/gnb/bin），postinstall 自动调
 > `mynet install` 装配服务（升级时沿用已配置的 MYNET_GATEWAYS）：

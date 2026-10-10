@@ -1,3 +1,5 @@
+//go:build windows
+
 package mynet
 
 import (
@@ -17,7 +19,7 @@ import (
 // 与 linux/darwin 的差异：
 //   - 可执行文件是 mynet.exe / mynetd.exe；
 //   - 服务走 Windows SCM（sc create），gnb 由 mynetd auto_restore 拉起；
-//   - 默认前缀 `C:\Program Files\MyNet`（与 INSTALL.md / PlatformDefaultHome 一致）。
+//   - 默认前缀 `C:\Program Files\MyNet`（程序文件位；home 是 C:\ProgramData\MyNet）。
 //
 // 判据对齐 §7.1 D1：不返回 error 桩；每一步真做，做不到的明说。
 func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int {
@@ -268,4 +270,41 @@ func splitEnvLines(s string) []string {
 // execCommand 失败不关心（taskkill 在进程不存在时非 0）。
 func execCommand(name string, args ...string) error {
 	return exec.Command(name, args...).Run()
+}
+
+// platformInstall 是 `mynet install` 的 Windows 入口（cmd_install.go 调用）。
+func platformInstall(prefix, home, gateways, gnbBin string, enable, dry bool) int {
+	return installWindows(prefix, home, gateways, gnbBin, enable, dry)
+}
+
+func platformDescriptor() PlatformDescriptor {
+	return PlatformDescriptor{
+		Platform:     "windows",
+		PkgManager:   "nsis/msi",
+		ServiceMgr:   "scm",
+		Capabilities: []string{"service.scm", "tray", "apply.osroute"},
+	}
+}
+
+// platformUninstall 是 `mynet uninstall` 的 Windows 入口。
+// 不做 Geteuid 门禁：Windows 无 POSIX uid，sc/reg 自会在权限不足时报错
+// （与安装侧口径一致 —— installWindows 也不设门禁）。
+func platformUninstall(home string, keepBin, dry bool) int {
+	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	fmt.Println("  sc stop/delete mynetd + 删注册表托盘自启（HKLM …\\Run\\MyNetTray）")
+	fmt.Printf("  删 %s\\mynetd.env\n", home)
+	if !keepBin {
+		fmt.Printf("  删 %s\\bin\\{mynet.exe,mynetd.exe}\n", home)
+	}
+	fmt.Printf("  **保留** %s\\{conf,var}（节点身份与密钥，卸载不替你丢业务数据）\n", home)
+	if dry {
+		fmt.Println("\n--dry-run：以上都没有执行")
+		return 0
+	}
+	if err := uninstallWindowsService(home); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ uninstall 服务/托盘自启: %v（继续删文件）\n", err)
+	}
+	removeOwnBinaries(home, keepBin)
+	uninstallTail(home)
+	return 0
 }

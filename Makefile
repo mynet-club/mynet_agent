@@ -68,12 +68,26 @@ GO_LDFLAGS := -s -w \
 	-X github.com/mynet-club/mynet_agent/mynet.Version=$(VERSION) \
 	-X main.version=$(VERSION)
 
-# 平台矩阵：goos goarch <ctl 侧 arch 名>
+# 平台矩阵：platform:goos:goarch:ctlarch:tags
+#   platform = 产物名与 packaging/<platform>/INSTALL.md 的平台段（对齐 ctl PLATFORMS）；
+#   goos/goarch = 交叉编译目标；
+#   ctlarch  = ctl 侧 arch 名（Go mipsle → ctl mipsel）；
+#   tags     = 追加的 -tags（openwrt = 选 procd/UCI 后端），空表示无。
+#
 # ⚠️ Go 的 mipsle 在 ctl 侧叫 mipsel —— 产物名必须用 ctl 的叫法，
 #    否则 ctl 的 validateArch() 拒收、下载 404。
 # 用冒号分隔而非空格：`for x in $(VAR)` 的展开会按 IFS 切词，变量里的引号是字面量
-# 不被 shell 认，写成 "a b c" "d e f" 只会得到一堆单词而非三元组。
-DIST_MATRIX := darwin:arm64:arm64 darwin:amd64:amd64 linux:amd64:amd64 linux:arm64:arm64 linux:mipsle:mipsel windows:amd64:amd64
+# 不被 shell 认，写成 "a b c" "d e f" 只会得到一堆单词而非多元组。
+# openwrt 用 GOOS=linux + `-tags openwrt`：与通用 linux 包**同 GOOS 不同产物**，
+# 产物名走 ctl 的 openwrt 平台（ext=tgz，见 packaging/openwrt/INSTALL.md）。
+DIST_MATRIX := \
+  darwin:darwin:arm64:arm64: \
+  darwin:darwin:amd64:amd64: \
+  linux:linux:amd64:amd64: \
+  linux:linux:arm64:arm64: \
+  linux:linux:mipsle:mipsel: \
+  openwrt:linux:mipsle:mipsel:openwrt \
+  windows:windows:amd64:amd64:
 
 # 打包器：darwin/windows 用 zip，其余 tgz（对齐 ctl PLATFORMS 的 ext）
 PACK = sh scripts/pack.sh
@@ -102,14 +116,22 @@ dist:
 		mkdir -p mynetd/localapi/webui/gui; \
 		cp -R "$(GUI_DIST)/." mynetd/localapi/webui/gui/; \
 		trap 'rm -rf mynetd/localapi/webui/gui' EXIT; \
-		for triple in $(DIST_MATRIX); do \
-		goos=$${triple%%:*}; rest=$${triple#*:}; goarch=$${rest%%:*}; ctlarch=$${rest#*:}; \
-		name=mynet_agent_$${goos}_$${ctlarch}_$(VERSION); \
+		for entry in $(DIST_MATRIX); do \
+		platform=$${entry%%:*}; r=$${entry#*:}; \
+		goos=$${r%%:*}; r=$${r#*:}; \
+		goarch=$${r%%:*}; r=$${r#*:}; \
+		ctlarch=$${r%%:*}; tags=$${r#*:}; \
+		name=mynet_agent_$${platform}_$${ctlarch}_$(VERSION); \
 		out=dist/$$name; \
 		mkdir -p $$out; \
 		ext=""; if [ "$$goos" = windows ]; then ext=".exe"; fi; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet$$ext ./cmd/mynet; \
-		GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd$$ext ./cmd/mynetd; \
+		if [ -n "$$tags" ]; then \
+		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags "$$tags" -o $$out/mynet$$ext ./cmd/mynet; \
+		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags "$$tags embed" -o $$out/mynetd$$ext ./cmd/mynetd; \
+		else \
+		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet$$ext ./cmd/mynet; \
+		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd$$ext ./cmd/mynetd; \
+		fi; \
 		case "$$goos" in \
 		  darwin) \
 		    if [ "$$(uname -s)" = Darwin ]; then \
@@ -122,11 +144,11 @@ dist:
 		    GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_tray$$ext ./cmd/mynet_tray; \
 		    ;; \
 		esac; \
-		cp mynetd/localapi/webui/index.html $$out/webui.html; \
-		if [ -f packaging/$$goos/INSTALL.md ]; then \
-		  cp packaging/$$goos/INSTALL.md $$out/INSTALL.md; \
+		if [ "$$platform" != openwrt ]; then cp mynetd/localapi/webui/index.html $$out/webui.html; fi; \
+		if [ -f packaging/$$platform/INSTALL.md ]; then \
+		  cp packaging/$$platform/INSTALL.md $$out/INSTALL.md; \
 		else \
-		  echo "  ✗ 缺 packaging/$$goos/INSTALL.md —— 分平台安装文档是产物一部分"; exit 1; \
+		  echo "  ✗ 缺 packaging/$$platform/INSTALL.md —— 分平台安装文档是产物一部分"; exit 1; \
 		fi; \
 		$(PACK) $$out; \
 		echo "  $$name"; \
@@ -138,13 +160,17 @@ dist:
 version:
 	@echo $(VERSION)
 
-# pkg-darwin —— macOS 图形化安装产物（.pkg + .dmg，Installer.app 双击装）。
-# 文件落地归 pkg，服务装配仍走 `mynet install`（postinstall 调用）。
-# 必须在 macOS 宿主机上跑（pkgbuild/productbuild/hdiutil + tray 的 CGO）。
-.PHONY: pkg-darwin
-pkg-darwin:
-	@echo "▸ pkg-darwin（VERSION=$(VERSION)）"
-	@VERSION=$(VERSION) GNB_BASELINE=$(GNB_BASELINE) LDFLAGS='$(GO_LDFLAGS)' sh packaging/darwin/build_pkg.sh
+# test-openwrt —— 跑 OpenWrt 后端（linux && openwrt）单测。
+# ⚠️ 只能在 linux 目标上跑（OpenWrt 装配代码按 GOOS=linux 编译）；darwin/windows 只能交叉编译。
+.PHONY: test-openwrt
+test-openwrt:
+	@if [ "$$(go env GOOS)" != linux ]; then \
+		echo "· test-openwrt 跳过：当前 GOOS=$$(go env GOOS)，OpenWrt 后端只在 linux 上运行"; \
+		echo "  仅编译校验：GOOS=linux GOARCH=mipsle go test -c -tags openwrt -o /dev/null ./mynet"; \
+		GOOS=linux GOARCH=mipsle go test -c -tags openwrt -o /dev/null ./mynet; \
+	else \
+		go test -count=1 -tags openwrt ./mynet/; \
+	fi
 
 # checksums.txt —— 校验和 SSOT。ctl 上传时服务端会再算一遍（ReleaseService.php:34），
 # 这里生成一份是为了：① 离线分发时客户端可核；② 上传前自检产物完整。

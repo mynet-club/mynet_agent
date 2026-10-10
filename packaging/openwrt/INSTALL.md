@@ -1,8 +1,11 @@
 # MyNet 安装指南 — OpenWrt
 
 > 产物：`mynet-agent_*_*.ipk` + `luci-app-mynet_*_*.ipk`（SDK 交叉编译）
-> 也可用 `mynet_agent_linux_mipsel_*` / `linux_arm64_*` / `linux_amd64_*` 手工落位
+> 手工落位用 **`mynet_agent_openwrt_mipsel_*`**（`-tags openwrt` 构建的产物）
 > 包内：`mynet` `mynetd`（瘦，无 embed WebUI）+ LuCI 壳
+>
+> ⚠️ **不要**用 `mynet_agent_linux_*`：通用 Linux 包不含 procd/UCI 后端，
+> 在 OpenWrt 上会明确拒绝装配（目录/服务/防火墙都不同）。
 
 ---
 
@@ -32,6 +35,8 @@ opkg install /tmp/mynet-agent_*.ipk /tmp/luci-app-mynet_*.ipk
 ```
 
 ### 2b. 手工落位（无 ipk 时）
+
+解压 `mynet_agent_openwrt_mipsel_*.tgz`（`-tags openwrt` 产物）后：
 
 ```sh
 # 二进制

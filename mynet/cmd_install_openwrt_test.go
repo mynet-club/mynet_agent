@@ -1,14 +1,18 @@
+//go:build linux && openwrt
+
 package mynet
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestOpenWrtInitsEmbedded(t *testing.T) {
-	if err := assertUnitsEmbedded(); err != nil {
-		t.Fatalf("assertUnitsEmbedded: %v", err)
+	if err := assertOpenWrtInitEmbedded(); err != nil {
+		t.Fatalf("assertOpenWrtInitEmbedded: %v", err)
 	}
 	for _, name := range OpenWrtInitNames {
 		body, ok := openWrtInit(name)
@@ -76,11 +80,6 @@ func TestOpenWrtMynetInitDualDriver(t *testing.T) {
 	}
 }
 
-func TestIsOpenWrtDoesNotPanic(t *testing.T) {
-	// 开发机通常不是 OpenWrt，只要不 panic 即可
-	_ = isOpenWrt()
-}
-
 // OpenWrt：mynet install 是**服务安装**，不 copy 二进制（文件落地归 ipk）。
 // 全平台同一契约：安装包放文件，install 只装服务。
 func TestOpenWrtInstallIsServiceOnly(t *testing.T) {
@@ -127,5 +126,108 @@ func TestOpenWrtInstallSetsNetworkZone(t *testing.T) {
 	}
 	if !strings.Contains(s, "network.mynet") || !strings.Contains(s, "firewall") {
 		t.Fatal("setup must cover network.mynet + firewall zone")
+	}
+}
+
+// ---- G-11 回归：用形状忠实的 stub uci 真跑 UCI 步骤序列 ----
+
+// stubUci 是最小 uci 替身（show/add/set/get/commit），足以驱动 openWrtUciSteps。
+// 真机才能跑真 uci；本 stub 验证**步骤序列的逻辑**：首装成功、重复执行幂等。
+const stubUci = `#!/bin/sh
+ST="${UCI_STATE:?}"
+case "$1" in
+  show) if [ -n "$2" ]; then grep -F "$2." "$ST" 2>/dev/null; else cat "$ST" 2>/dev/null; fi ;;
+  add)
+    n=$(wc -l < "$ST" 2>/dev/null | tr -d ' ')
+    sec="cfg$(printf '%06d' $((n+1)))"
+    echo "$2.$sec=$3" >> "$ST"; echo "$sec" ;;
+  set)
+    expr="$2"; key="${expr%%=*}"; val="${expr#*=}"
+    cfg="${key%%.*}"; rest="${key#*.}"; sec="${rest%%.*}"; opt="${rest#*.}"
+    if [ "$sec" = "$rest" ]; then
+      awk -v k="$cfg.$sec" -F= '$1!=k' "$ST" > "$ST.t" 2>/dev/null; mv "$ST.t" "$ST" 2>/dev/null || :
+      echo "$cfg.$sec=$val" >> "$ST"
+    else
+      awk -v k="$cfg.$sec.$opt" -F= '$1!=k' "$ST" > "$ST.t" 2>/dev/null; mv "$ST.t" "$ST" 2>/dev/null || :
+      echo "$cfg.$sec.$opt='$val'" >> "$ST"
+    fi ;;
+  get)
+    key="$2"; cfg="${key%%.*}"; rest="${key#*.}"; sec="${rest%%.*}"; opt="${rest#*.}"
+    awk -v k="$cfg.$sec.$opt" -F= '$1==k { v=$2; sub(/^./,"",v); sub(/.$/,"",v); print v; f=1 } END{ exit (f?0:1) }' "$ST" ;;
+  commit) : ;;
+  *) exit 1 ;;
+esac
+`
+
+func TestOpenWrtUciStepsFirstInstallThenIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "uci.state")
+	if err := os.WriteFile(state, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "uci"), []byte(stubUci), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UCI_STATE", state)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	read := func() string { b, _ := os.ReadFile(state); return string(b) }
+	run := func() {
+		t.Helper()
+		for _, c := range openWrtUciSteps("gnb_tun_16") {
+			if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+				t.Fatalf("步骤 %v 失败: %v\n%s", c, err, out)
+			}
+		}
+	}
+
+	run() // 首装
+	if n := strings.Count(read(), "=zone"); n != 1 {
+		t.Fatalf("首装应建 1 个 zone，实际 %d：\n%s", n, read())
+	}
+	if n := strings.Count(read(), "=forwarding"); n != 2 {
+		t.Fatalf("首装应建 2 条 forwarding，实际 %d：\n%s", n, read())
+	}
+	for _, want := range []string{"name='mynet'", "masq='1'", "src='lan'", "dest='mynet'", "src='mynet'", "dest='wan'", "device='gnb_tun_16'"} {
+		if !strings.Contains(read(), want) {
+			t.Fatalf("首装后缺 %q：\n%s", want, read())
+		}
+	}
+
+	run() // 重跑必须幂等
+	if n := strings.Count(read(), "=zone"); n != 1 {
+		t.Fatalf("重跑不应新建 zone，实际 %d：\n%s", n, read())
+	}
+	if n := strings.Count(read(), "=forwarding"); n != 2 {
+		t.Fatalf("重跑不应重复 forwarding，实际 %d：\n%s", n, read())
+	}
+}
+
+// 结构防线：zone 步骤必须捕获 `uci add firewall zone` 的 section 名（旧实现丢进 /dev/null）。
+func TestOpenWrtUciZoneStepCapturesSectionID(t *testing.T) {
+	step := openWrtZoneStep("")
+	if !strings.Contains(step, "s=$(uci add firewall zone)") {
+		t.Fatal("zone 步骤必须捕获 `uci add firewall zone` 的 section 名，不能丢进 /dev/null")
+	}
+	if !strings.Contains(step, `-F"[.=]"`) {
+		t.Fatal("section 名必须按 [.=] 切分（-F. 会把 =类型 粘进字段 → 幂等判据失效）")
+	}
+}
+
+// G-9 回归：gnb_es 清理必须按**可验证归属**（exe 是本部署的 gnb_es + 父进程是本实例 gnb），
+// 不得再用 PPID=1 —— 孤儿只说明「没有父进程」，**不证明属于本节点**，
+// 据此清理会误杀同机上别的实例留下的 gnb_es。
+func TestOpenWrtInitGnbEsCleanupUsesVerifiableOwnership(t *testing.T) {
+	body, ok := openWrtInit("mynet")
+	if !ok {
+		t.Fatal("mynet init 未嵌入")
+	}
+	if strings.Contains(body, `"$ppid" = "1"`) {
+		t.Fatal("stop_gnb_instance 不得用 PPID=1 判归属（孤儿 ≠ 本实例）")
+	}
+	for _, want := range []string{"/cmdline", "skip gnb_es"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("gnb_es 清理缺可验证归属判据 %q（应为 exe + 父进程本实例 gnb）", want)
+		}
 	}
 }

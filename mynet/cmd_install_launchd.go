@@ -1,3 +1,5 @@
+//go:build darwin
+
 package mynet
 
 import (
@@ -228,4 +230,125 @@ func launchctl(args ...string) (string, error) {
 func xmlEsc(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 	return r.Replace(s)
+}
+
+// platformInstall 是 `mynet install` 的 darwin 入口（cmd_install.go 调用）。
+func platformInstall(prefix, home, gateways, gnbBin string, enable, dry bool) int {
+	return installDarwin(prefix, home, gateways, gnbBin, enable, dry)
+}
+
+func platformDescriptor() PlatformDescriptor {
+	return PlatformDescriptor{
+		Platform:     "darwin",
+		PkgManager:   "pkg",
+		ServiceMgr:   "launchd",
+		Capabilities: []string{"service.launchd", "tray", "apply.osroute"},
+	}
+}
+
+// platformUninstall 是 `mynet uninstall` 的 darwin 入口。
+func platformUninstall(home string, keepBin, dry bool) int {
+	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	fmt.Println("  launchctl bootout system/com.mynet.{mynetd,gnb}")
+	fmt.Printf("  删 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
+	fmt.Println("  launchctl asuser <控制台uid> bootout gui/<uid>/" + LabelTray)
+	fmt.Printf("  删 %s/%s.plist（托盘）\n", launchAgentsDir, LabelTray)
+	if !keepBin {
+		fmt.Printf("  删 %s/bin/{mynet,mynetd}\n", home)
+	}
+	fmt.Printf("  **保留** %s/{conf,var}（节点身份与密钥，卸载不替你丢业务数据）\n", home)
+	if dry {
+		fmt.Println("\n--dry-run：以上都没有执行")
+		return 0
+	}
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "uninstall 需要 root。请 sudo mynet uninstall …")
+		return 1
+	}
+	if err := uninstallLaunchd(keepBin, home); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️ uninstall launchd: %v（继续删文件）\n", err)
+	}
+	removeOwnBinaries(home, keepBin)
+	uninstallTail(home)
+	return 0
+}
+
+// installDarwin macOS 服务装配（launchd）。原 cmd_install.go 的 darwin 分支。
+// 无内嵌单元：launchd plist 由 writeLaunchdPlist 现场生成（systemd/procd 模板不参与）。
+func installDarwin(prefix, home, gateways, gnbBin string, enable, dry bool) int {
+	binDir := filepath.Join(prefix, "bin")
+	envPath := filepath.Join(prefix, "etc", "mynetd.env") // 仅作文档，launchd 用 EnvironmentVariables
+
+	fmt.Println("将执行以下动作（服务安装，--dry-run 只看不做）：")
+	fmt.Printf("  写 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
+	fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
+	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
+	fmt.Printf("  置备 gnb 四件套到标准位 %s/driver/gnb/bin（源: 包内位 → /usr/local/bin → --gnb-bin 同目录）\n", home)
+	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
+		envPath, home, gateways, binDir)
+	fmt.Printf("  建 %s/{conf,var}\n", home)
+	if enable {
+		fmt.Println("  launchctl bootstrap system（com.mynet.mynetd；gnb 由 mynetd 拉起）")
+		fmt.Printf("  写 %s/%s.plist 并 bootstrap 到控制台用户 gui 域（托盘；mynet_tray 不在位则跳过）\n",
+			launchAgentsDir, LabelTray)
+	}
+	if dry {
+		fmt.Println("\n--dry-run：以上都没有执行")
+		return 0
+	}
+	if os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "install 需要 root：要写服务单元与 /etc/mynet。请 sudo mynet install …")
+		fmt.Fprintln(os.Stderr, "  （TUN / 路由表 / 系统服务都属于系统层，桌面托盘本身不需要 root）")
+		return 1
+	}
+
+	// 端口闸门：8096 被别人占着就不装；是旧版 MyNet 就走升级（保 conf）
+	if err := mustAcceptPort(DefaultLocalAPI); err != nil {
+		fmt.Fprintln(os.Stderr, "✗", err)
+		return 1
+	}
+
+	mynetPath := filepath.Join(binDir, "mynet")
+	mynetdPath := filepath.Join(binDir, "mynetd")
+	for _, bin := range []string{mynetPath, mynetdPath} {
+		if !fileExists(bin) {
+			fmt.Fprintf(os.Stderr, "✗ 缺二进制 %s\n", bin)
+			fmt.Fprintln(os.Stderr, "  文件落地归安装包（deb/rpm/pkg/MSI/dist），mynet install 只装服务")
+			return 1
+		}
+	}
+
+	for _, w := range clearDownloadMarks([]string{mynetPath, mynetdPath}) {
+		fmt.Fprintln(os.Stderr, "⚠", w)
+	}
+
+	// 1) 先停服务（改单元时旧进程不能占着文件）
+	_, _ = launchctl("bootout", "system/"+LabelMynetd)
+	_, _ = launchctl("bootout", "system/"+LabelGNB)
+
+	// 2) MYNET_HOME 目录
+	for _, sub := range []string{"conf", "var"} {
+		if err := os.MkdirAll(filepath.Join(home, sub), 0o700); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+
+	runInstallDetector(binDir, home)
+	provisionProxyIfStamped(home)
+	provisionDriverAndReport(prefix, home, gnbBin)
+
+	// launchd：plist 自带 EnvironmentVariables，不需要单独的 env 文件
+	if err := installLaunchd(home, gateways, binDir, gnbBin, enable); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	// 托盘（macOS = 安装器形态，GUI 装机装完菜单栏必须有图标）
+	if err := installTrayAgent(home, binDir, enable); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 托盘 LaunchAgent 安装失败（不影响服务）: %v\n", err)
+	}
+
+	warnGnbMissing(gnbBin, "mynet_gnb.service 会起不来。请把 gnb 装到该路径，或用 --gnb-bin 指定后重装。")
+	printInstallNextSteps(binDir, true)
+	return 0
 }

@@ -4,7 +4,9 @@ name: build-agent
 #
 # 命名 SSOT：mynet_agent_{os}_{arch}_{version}（AGENTS.md §1.5，guard C3）
 # ⚠️ Go 的 mipsle 在 ctl 侧叫 mipsel —— 产物名必须用 ctl 叫法
-# OpenWrt：mynetd **无 embed**（D-11 瘦构建，UI 归 LuCI）
+# 桌面/服务器（linux/darwin/windows）：mynetd **embed** WebUI（与 `make dist` 一致）
+# OpenWrt：**不走本工作流** —— 其瘦构建（`-tags openwrt`、无 embed、procd 后端）由
+#          `build_openwrt.yml` 出 ipk；本工作流不再产出"伪装成 linux 的 OpenWrt 包"。
 # proxy 能力在默认编译里（mynet/proxy_*.go），无需额外 tag
 
 on:
@@ -36,15 +38,12 @@ jobs:
           - goos: linux
             goarch: amd64
             ctlarch: amd64
-            openwrt: true
           - goos: linux
             goarch: arm64
             ctlarch: arm64
-            openwrt: true
           - goos: linux
             goarch: mipsle
             ctlarch: mipsel
-            openwrt: true
             gomips: softfloat
           - goos: darwin
             goarch: arm64
@@ -105,12 +104,9 @@ jobs:
 
           # mynet 执行器（含 proxy：proxy_*.go 默认编入）
           go build -ldflags "$LDFLAGS" -o "${OUT}/mynet${EXT}" ./cmd/mynet
-          # mynetd：OpenWrt 瘦（无 embed）；非 OpenWrt 产 embed 版供桌面
-          if [ "${{ matrix.openwrt }}" = "true" ]; then
-            go build -ldflags "$LDFLAGS" -o "${OUT}/mynetd${EXT}" ./cmd/mynetd
-          else
-            go build -ldflags "$LDFLAGS" -tags embed -o "${OUT}/mynetd${EXT}" ./cmd/mynetd
-          fi
+          # mynetd：桌面/服务器发行一律 embed WebUI（与 make dist 一致）。
+          # OpenWrt 不走本工作流 —— 其瘦构建由 build_openwrt.yml 的 `-tags openwrt` ipk 承担。
+          go build -ldflags "$LDFLAGS" -tags embed -o "${OUT}/mynetd${EXT}" ./cmd/mynetd
           # 客户端包**不含** mynet_gateway（服务端组件，不进用户安装包）
 
           # sanity：proxy 能力必须在（「带 proxy 的」）
@@ -157,7 +153,7 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
-  openwrt-meta:
+  upgrade-artifacts:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -166,5 +162,6 @@ jobs:
           path: artifacts
       - name: List upgrade artifacts
         run: |
-          echo "## OpenWrt 升级可用产物" >> "$GITHUB_STEP_SUMMARY"
+          echo "## 升级可用产物" >> "$GITHUB_STEP_SUMMARY"
+          echo "（OpenWrt ipk 见 build_openwrt.yml）" >> "$GITHUB_STEP_SUMMARY"
           find artifacts -type f | tee -a "$GITHUB_STEP_SUMMARY"
