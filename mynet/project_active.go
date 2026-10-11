@@ -287,6 +287,19 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	if err != nil {
 		return err
 	}
+	// L5 驱动侧放行（wg 方言）：proxy client 时把出口目的集并进出口 peer 的 AllowedIPs。
+	// 只打标不放行 → wg 按 AllowedIPs 做 cryptokey routing，包被静默丢弃
+	// （spec/proxy-split.md §15.1）。fail-loud：出口选点对不上 wg peer 即报错，不写盘。
+	if p := EffectiveProxyPolicy(); p != nil && p.Enabled && p.IsClientLike() && len(p.Exits) > 0 {
+		dest, derr := WGProxyDestCIDRs(p)
+		if derr != nil {
+			return fmt.Errorf("wg proxy 放行: %w", derr)
+		}
+		if err := ProjectProxyToWG(env.WireGuard, p, dest); err != nil {
+			return fmt.Errorf("wg proxy 放行: %w", err)
+		}
+		fmt.Printf("✓ wg proxy 放行：出口 AllowedIPs ∪ 目的集（%d 条）\n", len(dest))
+	}
 	d := driver.NewWireGuardDriver(iface, 0)
 	if dry {
 		fmt.Printf("dry-run: 将写入 /etc/wireguard/%s.conf\n", iface)

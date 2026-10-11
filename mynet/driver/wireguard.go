@@ -255,6 +255,12 @@ func RenderWGConfig(w *domain.WireGuardIntent) string {
 	if w.Interface.ListenPort > 0 {
 		fmt.Fprintf(&b, "ListenPort = %d\n", w.Interface.ListenPort)
 	}
+	// Table = off：proxy client 接管路由时，禁止 wg-quick 按 AllowedIPs 往主表写路由。
+	// 否则目的集会被写进主表，连**本机自身**发往这些目的的流量一起卷进隧道
+	// （spec/proxy-split.md §15.4 已下线的「主表 /32 钉扎」病）。模式值由 L5 投影设置。
+	if w.Routing != nil && w.Routing.Mode == "off" {
+		b.WriteString("Table = off\n")
+	}
 	for _, p := range w.Peers {
 		b.WriteString("\n[Peer]\n")
 		b.WriteString("PublicKey = " + p.PublicKey + "\n")

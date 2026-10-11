@@ -265,6 +265,26 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 				}
 			}
 		}
+		// PC 形态（mac/win）自出口：指定域名解析 → /32 钉隧道（主表）。
+		// 域名驱动、无固定 IP 集（用户裁决 2026-10-11）；Linux/OpenWrt 不走这里
+		// （nft 打标 + 策略表，主表保持干净，spec §15.4）。
+		if isPCProxyForm(snap) {
+			pinCmds, next := ApplyPCPin(snap, plan.Proxy.Policy.DomainRules, rt.TunDevice)
+			pinOK := true
+			for _, c := range pinCmds {
+				if err := runOp(dry, c.argv); err != nil {
+					if c.optional {
+						continue
+					}
+					fmt.Fprintf(os.Stderr, "proxy pc-pin %v: %v\n", c.argv, err)
+					fail = 1
+					pinOK = false
+				}
+			}
+			if !dry && pinOK {
+				_ = SavePCPinIPs(next)
+			}
+		}
 		pcmds := proxyAllCmds(snap, plan.Proxy.Policy, rt)
 		log.Info("proxy apply", "cmds", len(pcmds),
 			"role", plan.Proxy.Policy.Role,
@@ -312,6 +332,17 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			if err := runOp(dry, c.argv); err != nil && !c.optional {
 				fmt.Fprintf(os.Stderr, "proxy cleanup %v: %v\n", c.argv, err)
 				fail = 1
+			}
+		}
+		// PC 形态：撤销域名驱动的 /32 钉扎（PC 走主表，不走 proxyCleanupCmds 的策略表清理）
+		if isPCProxyForm(snap) {
+			for _, c := range PCProxyPinDelCmds(snap, LoadPCPinIPs(), crt.TunDevice) {
+				if err := runOp(dry, c.argv); err != nil && !c.optional {
+					fail = 1
+				}
+			}
+			if !dry {
+				_ = SavePCPinIPs(nil)
 			}
 		}
 	}
