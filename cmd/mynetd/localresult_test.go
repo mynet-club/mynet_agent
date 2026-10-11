@@ -100,9 +100,10 @@ func TestSelectExecutor_DefaultIsMynet(t *testing.T) {
 	}
 }
 
-// O1：config/setup/plugin 在 Lua 执行器下必须改走 Go 二进制。
+// O1：config/setup/plugin 在 Lua 执行器下必须改走 Go 二进制；proxy 同理
+// （client 分流的落地是 L6，Lua 侧已退役，走 Lua 桩会报「不支持子命令: proxy」）。
 func TestGoNativeInLua(t *testing.T) {
-	for _, cmd := range []string{"config", "setup", "plugin"} {
+	for _, cmd := range []string{"config", "setup", "plugin", "proxy"} {
 		if !goNativeInLua(cmd) {
 			t.Fatalf("%s 应走 Go", cmd)
 		}

@@ -59,9 +59,11 @@ func execLuaStd(argv []string) (string, string, error) {
 // 身份/config/keys/pull 显式交给 Go）。`config` 曾有一个只看 status 的 Lua 桩，
 // 会把 localapi 的 identity/runtime/tenants/connect/keys 全带偏，故整条交给 Go。
 // `plugin`（proxy 投影/出口/域名的唯一入口）同理：Lua 侧无对应实现。
+// `proxy` 也归 Go：它的落地（client 分流的 nft/ip rule/table/DNS）是 L6，Lua 侧已退役
+// （2026-10-11）—— 走 Lua 桩会得到「不支持子命令: proxy」，第三段刷新就断在这。
 func goNativeInLua(cmd string) bool {
 	switch cmd {
-	case "config", "setup", "plugin":
+	case "config", "setup", "plugin", "proxy":
 		return true
 	}
 	return false
