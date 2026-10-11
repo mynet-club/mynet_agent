@@ -59,7 +59,7 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	mynetBin := filepath.Join(binDir, "mynet")
 	mynetdBin := filepath.Join(binDir, "mynetd")
 
-	fmt.Println("将执行以下动作（OpenWrt 服务安装，--dry-run 只看不做）：")
+	printInstallActionsHeader("OpenWrt 服务安装", dry)
 	fmt.Printf("  检查二进制已在位（ipk 负责安装）: %s, %s\n", mynetdBin, mynetBin)
 	fmt.Println("  配置 mynet 网络/防火墙 zone（network.mynet + zone + forwarding）")
 	fmt.Printf("  写 %s/{mynetd,mynet}（procd 服务单元）\n", initDir)
@@ -313,7 +313,7 @@ func runInit(name, action string) ([]byte, error) {
 // OpenWrt 上的 legacy 卸载（cmd_install_systemd.go 的 isOpenWrt 分支）—— 修 G-15，
 // 避免通用包在 OpenWrt 上卸载时走 systemd 路径、遗留 init/zone。
 func uninstallOpenWrt(home string, keepBin, dry bool) int {
-	fmt.Println("将执行以下动作（OpenWrt 卸载，--dry-run 只看不做）：")
+	printInstallActionsHeader("OpenWrt 卸载", dry)
 	fmt.Println("  /etc/init.d/mynetd stop && disable")
 	fmt.Println("  /etc/init.d/mynet  stop && disable")
 	for _, name := range OpenWrtInitNames {

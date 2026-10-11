@@ -12,6 +12,24 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
+// printInstallActionsHeader 打印「安装/卸载动作清单」的表头。
+//
+// 只有 --dry-run 才说「只看不做」。真实执行时若照抄这句，日志里会同时出现
+// 「--dry-run 只看不做」和随后的 installed/enabled/started —— 排障的人据此
+// 误判「只干跑没落地」（2026-10-11 .182 升级的 opkg 日志实测踩过）。
+func printInstallActionsHeader(ctx string, dry bool) {
+	switch {
+	case dry && ctx != "":
+		fmt.Printf("将执行以下动作（%s，--dry-run 只看不做）：\n", ctx)
+	case dry:
+		fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	case ctx != "":
+		fmt.Printf("执行以下动作（%s）：\n", ctx)
+	default:
+		fmt.Println("执行以下动作：")
+	}
+}
+
 // cmdInstall — **服务安装**（不是安装包安装）。
 //
 //	mynet install [--prefix DIR] [--home DIR] [--gateways URL[,URL]]

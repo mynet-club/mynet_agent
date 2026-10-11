@@ -73,7 +73,7 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	envPath := "/etc/mynet/mynetd.env"
 	unitDir := "/etc/systemd/system"
 
-	fmt.Println("将执行以下动作（服务安装，--dry-run 只看不做）：")
+	printInstallActionsHeader("服务安装", dry)
 	for _, u := range SystemdUnitNames {
 		fmt.Printf("  写 %s/%s\n", unitDir, unitFileName(u))
 	}
@@ -175,7 +175,7 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 }
 
 func uninstallSystemd(home string, keepBin, dry bool) int {
-	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	printInstallActionsHeader("", dry)
 	fmt.Println("  systemctl disable --now mynetd mynet_gnb")
 	for _, u := range SystemdUnitNames {
 		fmt.Printf("  删 /etc/systemd/system/%s\n", unitFileName(u))

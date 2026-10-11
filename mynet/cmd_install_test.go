@@ -1,6 +1,7 @@
 package mynet
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,42 @@ import (
 
 // 平台无关的安装/卸载契约测试（本文件不带 build tag，四平台都要过）。
 // 平台专属的装配测试见 cmd_install_{systemd,launchd}_test.go。
+
+// 表头措辞：真实执行时**不得**出现「--dry-run 只看不做」—— 否则日志里一句
+// 「只干跑」会让人以为动作没落地（2026-10-11 .182 升级的 opkg 日志实测踩过）。
+func TestPrintInstallActionsHeaderWording(t *testing.T) {
+	capture := func(ctx string, dry bool) string {
+		old := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		printInstallActionsHeader(ctx, dry)
+		_ = w.Close()
+		os.Stdout = old
+		b, _ := io.ReadAll(r)
+		return string(b)
+	}
+	cases := []struct {
+		ctx  string
+		dry  bool
+		want string
+	}{
+		{"OpenWrt 服务安装", false, "执行以下动作（OpenWrt 服务安装）："},
+		{"OpenWrt 服务安装", true, "--dry-run 只看不做"},
+		{"", false, "执行以下动作："},
+	}
+	for _, tc := range cases {
+		got := capture(tc.ctx, tc.dry)
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("ctx=%q dry=%v: 想要含 %q，实际 %q", tc.ctx, tc.dry, tc.want, got)
+		}
+		if !tc.dry && strings.Contains(got, "--dry-run") {
+			t.Errorf("ctx=%q 真实执行不得出现 --dry-run，实际 %q", tc.ctx, got)
+		}
+	}
+}
 
 func TestInstallRequiresGateways(t *testing.T) {
 	home := t.TempDir()

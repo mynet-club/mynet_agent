@@ -59,6 +59,24 @@ func TestOpenWrtMynetInitUsesProcdInstance(t *testing.T) {
 	}
 }
 
+// 收敛守卫：procd 托管的 gnb 与「驱动侧 daemon 化 spawn 的 gnb」重叠时会留下
+// 「procd 实例没 tun、孤儿占着 tun」。start 前必须按 confdir 收敛，且精确停。
+func TestOpenWrtMynetInitConvergesStaleGnb(t *testing.T) {
+	body, _ := openWrtInit("mynet")
+	for _, want := range []string{"converge_stale_gnb", "procd_gnb_pids"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("mynet init 缺同节点双 gnb 收敛守卫 %q", want)
+		}
+	}
+	// 只按 confdir 匹配（多节点安全），且 pid+cmdline 精确停 —— 不得按名字杀。
+	if !strings.Contains(body, `case "$cmd" in`) {
+		t.Error("收敛守卫必须按 cmdline 归属判定，不能按进程名")
+	}
+	if strings.Contains(body, "killall") || strings.Contains(body, "pkill") {
+		t.Error("收敛守卫不得按名字杀进程")
+	}
+}
+
 // 双驱动：init 必须按 VPN_TYPE 分支 gnb | wireguard（架构支持）
 func TestOpenWrtMynetInitDualDriver(t *testing.T) {
 	body, _ := openWrtInit("mynet")

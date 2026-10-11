@@ -39,6 +39,9 @@ jobs:
           - { arch: mipsel, goarch: mipsle, sdk_target: ramips/mt7621, sdk_name: ramips-mt7621, sdk_libc: musl, gomips: softfloat }
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 全历史：PKG_RELEASE 用提交计数（单调递增，且同一提交可复现）。
+          fetch-depth: 0
 
       # 包树在 mynet_openwrt（私有）—— 用建仓账号 token（repo secret GH_PAT）。
       # ⚠️ 仓名不带 -V2：2026-10 已去掉迁移期后缀（旧的 -V2 名靠 GitHub 重定向才不炸）。
@@ -111,7 +114,7 @@ jobs:
       # OpenWrt 后端（linux && openwrt）只能在 linux 上跑测；本机 darwin 只能编译。
       # 这里跑 openwrt 标签单测，覆盖 UCI 步骤首装/幂等（G-11）等。
       - name: Unit tests (openwrt backend)
-        run: go test -count=1 -tags openwrt ./mynet/
+        run: go test -count=1 -tags openwrt ./mynet/ ./mynet/driver/
 
       - name: Package via OpenWrt SDK (ipk)
         run: |
@@ -129,7 +132,12 @@ jobs:
             'CONFIG_PACKAGE_luci-app-mynet=y' >> .config
           make defconfig
 
-          make package/mynet_openwrt/compile V=s
+          # opkg 按 version-release 判「是不是升级」：PKG_RELEASE 带上**提交计数**
+          # （单调递增、同提交可复现），否则同一产品版本下 opkg 永远判定「已是最新」，
+          # 升级只能靠 --force-reinstall（2026-10-11 升 .182 实测）。
+          REL=$(git -C "$GITHUB_WORKSPACE" rev-list --count HEAD)
+          echo "PKG_RELEASE=$REL (mynet_agent 提交数)"
+          MYNET_PKG_RELEASE="$REL" make package/mynet_openwrt/compile V=s
 
           mkdir -p "$GITHUB_WORKSPACE/dist-ipk"
           # 只收我们自己的包，不带 feeds 全量（firmware/luci-base 等）

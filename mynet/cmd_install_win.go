@@ -31,7 +31,7 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	mynetExe := filepath.Join(binDir, "mynet.exe")
 	mynetdExe := filepath.Join(binDir, "mynetd.exe")
 
-	fmt.Println("将执行以下动作（Windows 服务安装，--dry-run 只看不做）：")
+	printInstallActionsHeader("Windows 服务安装", dry)
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s\\{mynet.exe,mynetd.exe}\n", binDir)
 	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s)\n",
 		envPath, home, gateways, mynetExe)
@@ -290,7 +290,7 @@ func platformDescriptor() PlatformDescriptor {
 // 不做 Geteuid 门禁：Windows 无 POSIX uid，sc/reg 自会在权限不足时报错
 // （与安装侧口径一致 —— installWindows 也不设门禁）。
 func platformUninstall(home string, keepBin, dry bool) int {
-	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	printInstallActionsHeader("", dry)
 	fmt.Println("  sc stop/delete mynetd + 删注册表托盘自启（HKLM …\\Run\\MyNetTray）")
 	fmt.Printf("  删 %s\\mynetd.env\n", home)
 	if !keepBin {

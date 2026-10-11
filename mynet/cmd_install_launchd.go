@@ -248,7 +248,7 @@ func platformDescriptor() PlatformDescriptor {
 
 // platformUninstall 是 `mynet uninstall` 的 darwin 入口。
 func platformUninstall(home string, keepBin, dry bool) int {
-	fmt.Println("将执行以下动作（--dry-run 只看不做）：")
+	printInstallActionsHeader("", dry)
 	fmt.Println("  launchctl bootout system/com.mynet.{mynetd,gnb}")
 	fmt.Printf("  删 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
 	fmt.Println("  launchctl asuser <控制台uid> bootout gui/<uid>/" + LabelTray)
@@ -279,7 +279,7 @@ func installDarwin(prefix, home, gateways, gnbBin string, enable, dry bool) int 
 	binDir := filepath.Join(prefix, "bin")
 	envPath := filepath.Join(prefix, "etc", "mynetd.env") // 仅作文档，launchd 用 EnvironmentVariables
 
-	fmt.Println("将执行以下动作（服务安装，--dry-run 只看不做）：")
+	printInstallActionsHeader("服务安装", dry)
 	fmt.Printf("  写 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
 	fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)

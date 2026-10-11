@@ -100,6 +100,43 @@ run_plugin_hooks() {
 }
 
 # ── gnb：procd 常驻实例 ────────────────────────────────────────
+
+# procd 当前托管的 gnb pid 列表（空格分隔）。取不到（无 ubus/jsonfilter/无实例）返回空。
+procd_gnb_pids() {
+	command -v ubus >/dev/null 2>&1 || return 0
+	command -v jsonfilter >/dev/null 2>&1 || return 0
+	ubus call service list '{"name":"mynet"}' 2>/dev/null \
+		| jsonfilter -e '@.mynet.instances.gnb.pid' 2>/dev/null | tr '\n' ' '
+}
+
+# 收敛：同一节点（confdir）只允许一个 gnb 实例。
+#
+# 为什么需要：驱动侧的实例生命周期有两条入口 —— procd（本 init）与 `mynet`/mynetd
+# 触发的 driver.Start/Reload（daemon 化、不受 procd 监管）。两者重叠时会留下
+# 「procd 认的实例没有 tun、而孤儿进程占着 tun」的状态，之后 procd 只是不断重启那个
+# 拿不到 tun 的实例（隧道时通时断）。系统 managedBy 的判据在驱动侧只覆盖 systemd
+# （systemdManages()，见 driver/gnb.go:330），OpenWrt 缺这一条。
+#
+# 判据按 **confdir**：只清理指向本节点配置目录的 gnb，同机其它节点的 gnb 不受影响
+# （多节点/多 zone 共存是设计支持的）。红线：pid + cmdline 精确停，绝不按名字杀。
+converge_stale_gnb() {
+	local confdir="$1" procd_pids p cmd
+	procd_pids=$(procd_gnb_pids)
+	[ -n "$procd_pids" ] || procd_pids=" "   # 成员判据要能匹配空集
+	for p in $(pidof gnb 2>/dev/null); do
+		case " $procd_pids " in *" $p "*) continue ;; esac
+		cmd=$(tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null) || continue
+		case "$cmd" in
+			*"$confdir"*)
+				log "converge: 停止同节点遗留 gnb pid=$p（procd 未托管，$confdir）"
+				kill "$p" 2>/dev/null || true
+				sleep 1
+				kill -9 "$p" 2>/dev/null || true
+				;;
+		esac
+	done
+}
+
 start_gnb_instance() {
 	local nid confdir bin
 	nid=$(get_node_id_from_conf)
@@ -110,6 +147,8 @@ start_gnb_instance() {
 		log "ERROR: gnb not ready (nid=$nid conf=$confdir bin=$bin)"
 		return 1
 	fi
+	# 收敛：注册 procd 实例前，先停掉本节点上 procd 未托管的遗留 gnb。
+	converge_stale_gnb "$confdir"
 	# E-2：daemon off，交给 procd 前台
 	if [ -f "$confdir/node.conf" ]; then
 		sed -i 's/^daemon on$/daemon off/' "$confdir/node.conf" 2>/dev/null || true
