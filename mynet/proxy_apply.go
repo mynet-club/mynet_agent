@@ -133,14 +133,11 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	// 5) mangle 打标（Linux nft/iptables；macOS 无 —— 由 proxyMarkCmds 自己判）
 	cmds = append(cmds, proxyMarkCmds(snap, p, rt, fw)...)
 
-	// 6) 国外 DNS /32 强制进隧道（写主表，无条件）
-	if p.ForeignDNSRoute {
-		for _, ip := range DefaultForeignDNSServers {
-			cmds = append(cmds, routeCmds(snap, RouteOp{
-				Action: "replace", Destination: ip + "/32", Device: dev,
-			})...)
-		}
-	}
+	// 6) 国外 DNS /32 主表钉扎已**下线**（2026-10-11 裁决：节点自身直连）。
+	// 历史行为：把 8.8.8.8/32 等写进主表 → 连**节点自身**发往这些 DNS 的流量也被
+	// 送进隧道（节点自己代理自己），且 D:上游 ISP 污染 vs. 自代理 的取舍已裁定为后者。
+	// 外部 DNS 都在 nft 白名单集合内，转发的客户端流量靠打标 → table <EffectiveTable()>
+	// 照旧进隧道；主表不再钉扎。存量由 proxyCleanupCmds 摘除。
 
 	return cmds
 }

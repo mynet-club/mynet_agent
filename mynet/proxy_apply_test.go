@@ -93,11 +93,15 @@ func TestProxyClientCmdsHasPolicyRouteAndMark(t *testing.T) {
 		"ip rule add fwmark 0xc8 lookup 200 prio 31800",
 		"ip route replace 192.0.2.1/32 dev eth0", // GUARD-OK 测试断言命令串，非执行点
 		"nft add rule ip mangle PREROUTING ip daddr @mynet_proxy dst4 meta mark set 0xc8",
-		"ip route replace 8.8.8.8/32 dev gnb_tun", // GUARD-OK 测试断言命令串，非执行点
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("缺少命令 %q\n---\n%s", want, text)
 		}
+	}
+	// 国外 DNS /32 主表钉扎已下线（2026-10-11）：写主表会让**节点自身**的解析流量
+	// 也进隧道（节点自己代理自己）。客户端靠上面那条打标即可。
+	if strings.Contains(text, "route replace 8.8.8.8/32") {
+		t.Fatalf("国外 DNS /32 不得再钉进主表:\n%s", text)
 	}
 }
 
@@ -114,8 +118,9 @@ func TestProxyBSDNeverTouchesMainDefault(t *testing.T) {
 	if strings.Contains(text, "-net default") || strings.Contains(text, " default ") {
 		t.Fatalf("BSD 计划不得触碰 default:\n%s", text)
 	}
-	if !strings.Contains(text, "route -n add -host 8.8.8.8") { // GUARD-OK 测试断言命令串，非执行点
-		t.Fatalf("BSD 分流契约 = 国外 DNS /32 钉隧道，应保留:\n%s", text)
+	// 国外 DNS /32 主表钉扎已下线（2026-10-11，跨平台一致）：BSD 也不得再出现该 host 路由。
+	if strings.Contains(text, "add -host 8.8.8.8") {
+		t.Fatalf("BSD 也不得钉国外 DNS /32 进主表:\n%s", text)
 	}
 }
 
@@ -396,12 +401,11 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 	snap := snapNft()
 	cmds := proxyAllCmds(snap, plan.Proxy.Policy, plan.Proxy.Runtime)
 	text := joinCmds(cmds)
-	// fixture: domestic+whitelist → international/normal + split DNS + foreign dns
+	// fixture: domestic+whitelist → international/normal + split DNS（外部 DNS 主表钉扎已下线）
 	for _, want := range []string{
 		"table 200",
 		"fwmark 0xc8",
 		"daddr @mynet_proxy dst4 meta mark set 0xc8",
-		"ip route replace 8.8.8.8/32", // GUARD-OK 测试断言命令串，非执行点
 		// mynetBinPath() 给绝对路径（服务环境 PATH 不含 mynet）——只查子命令
 		"proxy dns-split 223.5.5.5,119.29.29.29 8.8.8.8",
 	} {
