@@ -41,7 +41,7 @@ func TestProxyWGPathEmitsSetRouteRuleMark(t *testing.T) {
 		"nft add element ip mynet_proxy_wg mynet_proxy_wg { 1.1.1.0/24 }",
 		"nft add element ip mynet_proxy_wg mynet_proxy_wg { 2.2.2.0/24 }",
 		"nft add rule ip mynet_proxy_wg PREROUTING ip daddr @mynet_proxy_wg meta mark set 0xc9 counter",
-		"ip route replace default dev wg_exit table 201", // GUARD-OK 断言期望的命令形状，非执行点
+		"ip route replace default dev wg_exit table 201",
 		"ip rule add fwmark 0xc9 lookup 201 prio 31799",
 	} {
 		if !strings.Contains(out, want) {
