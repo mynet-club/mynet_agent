@@ -140,21 +140,63 @@ jobs:
           # 空目录即失败
           [ "$(find "$GITHUB_WORKSPACE/dist-ipk" -name '*.ipk' | wc -l)" -ge 2 ]
 
-      - name: Upload ipk
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-ipk-${{ matrix.arch }}
-          path: dist-ipk/*
-          if-no-files-found: error
+      # O6 冻结：ctl 的 parseFilename 只认 {product}_{platform}_{arch}_{ver}.{ext}
+      # （见 mynet_ctl ReleaseDomainService + tests/Unit/ReleaseFilenameTest）。
+      # SDK 原生名 mynet-agent_*.ipk / luci-app-mynet_*.ipk 不在其枚举里 → 改名。
+      - name: Freeze ipk names (ctl SSOT)
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/dist-ipk"
+          rt=$(ls mynet-agent_*.ipk 2>/dev/null | head -1 || true)
+          [ -n "$rt" ] || { echo "ERROR: 未产出 mynet-agent ipk"; exit 1; }
+          mv -f "$rt" "mynet_agent_openwrt_${{ matrix.arch }}_${VER}.ipk"
+          lu=$(ls luci-app-mynet_*.ipk 2>/dev/null | head -1 || true)
+          [ -n "$lu" ] || { echo "ERROR: 未产出 luci-app-mynet ipk"; exit 1; }
+          mv -f "$lu" "lua_openwrt_all_${VER}.ipk"
+          sha256sum ./*.ipk | tee SHA256SUMS
+          ls -la
+
+      # 分发=ctl（不再用 upload-artifact：GitHub artifact 配额已耗尽）。
+      # 契约：POST {CTL_URL}/api/v2/releases，multipart，Bearer token(scope=release:upload)。
+      - name: Publish to ctl
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          CTL_URL: ${{ secrets.CTL_URL }}
+          CTL_TOKEN: ${{ secrets.CTL_RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$CTL_URL" ]   || { echo "ERROR: 缺 secrets.CTL_URL（ctl 基址）"; exit 1; }
+          [ -n "$CTL_TOKEN" ] || { echo "ERROR: 缺 secrets.CTL_RELEASE_TOKEN（scope=release:upload）"; exit 1; }
+          stable=0; [ "$REF_TYPE" = "tag" ] && stable=1   # is_stable 必须发 1/0
+          cd "$GITHUB_WORKSPACE/dist-ipk"
+          pub() { # product platform arch file
+            echo "→ publish $1 $2 $3 $4 (is_stable=$stable)"
+            curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
+              -H "Authorization: Bearer $CTL_TOKEN" \
+              -F "product=$1" -F "version=${VER}" -F "platform=$2" -F "arch=$3" \
+              -F "is_stable=$stable" -F "file=@$4"
+            echo
+          }
+          pub mynet_agent openwrt "${{ matrix.arch }}" "mynet_agent_openwrt_${{ matrix.arch }}_${VER}.ipk"
+          pub lua        openwrt "all"             "lua_openwrt_all_${VER}.ipk"
 
   summary:
     needs: ipk
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: List ipk
+      # 产物不再走 GitHub artifact（配额耗尽），分发在 ctl；这里只列出 ctl 索引确认
+      - name: List ctl releases
+        env:
+          CTL_URL: ${{ secrets.CTL_URL }}
         run: |
-          echo "## OpenWrt ipk（SDK 24.10）" >> "$GITHUB_STEP_SUMMARY"
-          find artifacts -type f | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## OpenWrt ipk（SDK 24.10 → ctl）"
+            if [ -n "$CTL_URL" ]; then
+              curl -sS "$CTL_URL/api/v2/releases" | head -c 4000
+            else
+              echo "（未配 secrets.CTL_URL，跳过）"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
