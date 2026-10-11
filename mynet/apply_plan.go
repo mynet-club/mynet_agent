@@ -38,6 +38,9 @@ type ApplyPlan struct {
 	// UTUN_OPT_IFNAME）。执行期用这里的 IP 反查真实接口，否则路由装到
 	// 一个不存在的 gnb_tun 上 —— 症状是「隧道起了、IP 有了、ping 全丢」。
 	LocalAddresses []string `json:"local_addresses,omitempty"`
+	// ProxyOnly 只跑 proxy 段（本地开/关代理用）：跳过 OS 路由/防火墙/接口与钉默认网关。
+	// 不是 plan 文件字段（json:"-"），只由 `mynet apply --proxy-only` 在内存里置位。
+	ProxyOnly bool `json:"-"`
 }
 
 type RouteOp struct {
@@ -161,10 +164,12 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			applied.recordRoute(r)
 		}
 	}
-	if err := pinDefaultGateway(snap, dry); err != nil {
-		fmt.Fprintf(os.Stderr, "pin default gateway: %v\n", err)
-		log.Warn("钉默认网关失败", "err", err)
-		fail = 1
+	if !plan.ProxyOnly {
+		if err := pinDefaultGateway(snap, dry); err != nil {
+			fmt.Fprintf(os.Stderr, "pin default gateway: %v\n", err)
+			log.Warn("钉默认网关失败", "err", err)
+			fail = 1
+		}
 	}
 	for _, f := range plan.Firewall {
 		argv := firewallArgv(snap, f)
