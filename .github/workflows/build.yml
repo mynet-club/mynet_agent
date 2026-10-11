@@ -21,6 +21,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 同一 ref 的并发运行取消旧的（重复 dispatch 不叠加）；tag 出包不取消（防半截发布）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -34,6 +39,8 @@ jobs:
 
   build:
     needs: test
+    # PR 只跑 test（便宜、能挡坏东西）；6 腿交叉编译只在 tag/手动跑 —— 省额度。
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

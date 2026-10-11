@@ -21,22 +21,52 @@ on:
         description: "mynet_openwrt 的 git ref（tag/branch/sha）；留空用该仓默认分支"
         required: false
         default: ""
+      legs:
+        description: "构建腿：single=仅 amd64（默认，省额度）；all=三腿全出（出包用）"
+        required: false
+        default: "single"
+        type: choice
+        options: ["single", "all"]
+
+# 同一 ref 的并发运行取消旧的（手动重复 dispatch 不再叠加）；tag 出包不取消（防半截发布）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   SDK_VERSION: "24.10.0"
   SDK_GCC: "13.3.0"
 
 jobs:
+  # 腿选择：tag 或 legs=all → 三腿；否则只 amd64（手动验证单腿够，省 2/3 分钟）。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          LEGS: ${{ github.event.inputs.legs }}
+        run: |
+          set -euo pipefail
+          # 192.168.0.2 = ImmortalWrt 24.10 x86_64 → x86/64
+          AMD='{"arch":"amd64","goarch":"amd64","sdk_target":"x86/64","sdk_name":"x86-64","sdk_libc":"musl"}'
+          ARM='{"arch":"arm64","goarch":"arm64","sdk_target":"armsr/armv8","sdk_name":"armsr-armv8","sdk_libc":"musl"}'
+          MIP='{"arch":"mipsel","goarch":"mipsle","sdk_target":"ramips/mt7621","sdk_name":"ramips-mt7621","sdk_libc":"musl","gomips":"softfloat"}'
+          if [ "$REF_TYPE" = "tag" ] || [ "${LEGS:-single}" = "all" ]; then
+            printf 'matrix={"include":[%s,%s,%s]}\n' "$AMD" "$ARM" "$MIP" >> "$GITHUB_OUTPUT"
+          else
+            printf 'matrix={"include":[%s]}\n' "$AMD" >> "$GITHUB_OUTPUT"
+          fi
+          echo "legs=${LEGS:-single} ref_type=$REF_TYPE"
+
   ipk:
+    needs: plan
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # 192.168.0.2 = ImmortalWrt 24.10 x86_64 → x86/64
-          - { arch: amd64,  goarch: amd64,  sdk_target: x86/64,        sdk_name: x86-64,        sdk_libc: musl }
-          - { arch: arm64,  goarch: arm64,  sdk_target: armsr/armv8,   sdk_name: armsr-armv8,   sdk_libc: musl }
-          - { arch: mipsel, goarch: mipsle, sdk_target: ramips/mt7621, sdk_name: ramips-mt7621, sdk_libc: musl, gomips: softfloat }
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
