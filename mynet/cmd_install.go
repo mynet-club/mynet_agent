@@ -84,8 +84,22 @@ func cmdInstall(args []string) int {
 		// O4：把旧 Lua 权威 proxy_role.conf 折叠进统一 Local 意图（幂等）。
 		// 失败只告警：迁移是过渡桥，不该挡住安装本身；非旧部署时是 no-op。
 		reportLegacyProxyMigration(resolved, dry)
+		// O1/O8：把旧 Lua 配置采纳进 Go 配置档（幂等、只读旧文件）。非旧部署 no-op。
+		reportLegacyConfigAdoption(resolved, dry)
 	}
 	return code
+}
+
+// reportLegacyConfigAdoption 跑一次旧配置采纳并报告（best-effort）。
+func reportLegacyConfigAdoption(home string, dry bool) {
+	res, err := AdoptLegacyConfig(home, dry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 旧 Lua 配置未采纳（不猜，留待人工）: %v\n", err)
+		return
+	}
+	if res.Adopted {
+		fmt.Println("配置采纳:", res.Reason)
+	}
 }
 
 // reportLegacyProxyMigration 跑一次旧 proxy conf 迁移并报告（best-effort）。

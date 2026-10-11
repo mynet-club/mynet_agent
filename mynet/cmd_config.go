@@ -86,6 +86,15 @@ func cmdConfig(args []string) int {
 		return cmdConfigUse(args[1:])
 	case "status":
 		return configFaceStatus()
+	case "adopt":
+		// A5：把旧 Lua 配置采纳进 Go 配置档（幂等、只读旧文件、fail-closed）
+		dry := false
+		for _, a := range args[1:] {
+			if a == "--dry-run" {
+				dry = true
+			}
+		}
+		return configAdopt(dry)
 	case "tenants":
 		return configFaceTenants()
 	case "keys":
