@@ -60,16 +60,18 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          # 只在 HEAD **正好**落在 tag 上时用 tag；否则 v0.0.0-<短 sha>。
-          # ⚠️ 不要用 `git describe --tags --always`：全历史（fetch-depth: 0）下它会
-          # 给出 `v0.1.2-20-g11d6231` 这种**两个连字符**的形式，而 ctl 的
-          # validateVersion（ReleaseDomainService.php:259）只允许一个 [.\-] 后缀段
-          # ⇒ 上传被判「无效的版本号格式」回 500（2026-10-11 实测）。
+          # 版本必须**同时**反映两个仓：产物 = agent 的 Go 二进制 + openwrt 仓的
+          # LuCI/脚本/postinst。只看 agent 的 sha 时，openwrt 仓单独改动不改版本
+          # ⇒ 发布探针判「已在下载面」而 SKIP —— 修了却不发，下载面静默停在旧件
+          # （2026-10-11 实测：luci postinst 的修复被 SKIP 掉）。
+          # ⚠️ 不要用 `git describe`：全历史下会给 v0.1.2-20-g<sha>（两个连字符），
+          # ctl 的 validateVersion 只允许一个 [.\-] 后缀段 ⇒ 500。
+          OW=$(git -C "$GITHUB_WORKSPACE/mynet_openwrt" rev-parse --short HEAD)
           TAG=$(git tag --points-at HEAD | head -1)
           if [ -n "$TAG" ]; then
             V="$TAG"
           else
-            V="v0.0.0-$(git rev-parse --short HEAD)"
+            V="v0.0.0-$(git rev-parse --short HEAD).$OW"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
