@@ -171,9 +171,9 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
 			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "mynet_proxy",
 				"{ type ipv4_addr; flags interval; }"}, optional: true},
-			// 从文件灌元素（nft -f 片段由执行器包装；此处用 nft add element 批量不现实，
-			// 真正加载走 proxyLoadIPSetFile —— 命令仅占位确保 set 存在）。
-			{argv: []string{"nft", "flush", "set", "ip", "mynet_proxy", "mynet_proxy"}, optional: true},
+			// ⚠️ 这里**不能**放 `nft flush set`「占位」：它是真跑的，会把列表步骤刚灌进去的
+			// 元素清成 0（2026-10-11 .182 实测：17789 → 0）。元素的清空+重灌由列表步骤的
+			// nft 片段负责（`flush set` + `add element`，见 WriteNftSetFragment）。
 		}
 	}
 	if snap.Capabilities["iptables"] {
