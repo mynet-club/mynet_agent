@@ -186,3 +186,35 @@ func TestPluginProxyLocalOnlySkipsWriteback(t *testing.T) {
 		t.Fatal("local_only=true 不应回写云端")
 	}
 }
+
+// O7 并发护序：POST /api/v1/plugin/proxy 必须与 config 写面共用 configMutation。
+// 该端点直调 s.Ops（不走 dispatch → 不触发 isContextMutation 的加锁），此前**未加锁**：
+// 会与 config/apply、LuCI 写、后台 stamp 并发改同一份 proxy_intent + 驱动投影 → 丢更新。
+func TestPluginProxyPostSharesConfigMutationLock(t *testing.T) {
+	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: t.TempDir()})
+	wireProxyStore(s)
+
+	// 模拟另一个配置写入正在执行（如 config/apply）
+	if !s.configMutation.TryLock() {
+		t.Fatal("前置：锁应空闲")
+	}
+	defer s.configMutation.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plugin/proxy", strings.NewReader(`{"policy":{}}`))
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("并发写应被挡成 409，实际 %d：%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "operation_in_progress") {
+		t.Fatalf("应回 operation_in_progress：%s", rr.Body.String())
+	}
+
+	// 读面必须不受影响（读可与写并行 —— 页面刷新状态不该 409）
+	greq := httptest.NewRequest(http.MethodGet, "/api/v1/plugin/proxy", nil)
+	grr := httptest.NewRecorder()
+	s.mux.ServeHTTP(grr, greq)
+	if grr.Code == http.StatusConflict {
+		t.Fatalf("GET 不该被互斥挡，实际 %d", grr.Code)
+	}
+}

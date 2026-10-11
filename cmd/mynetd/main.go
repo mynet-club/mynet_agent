@@ -377,10 +377,19 @@ func runAgent(ctx context.Context) {
 	// 随 mynetd 恢复隧道：按上次退出时 gnb|wg 状态 + agent.json 开关
 	go func() {
 		time.Sleep(2 * time.Second) // 等 localapi / bundle 就绪
-		restoreTunnelIfNeeded(func(drv string) error {
-			_, err := execMynet([]string{"service", "start", drv})
-			return err
+		// 启动恢复也是**写节点状态**（拉起 gnb|wg），必须与 HTTP 写面互斥：
+		// 否则它与 LuCI/面板的 config 写并发时会同抢驱动 → 双 gnb 一类问题（O7 并发护序）。
+		// 尽力而为：拿不到锁（用户正在写）就跳过，以用户操作为准。
+		ok := api.TryRunExclusive(func() error {
+			restoreTunnelIfNeeded(func(drv string) error {
+				_, err := execMynet([]string{"service", "start", drv})
+				return err
+			})
+			return nil
 		})
+		if !ok {
+			logger.Comp("mynetd").Info("跳过启动隧道恢复：有配置写入正在进行，以用户操作为准")
+		}
 	}()
 
 	<-ctx.Done()

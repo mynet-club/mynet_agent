@@ -35,7 +35,12 @@ type ProxyWritebackFunc func(policy domain.ProxyPolicy, revision int64) (cloudRe
 // 空则用默认 conf/local。
 
 func (s *Server) registerProxyRoutes() {
-	s.mux.HandleFunc("/api/v1/plugin/proxy", s.handlePluginProxy)
+	// POST 必须与 config/nodes 写面共用同一把 configMutation：
+	// 本端点直调 s.Ops（不经 dispatch → 不触发 isContextMutation 的加锁），
+	// 若不加锁就与 config/apply、LuCI 写、后台 stamp 并发改同一份
+	// proxy_intent + 驱动投影 → 丢更新/半装（O7 并发护序）。
+	// GET（读状态）不受影响：withConfigMutation 放行 GET/HEAD。
+	s.mux.HandleFunc("/api/v1/plugin/proxy", s.withConfigMutation(s.handlePluginProxy))
 }
 
 type proxyStatusBody struct {

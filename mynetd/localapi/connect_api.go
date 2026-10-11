@@ -23,6 +23,20 @@ func (s *Server) withConfigMutation(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// TryRunExclusive 以 configMutation 执行 fn（进程内写面，如启动时的隧道恢复）。
+//
+// 与 HTTP 写面互斥：拿到锁则 fn 独占地写节点状态（此间 HTTP 写请求 409），
+// 拿不到（有用户写在进行）则**跳过**并返回 false —— 启动恢复是尽力而为，
+// 用户正在写的时候以用户为准，不阻塞、不排队。
+func (s *Server) TryRunExclusive(fn func() error) bool {
+	if !s.configMutation.TryLock() {
+		return false
+	}
+	defer s.configMutation.Unlock()
+	_ = fn()
+	return true
+}
+
 // One connect request owns the sequence; every system operation stays in Ops.
 // The response records completed steps and the failure stage, never key data.
 func (s *Server) handleConfigConnect(w http.ResponseWriter, r *http.Request) {

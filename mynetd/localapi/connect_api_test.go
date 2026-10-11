@@ -158,3 +158,31 @@ func TestConnectExecutionErrorIsRedacted(t *testing.T) {
 	}
 	s.configMutation.Unlock()
 }
+
+// 启动恢复（进程内写面）与 HTTP 写面互斥：有写在进行 → 跳过；空闲 → 执行并释放锁。
+func TestTryRunExclusiveSkipsWhenMutationInFlight(t *testing.T) {
+	s := newTestServer(t)
+	ran := false
+
+	if !s.configMutation.TryLock() {
+		t.Fatal("前置：锁应空闲")
+	}
+	if s.TryRunExclusive(func() error { ran = true; return nil }) {
+		t.Fatal("有写在进行时应跳过（返回 false）")
+	}
+	s.configMutation.Unlock()
+	if ran {
+		t.Fatal("跳过时不得执行 fn")
+	}
+
+	if !s.TryRunExclusive(func() error { ran = true; return nil }) {
+		t.Fatal("空闲时应执行并返回 true")
+	}
+	if !ran {
+		t.Fatal("空闲时应执行 fn")
+	}
+	if !s.configMutation.TryLock() {
+		t.Fatal("fn 返回后锁应已释放")
+	}
+	s.configMutation.Unlock()
+}
