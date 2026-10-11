@@ -64,6 +64,23 @@ func Run(args []string) int {
 	cmd := args[0]
 	rest := args[1:]
 
+	// 不带 home 直接报错：**不再按 exe 目录猜**。OpenWrt 下可执行在 /usr/sbin，
+	// 按 exe 推 home 会得到 /usr/sbin → 读到错的配置树（实测 `mynet config status`
+	// 会静默返回「未初始化」而不是报错）。允许不需要配置树的命令；
+	// install/uninstall 自带 --home/MYNET_HOME 解析（解析不到会自行报错）。
+	switch cmd {
+	case "help", "-h", "--help", "version", "-v", "--version", "platform",
+		"install", "uninstall":
+		// 无需 home
+	default:
+		if os.Getenv("MYNET_HOME") == "" {
+			fmt.Fprintln(os.Stderr,
+				"✗ 未设 MYNET_HOME：export MYNET_HOME=/etc/mynet 或用 --home DIR。"+
+					"（不再按 exe 目录猜 home，以免读错配置树）")
+			return 1
+		}
+	}
+
 	if strings.HasPrefix(cmd, "refresh") {
 		return cmdRefresh(args)
 	}
