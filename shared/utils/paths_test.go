@@ -103,3 +103,28 @@ func TestConfDirVarDirStable(t *testing.T) {
 		t.Fatal("应基于绝对 HOME")
 	}
 }
+
+// 密钥是节点身份：切到 online 档后仍应找到 conf/local 下的既有密钥（跨档不漂）。
+func TestResolveKeysDirCrossModeFallback(t *testing.T) {
+	home := t.TempDir()
+	local := filepath.Join(home, "conf", "local")
+	if err := os.MkdirAll(filepath.Join(local, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "keys", "node.private"), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	online := filepath.Join(home, "conf", "online", "t_1")
+	if err := os.MkdirAll(online, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got := ResolveKeysDir(online, "8283289760467957")
+	want := filepath.Join(local, "keys")
+	if got != want {
+		t.Fatalf("online 档应回退到 conf/local/keys，得 %q 期望 %q", got, want)
+	}
+	// local 档直接命中
+	if g := ResolveKeysDir(local, "8283289760467957"); g != want {
+		t.Fatalf("local 档应命中 conf/local/keys，得 %q", g)
+	}
+}

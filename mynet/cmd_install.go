@@ -84,11 +84,23 @@ func cmdInstall(args []string) int {
 		// O4：把旧 Lua 权威 proxy_role.conf 折叠进统一 Local 意图（幂等）。
 		// 失败只告警：迁移是过渡桥，不该挡住安装本身；非旧部署时是 no-op。
 		reportLegacyProxyMigration(resolved, dry)
-		// ⚠️ config adopt（旧 Lua 配置→Go 档案）**暂不自动跑**：它把 mode 设为 online 会
-		// 改变 `ActiveSource()` → `ResolveKeysDir` 随之换目录，若既有密钥不在目标位会
-		// 误判"缺 back 公钥"。密钥落点（按来源 vs 按节点）未定前，只留手动 `mynet config adopt`。
+		// O1/O8：把旧 Lua 配置采纳进 Go 配置档（幂等、只读旧文件）。
+		// 密钥已按节点身份解耦（ResolveKeysDir 跨档回退 conf/local），切 online 不再丢密钥。
+		reportLegacyConfigAdoption(resolved, dry)
 	}
 	return code
+}
+
+// reportLegacyConfigAdoption 跑一次旧配置采纳并报告（best-effort）。
+func reportLegacyConfigAdoption(home string, dry bool) {
+	res, err := AdoptLegacyConfig(home, dry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 旧 Lua 配置未采纳（不猜，留待人工）: %v\n", err)
+		return
+	}
+	if res.Adopted {
+		fmt.Println("配置采纳:", res.Reason)
+	}
 }
 
 // reportLegacyProxyMigration 跑一次旧 proxy conf 迁移并报告（best-effort）。

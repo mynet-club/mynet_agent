@@ -139,20 +139,50 @@ func LegacyKeysDir(space string) string {
 	return filepath.Join(space, "keys")
 }
 
-// ResolveKeysDir 优先 nodes/{id}/keys，无则回退 legacy {space}/keys。
-func ResolveKeysDir(space, nodeID string) string {
-	if nodeID != "" {
-		p := filepath.Join(space, "nodes", nodeID, "keys")
-		if fileExists(filepath.Join(p, "node.private")) || dirExists(p) {
-			return p
-		}
-		// 新目录不存在时也返回新路径（写入方会创建）
-		if !fileExists(filepath.Join(LegacyKeysDir(space), "node.private")) {
-			return p
-		}
+// siblingLocal 由某配置来源目录推出同级的 `conf/local`：
+//
+//	<home>/conf/local          → 自身
+//	<home>/conf/online/<td>    → <home>/conf/local
+//
+// 找不到 conf 祖先则返回 ""。不依赖 env，纯路径推导（便于测试）。
+func siblingLocal(space string) string {
+	if filepath.Base(space) == "local" {
+		return space
 	}
-	if fileExists(filepath.Join(LegacyKeysDir(space), "node.private")) {
-		return LegacyKeysDir(space)
+	for p := space; ; {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return ""
+		}
+		if filepath.Base(parent) == "conf" {
+			return filepath.Join(parent, "local")
+		}
+		p = parent
+	}
+}
+
+// ResolveKeysDir 解析节点密钥目录。
+//
+// 顺序：**当前来源 space** → **同级 conf/local**（历史/跨档落点）→ 新建 space 下新路径。
+//
+// 为什么跨档回退：密钥是**节点身份**，不该随 local/online 切档而"换目录" ——
+// 切档后若只在当前档找，会误判「缺密钥/缺 back 公钥」（实测 `keys sync` 因此
+// 触发多余回填并因空 URL 失败）。宁可认同一台机只有一份密钥。
+func ResolveKeysDir(space, nodeID string) string {
+	candidates := []string{space}
+	if local := siblingLocal(space); local != "" && filepath.Clean(local) != filepath.Clean(space) {
+		candidates = append(candidates, local)
+	}
+	for _, sp := range candidates {
+		if nodeID != "" {
+			p := filepath.Join(sp, "nodes", nodeID, "keys")
+			if fileExists(filepath.Join(p, "node.private")) {
+				return p
+			}
+		}
+		if fileExists(filepath.Join(LegacyKeysDir(sp), "node.private")) {
+			return LegacyKeysDir(sp)
+		}
 	}
 	if nodeID != "" {
 		if p, err := NodeKeysDir(space, nodeID); err == nil {
