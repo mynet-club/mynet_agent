@@ -173,7 +173,15 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 }
 
 // proxyMarkCmds 打 fwmark：PREROUTING（LAN 转发）+ OUTPUT（本机 App，同机形态）。
-//
+// nftRule 幂等地落一条 nft 规则：先按**同样的 spec** 删（optional —— 没装过/已失效都
+// 不算失败），再 add。`nft add rule` 允许同规则多份：只 add 不删，重复 apply 会**堆积**
+// 重复规则（2026-10-11 .182 实测要求修）。delete 按 spec 匹配，顺带清掉历史堆积。
+func nftRule(spec []string) []routeCmd {
+	del := append([]string{"nft", "delete", "rule"}, spec...)
+	add := append([]string{"nft", "add", "rule"}, spec...)
+	return []routeCmd{{argv: del, optional: true}, {argv: add}}
+}
+
 // 历史教训：只写 PREROUTING 时，消费者=入口的 PC 上**本机流量根本不会被标记**。
 // 同机自环见 proxySelfExemptCmds —— 隧道自身包必须先豁免再谈打标。
 func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime, fw int) []routeCmd {
@@ -195,21 +203,20 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 		}
 		// LAN 回包不重打 mark（防路由回环）
 		if rt.LANBridge != "" {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mynet_proxy", "PREROUTING",
-				"iifname", rt.TunDevice, "ct", "state", "established,related", "return",
-			}, optional: true})
+			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "PREROUTING",
+				"iifname", rt.TunDevice, "ct", "state", "established,related", "return"})...)
 		}
-		mark := func(chain, daddrExpr string) []string {
-			base := []string{"nft", "add", "rule", "ip", "mynet_proxy", chain}
+		markSpec := func(chain, daddrExpr string) []string {
 			if inverted {
-				return append(base, "ip", "daddr", "!=", daddrExpr, "meta", "mark", "set", fwHex)
+				return []string{"ip", "mynet_proxy", chain, "ip", "daddr", "!=", daddrExpr,
+					"meta", "mark", "set", fwHex}
 			}
-			return append(base, "ip", "daddr", daddrExpr, "meta", "mark", "set", fwHex)
+			return []string{"ip", "mynet_proxy", chain, "ip", "daddr", daddrExpr,
+				"meta", "mark", "set", fwHex}
 		}
 		setRef := "@mynet_proxy"
-		cmds = append(cmds, routeCmd{argv: mark("PREROUTING", setRef)})
-		cmds = append(cmds, routeCmd{argv: mark("OUTPUT", setRef)})
+		cmds = append(cmds, nftRule(markSpec("PREROUTING", setRef))...)
+		cmds = append(cmds, nftRule(markSpec("OUTPUT", setRef))...)
 		return cmds
 	}
 
@@ -258,22 +265,16 @@ func proxySelfExemptCmds(snap *shared.SystemSnapshot, rt ProxyRuntime) []routeCm
 				"{ type filter hook output priority -150; }"}, optional: true},
 		)
 		if rt.ExitEndpoint != "" {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
-				"ip", "daddr", rt.ExitEndpoint, "return",
-			}, optional: true})
+			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
+				"ip", "daddr", rt.ExitEndpoint, "return"})...)
 		}
 		if rt.TunnelLocalPort > 0 {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
-				"udp", "sport", fmt.Sprintf("%d", rt.TunnelLocalPort), "return",
-			}, optional: true})
+			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
+				"udp", "sport", fmt.Sprintf("%d", rt.TunnelLocalPort), "return"})...)
 		}
 		// 回环 / 本机解析器
-		cmds = append(cmds, routeCmd{argv: []string{
-			"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
-			"oifname", "lo", "return",
-		}, optional: true})
+		cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
+			"oifname", "lo", "return"})...)
 		return cmds
 	}
 	if snap.Capabilities["iptables"] {
