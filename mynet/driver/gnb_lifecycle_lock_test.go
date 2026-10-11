@@ -34,6 +34,9 @@ type fakeGnb struct {
 	// concurrentSpawns 记录「同一时刻有几次 Spawn 在途」，用来证明锁真的串行化了。
 	inSpawn    int
 	maxInSpawn int
+	// busyboxPS 为真时让 `ps` 报「不认 -A」（OpenWrt busybox 的实测形态：`.182` 上
+	// `ps: unrecognized option: A`），逼出 pidof + /proc 的回落路径。
+	busyboxPS bool
 }
 
 func newFakeGnb() *fakeGnb {
@@ -48,6 +51,9 @@ func (f *fakeGnb) exec(name string, args ...string) ([]byte, error) {
 		// LoadState=not-found ⇒ systemdManages()=false ⇒ 走 spawn 路径（正是生产 .180 的形态）
 		return []byte("not-found"), nil
 	case name == "ps":
+		if f.busyboxPS {
+			return nil, fmt.Errorf("ps: unrecognized option: A")
+		}
 		var pids []int
 		for pid := range f.alive {
 			pids = append(pids, pid)
@@ -58,6 +64,33 @@ func (f *fakeGnb) exec(name string, args ...string) ([]byte, error) {
 			fmt.Fprintf(&b, "%d %s\n", pid, f.cmdline[pid])
 		}
 		return []byte(b.String()), nil
+	case name == "pidof":
+		// busybox 回落路径：pidof <exe> → 名字匹配；命令行首段 basename 即进程名
+		name0 := ""
+		if len(args) > 0 {
+			name0 = args[0]
+		}
+		var pids []int
+		for pid := range f.alive {
+			if filepath.Base(strings.Fields(f.cmdline[pid])[0]) == name0 {
+				pids = append(pids, pid)
+			}
+		}
+		sort.Ints(pids)
+		var parts []string
+		for _, pid := range pids {
+			parts = append(parts, strconv.Itoa(pid))
+		}
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("pidof: no matching process")
+		}
+		return []byte(strings.Join(parts, " ")), nil
+	case name == "cat" && len(args) == 1 && strings.HasPrefix(args[0], "/proc/"):
+		pid, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(args[0], "/proc/"), "/cmdline"))
+		if cmd, ok := f.cmdline[pid]; ok {
+			return []byte(strings.ReplaceAll(cmd, " ", "\x00")), nil
+		}
+		return nil, fmt.Errorf("cat: no such file")
 	case name == "kill" && len(args) == 2 && args[0] == "-0":
 		pid, _ := strconv.Atoi(args[1])
 		if f.alive[pid] {
@@ -239,5 +272,38 @@ func TestConvergeIgnoresOtherConfdir(t *testing.T) {
 	}
 	if n := f.liveCount(confA); n != 1 {
 		t.Fatalf("本 confdir 应 1 个，实际 %d", n)
+	}
+}
+
+// busybox（OpenWrt）的 ps 不认 -A/-o → 必须回落到 pidof + /proc 口径，否则收敛在
+// OpenWrt 上静默失效（2026-10-11 `.182` 实测：`ps: unrecognized option: A`）。
+func TestConvergeFallsBackWhenPsUnsupported(t *testing.T) {
+	conf := t.TempDir()
+	f := newFakeGnb()
+	f.busyboxPS = true
+	f.mu.Lock()
+	f.alive[4242] = true
+	f.cmdline[4242] = "gnb -c " + conf // 本 confdir 的孤儿
+	f.alive[1] = true
+	f.cmdline[1] = "gnb -c /some/other/conf" // 别的节点
+	f.mu.Unlock()
+
+	d := f.driver(conf)
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	f.mu.Lock()
+	orphan, other := f.alive[4242], f.alive[1]
+	f.mu.Unlock()
+	if orphan {
+		t.Fatal("ps 不可用时仍须收敛同 confdir 孤儿（pidof+/proc 回落没生效）")
+	}
+	if !other {
+		t.Fatal("别的 confdir 不该被收")
+	}
+	if n := f.liveCount(conf); n != 1 {
+		t.Fatalf("应恰 1 个，实际 %d", n)
 	}
 }

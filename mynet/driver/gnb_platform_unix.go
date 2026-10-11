@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -83,12 +84,37 @@ func (d *GNBDriver) lockLifecycle() (func(), error) {
 
 // sameConfdirPidsOS 列出「命令行指向本 ConfDir 的 gnb」进程。
 //
-// 用 `ps -Ao pid=,args=`（Linux 与 macOS/BSD 都认 args 这个别名）而非 /proc ——
-// macOS 没有 /proc，而这条判据要跨 unix 一起用。
+// 两段：
+//  1. `ps -Ao pid=,args=` —— GNU ps（Linux）与 BSD ps（macOS）都认，一次拿全；
+//  2. **失败时回落** `pidof gnb` + `/proc/<pid>/cmdline` —— busybox 的 ps 不认
+//     `-A`/`-o`（2026-10-11 在 `.182` 实测：`ps: unrecognized option: A`），
+//     而 OpenWrt 上跑的是 busybox。这条回落与 init 的 converge_stale_gnb 是同一判据。
 func (d *GNBDriver) sameConfdirPidsOS() []int {
-	out, err := d.Exec("ps", "-Ao", "pid=,args=")
+	if out, err := d.Exec("ps", "-Ao", "pid=,args="); err == nil {
+		return parseSameConfdirPids(string(out), d.ConfDir, gnbExeName())
+	}
+	return d.sameConfdirPidsViaProc()
+}
+
+// sameConfdirPidsViaProc pidof + /proc 口径（busybox / 无 GNU ps 的环境）。
+func (d *GNBDriver) sameConfdirPidsViaProc() []int {
+	out, err := d.Exec("pidof", gnbExeName())
 	if err != nil {
 		return nil
 	}
-	return parseSameConfdirPids(string(out), d.ConfDir, gnbExeName())
+	var pids []int
+	for _, f := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(f)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		raw, rerr := d.Exec("cat", fmt.Sprintf("/proc/%d/cmdline", pid))
+		if rerr != nil {
+			continue
+		}
+		if strings.Contains(strings.ReplaceAll(string(raw), "\x00", " "), d.ConfDir) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
