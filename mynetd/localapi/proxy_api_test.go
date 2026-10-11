@@ -97,6 +97,11 @@ func TestPluginProxyPostLocalThenWriteback(t *testing.T) {
 	if len(applied) == 0 || applied[0] != "plugin apply proxy" {
 		t.Fatalf("应派发执行器 plugin apply proxy，got %v", applied)
 	}
+	// 第三段：写意图 + 驱动投影之后必须刷周边（client 分流的 nft/ip rule/table 等在
+	// `mynet apply` 里），否则页面开关"看起来生效、周边没装"。
+	if len(applied) < 2 || applied[1] != "apply --auto" {
+		t.Fatalf("应在 plugin apply 之后派发 apply --auto 刷周边，got %v", applied)
+	}
 	if wroteRev == 0 {
 		t.Fatal("应发生回写")
 	}

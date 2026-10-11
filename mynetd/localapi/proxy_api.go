@@ -134,6 +134,23 @@ func (s *Server) postPluginProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 1b) 刷周边：client 分流的 nft/ipset/ip rule/table、防火墙/NAT 都在
+	// `mynet apply` 里。写意图 + 驱动投影之后必须补这一次 —— 否则页面开关"看起来生效、
+	// 实际周边没装"，要等下一次 bundle/reload 才落地（2026-10-11 实测的时通时断来源之一）。
+	// 与 bundle 变更走**同一条**刷新链，行为一致；apply 是幂等的。
+	if s.Ops != nil {
+		if _, err := s.Ops([]string{"apply", "--auto"}); err != nil {
+			st.MarkWritebackFail(err, now)
+			_ = s.saveProxyState(dir, st)
+			writeJSON(w, 500, map[string]any{
+				"success": false,
+				"message": "周边刷新失败（intent 已记）: " + err.Error(),
+				"data":    st.Describe(),
+			})
+			return
+		}
+	}
+
 	// 2) 回写云端（失败不回滚）。LocalOnly = 仅本机 proxy，故意不推云端。
 	if s.ProxyWriteback != nil && !p.LocalOnly {
 		rev, err := s.ProxyWriteback(st.Local.Policy, st.Local.Revision)
