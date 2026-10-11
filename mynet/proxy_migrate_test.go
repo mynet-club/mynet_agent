@@ -129,6 +129,35 @@ func TestMigrateLegacyProxyConf_DoesNotClobberExistingLocal(t *testing.T) {
 	}
 }
 
+// 空残桩（`{"enabled":false}` —— 某次 enable/disable 留下的空壳）不算"配过"，
+// 应被旧 Lua conf 折叠覆盖。这是 2026-10-11 .182 上「代理没起」的根因：残桩把折叠
+// 挡死 → Local 停在 enabled:false → Go 单一 owner 下 client 分流就不装了。
+func TestMigrateLegacyProxyConf_FoldsBareStubLocal(t *testing.T) {
+	home := t.TempDir()
+	base := proxyLocalBaseDir(home)
+	stub := &domain.ProxyIntentState{}
+	if err := stub.ApplyLocal(domain.ProxyPolicy{Enabled: false}, time.Now()); err != nil {
+		t.Fatalf("造空残桩失败: %v", err)
+	}
+	if err := config.SaveProxyIntent(base, stub); err != nil {
+		t.Fatal(err)
+	}
+
+	writeLegacyProxyConf(t, home, "PROXY_ENABLED=\"1\"\nPROXY_MODE=\"client\"\nNODE_REGION=\"domestic\"\nPROXY_POLICY=\"whitelist\"\n")
+
+	res, err := MigrateLegacyProxyConf(home, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Migrated {
+		t.Fatalf("空残桩应被折叠（不该 skip）: %+v", res)
+	}
+	st := loadLocalIntent(t, home)
+	if st.Local == nil || !st.Local.Policy.Enabled || st.Local.Policy.Role != domain.ProxyRoleClient {
+		t.Fatalf("折叠后 Local 应为 client+enabled: %+v", st.Local)
+	}
+}
+
 // 未知键 → fail-closed：不写 intent、不写 marker。
 func TestMigrateLegacyProxyConf_UnknownKeyFailsClosed(t *testing.T) {
 	home := t.TempDir()

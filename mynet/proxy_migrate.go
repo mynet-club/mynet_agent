@@ -82,7 +82,10 @@ func MigrateLegacyProxyConf(home string, dry bool) (MigrateResult, error) {
 	if mErr != nil {
 		return MigrateResult{}, mErr
 	}
-	if marker != nil && marker.SchemaVersion == proxyMigrateSchema && marker.SourceSHA256 == sha {
+	if marker != nil && marker.SchemaVersion == proxyMigrateSchema && marker.SourceSHA256 == sha &&
+		marker.Result == "migrated" {
+		// 只有**真迁移过**才算"已迁"。跳过（如 skipped-local-present）也写标记是为了
+		// 不反复刷日志，但它不能把后续（残桩判定修好之后）的重试挡死。
 		return MigrateResult{Skipped: true, Reason: "已迁移（源未变，sha256 一致）"}, nil
 	}
 
@@ -96,7 +99,7 @@ func MigrateLegacyProxyConf(home string, dry bool) (MigrateResult, error) {
 	if err != nil {
 		return MigrateResult{}, fmt.Errorf("读统一意图: %w", err)
 	}
-	if st.Local != nil {
+	if st.Local != nil && !localIsBareStub(&st.Local.Policy) {
 		if !dry {
 			_ = saveProxyMigrateMarker(base, &proxyMigrateMarker{
 				SchemaVersion: proxyMigrateSchema, Source: "proxy_role.conf",
@@ -121,6 +124,27 @@ func MigrateLegacyProxyConf(home string, dry bool) (MigrateResult, error) {
 		}
 	}
 	return MigrateResult{Migrated: true, Reason: "已折叠进 Local 轨"}, nil
+}
+
+// localIsBareStub 判定 Local 轨是否只是**空残桩**：除 Enabled 外别无任何策略字段。
+// 残桩（例如 `{"enabled":false}` —— 曾被某次 enable/disable 写下的空壳）不是"用户配过的
+// 本地策略"，不该挡住旧 Lua conf 的折叠；真有字段（role/region/policy/exits/split/dns/
+// domain_rules/acl…）时必须跳过、不覆盖。
+//
+// 用 JSON 序列化比较：`omitempty` 把空值与 nil 归一，避免 nil-vs-empty 的假不等。
+func localIsBareStub(p *domain.ProxyPolicy) bool {
+	if p == nil {
+		return true
+	}
+	cp := *p
+	cp.Enabled = false // 开关本身不参与"有没有配过"的判定（由折叠决定）
+	b, err := json.Marshal(cp)
+	if err != nil {
+		return false // 序列化失败按"有内容"处理：宁可跳过，不覆盖
+	}
+	var zero domain.ProxyPolicy
+	zb, _ := json.Marshal(zero)
+	return string(b) == string(zb)
 }
 
 // 旧 conf 的**已知键**白名单（proxy.lua M.save_config 产出的正是这 8 个）。
