@@ -22,18 +22,41 @@ func validEnvelope(t *testing.T, generation string) []byte {
 	env := &domain.BundleEnvelope{
 		SchemaVersion: 2,
 		Generation:    generation,
-		// schema 把 checksum 列为 required，所以夹具必须带上。
-		// 这里填字面量而不真算：Save 刻意**不验校验和的值**（见 validateEnvelope 注释），
-		// 本测试要验的是「required 字段齐不齐」，不是 canonicalization。
-		Checksum:    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		GeneratedAt: "2026-09-25T00:00:00Z",
-		Node:        domain.NodeRef{ID: "1245816621804034", Interface: "gnb0", MTU: 1400},
-		Driver:      domain.VPNDriverType("gnb"),
-		Network:     domain.NetworkIntent{Addresses: []string{"10.23.0.5/24"}},
+		GeneratedAt:   "2026-09-25T00:00:00Z",
+		Node:          domain.NodeRef{ID: "1245816621804034", Interface: "gnb0", MTU: 1400},
+		Driver:        domain.VPNDriverType("gnb"),
+		Network:       domain.NetworkIntent{Addresses: []string{"10.23.0.5/24"}},
 	}
+	// checksum 用**真算法**回填（先编空的一份，算出值再编一遍）—— 夹具即「合法包」，
+	// 否则整套测试都会打 checksum 告警，噪音掩盖真信号。故意不匹配另有
+	// validEnvelopeBadChecksum。
 	raw, err := domain.EncodeBundleEnvelope(env)
 	if err != nil {
 		t.Fatalf("EncodeBundleEnvelope: %v", err)
+	}
+	sum, err := domain.ComputeBundleChecksum(raw)
+	if err != nil {
+		t.Fatalf("ComputeBundleChecksum: %v", err)
+	}
+	env.Checksum = sum
+	raw, err = domain.EncodeBundleEnvelope(env)
+	if err != nil {
+		t.Fatalf("EncodeBundleEnvelope(回填 checksum): %v", err)
+	}
+	return raw
+}
+
+// validEnvelopeBadChecksum 同 validEnvelope，但 checksum 故意写错 —— 供「只核不拦」用例。
+func validEnvelopeBadChecksum(t *testing.T, generation string) []byte {
+	t.Helper()
+	env, err := domain.DecodeBundleEnvelope(validEnvelope(t, generation))
+	if err != nil {
+		t.Fatalf("DecodeBundleEnvelope: %v", err)
+	}
+	env.Checksum = "sha256:" + strings.Repeat("0", 64)
+	raw, err := domain.EncodeBundleEnvelope(env)
+	if err != nil {
+		t.Fatalf("EncodeBundleEnvelope(bad): %v", err)
 	}
 	return raw
 }
@@ -122,8 +145,23 @@ func TestBundleSaveRefusesGarbageAndKeepsGoodCopy(t *testing.T) {
 	}
 }
 
-// ── Sync：200 / 304 / 错误 ───────────────────────────────────
+// checksum **只核不拦**：值对不上也放行（记 warning），不拒绝落盘 ——
+// 硬拒绝的代价是「两端 canonical 一旦有差异就拒绝所有包」，先用告警换可见性。
+func TestBundleSaveAcceptsChecksumMismatchWarnOnly(t *testing.T) {
+	s := tempStore(t)
+	body := validEnvelopeBadChecksum(t, "gen-mismatch")
+	if err := domain.VerifyBundleChecksum(body); err == nil {
+		t.Fatal("夹具 checksum 本该不匹配，否则这条测试测不到东西")
+	}
+	if err := s.Save(body, `"etag-m"`); err != nil {
+		t.Fatalf("checksum 不匹配应放行（仅告警），实际被拒: %v", err)
+	}
+	if string(mustRead(t, s.path)) != string(body) {
+		t.Error("落盘内容应与入参一致")
+	}
+}
 
+// ── Sync：200 / 304 / 错误 ───────────────────────────────────
 func TestBundleSyncUpdatedThenUnchanged(t *testing.T) {
 	s := tempStore(t)
 	body := validEnvelope(t, "gen-1")

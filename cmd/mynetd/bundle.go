@@ -10,6 +10,7 @@ import (
 
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // bundleStore 把 back 下发的 BundleEnvelope 落到 $MYNET_HOME/var/bundle.json。
@@ -110,9 +111,11 @@ func (s *bundleStore) Save(body []byte, etag string) error {
 // schema_version / generation / checksum / generated_at / node / driver / network，
 // driver 限 gnb|wireguard。
 //
-// 这里**不验 checksum 的值**：两端 canonicalization 若有细微差异，验值会让
-// 节点拒绝所有配置包 —— 那比拿到一份没校验的配置严重得多。校验和的核对
-// 属应用配置那一侧（mynet apply）的职责。
+// checksum **只核不拦**（2026-10-12 裁定：先跑通）：值不匹配时记 warning **放行**，
+// 不拒绝落盘。理由：两端 canonicalization 若有细微差异，硬拒绝会让节点拒绝**所有**
+// 配置包（比拿到一份没校验的配置严重得多），而「有没有差异」这件事用告警就能先拿到 ——
+// 观测一段时间、确认两端一致后，再决定是否收紧为拒绝。校验能力见
+// domain.VerifyBundleChecksum（canonical 算法已冻结，fixtures 往返一致）。
 func validateEnvelope(raw []byte) error {
 	env, err := domain.DecodeBundleEnvelope(raw)
 	if err != nil {
@@ -137,6 +140,11 @@ func validateEnvelope(raw []byte) error {
 	case domain.VPNDriverType("gnb"), domain.VPNDriverType("wireguard"):
 	default:
 		return fmt.Errorf("driver = %q，schema 只允许 gnb|wireguard", env.Driver)
+	}
+	// 只核不拦：不匹配记 warning 放行（详见函数注释）。
+	if err := domain.VerifyBundleChecksum(raw); err != nil {
+		logger.Warn("bundle checksum 不匹配（放行，仅告警）",
+			"node", env.Node.ID, "generation", env.Generation, "err", err)
 	}
 	return nil
 }
