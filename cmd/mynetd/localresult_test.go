@@ -100,6 +100,28 @@ func TestSelectExecutor_DefaultIsMynet(t *testing.T) {
 	}
 }
 
+// O1：config/setup 在 Lua 执行器下必须改走 Go 二进制（形状以 mynet config 为准）。
+func TestGoNativeInLua(t *testing.T) {
+	for _, cmd := range []string{"config", "setup"} {
+		if !goNativeInLua(cmd) {
+			t.Fatalf("%s 应走 Go", cmd)
+		}
+	}
+	for _, cmd := range []string{"apply", "service", "metrics", "detector", "nodes", ""} {
+		if goNativeInLua(cmd) {
+			t.Fatalf("%s 不应走 Go（Lua 有实现）", cmd)
+		}
+	}
+}
+
+// 防回归：Lua 脚本不得再把 config 当 status 的别名合成桩（那样会把
+// localapi 的 identity/runtime/tenants/connect/keys 全带偏）。
+func TestLuaScriptDoesNotStubConfig(t *testing.T) {
+	if strings.Contains(luaRunnerScript, `cmd == "status" or cmd == "config"`) {
+		t.Fatal("Lua 脚本仍把 config 当 status 别名 —— config 必须整条交给 Go")
+	}
+}
+
 func TestSelectExecutor_LuaWhenEnvSet(t *testing.T) {
 	t.Setenv("MYNET_EXECUTOR", "lua")
 	if executorKind() != "lua" {

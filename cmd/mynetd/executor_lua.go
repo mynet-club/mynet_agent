@@ -55,8 +55,21 @@ func execLuaStd(argv []string) (string, string, error) {
 	return stdout, stderr, nil
 }
 
+// goNativeInLua 报告某子命令在 Lua 执行器下是否应改走 Go 二进制（O1：
+// 身份/config/keys/pull 显式交给 Go）。`config` 曾有一个只看 status 的 Lua 桩，
+// 会把 localapi 的 identity/runtime/tenants/connect/keys 全带偏，故整条交给 Go。
+func goNativeInLua(cmd string) bool {
+	return cmd == "config" || cmd == "setup"
+}
+
 // execLua 跑 lua -e 执行一条 mynet 形状的命令。
+//
+// O1：`config`/`setup` **不经 Lua**，直接走 Go 二进制（见 goNativeInLua）。
+// 形状以 `mynet config ...` 为唯一权威，与桌面同一实现。
 func execLua(argv []string) (any, error) {
+	if len(argv) > 0 && goNativeInLua(argv[0]) {
+		return execMynet(argv)
+	}
 	script, err := planLuaScript(argv)
 	if err != nil {
 		return map[string]any{"argv": argv, "error": err.Error()}, err
@@ -268,7 +281,7 @@ elseif cmd == "nodes" then
   local nid = cfg.get_node_id()
   out(util2.json_encode({ node_id = nid }) or "{}")
   os.exit(0)
-elseif cmd == "status" or cmd == "config" then
+elseif cmd == "status" then
   local node = try_require("luci.model.mynet.node")
   local util = try_require("luci.model.mynet.util")
   local cfg = try_require("luci.model.mynet.config")
