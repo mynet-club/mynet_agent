@@ -2,11 +2,13 @@ package driver
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // WireGuardDriver 只读 + 生命周期。解析 `wg show`。
@@ -43,9 +45,11 @@ func (d *WireGuardDriver) IsAvailable() bool {
 func (d *WireGuardDriver) IsProcessAlive() bool { return d.IsAvailable() }
 
 func (d *WireGuardDriver) Capabilities() domain.DriverCaps {
-	// A-8：wg 无 Discovery / 无 Proxy
+	// A-8：wg 无 Discovery / 无 Proxy。
+	// HotReload=true：Reload 走 `wg syncconf`（只同步 WG 协议状态，不断链路），
+	// 不可用时回落 Stop+Start（见 Reload）。
 	return domain.DriverCaps{
-		HotReload:       false,
+		HotReload:       true,
 		Discovery:       false,
 		Proxy:           false,
 		CustomKeyUpload: true,
@@ -173,8 +177,84 @@ func (d *WireGuardDriver) Stop() error {
 	return err
 }
 
-// Reload 冷启（HotReload=false，热路径未验证）。
+// wgQuickOnlyKeys 只属于 wg-quick、`wg setconf/syncconf` **不认**的键
+// （wg-quick strip 干的就是剔掉它们；不剔 syncconf 直接语法错）。
+// ⚠️ `FwMark`/`Fwmark` 是 **wg 自己的键**，不能剔。Address/MTU/DNS 归 L6（NetworkIntent）。
+var wgQuickOnlyKeys = map[string]bool{
+	"address": true, "mtu": true, "table": true, "dns": true,
+	"preup": true, "postup": true, "predown": true, "postdown": true, "saveconfig": true,
+}
+
+// StripWGQuickKeys 把 wg-quick 配置剥成 `wg setconf/syncconf` 认的形态：
+// 丢掉 wg-quick 专有键，保留 [Interface]/[Peer] 段与 wg 自己的键。
+//
+// 为什么自己剥而不用 `wg-quick strip`：那是 wg-quick 的子命令，而 **OpenWrt 没有
+// wg-quick**（只有 wg）—— 用它等于把热同步钉死在有 wg-quick 的平台上。
+func StripWGQuickKeys(text string) string {
+	out := make([]string, 0, 16)
+	for _, line := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "[") {
+			out = append(out, line)
+			continue
+		}
+		key := t
+		if i := strings.IndexByte(t, '='); i >= 0 {
+			key = strings.TrimSpace(t[:i])
+		}
+		if wgQuickOnlyKeys[strings.ToLower(key)] {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+}
+
+// SyncFromConfFile 热同步：把盘上的配置剥成 wg 形态后 `wg syncconf <iface> <file>`。
+//
+// 只同步 **WG 协议状态**（私钥/端口/对端/AllowedIPs），**不含** Address/MTU/Table/
+// FIB/rule/firewall —— 那些归 L6（driver-abstraction.md R7：两部分分开验证）。
+// 接口不在时报错（syncconf 不能建口，先 up）。
+func (d *WireGuardDriver) SyncFromConfFile() error {
+	if _, err := d.Exec("wg", "show", d.Interface); err != nil {
+		return fmt.Errorf("wireguard: 接口 %s 不在，不能 syncconf（应先 up）: %w", d.Interface, err)
+	}
+	raw, err := os.ReadFile(d.ConfPath)
+	if err != nil {
+		return fmt.Errorf("wireguard: 读 %s: %w", d.ConfPath, err)
+	}
+	tmp, err := os.CreateTemp("", "mynet-wg-sync-*.conf")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(StripWGQuickKeys(string(raw))); err != nil {
+		_ = tmp.Close()
+
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if out, err := d.Exec("wg", "syncconf", d.Interface, tmp.Name()); err != nil {
+		return fmt.Errorf("wg syncconf %s: %w (%s)", d.Interface, err, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+// Reload 热重载优先：接口在跑 → `wg syncconf`（不断链路）；不在/失败 → 回落冷启 Stop+Start。
+//
+// 回落是契约的一部分（vpn_lifecycle_driver.go：HotReload 语义下 Reload 仍须能把状态带到位）；
+// 但回落**要说话** —— 否则「syncconf 一直失败、一直偷偷冷启」会被当成热重载其实是通了。
 func (d *WireGuardDriver) Reload() error {
+	log := logger.Comp("driver")
+	if err := d.SyncFromConfFile(); err == nil {
+		log.Info("wireguard syncconf 热同步完成", "iface", d.Interface)
+		return nil
+	} else {
+		log.Info("wireguard 热同步不可用，回落冷启 Stop+Start", "iface", d.Interface, "err", err)
+	}
 	_ = d.Stop()
 	return d.Start()
 }

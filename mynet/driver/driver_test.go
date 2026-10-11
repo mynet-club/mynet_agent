@@ -15,8 +15,10 @@ func TestWGCapsNoDiscoveryNoProxy(t *testing.T) {
 	if c.Discovery || c.Proxy {
 		t.Fatalf("wg must not have Discovery/Proxy: %+v", c)
 	}
-	if c.HotReload {
-		t.Fatal("HotReload 未验证必须 false")
+	// HotReload：wg 的 Reload 走 `wg syncconf`（只同步 WG 协议状态、不断链路），
+	// 不可用时回落 Stop+Start —— 已实现并验证（单测 4 例 + arm64 VM 真机 syncconf 热加对端）。
+	if !c.HotReload {
+		t.Fatal("wg 的热同步已落地（wg syncconf），HotReload 应为 true")
 	}
 }
 
