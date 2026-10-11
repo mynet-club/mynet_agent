@@ -167,13 +167,24 @@ func (d *WireGuardDriver) WriteIntent(w *domain.WireGuardIntent) error {
 	return writeFile0600(d.ConfPath, []byte(text))
 }
 
+// Start 起隧道。平台服务管理器在（OpenWrt/procd）→ 交给它 —— init 的
+// `start_wg_interface` 有 `ip`+`wg` 兜底，而这里直接 exec 的 `wg-quick` 在 OpenWrt
+// **根本不存在**（wireguard-tools 不装它），自建必失败。
 func (d *WireGuardDriver) Start() error {
+	if handled, err := delegatePlatformService(d.Exec, "start"); handled {
+		return err
+	}
 	_, err := d.Exec("wg-quick", "up", d.Interface)
+
 	return err
 }
 
 func (d *WireGuardDriver) Stop() error {
+	if handled, err := delegatePlatformService(d.Exec, "stop"); handled {
+		return err
+	}
 	_, err := d.Exec("wg-quick", "down", d.Interface)
+
 	return err
 }
 
@@ -253,9 +264,14 @@ func (d *WireGuardDriver) Reload() error {
 		log.Info("wireguard syncconf 热同步完成", "iface", d.Interface)
 		return nil
 	} else {
-		log.Info("wireguard 热同步不可用，回落冷启 Stop+Start", "iface", d.Interface, "err", err)
+		log.Info("wireguard 热同步不可用，回落", "iface", d.Interface, "err", err)
+	}
+	// OpenWrt 等由平台拥有的形态：交给它 restart（它自己按 VPN_TYPE 起 gnb|wg）。
+	if handled, err := delegatePlatformService(d.Exec, "restart"); handled {
+		return err
 	}
 	_ = d.Stop()
+
 	return d.Start()
 }
 

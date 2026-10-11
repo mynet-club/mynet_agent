@@ -359,6 +359,11 @@ func (d *GNBDriver) Start() error { return d.withLifecycle(d.startLocked) }
 
 func (d *GNBDriver) startLocked() error {
 	log := logger.Comp("driver")
+	// 平台服务管理器在（OpenWrt/procd）→ 交给它：绕过它自己 spawn 出的 gnb 它不认，
+	// 两份争 tun 就是双 gnb 的来源（与 Lua 执行器委托 /etc/init.d/mynet 同一规则）。
+	if handled, err := delegatePlatformService(d.Exec, "start"); handled {
+		return err
+	}
 	if d.IsProcessAlive() {
 		log.Debug("gnb 已在运行", "conf", d.ConfDir)
 		return nil
@@ -499,6 +504,9 @@ func (d *GNBDriver) Stop() error { return d.withLifecycle(d.stopLocked) }
 
 func (d *GNBDriver) stopLocked() error {
 	log := logger.Comp("driver")
+	if handled, err := delegatePlatformService(d.Exec, "stop"); handled {
+		return err
+	}
 	log.Info("gnb 停止", "conf", d.ConfDir)
 	if d.systemdManages() {
 		if _, err := d.Exec("systemctl", "stop", d.ServiceUnit); err != nil {
@@ -550,6 +558,10 @@ func (d *GNBDriver) readPidFile() (int, error) {
 // 也把「停完再起」这个原子语义拆开（那正是重叠 reload 留下两个 gnb 的形态）。
 func (d *GNBDriver) Reload() error {
 	return d.withLifecycle(func() error {
+		// 平台服务管理器在 → 让它 restart（procd 自己串行化，且它才是实例的权威）。
+		if handled, err := delegatePlatformService(d.Exec, "restart"); handled {
+			return err
+		}
 		logger.Comp("driver").Info("gnb reload", "conf", d.ConfDir)
 		_ = d.stopLocked()
 		return d.startLocked()
