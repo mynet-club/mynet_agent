@@ -223,3 +223,23 @@ func TestGenerationRevision(t *testing.T) {
 		t.Fatal("无法解析应返回 0")
 	}
 }
+
+// ApplyLocal 自行解算 split：上游只给 role/region/policy 也生效（矩阵解算归权威侧）。
+func TestApplyLocalResolvesSplit(t *testing.T) {
+	s := &ProxyIntentState{}
+	p := ProxyPolicy{Enabled: true, Role: ProxyRoleClient, Region: ProxyRegionDomestic, Policy: ProxyPolicyWhitelist}
+	if err := s.ApplyLocal(p, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if s.Local == nil || s.Local.Policy.Split == nil {
+		t.Fatal("应解算出 split")
+	}
+	if s.Local.Policy.Split.ListSource != ProxyListInternational || s.Local.Policy.Split.MatchMode != ProxyMatchNormal {
+		t.Fatalf("split 解算错: %+v", s.Local.Policy.Split)
+	}
+	// 非法 region/policy 仍拒（不静默兜底）
+	if err := (&ProxyIntentState{}).ApplyLocal(
+		ProxyPolicy{Enabled: true, Role: ProxyRoleClient, Region: "xx", Policy: "yy"}, time.Now()); err == nil {
+		t.Fatal("非法 region/policy 应拒")
+	}
+}

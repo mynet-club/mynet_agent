@@ -93,6 +93,16 @@ func (s *ProxyIntentState) Effective() *StampedProxyPolicy {
 
 // ApplyLocal 本地写入：revision 自增（在当前最大上 +1），标 Dirty。
 func (s *ProxyIntentState) ApplyLocal(p ProxyPolicy, now time.Time) error {
+	// client 侧若未带 Split，由**此处**按 region×policy 解算（与 SetProxyEnabled 同口径）。
+	// 上游（LuCI/桥）只该给业务参数 role/region/policy；矩阵解算是权威侧的事，
+	// 免得每个调用方各抄一份 region×policy 矩阵（旧线正因此出过 domestic+blacklist 失效）。
+	if p.IsClientLike() && p.Split == nil {
+		src, mode, err := ResolveProxySplit(p.Region, p.Policy)
+		if err != nil {
+			return err
+		}
+		p.Split = &ProxySplit{ListSource: src, MatchMode: mode}
+	}
 	if err := p.Validate(); err != nil {
 		return err
 	}
