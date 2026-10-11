@@ -354,11 +354,20 @@ func (d *GNBDriver) systemdManages() bool {
 	return strings.TrimSpace(string(out)) == "loaded"
 }
 
-func (d *GNBDriver) Start() error {
+// Start 拉起 gnb。整段在**每 confdir 一把**的生命周期锁内执行（见 withLifecycle）。
+func (d *GNBDriver) Start() error { return d.withLifecycle(d.startLocked) }
+
+func (d *GNBDriver) startLocked() error {
 	log := logger.Comp("driver")
 	if d.IsProcessAlive() {
 		log.Debug("gnb 已在运行", "conf", d.ConfDir)
 		return nil
+	}
+	// 启动前收敛：同 confdir 只许一个实例。**不能只信 pid 文件** —— 判活用的 pid 可能
+	// 指错或被旧进程占着（2026-10-11 生产 .180：gnb.pid 记的正是 tunless 那个，持 tun 的
+	// 是没被记录的孤儿）。命令行才是权威判据。
+	if n := d.convergeSameConfdir(0, "启动前收敛"); n > 0 {
+		log.Info("启动前收敛了同 confdir 遗留 gnb", "n", n, "conf", d.ConfDir)
 	}
 	log.Info("gnb 启动", "conf", d.ConfDir, "systemd", d.systemdManages())
 	if d.systemdManages() {
@@ -386,6 +395,12 @@ func (d *GNBDriver) Start() error {
 	if err := d.waitAlive(); err != nil {
 		log.Error("gnb 启动后未就绪", "pid", pid, "err", err)
 		return err
+	}
+	// 就绪后按 pid 文件校一次「唯一」：万一 pid 文件指向的是别人，这里会把它之外的多余实例收掉。
+	if kept, perr := d.readPidFile(); perr == nil {
+		if n := d.convergeSameConfdir(kept, "启动后校验唯一"); n > 0 {
+			log.Warn("启动后发现多余同 confdir 实例并已收敛", "n", n, "keep", kept)
+		}
 	}
 	log.Info("gnb 已就绪", "pid", pid, "bin", bin)
 	return nil
@@ -480,7 +495,9 @@ func (d *GNBDriver) waitAlive() error {
 // ⚠️ 此前是 `gnb_ctl -k`，而 gnb_ctl 的 getopt 串是 "b:n:csa:o46h"
 // （gnb_ctl.c:102），long_options 里也没有 k —— **这个 flag 根本不存在**。
 // gnb 装了 SIGTERM handler（gnb.c:395），发 SIGTERM 即可优雅退出。
-func (d *GNBDriver) Stop() error {
+func (d *GNBDriver) Stop() error { return d.withLifecycle(d.stopLocked) }
+
+func (d *GNBDriver) stopLocked() error {
 	log := logger.Comp("driver")
 	log.Info("gnb 停止", "conf", d.ConfDir)
 	if d.systemdManages() {
@@ -493,6 +510,8 @@ func (d *GNBDriver) Stop() error {
 	pid, err := d.readPidFile()
 	if err != nil {
 		log.Warn("gnb 停止：读 pid 失败", "err", err)
+		// 不直接返回：pid 文件坏了/被覆盖，仍有可能是同 confdir 的实例在跑 —— 交给收敛收。
+		d.convergeSameConfdir(0, "pid 缺失时收敛")
 		return err
 	}
 	if err := d.pidKillOS(pid); err != nil {
@@ -502,6 +521,10 @@ func (d *GNBDriver) Stop() error {
 	// 清 pid 文件：否则 node-status 会把「用户主动停」误判成
 	// 「启动失败：gnb 已退出」（pid 文件在、进程没了）。
 	_ = os.Remove(d.ConfDir + "/gnb.pid")
+	// 兜底收敛：pid 文件只有一个 pid，被覆盖/指错时会有同 confdir 的残留。
+	if n := d.convergeSameConfdir(0, "停止后清残留"); n > 0 {
+		log.Info("停止后收敛了同 confdir 残留 gnb", "n", n)
+	}
 	log.Info("gnb 已停止", "pid", pid)
 	return nil
 }
@@ -522,10 +545,95 @@ func (d *GNBDriver) readPidFile() (int, error) {
 }
 
 // Reload 退化为 Stop+Start（热重启未验证）。
+//
+// ⚠️ 两步必须在**同一把生命周期锁内**：分别调 Start/Stop 会各自取锁 —— 既可能自锁死，
+// 也把「停完再起」这个原子语义拆开（那正是重叠 reload 留下两个 gnb 的形态）。
 func (d *GNBDriver) Reload() error {
-	logger.Comp("driver").Info("gnb reload", "conf", d.ConfDir)
-	_ = d.Stop()
-	return d.Start()
+	return d.withLifecycle(func() error {
+		logger.Comp("driver").Info("gnb reload", "conf", d.ConfDir)
+		_ = d.stopLocked()
+		return d.startLocked()
+	})
+}
+
+// lifecycleLockTimeout 等「另一个启停/重载」的最长时间；超时报错，不硬闯。
+const lifecycleLockTimeout = 60 * time.Second
+
+// withLifecycle 以**每 confdir 一把**的排他锁执行生命周期动作。
+//
+// 为什么必须有：驱动动作有多个发起方 —— mynetd 的 bundle_changed 事件链、CLI、LuCI 桥、
+// 开机恢复 —— 它们各自 fork 出 `mynet service …` **子进程**，进程内互斥盖不住。
+// 2026-10-11 生产 .180 实测：启动瞬间 `bundle_changed` 连跑 3 次 reload（事件层只合并掉
+// 1 次），重叠的 Stop/Start 在同一 confdir 留下两个 gnb —— 一个持 tun、一个 tunless，
+// 且 gnb.pid 记的恰是 tunless 那个。锁跨进程，正是为这一类。
+func (d *GNBDriver) withLifecycle(fn func() error) error {
+	rel, err := d.lockLifecycle()
+	if err != nil {
+		return err
+	}
+	defer rel()
+	return fn()
+}
+
+// convergeSameConfdir 收掉「命令行指向本 ConfDir 的其它 gnb」，只留 keepPid（0 = 全清），
+// 返回收掉的数量。
+//
+// 判据与 OpenWrt init 的 converge_stale_gnb 同源（**pid + cmdline**，绝不按名字杀），
+// 但放在 Go 侧 ⇒ systemd / launchd / Windows 一并覆盖（#18 原先只在 OpenWrt init 上）。
+// systemd 托管时不越权动它的进程 —— 单元自己保证唯一。
+func (d *GNBDriver) convergeSameConfdir(keepPid int, why string) int {
+	if d.systemdManages() {
+		return 0
+	}
+	self := os.Getpid()
+	n := 0
+	for _, pid := range d.sameConfdirPidsOS() {
+		if pid == keepPid || pid == self {
+			continue
+		}
+		logger.Comp("driver").Info("收敛同 confdir 遗留 gnb", "pid", pid, "conf", d.ConfDir, "why", why)
+		d.killUntilDead(pid)
+		n++
+	}
+	return n
+}
+
+// killUntilDead 先 SIGTERM（gnb 装了 handler，可优雅退出），超时再硬杀。
+func (d *GNBDriver) killUntilDead(pid int) {
+	_ = d.pidKillOS(pid)
+	for i := 0; i < 10; i++ {
+		if !d.pidAliveOS(pid) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	_ = d.pidKill9OS(pid)
+}
+
+// parseSameConfdirPids 从 `<pid> <argv...>` 行里挑出「命令行含 confDir 且 argv[0] 是 gnb」
+// 的 pid。单独抽出来是为了可测：两种平台的扫描（unix ps / windows powershell）共用它，
+// 而「误把只是提到该路径的别的进程当 gnb」是这条判据最容易出的错。
+func parseSameConfdirPids(out, confDir, exeName string) []int {
+	var pids []int
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, confDir) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if filepath.Base(fields[1]) != exeName {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
 }
 
 func (d *GNBDriver) Status() (*domain.DriverStatus, error) {

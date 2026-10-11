@@ -524,8 +524,15 @@ func TestGnbStopFailsCleanlyWithoutPidFile(t *testing.T) {
 	if err := d.Stop(); err == nil {
 		t.Fatal("没有 pid 文件时 Stop 必须报错，不能静默成功")
 	}
-	if len(calls) != 0 {
-		t.Fatalf("没拿到 pid 就不该 exec 任何东西，实际: %v", calls)
+	// 没有 pid 文件时仍**允许**扫一遍同 confdir 残留（精确收敛，见 convergeSameConfdir）；
+	// 但两条红线不变：不许按名字杀，也不许在本 tempdir 扫不到实例时杀任何 pid。
+	for _, c := range calls {
+		if strings.Contains(c, "pkill") || strings.Contains(c, "killall") {
+			t.Fatalf("stop 不得按名字杀进程：%v", calls)
+		}
+		if strings.HasPrefix(c, "kill ") {
+			t.Fatalf("扫不到同 confdir 实例时不该杀任何 pid：%v", calls)
+		}
 	}
 }
 
