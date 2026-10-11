@@ -9,9 +9,13 @@ name: build-agent
 #          `build_openwrt.yml` 出 ipk；本工作流不再产出"伪装成 linux 的 OpenWrt 包"。
 # proxy 能力在默认编译里（mynet/proxy_*.go），无需额外 tag
 
+# ⚠️ 触发面：**只 tag + 手动 + PR**，不跟 push:main。
+# 本工作流的 build 矩阵是 6 腿交叉编译 + upload-artifact，而 GitHub Artifact 存储
+# 配额已耗尽（upload-artifact 报 "Artifact storage quota has been hit"），
+# push:main 触发的每次运行都**只烧分钟、拿不到产物**（红）。出包按需跑；
+# PR 仍跑（test 便宜、且能挡坏东西）。
 on:
   push:
-    branches: [main]
     tags: ['v*']
   pull_request:
     branches: [main]

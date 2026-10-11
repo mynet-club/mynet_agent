@@ -8,9 +8,12 @@ name: build-openwrt-sdk
 #
 # Go 侧 CGO_ENABLED=0 静态编译（musl 运行时可跑）；ipk 元数据/架构由 SDK 打出。
 
+# ⚠️ 触发面：**只 tag + 手动**，不跟 push:main。
+# 理由：本工作流是 3 腿 SDK 矩阵（每腿 ~3-4 分钟），而 GitHub Artifact 存储配额
+# 已耗尽（upload-artifact 报 "Artifact storage quota has been hit"），push:main
+# 触发的每次运行都**只烧分钟、拿不到产物**（红）。出包按需跑。
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
