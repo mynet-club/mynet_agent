@@ -1,8 +1,6 @@
 package mynet
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,55 +8,74 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-func wgEnvForProjection() (*domain.WireGuardIntent, *domain.ProxyPolicy) {
-	w := &domain.WireGuardIntent{
-		Interface: domain.WgInterface{PrivateKey: "priv", PublicKey: "pub", KeyAlgorithm: "curve25519"},
-		Peers: []domain.WgPeer{
-			{ID: "p1", BusinessNodeID: "1001", PublicKey: "peerkey", AllowedIPs: []string{"10.0.0.0/24"}},
-			{ID: "p2", BusinessNodeID: "2002", PublicKey: "other", AllowedIPs: []string{"10.9.0.0/24"}},
-		},
+func wgIntent(peerIDs ...string) *domain.WireGuardIntent {
+	w := &domain.WireGuardIntent{Interface: domain.WgInterface{PrivateKey: "priv", KeyAlgorithm: "curve25519"}}
+	for _, id := range peerIDs {
+		w.Peers = append(w.Peers, domain.WgPeer{BusinessNodeID: id, PublicKey: "pk-" + id, AllowedIPs: []string{"10.0.0.0/24"}})
 	}
-	p := &domain.ProxyPolicy{
-		Enabled: true,
-		Role:    domain.ProxyRoleClient,
-		Region:  domain.ProxyRegionDomestic,
-		Policy:  domain.ProxyPolicyWhitelist,
-		Exits:   []domain.ProxyExit{{NodeID: "1001", Enabled: true, Weight: 10}},
-	}
-	return w, p
+	return w
 }
 
-func TestProjectProxyToWGUnionsExitAllowedIPs(t *testing.T) {
-	w, p := wgEnvForProjection()
-	dest := []string{"1.1.1.0/24", "2.2.2.0/24"}
-	if err := ProjectProxyToWG(w, p, dest); err != nil {
+// 映射必须与 gnb 的 proxy.conf 同义：
+//
+//	默认出口（[default]）→ 0.0.0.0/0（wg 无兜底出口）；分组出口 → 组内 targets（最长前缀）；
+//	组内无出口 = DROP（不给任何 peer 放行）。
+func TestWGExitDestinationsDefaultAndGroups(t *testing.T) {
+	c := &domain.PluginProxyConfig{
+		Exits: []domain.ProxyExit{{NodeID: "1001", Enabled: true}},
+		Groups: []domain.ProxyGroup{
+			{Name: "jp", Targets: []string{"1.1.1.0/24", "0.0.0.0/0"}, Exits: []domain.ProxyExit{{NodeID: "2002", Enabled: true}}},
+			{Name: "drop", Targets: []string{"9.9.9.0/24"}}, // 无出口 → DROP
+		},
+	}
+	got := WGExitDestinations(c)
+	if len(got["1001"]) != 1 || got["1001"][0] != "0.0.0.0/0" {
+		t.Fatalf("默认出口应放全（0.0.0.0/0）：%v", got["1001"])
+	}
+	if len(got["2002"]) != 1 || got["2002"][0] != "1.1.1.0/24" {
+		t.Fatalf("分组出口只放组内 targets（/0 拒载）：%v", got["2002"])
+	}
+	if len(got) != 2 {
+		t.Fatalf("应为 2 个出口条目（无出口的组不产生条目）：%v", got)
+	}
+}
+
+func TestWGExitDestinationsDisabledExitIgnored(t *testing.T) {
+	c := &domain.PluginProxyConfig{
+		Exits:  []domain.ProxyExit{{NodeID: "1001", Enabled: false}},
+		Groups: []domain.ProxyGroup{{Name: "g", Targets: []string{"1.1.1.0/24"}, Exits: []domain.ProxyExit{{NodeID: "2002", Enabled: false}}}},
+	}
+	if got := WGExitDestinations(c); len(got) != 0 {
+		t.Fatalf("未启用的出口不该产生条目：%v", got)
+	}
+}
+
+func TestProjectProxyToWGProjectsAndTableOff(t *testing.T) {
+	w := wgIntent("1001", "2002")
+	if err := ProjectProxyToWG(w, map[string][]string{"1001": {"0.0.0.0/0"}, "2002": {"1.1.1.0/24"}}); err != nil {
 		t.Fatalf("投影失败: %v", err)
 	}
-	// 出口 peer 原有网段保留，目的集并入
-	got := strings.Join(w.Peers[0].AllowedIPs, ",")
-	for _, want := range []string{"10.0.0.0/24", "1.1.1.0/24", "2.2.2.0/24"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("出口 peer 缺失 %s：%s", want, got)
-		}
+	a0 := strings.Join(w.Peers[0].AllowedIPs, ",")
+	if !strings.Contains(a0, "0.0.0.0/0") || !strings.Contains(a0, "10.0.0.0/24") {
+		t.Fatalf("默认出口应并集 0.0.0.0/0 且保留原有网段：%s", a0)
 	}
-	// 非出口 peer 不被污染
-	if strings.Join(w.Peers[1].AllowedIPs, ",") != "10.9.0.0/24" {
-		t.Fatalf("非出口 peer 被改写: %v", w.Peers[1].AllowedIPs)
+	a1 := strings.Join(w.Peers[1].AllowedIPs, ",")
+	if !strings.Contains(a1, "1.1.1.0/24") || strings.Contains(a1, "0.0.0.0/0") {
+		t.Fatalf("分组出口只该拿自己那份：%s", a1)
 	}
-	// 接管路由
 	if w.Routing == nil || w.Routing.Mode != "off" {
-		t.Fatalf("应设 Table=off 接管路由，实际 %+v", w.Routing)
+		t.Fatalf("必须接管路由（Table=off），否则 0.0.0.0/0 会抢走默认路由：%+v", w.Routing)
 	}
 }
 
 func TestProjectProxyToWGIdempotent(t *testing.T) {
-	w, p := wgEnvForProjection()
-	dest := []string{"1.1.1.0/24", "2.2.2.0/24"}
-	if err := ProjectProxyToWG(w, p, dest); err != nil {
+	w := wgIntent("1001")
+	dest := map[string][]string{"1001": {"0.0.0.0/0"}}
+	if err := ProjectProxyToWG(w, dest); err != nil {
 		t.Fatal(err)
 	}
 	first := strings.Join(w.Peers[0].AllowedIPs, ",")
-	if err := ProjectProxyToWG(w, p, dest); err != nil {
+	if err := ProjectProxyToWG(w, dest); err != nil {
 		t.Fatal(err)
 	}
 	if second := strings.Join(w.Peers[0].AllowedIPs, ","); second != first {
@@ -66,71 +83,26 @@ func TestProjectProxyToWGIdempotent(t *testing.T) {
 	}
 }
 
+// 出口选点在 wg bundle 里对不上 peer → fail-loud（否则包被 cryptokey routing 静默丢）。
 func TestProjectProxyToWGFailLoudMissingExit(t *testing.T) {
-	w, p := wgEnvForProjection()
-	p.Exits = []domain.ProxyExit{{NodeID: "9999", Enabled: true}} // 选了不存在的出口
-	err := ProjectProxyToWG(w, p, []string{"1.1.1.0/24"})
+	w := wgIntent("1001")
+	err := ProjectProxyToWG(w, map[string][]string{"9999": {"1.1.1.0/24"}})
 	if err == nil {
-		t.Fatal("出口对不上任何 peer 时应 fail-loud，实际通过")
+		t.Fatal("出口对不上任何 peer 时应 fail-loud")
 	}
-	if !strings.Contains(err.Error(), "不被任何 peer 的 AllowedIPs 覆盖") {
-		t.Fatalf("错误信息应说明覆盖缺失: %v", err)
-	}
-}
-
-func TestProjectProxyToWGNoopWhenNotClient(t *testing.T) {
-	w, p := wgEnvForProjection()
-	p.Enabled = false
-	if err := ProjectProxyToWG(w, p, []string{"1.1.1.0/24"}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(w.Peers[0].AllowedIPs, ",") != "10.0.0.0/24" || w.Routing != nil {
-		t.Fatalf("禁用时不应改动: allowed=%v routing=%+v", w.Peers[0].AllowedIPs, w.Routing)
-	}
-
-	w2, p2 := wgEnvForProjection()
-	p2.Role = domain.ProxyRoleServer
-	if err := ProjectProxyToWG(w2, p2, []string{"1.1.1.0/24"}); err != nil {
-		t.Fatal(err)
-	}
-	if w2.Routing != nil {
-		t.Fatalf("server 角色不应接管路由: %+v", w2.Routing)
+	if !strings.Contains(err.Error(), "对不上 peer") {
+		t.Fatalf("错误信息应指出对不上：%v", err)
 	}
 }
 
-func TestWGProxyDestCIDRsGlobalModes(t *testing.T) {
-	// FullTunnel → /0
-	if got, err := WGProxyDestCIDRs(&domain.ProxyPolicy{Enabled: true, FullTunnel: true}); err != nil || len(got) != 1 || got[0] != "0.0.0.0/0" {
-		t.Fatalf("FullTunnel 应给 0.0.0.0/0: %v %v", got, err)
-	}
-	// inverted（未命中列表即代理）→ 安全超集 /0
-	p := &domain.ProxyPolicy{Enabled: true, Split: &domain.ProxySplit{MatchMode: domain.ProxyMatchInverted, ListSource: domain.ProxyListChina}}
-	if got, err := WGProxyDestCIDRs(p); err != nil || len(got) != 1 || got[0] != "0.0.0.0/0" {
-		t.Fatalf("inverted 应给 0.0.0.0/0: %v %v", got, err)
-	}
-}
-
-func TestWGProxyDestCIDRsFromBundledList(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("MYNET_HOME", home)
-	dir := filepath.Join(home, "conf", "proxy", "proxy_sources")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+func TestProjectProxyToWGNoopWhenNothingToProject(t *testing.T) {
+	w := wgIntent("1001")
+	before := strings.Join(w.Peers[0].AllowedIPs, ",")
+	if err := ProjectProxyToWG(w, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "interip.txt"), []byte("# c\n1.1.1.0/24\n8.8.8.8/32\n\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// domestic + whitelist → international → interip.txt
-	p := &domain.ProxyPolicy{
-		Enabled: true, Region: domain.ProxyRegionDomestic, Policy: domain.ProxyPolicyWhitelist,
-		Split: &domain.ProxySplit{ListSource: domain.ProxyListInternational, MatchMode: domain.ProxyMatchNormal},
-	}
-	got, err := WGProxyDestCIDRs(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0] != "1.1.1.0/24" || got[1] != "8.8.8.8/32" {
-		t.Fatalf("应从随包列表解出 2 条 CIDR: %v", got)
+	if after := strings.Join(w.Peers[0].AllowedIPs, ","); after != before || w.Routing != nil {
+		t.Fatalf("没有出口时不该改动：%s routing=%+v", after, w.Routing)
 	}
 }
 

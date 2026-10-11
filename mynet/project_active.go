@@ -287,18 +287,17 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	if err != nil {
 		return err
 	}
-	// L5 驱动侧放行（wg 方言）：proxy client 时把出口目的集并进出口 peer 的 AllowedIPs。
-	// 只打标不放行 → wg 按 AllowedIPs 做 cryptokey routing，包被静默丢弃
-	// （spec/proxy-split.md §15.1）。fail-loud：出口选点对不上 wg peer 即报错，不写盘。
-	if p := EffectiveProxyPolicy(); p != nil && p.Enabled && p.IsClientLike() && len(p.Exits) > 0 {
-		dest, derr := WGProxyDestCIDRs(p)
-		if derr != nil {
-			return fmt.Errorf("wg proxy 放行: %w", derr)
-		}
-		if err := ProjectProxyToWG(env.WireGuard, p, dest); err != nil {
+	// L5 驱动侧放行（wg 方言）：proxy client 时按「出口 → 目的集」投影 AllowedIPs。
+	// 与 gnb 的 proxy.conf **同源**（默认出口兜底 / 分组 target→出口），只是方言不同：
+	// 默认出口 → 0.0.0.0/0（wg 无兜底出口概念），分组出口 → 组内 targets（最长前缀选 peer）。
+	if p := EffectiveProxyPolicy(); p != nil && p.Enabled && p.IsClientLike() {
+		destByExit := WGExitDestinations(loadPluginProxyConfig())
+		if err := ProjectProxyToWG(env.WireGuard, destByExit); err != nil {
 			return fmt.Errorf("wg proxy 放行: %w", err)
 		}
-		fmt.Printf("✓ wg proxy 放行：出口 AllowedIPs ∪ 目的集（%d 条）\n", len(dest))
+		if len(destByExit) > 0 {
+			fmt.Printf("✓ wg proxy 放行：%d 个出口的 AllowedIPs 已按目的集放行\n", len(destByExit))
+		}
 	}
 	d := driver.NewWireGuardDriver(iface, 0)
 	// 接口地址（NetworkIntent.Addresses）随 conf 落地：wg-quick 与 OpenWrt init 的 ip+wg

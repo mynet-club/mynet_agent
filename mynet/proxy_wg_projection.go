@@ -1,157 +1,131 @@
 package mynet
 
-// L5 驱动侧放行（wg 方言）：把 proxy 出口目的集并进出口 peer 的 AllowedIPs。
+// L5 驱动侧放行（wg 方言）：把 proxy 出口**目的集**并进出口 peer 的 AllowedIPs。
 //
-// 为什么需要这一层：WireGuard 的 AllowedIPs 是**双向 cryptokey routing**，不只是
-// 系统路由。OS 侧 nft 打标 + `ip route … table <N> dev wg0` 把包塞进 wg 设备后，
-// wg 自己还要按 AllowedIPs 做一次「这个目的地址归谁」的查表；目的集不在任何 peer
-// 的 AllowedIPs 里 → 包被 wg **静默丢弃**，现象是「策略路由装好了、集合也灌了，
-// 流量就是出不去」。这就是 spec/proxy-split.md §15.1「只打标不放行 → 进了也丢」。
+// 先澄清一件事：WireGuard 的 `AllowedIPs` 是**双向 cryptokey routing**（发侧按目的地址
+// 选 peer + 收侧防伪），**不是分流选择器**。分流选择器是我们那层：nft set + `mark <fwmark>`
+// + `table <N>`。所以 AllowedIPs 只要做那个集合的**超集**（别让 wg 把包丢了）即可 ——
+// **不要**把 split 列表的几万条 CIDR 抄进来：
+//   - 形态上没必要（选择在 nft）；
+//   - 代价上荒谬（interip 列表 ~1.8 万条，conf 变 1.8 万行，每次 syncconf 都要同步）；
+//   - 语义上做不到（inverted「未命中列表即代理」的目标集是**补集**，CIDR 表达不了）。
 //
-// 于是放行（AllowedIPs ⊇ 目的集）与打标（nft → table）缺一不可：
-//   - 只打标不放行 → wg 丢包（本文件补的正是这条）；
-//   - 只放行不打标 → 目的集进不了 table（本机自身流量另有铁律，spec §15.4）。
+// 于是本文件的映射（与 gnb 的 proxy.conf **同源**：默认出口 / 分组 target→出口）：
+//   默认出口（`[default]` / EffectiveExits）→ `0.0.0.0/0`：wg 里没有「兜底出口」，
+//     唯一等价表达就是全放行；真正进不进隧道由 nft 打标决定。
+//   分组出口（`[group] target <cidr> exit`）→ 该组 targets 的并集：wg 按**最长前缀**
+//     在 peer 之间选（0.0.0.0/0 兜底 + 组内窄前缀），与 gnb 的 group 语义等价。
+//   组内无出口 = DROP（gnb 语义）→ 不给任何 peer 放行，wg 自然丢弃。
 //
-// 幂等：目的集并集去重后写入；每次从 bundle 重渲染，同一输入得同一份。
-// fail-loud：投影后若「目的集 ⊄ 所有 peer 的 AllowedIPs 并集」，说明出口 peer 在
-// wg bundle 里根本不存在（选点对不上）—— 拒绝写盘并报错，不静默留一份会丢包的配置。
+// 幂等：并集去重；每次从 bundle 重渲染，同一输入同一份。
+// fail-loud：某个出口**配了目的集**却在 wg bundle 里找不到对应 peer ⇒ 报错不写盘
+// （选点对不上 = 静默丢包，宁可起不来也要看得见）。
 
 import (
 	"fmt"
-	"net"
-	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// ProjectProxyToWG 把 proxy 出口目的集并进匹配出口的 wg peer 的 AllowedIPs，
-// 并关闭 wg-quick 的自动路由（Table = off）。仅对 client/both 且 enabled 生效。
-//
-// 调用方须先判「适用」（enabled && IsClientLike && 有出口）；不适用直接 no-op。
-func ProjectProxyToWG(w *domain.WireGuardIntent, p *domain.ProxyPolicy, destCIDRs []string) error {
-	if w == nil || p == nil || !p.Enabled || !p.IsClientLike() {
-		return nil
-	}
-	exits := enabledExitIDs(p)
-	if len(exits) == 0 {
-		return nil
-	}
-	if len(destCIDRs) == 0 {
-		return fmt.Errorf("proxy 目的集为空：无法确定出口 peer 的 AllowedIPs（拒绝写一份会丢包的 wg 配置）")
-	}
+// wgRoutingOff 让 wg-quick 不碰系统路由的模式值（RenderWGConfig 渲染成 `Table = off`）。
+const wgRoutingOff = "off"
 
-	for i := range w.Peers {
-		if !peerMatchesAnyExit(&w.Peers[i], exits) {
+// wgGlobalDest 默认出口的兜底目的集。见文件头：wg 没有「兜底出口」，只能全放行。
+const wgGlobalDest = "0.0.0.0/0"
+
+// WGExitDestinations 从 proxy 插件配置（与 gnb 投影同一份来源）解算「出口节点 ID → 目的集」。
+func WGExitDestinations(c *domain.PluginProxyConfig) map[string][]string {
+	out := map[string][]string{}
+	if c == nil {
+		return out
+	}
+	// 默认出口：[default] 兜底 → 全放行
+	for _, e := range c.EffectiveExits() {
+		out[e.NodeID] = append(out[e.NodeID], wgGlobalDest)
+	}
+	// 分组出口：该组 targets → 组内出口（最长前缀在 wg 侧生效）
+	for _, g := range c.Groups {
+		var targets []string
+		for _, t := range g.Targets {
+			t = strings.TrimSpace(t)
+			// 与 gnb 侧同口径：/0 拒载（由 [default] 兜底表达）
+			if t == "" || t == "0.0.0.0/0" || t == "0/0" {
+				continue
+			}
+			targets = append(targets, t)
+		}
+		// 组内无出口 = DROP：不写进任何 peer 的 AllowedIPs（wg 自然丢）
+		if len(targets) == 0 {
 			continue
 		}
-		w.Peers[i].AllowedIPs = unionCIDRStrings(w.Peers[i].AllowedIPs, destCIDRs)
+		for _, e := range g.Exits {
+			if e.Enabled && e.NodeID != "" {
+				out[e.NodeID] = append(out[e.NodeID], targets...)
+			}
+		}
+	}
+	for id := range out {
+		out[id] = dedupStrings(out[id])
+	}
+	return out
+}
+
+// ProjectProxyToWG 把「出口 → 目的集」并进匹配出口的 wg peer 的 AllowedIPs，并关闭
+// wg-quick 的自动路由（`Table = off`）。调用方须先判「适用」（enabled && client-like）。
+func ProjectProxyToWG(w *domain.WireGuardIntent, destByExit map[string][]string) error {
+	if w == nil || len(destByExit) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(destByExit))
+	for id := range destByExit {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	matched := map[string]bool{}
+	for i := range w.Peers {
+		for _, id := range ids {
+			if !peerMatchesExit(&w.Peers[i], id) {
+				continue
+			}
+			w.Peers[i].AllowedIPs = unionCIDRStrings(w.Peers[i].AllowedIPs, destByExit[id])
+			matched[id] = true
+		}
 	}
 
-	// Table = off：代理接管路由（打标 + table <N>），**禁止** wg-quick 把目的集写进主表。
-	// 主表路由会连**本机自身**发往这些目的的流量一起卷进隧道 —— 正是 spec §15.4
-	// 已下线的「主表 /32 钉扎」病。所以放行必须与接管路由成对出现。
+	// fail-loud：配了目的集的出口在 wg bundle 里对不上 peer（选点错 = 静默丢包）
+	var missing []string
+	for _, id := range ids {
+		if !matched[id] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("proxy 放行失败：出口 %v 在 wg bundle 里对不上 peer"+
+			"（AllowedIPs 放行不了 ⇒ 包会被 wg cryptokey routing 静默丢弃）", missing)
+	}
+
+	// Table = off：代理接管路由（打标 + table <N>），**禁止** wg-quick 按 AllowedIPs 往主表写路由
+	// —— 尤其 0.0.0.0/0 会把默认路由抢走，连本机自身流量一并卷进隧道（spec §15.4 已下线的病）。
 	if w.Routing == nil {
 		w.Routing = &domain.WgRouting{}
 	}
 	w.Routing.Mode = wgRoutingOff
 
-	return verifyWGDestCovered(w, destCIDRs, exits)
+	return nil
 }
 
-// wgRoutingOff 让 wg-quick 不碰系统路由的模式值（RenderWGConfig 渲染成 `Table = off`）。
-const wgRoutingOff = "off"
-
-// WGProxyDestCIDRs 解算「需要从出口 peer 出去的 proxy 目的集」。
-//
-//	FullTunnel / inverted → 0.0.0.0/0（wg 表达不了补集，取安全超集；真正进不进隧道
-//	                        仍由 OS 打标决定，Table = off 下不会因此劫持主表）
-//	normal               → 列表文件里的 CIDR（随包列表优先，其次节点缓存）
-//
-// 返回 error = 目的集无法确定（缺列表文件等）。**不静默给空集**：空集会让 fail-loud 假绿。
-func WGProxyDestCIDRs(p *domain.ProxyPolicy) ([]string, error) {
-	if p == nil {
-		return nil, nil
-	}
-	if p.FullTunnel {
-		return []string{"0.0.0.0/0"}, nil
-	}
-	if p.Split == nil {
-		return nil, fmt.Errorf("proxy 策略缺 split（region=%s policy=%s）：无法解算目的集", p.Region, p.Policy)
-	}
-	if p.Split.MatchMode == domain.ProxyMatchInverted {
-		return []string{"0.0.0.0/0"}, nil
-	}
-	f := resolveWGProxyListFile(p)
-	if f == "" {
-		return nil, fmt.Errorf("proxy 目的集列表文件缺失（region=%s policy=%s）：随包与缓存都没找到",
-			p.Region, p.Policy)
-	}
-	data, err := os.ReadFile(f)
-	if err != nil {
-		return nil, fmt.Errorf("读 proxy 列表 %s: %w", f, err)
-	}
-	cidrs := parseCIDRLines(string(data))
-	if len(cidrs) == 0 {
-		return nil, fmt.Errorf("proxy 列表 %s 无有效 CIDR 行", f)
-	}
-	return cidrs, nil
-}
-
-// resolveWGProxyListFile 目的集列表文件：随包列表优先，其次节点缓存。
-// 与 planFromBundle 同一套来源（bundledProxyListPath / ProxyListCachePath）。
-func resolveWGProxyListFile(p *domain.ProxyPolicy) string {
-	if f := bundledProxyListPath(p); f != "" {
-		return f
-	}
-	src := p.Split.ListSource
-	if p.Split.IPList != nil && p.Split.IPList.Source != "" {
-		src = p.Split.IPList.Source
-	}
-	if src == "" {
-		return ""
-	}
-	f := ProxyListCachePath(filepath.Join(varDir(), "proxy-lists"), src)
-	if _, err := os.Stat(f); err != nil {
-		return ""
-	}
-	return f
-}
-
-// parseCIDRLines 解析 CIDR 列表文本（空行/`#` 注释跳过）。
-func parseCIDRLines(text string) []string {
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-// enabledExitIDs 生效出口的节点 ID 集合。
-func enabledExitIDs(p *domain.ProxyPolicy) map[string]bool {
-	m := map[string]bool{}
-	for _, e := range p.Exits {
-		if e.Enabled && e.NodeID != "" {
-			m[e.NodeID] = true
-		}
-	}
-	return m
-}
-
-// peerMatchesAnyExit peer 是否就是某个生效出口（业务节点 ID 或 peer ID 命中）。
-func peerMatchesAnyExit(peer *domain.WgPeer, exits map[string]bool) bool {
-	if peer == nil {
+// peerMatchesExit peer 是否就是某个出口（业务节点 ID 或 peer ID 命中）。
+func peerMatchesExit(peer *domain.WgPeer, exitID string) bool {
+	if peer == nil || exitID == "" {
 		return false
 	}
-	if peer.BusinessNodeID != "" && exits[peer.BusinessNodeID] {
+	if peer.BusinessNodeID != "" && peer.BusinessNodeID == exitID {
 		return true
 	}
-	return peer.ID != "" && exits[peer.ID]
+	return peer.ID != "" && peer.ID == exitID
 }
 
 // unionCIDRStrings 并集：base 原序保留，再把 extra 中缺失的追加（按精确串去重，幂等）。
@@ -173,81 +147,4 @@ func unionCIDRStrings(base, extra []string) []string {
 		out = append(out, s)
 	}
 	return out
-}
-
-// verifyWGDestCovered fail-loud：目的集必须被所有 peer 的 AllowedIPs 并集覆盖。
-// 不覆盖 = 有出口选点对不上任何 wg peer（选了不存在的出口）→ 报错，不静默丢包。
-func verifyWGDestCovered(w *domain.WireGuardIntent, destCIDRs []string, exits map[string]bool) error {
-	var allowed []*net.IPNet
-	for i := range w.Peers {
-		for _, a := range w.Peers[i].AllowedIPs {
-			if n := parseIPNet(a); n != nil {
-				allowed = append(allowed, n)
-			}
-		}
-	}
-	var missing []string
-	for _, d := range destCIDRs {
-		dn := parseIPNet(d)
-		if dn == nil {
-			return fmt.Errorf("proxy 目的集含有非法 CIDR %q", d)
-		}
-		covered := false
-		for _, a := range allowed {
-			if cidrCovers(a, dn) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			missing = append(missing, d)
-		}
-	}
-	if len(missing) > 0 {
-		ids := make([]string, 0, len(exits))
-		for id := range exits {
-			ids = append(ids, id)
-		}
-		return fmt.Errorf("proxy 放行失败：目的集有 %d 条不被任何 peer 的 AllowedIPs 覆盖"+
-			"（出口 %v 在 wg bundle 里对不上 peer？）示例: %s",
-			len(missing), ids, strings.Join(headN(missing, 3), ", "))
-	}
-	return nil
-}
-
-// cidrCovers outer 是否覆盖 inner（同族、前缀不长于 inner、含 inner 网络地址）。
-func cidrCovers(outer, inner *net.IPNet) bool {
-	oOnes, oBits := outer.Mask.Size()
-	iOnes, iBits := inner.Mask.Size()
-	if oBits != iBits || oOnes > iOnes {
-		return false
-	}
-	return outer.Contains(inner.IP)
-}
-
-// parseIPNet 解析 "1.2.3.0/24" 或裸 "1.2.3.4"（视为 /32）。
-func parseIPNet(s string) *net.IPNet {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	if !strings.Contains(s, "/") {
-		ip := net.ParseIP(s)
-		if ip == nil || ip.To4() == nil {
-			return nil
-		}
-		return &net.IPNet{IP: ip.To4(), Mask: net.CIDRMask(32, 32)}
-	}
-	_, n, err := net.ParseCIDR(s)
-	if err != nil {
-		return nil
-	}
-	return n
-}
-
-func headN(s []string, n int) []string {
-	if len(s) > n {
-		return s[:n]
-	}
-	return s
 }

@@ -267,22 +267,34 @@ func applyProxyForwarding(g *domain.GnbIntent, exits []domain.ProxyExit) {
 	g.Forwarding.Direct = true
 }
 
-// enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent
-// （只动 direct-forwarding；proxy 开关归独立 proxy.conf）。
-// 不支持时不动 intent，只把警告留给 writeProxyProjection。
-func enrichIntentWithProxy(g *domain.GnbIntent) *domain.PluginProxyConfig {
+// loadPluginProxyConfig 读当前生效源下的 proxy 插件配置。
+//
+// **gnb 与 wg 两个方言投影的同一份来源**：gnb → proxy.conf，wg → 出口 peer 的 AllowedIPs。
+// 未装 / 未启用 / 解码失败 → nil（调用方按「没配」处理）。
+func loadPluginProxyConfig() *domain.PluginProxyConfig {
 	store := &config.Store{}
 	src, _, err := store.ActiveSource()
 	if err != nil {
 		return nil
 	}
-	pdir := utils.PluginsConfDir(src)
-	cfg, err := store.LoadPlugin(pdir, domain.PluginNameProxy)
-	if err != nil || !cfg.Enabled {
+	cfg, err := store.LoadPlugin(utils.PluginsConfDir(src), domain.PluginNameProxy)
+	if err != nil || cfg == nil || !cfg.Enabled {
 		return nil
 	}
 	pp, err := domain.DecodePluginProxy(cfg)
 	if err != nil {
+		return nil
+	}
+
+	return pp
+}
+
+// enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent
+// （只动 direct-forwarding；proxy 开关归独立 proxy.conf）。
+// 不支持时不动 intent，只把警告留给 writeProxyProjection。
+func enrichIntentWithProxy(g *domain.GnbIntent) *domain.PluginProxyConfig {
+	pp := loadPluginProxyConfig()
+	if pp == nil {
 		return nil
 	}
 	if ok, _ := GNBProxySupported(); !ok {
