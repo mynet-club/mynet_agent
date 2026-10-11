@@ -172,7 +172,18 @@ jobs:
           [ -n "$CTL_TOKEN" ] || { echo "ERROR: 缺 secrets.CTL_RELEASE_TOKEN（scope=release:upload）"; exit 1; }
           stable=0; if [ "$REF_TYPE" = "tag" ]; then stable=1; fi   # is_stable 必须发 1/0
           cd "$GITHUB_WORKSPACE/dist-ipk"
+          # 幂等：ctl 的 upload 是裸 Release::create()，releases 表有
+          # unique(product,version,platform,arch,variant)；同版本重推不是「跳过」而是
+          # **500** —— 修好一条腿重跑整个作业，已发过的腿全撞键，publish 永久红。
+          # 发前先量公开下载面 /d/<product>/<file>：200 = 已发布 → SKIP。判据与 gnb 仓的
+          # .github/actions/ctl-publish 同源（那边还比了包内 MANIFEST 的来源指纹，因为 gnb 的
+          # 版本号是 tag 可被重发；这里版本号是 v0.0.0-<提交sha>，同一版本必然是同一提交，
+          # 所以只需「发过没发过」这一级）。
           pub() { # product platform arch file
+            if [ "$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' "$CTL_URL/d/$1/$4" || echo 000)" = "200" ]; then
+              echo "SKIP: $4 已在下载面（/d/$1/$4）"
+              return 0
+            fi
             echo "→ publish $1 $2 $3 $4 (is_stable=$stable)"
             curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
               -H "Authorization: Bearer $CTL_TOKEN" \
@@ -181,7 +192,12 @@ jobs:
             echo
           }
           pub mynet_agent openwrt "${{ matrix.arch }}" "mynet_agent_openwrt_${{ matrix.arch }}_${VER}.ipk"
-          pub lua        openwrt "all"             "lua_openwrt_all_${VER}.ipk"
+          # luci-app-mynet 是 all 架构，三个腿打出的 ipk 完全同名同内容。
+          # 只有 amd64 腿发布它：否则第二/三腿会撞 ctl 的唯一键
+          # (product,version,platform,arch,variant)，上传 500。
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            pub lua openwrt "all" "lua_openwrt_all_${VER}.ipk"
+          fi
 
   summary:
     needs: ipk

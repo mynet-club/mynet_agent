@@ -169,11 +169,20 @@ jobs:
           files=(dist/*.tgz dist/*.zip)
           if [ "${#files[@]}" -eq 0 ]; then echo "ERROR: dist 下无产物"; exit 1; fi
           f="${files[0]}"
-          echo "→ publish mynet_agent ${{ matrix.goos }} ${{ matrix.ctlarch }} $f (is_stable=$stable)"
-          curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
-            -H "Authorization: Bearer $CTL_TOKEN" \
-            -F "product=mynet_agent" -F "version=${VER}" \
-            -F "platform=${{ matrix.goos }}" -F "arch=${{ matrix.ctlarch }}" \
-            -F "is_stable=$stable" -F "file=@$f"
+          base="$(basename "$f")"
+          # 幂等：ctl 的 upload 是裸 Release::create()，同 (product,version,platform,arch)
+          # 重推必撞 unique 键回 500。发前先量公开下载面 /d/mynet_agent/<file>，200 = 已发布
+          # → SKIP。判据与 gnb 的 ctl-publish action 同源；版本号是 v0.0.0-<提交sha>，
+          # 同一版本必然是同一提交，只需「发过没发过」这一级。
+          if [ "$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' "$CTL_URL/d/mynet_agent/$base" || echo 000)" = "200" ]; then
+            echo "SKIP: $base 已在下载面（/d/mynet_agent/$base）"
+          else
+            echo "→ publish mynet_agent ${{ matrix.goos }} ${{ matrix.ctlarch }} $f (is_stable=$stable)"
+            curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
+              -H "Authorization: Bearer $CTL_TOKEN" \
+              -F "product=mynet_agent" -F "version=${VER}" \
+              -F "platform=${{ matrix.goos }}" -F "arch=${{ matrix.ctlarch }}" \
+              -F "is_stable=$stable" -F "file=@$f"
+          fi
           echo
 
