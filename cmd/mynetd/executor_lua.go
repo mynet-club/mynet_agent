@@ -58,8 +58,13 @@ func execLuaStd(argv []string) (string, string, error) {
 // goNativeInLua 报告某子命令在 Lua 执行器下是否应改走 Go 二进制（O1：
 // 身份/config/keys/pull 显式交给 Go）。`config` 曾有一个只看 status 的 Lua 桩，
 // 会把 localapi 的 identity/runtime/tenants/connect/keys 全带偏，故整条交给 Go。
+// `plugin`（proxy 投影/出口/域名的唯一入口）同理：Lua 侧无对应实现。
 func goNativeInLua(cmd string) bool {
-	return cmd == "config" || cmd == "setup"
+	switch cmd {
+	case "config", "setup", "plugin":
+		return true
+	}
+	return false
 }
 
 // execLua 跑 lua -e 执行一条 mynet 形状的命令。

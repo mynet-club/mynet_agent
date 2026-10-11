@@ -100,9 +100,9 @@ func TestSelectExecutor_DefaultIsMynet(t *testing.T) {
 	}
 }
 
-// O1：config/setup 在 Lua 执行器下必须改走 Go 二进制（形状以 mynet config 为准）。
+// O1：config/setup/plugin 在 Lua 执行器下必须改走 Go 二进制。
 func TestGoNativeInLua(t *testing.T) {
-	for _, cmd := range []string{"config", "setup"} {
+	for _, cmd := range []string{"config", "setup", "plugin"} {
 		if !goNativeInLua(cmd) {
 			t.Fatalf("%s 应走 Go", cmd)
 		}
