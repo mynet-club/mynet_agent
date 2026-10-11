@@ -302,102 +302,17 @@ type ProxyGroup struct {
 	Exits []ProxyExit `json:"exits,omitempty"`
 }
 
-// 出口驱动（ProxyExit.Driver）。缺省 gnb（向后兼容旧配置）。
-const (
-	ProxyExitDriverGnb       = "gnb"       // 出口经 gnb 隧道（overlay VIP 作下一跳）
-	ProxyExitDriverWireguard = "wireguard" // 出口经 wg 隧道（点对点，default dev <wg>）
-)
-
 // ProxyExit 一个出站 peer。
 type ProxyExit struct {
 	NodeID string `json:"node_id"`
-	// Driver 出口走的隧道驱动：gnb（缺省）| wireguard。空 = gnb。
-	// 「按目的地并存」时，不同 driver 的出口各走一套策略路由（见 proxy_apply）。
-	Driver string `json:"driver,omitempty"`
 	// Via 出口节点的 overlay VIP（策略路由 default via）。可空 → 由对端 tun_address 解析。
-	// **仅 gnb 驱动**有意义；wg 驱动是点对点，下一跳即隧道口本身。
 	Via string `json:"via,omitempty"`
-	// Iface wg 驱动时的本机隧道接口名（如 wg_exit）。缺省 → 由 policy/驱动解算。
-	Iface string `json:"iface,omitempty"`
 	// Weight 1–100，越大越优先；默认 10。
 	Weight int `json:"weight,omitempty"`
 	// Order 1-based 展示/尝试顺序；0 表示跟在后面。
 	Order int `json:"order,omitempty"`
 	// Enabled 单独开关，便于保留配置但临时下线某出口。
 	Enabled bool `json:"enabled"`
-}
-
-// EffectiveDriver 空 = gnb。
-func (e *ProxyExit) EffectiveDriver() string {
-	if e == nil || e.Driver == "" {
-		return ProxyExitDriverGnb
-	}
-	return e.Driver
-}
-
-// IsWireGuard 是否 wg 驱动。
-func (e *ProxyExit) IsWireGuard() bool {
-	return e.EffectiveDriver() == ProxyExitDriverWireguard
-}
-
-// HasWireGuardExit 任一启用出口是 wg 驱动（顶层 Exits 或任一分组内）。
-// 「按目的地并存」据此决定要不要多写一套 wg 路径。
-func (c *PluginProxyConfig) HasWireGuardExit() bool {
-	if c == nil {
-		return false
-	}
-	for i := range c.Exits {
-		if c.Exits[i].Enabled && c.Exits[i].IsWireGuard() {
-			return true
-		}
-	}
-	for gi := range c.Groups {
-		for ei := range c.Groups[gi].Exits {
-			if c.Groups[gi].Exits[ei].Enabled && c.Groups[gi].Exits[ei].IsWireGuard() {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// WireGuardTargets 走 wg 出口的目的 CIDR 集合（去重保序）：
-// 取「含启用 wg 出口的分组」的 Targets。顶层 Exits 是 wg 时返回 nil 且 AllViaWG=true
-// （整份 split 集合都走 wg，gnb 路径让位）。
-//
-// 语义：分组 targets ⊆ 常态代理集合；未命中分组的其余目的仍走 gnb 路径。
-func (c *PluginProxyConfig) WireGuardTargets() (targets []string, allViaWG bool) {
-	if c == nil {
-		return nil, false
-	}
-	for i := range c.Exits {
-		if c.Exits[i].Enabled && c.Exits[i].IsWireGuard() {
-			return nil, true
-		}
-	}
-	seen := map[string]bool{}
-	for gi := range c.Groups {
-		g := &c.Groups[gi]
-		wg := false
-		for ei := range g.Exits {
-			if g.Exits[ei].Enabled && g.Exits[ei].IsWireGuard() {
-				wg = true
-				break
-			}
-		}
-		if !wg {
-			continue
-		}
-		for _, t := range g.Targets {
-			t = strings.TrimSpace(t)
-			if t == "" || seen[t] {
-				continue
-			}
-			seen[t] = true
-			targets = append(targets, t)
-		}
-	}
-	return targets, false
 }
 
 // EffectiveExits 过滤 Enabled 并按 Order 排序（Order 相同按 Weight 降序）。

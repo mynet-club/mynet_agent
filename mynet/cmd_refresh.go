@@ -266,16 +266,6 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 		if ex := firstEnabledExit(proxyPolicy); ex != nil {
 			rt.ExitVia = resolveExitVia(env, ex)
 		}
-		// 「按目的地并存」：策略里若有 wg 出口（分组 targets），补一套 wg 路径。
-		// gnb 路径保持不变；两组目的按 nft 链 priority 先后分流。
-		if pc := loadPluginProxyConfig(); pc != nil && pc.HasWireGuardExit() {
-			rt.WGIface = firstWGExitIface(pc)
-			if tg, all := pc.WireGuardTargets(); !all {
-				rt.WGTargets = tg
-			}
-			// all（顶层 wg 出口 = 整份 split 集合都走 wg）暂不在此展开：
-			// 那等价于「gnb 路径让位」，需从集合文件灌 wg set，属下一步。
-		}
 		if proxyPolicy.Split != nil && proxyPolicy.Split.IPList != nil {
 			// 缓存路径由 source 决定；URL 在执行期 FetchProxyIPList 使用
 			src := proxyPolicy.Split.IPList.Source
@@ -294,28 +284,6 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	}
 
 	return plan, nil
-}
-
-// firstWGExitIface 第一个启用 wg 出口声明的隧道接口名（顶层 Exits 或任一分组内）。
-// 空名不返回 —— 没接口名就不写 wg 路径（宁可退回纯 gnb，也不猜接口）。
-func firstWGExitIface(c *domain.PluginProxyConfig) string {
-	if c == nil {
-		return ""
-	}
-	for i := range c.Exits {
-		if e := &c.Exits[i]; e.Enabled && e.IsWireGuard() && e.Iface != "" {
-			return e.Iface
-		}
-	}
-	for gi := range c.Groups {
-		for ei := range c.Groups[gi].Exits {
-			e := &c.Groups[gi].Exits[ei]
-			if e.Enabled && e.IsWireGuard() && e.Iface != "" {
-				return e.Iface
-			}
-		}
-	}
-	return ""
 }
 
 func firstEnabledExit(p *domain.ProxyPolicy) *domain.ProxyExit {

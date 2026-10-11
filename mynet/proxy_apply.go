@@ -43,82 +43,10 @@ type ProxyRuntime struct {
 	WANDevice       string // 可选，物理出口（网关 /32 修复）
 	WANGateway      string // 可选，WAN 网关 IP
 	IPSetFile       string // CIDR 列表文件路径（chinaip/interip）
-
-	// ── wg 出口路径（「按目的地并存」）─────────────────────────────
-	// 仅在策略里存在 driver=wireguard 的出口时启用。gnb 路径保持原样，
-	// wg 路径另起一张表 + 独立 set/mark/table/rule，两条路径按目的地分。
-	WGIface   string   // wg 出口的本机隧道接口名（如 wg_exit）
-	WGTargets []string // 走 wg 出口的目的 CIDR（分组 targets）
-	WGFwmark  int      // wg 路径的 fwmark（缺省 0xc9，与 gnb 的 0xc8 分开）
-	WGTable   int      // wg 路径的策略路由表（缺省 201）
 }
 
 // proxyPrio 策略路由优先级（旧线 31800）。
 const proxyPrio = 31800
-
-// proxyWGPrio wg 出口路径的 ip rule 优先级（比 gnb 的 31800 更靠前）。
-const proxyWGPrio = 31799
-
-// wg 出口路径缺省 mark/table（与 gnb 的 0xc8/200 分开）。
-const (
-	DefaultProxyWGFwmark = 0xc9
-	DefaultProxyWGTable  = 201
-)
-
-// proxyWGEnabled 是否启用 wg 出口路径（策略里存在 wg 出口且给出了接口与目的集）。
-func proxyWGEnabled(rt ProxyRuntime) bool {
-	return rt.WGIface != "" && len(rt.WGTargets) > 0
-}
-
-// proxyWGPathCmds wg 出口路径：独立表 + set + 策略路由 + 打标。
-//
-// 与 gnb 路径**并存且分开**：另起 `ip mynet_proxy_wg` 表，set 与打标规则同表
-// （nft 的 @set 只能引用同表集合），链 priority -160 比 gnb 的 -150 更靠前，
-// 于是 wg 目的先被打标，gnb 链的 `meta mark 0` 守卫跳过、不覆盖。
-func proxyWGPathCmds(snap *shared.SystemSnapshot, rt ProxyRuntime) []routeCmd {
-	if !proxyWGEnabled(rt) || snap == nil || !snap.Capabilities["nft"] {
-		return nil
-	}
-	fw := rt.WGFwmark
-	if fw == 0 {
-		fw = DefaultProxyWGFwmark
-	}
-	tbl := rt.WGTable
-	if tbl == 0 {
-		tbl = DefaultProxyWGTable
-	}
-	fwHex := fmt.Sprintf("%#x", fw)
-
-	cmds := []routeCmd{
-		{argv: []string{"nft", "add", "table", "ip", "mynet_proxy_wg"}, optional: true},
-		{argv: []string{"nft", "add", "set", "ip", "mynet_proxy_wg", "mynet_proxy_wg",
-			"{ type ipv4_addr; flags interval; }"}, optional: true},
-		{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy_wg", "PREROUTING",
-			"{ type filter hook prerouting priority -160; }"}, optional: true},
-		// 只 flush 链（表里的 set 要留着，元素由下面重灌）
-		{argv: []string{"nft", "flush", "chain", "ip", "mynet_proxy_wg", "PREROUTING"}, optional: true},
-		{argv: []string{"nft", "flush", "set", "ip", "mynet_proxy_wg", "mynet_proxy_wg"}, optional: true},
-	}
-	// 目的集元素
-	for _, t := range rt.WGTargets {
-		cmds = append(cmds, routeCmd{
-			argv: []string{"nft", "add", "element", "ip", "mynet_proxy_wg", "mynet_proxy_wg",
-				"{ " + t + " }"},
-		})
-	}
-	cmds = append(cmds,
-		routeCmd{argv: []string{"nft", "add", "rule", "ip", "mynet_proxy_wg", "PREROUTING",
-			"ip", "daddr", "@mynet_proxy_wg", "meta", "mark", "set", fwHex, "counter"}},
-		// 策略路由表：点对点 wg 无下一跳网关 → default dev
-		routeCmd{argv: []string{"ip", "route", "replace", "default", "dev", rt.WGIface,
-			"table", fmt.Sprintf("%d", tbl)}},
-		routeCmd{argv: []string{"ip", "rule", "del", "fwmark", fwHex, "lookup", fmt.Sprintf("%d", tbl)},
-			optional: true},
-		routeCmd{argv: []string{"ip", "rule", "add", "fwmark", fwHex, "lookup", fmt.Sprintf("%d", tbl),
-			"prio", fmt.Sprintf("%d", proxyWGPrio)}},
-	)
-	return cmds
-}
 
 // ProxyApplyPlan 代理分流写入计划（挂进 ApplyPlan.Proxy）。
 type ProxyApplyPlan struct {
@@ -292,20 +220,13 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "PREROUTING",
 				"iifname", rt.TunDevice, "ct", "state", "established,related", "return"})...)
 		}
-		// 并存时：wg 路径（另一张表、priority 更靠前）已给命中目的打过 wgFw；
-		// 这里加 `meta mark 0` 守卫，只标未被 wg 抢走的目的，避免互相覆盖。
-		guard := []string{}
-		if proxyWGEnabled(rt) {
-			guard = []string{"meta", "mark", "0"}
-		}
 		markSpec := func(daddrExpr string) []string {
 			if inverted {
 				return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", "!=", daddrExpr,
 					"meta", "mark", "set", fwHex, "counter"}
 			}
-			spec := []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", daddrExpr}
-			spec = append(spec, guard...)
-			return append(spec, "meta", "mark", "set", fwHex, "counter")
+			return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", daddrExpr,
+				"meta", "mark", "set", fwHex, "counter"}
 		}
 		cmds = append(cmds, nftRule(markSpec("@mynet_proxy"))...)
 		return cmds
@@ -418,8 +339,6 @@ func mynetBinPath() string {
 // proxyAllCmds 一次拼齐 client+server+dns+hijack+bypass（apply 用）。
 func proxyAllCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
 	var cmds []routeCmd
-	// wg 出口路径先建（独立表/set/路由/规则）；gnb 路径随后（同 hook 更靠后 + mark 守卫）
-	cmds = append(cmds, proxyWGPathCmds(snap, rt)...)
 	cmds = append(cmds, proxyClientCmds(snap, p, rt)...)
 	cmds = append(cmds, proxyServerCmds(snap, p, rt)...)
 	cmds = append(cmds, proxyDNSCmds(p, rt)...)
