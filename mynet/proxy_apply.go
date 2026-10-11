@@ -73,13 +73,17 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	dev := rt.TunDevice
 	var cmds []routeCmd
 
-	// 0) 先把本表全部规则清掉再按序重加 —— 幂等的地基：`nft add rule` 允许同规则多份，
+	// 0) 先把本表两条链的规则清掉再按序重加 —— 幂等的地基：`nft add rule` 允许同规则多份，
 	//    只 add 不删则重复 apply 会堆积；而本机 nft 不支持按 spec 删规则（只认 handle），
-	//    所以整表 flush 是唯一干净的收敛法。表是**自建**的，不会碰到别人的规则。
-	//    optional：表还没建时（首跑）容错。
+	//    所以整链 flush 是干净的收敛法。表是**自建**的，不会碰到别人的规则。
+	//    ⚠️ 只能 `flush chain`，**不能 `flush table`** —— 后者会把本表的 **set 元素一起清掉**
+	//    （2026-10-11 .182 实测：集合 17789 → 0），而集合由列表步骤灌好，必须留着。
+	//    optional：链还没建时（首跑）容错。
 	if snap.Capabilities["nft"] {
-		cmds = append(cmds, routeCmd{
-			argv: []string{"nft", "flush", "table", "ip", "mynet_proxy"}, optional: true})
+		for _, ch := range []string{"PREROUTING", "OUTPUT"} {
+			cmds = append(cmds, routeCmd{
+				argv: []string{"nft", "flush", "chain", "ip", "mynet_proxy", ch}, optional: true})
+		}
 	}
 
 	// 1) IP 集合：nft 优先，ipset 兜底
