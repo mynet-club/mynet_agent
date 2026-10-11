@@ -140,11 +140,11 @@ func TestRenderWGConfigTableOff(t *testing.T) {
 		Peers:     []domain.WgPeer{{PublicKey: "k", AllowedIPs: []string{"1.1.1.0/24"}}},
 		Routing:   &domain.WgRouting{Mode: "off"},
 	}
-	if text := driver.RenderWGConfig(w); !strings.Contains(text, "Table = off") {
+	if text := driver.RenderWGConfig(w, nil); !strings.Contains(text, "Table = off") {
 		t.Fatalf("应在 [Interface] 渲染 Table = off:\n%s", text)
 	}
 	w.Routing = nil
-	if text := driver.RenderWGConfig(w); strings.Contains(text, "Table = off") {
+	if text := driver.RenderWGConfig(w, nil); strings.Contains(text, "Table = off") {
 		t.Fatalf("未接管路由时不应出现 Table = off:\n%s", text)
 	}
 }

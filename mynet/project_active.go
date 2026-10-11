@@ -301,6 +301,9 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 		fmt.Printf("✓ wg proxy 放行：出口 AllowedIPs ∪ 目的集（%d 条）\n", len(dest))
 	}
 	d := driver.NewWireGuardDriver(iface, 0)
+	// 接口地址（NetworkIntent.Addresses）随 conf 落地：wg-quick 与 OpenWrt init 的 ip+wg
+	// 兜底都从 conf 的 `Address=` 读，而 L6 的 refresh-address 是只打印的桩 ⇒ 不给就没人上地址。
+	d.Addresses = env.Network.Addresses
 	if dry {
 		fmt.Printf("dry-run: 将写入 /etc/wireguard/%s.conf\n", iface)
 		return nil

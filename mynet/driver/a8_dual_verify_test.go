@@ -220,7 +220,7 @@ func TestA8_F3_CrossDriverRoute(t *testing.T) {
 	// 驱动层互不知晓对方：渲染的 conf 不含对方设备名
 	wgConf := driver.RenderWGConfig(&domain.WireGuardIntent{
 		Interface: domain.WgInterface{PrivateKey: "K", PublicKey: "P", KeyAlgorithm: "curve25519"},
-	})
+	}, nil)
 	if strings.Contains(wgConf, "gnb") {
 		t.Fatal("wg conf must not mention gnb")
 	}

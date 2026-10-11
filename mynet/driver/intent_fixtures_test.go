@@ -48,7 +48,7 @@ func TestWireGuardMinimalFixture(t *testing.T) {
 	if env.WireGuard.Interface.KeyAlgorithm != "curve25519" {
 		t.Fatalf("alg=%s", env.WireGuard.Interface.KeyAlgorithm)
 	}
-	text := RenderWGConfig(env.WireGuard)
+	text := RenderWGConfig(env.WireGuard, nil)
 	if !strings.HasPrefix(text, "[Interface]") {
 		t.Fatalf("render=%q", text)
 	}

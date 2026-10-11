@@ -17,6 +17,11 @@ type WireGuardDriver struct {
 	NodeID    int64
 	ConfPath  string
 	Exec      func(name string, args ...string) ([]byte, error)
+	// Addresses 本机接口地址（NetworkIntent.Addresses），渲染进 wg-quick 配置的
+	// `Address =`。**bring-up 必需**：wg-quick 与 OpenWrt init 的 ip+wg 兜底都从这里读
+	// （`sed -n 's/^Address…'`），而 `wg setconf/syncconf` 不吃这个键（R7：crypto 与
+	// 网络分开）—— 所以它只进 conf、不进热同步。
+	Addresses []string
 }
 
 // NewWireGuardDriver 不猜接口名。
@@ -160,7 +165,7 @@ func (d *WireGuardDriver) WriteIntent(w *domain.WireGuardIntent) error {
 	if w == nil {
 		return fmt.Errorf("wireguard: nil intent")
 	}
-	text := RenderWGConfig(w)
+	text := RenderWGConfig(w, d.Addresses)
 	if d.ConfPath == "" {
 		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
 	}
@@ -344,12 +349,19 @@ func parseWGDump(s string) []wgRow {
 }
 
 // RenderWGConfig A-5：WireGuardIntent → wg-quick 文本。
-func RenderWGConfig(w *domain.WireGuardIntent) string {
+//
+// addresses 非空时写进 `[Interface] Address = a1, a2` —— **不带地址的 wg 口起不来数据面**
+// （gnb 由 address.conf 自带上口，wg 侧此前没人上：L6 的 `refresh-address` 是个只打印的桩）。
+// 该键只属于 wg-quick / init 的 ip+wg 兜底，`wg setconf/syncconf` 不认（见 StripWGQuickKeys）。
+func RenderWGConfig(w *domain.WireGuardIntent, addresses []string) string {
 	var b strings.Builder
 	b.WriteString("[Interface]\n")
 	b.WriteString("PrivateKey = " + w.Interface.PrivateKey + "\n")
 	if w.Interface.ListenPort > 0 {
 		fmt.Fprintf(&b, "ListenPort = %d\n", w.Interface.ListenPort)
+	}
+	if len(addresses) > 0 {
+		fmt.Fprintf(&b, "Address = %s\n", strings.Join(addresses, ", "))
 	}
 	// Table = off：proxy client 接管路由时，禁止 wg-quick 按 AllowedIPs 往主表写路由。
 	// 否则目的集会被写进主表，连**本机自身**发往这些目的的流量一起卷进隧道

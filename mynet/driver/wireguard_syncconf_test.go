@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // StripWGQuickKeys 必须剥掉 wg-quick 专有键（否则 `wg syncconf` 语法错），
@@ -119,5 +121,24 @@ func TestWGDriverReloadFallsBackWhenSyncconfFails(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("缺 %q：\n%s", want, got)
 		}
+	}
+}
+
+// 地址只进 bring-up（wg-quick / init 的 ip+wg 兜底都读 `Address=`），**不进** hot sync
+// （`wg setconf/syncconf` 不认这个键，R7 的 crypto/network 分层）。
+func TestRenderWGConfigEmitsAddressOnlyForBringUp(t *testing.T) {
+	w := &domain.WireGuardIntent{
+		Interface: domain.WgInterface{PrivateKey: "k", ListenPort: 51820},
+		Peers:     []domain.WgPeer{{PublicKey: "p", AllowedIPs: []string{"10.0.0.2/32"}}},
+	}
+	text := RenderWGConfig(w, []string{"10.9.0.1/24", "fd00::1/64"})
+	if !strings.Contains(text, "Address = 10.9.0.1/24, fd00::1/64") {
+		t.Fatalf("应把地址写进 [Interface]：\n%s", text)
+	}
+	if strings.Contains(StripWGQuickKeys(text), "Address") {
+		t.Fatalf("syncconf 形态不该带 Address（wg 不认）：\n%s", StripWGQuickKeys(text))
+	}
+	if strings.Contains(RenderWGConfig(w, nil), "Address") {
+		t.Fatal("没有地址时不该凭空写 Address 行")
 	}
 }

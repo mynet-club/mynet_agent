@@ -63,7 +63,7 @@ func TestRenderWGConfigFromIntent(t *testing.T) {
 			AllowedIPs: []string{"10.20.0.2/32"}, PersistentKeepaliveSecs: 25,
 		}},
 	}
-	text := RenderWGConfig(w)
+	text := RenderWGConfig(w, nil)
 	for _, want := range []string{
 		"PrivateKey = PRIV", "ListenPort = 51820",
 		"[Peer]", "PublicKey = PEERPUB", "PresharedKey = preshared=",
