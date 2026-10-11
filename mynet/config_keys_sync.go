@@ -35,7 +35,7 @@ func configFaceKeysSyncConnect(connect bool) int {
 
 	out := map[string]any{"synced": true}
 	if meta, mErr := keys.LoadNodeMeta(keysDir); mErr == nil && meta.BackPubHex == "" && mode.Mode == domain.ModeOnline {
-		if bp, fErr := fetchBackFacePub(cred.APIBaseURL); fErr != nil {
+		if bp, fErr := fetchBackFacePub(cloudHTTPBase()); fErr != nil {
 			out["back_pub_warning"] = "回填 back 节点面公钥失败: " + fErr.Error()
 		} else if uErr := keys.UpdateNodeMetaBackPub(keysDir, mode.Active.NodeID, bp); uErr != nil {
 			out["back_pub_warning"] = "回填 back 节点面公钥写盘失败: " + uErr.Error()

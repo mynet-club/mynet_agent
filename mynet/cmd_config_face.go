@@ -331,7 +331,7 @@ func backFacePubFor(mode *domain.ModeFile) (string, string) {
 	if cred == nil || cred.Token == "" {
 		return "", "未登录：back 节点面公钥未取到 —— 登录后 mynet config keys sync 会回填"
 	}
-	pub, err := fetchBackFacePub(cred.APIBaseURL)
+	pub, err := fetchBackFacePub(cloudHTTPBase())
 	if err != nil {
 		return "", "取 back 节点面公钥失败（" + err.Error() + "）—— 可稍后 mynet config keys sync 回填"
 	}
@@ -877,9 +877,6 @@ func fetchRemoteParityOptions() map[string]any {
 	if nodeID == "" {
 		return nil
 	}
-	if cred.APIBaseURL == "" {
-		cred.APIBaseURL = utils.LoadAgentCfg().APIBase
-	}
 	c := newBackClientFor(cred)
 	raw, code, err := c.doJSON("GET", "/api/v1/nodes/"+nodeID+"/bundle", nil)
 	if err != nil {
@@ -915,9 +912,6 @@ func configFacePullOnly(downloadOnly bool) int {
 			"need_login": true,
 			"message":    "未登录，请先登录 mynet 再拉取配置",
 		})
-	}
-	if cred.APIBaseURL == "" {
-		cred.APIBaseURL = utils.LoadAgentCfg().APIBase
 	}
 	nodeID := ""
 	st := &config.Store{}

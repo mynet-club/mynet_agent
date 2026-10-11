@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdAuth — 账号态（登录/状态/登出）。
@@ -51,7 +49,8 @@ func cmdAuth(args []string) int {
 }
 
 func authLogin(args []string) int {
-	api, email, password, tenant := "", "", "", ""
+	// 铁律：终端**只经 gateway**（本机 mynetd 中继），不直连 api_base。
+	api, email, password, tenant := cloudHTTPBase(), "", "", ""
 	fromStdin := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -60,7 +59,8 @@ func authLogin(args []string) int {
 				return authUsage("--api 需要 URL")
 			}
 			i++
-			api = strings.TrimRight(args[i], "/")
+			// 兼容旧命令行：不再使用；云通信统一走中继。
+			fmt.Fprintf(os.Stderr, "⚠ 忽略 --api %s：终端统一经 gateway 中继，不直连 api_base\n", args[i])
 		case "--email":
 			if i+1 >= len(args) {
 				return authUsage("--email 需要值")
@@ -85,17 +85,8 @@ func authLogin(args []string) int {
 			return authUsage("未知参数 " + args[i])
 		}
 	}
-	if api == "" {
-		// 没给就用已有凭证里记的，或配置里的 —— 免得每次都要敲一遍域名
-		if cfg := utils.LoadAgentCfg(); cfg.APIBase != "" {
-			api = cfg.APIBase
-		}
-		if c := LoadCredential(); c != nil && c.APIBaseURL != "" {
-			api = c.APIBaseURL
-		}
-	}
-	if api == "" || email == "" {
-		return authUsage("需要 --api 与 --email")
+	if email == "" {
+		return authUsage("需要 --email")
 	}
 	if password == "" && fromStdin {
 		sc := bufio.NewScanner(os.Stdin)
@@ -218,7 +209,7 @@ func authStatus() int {
 
 	// 顺手探一次 back 公钥，让「向导前置是否就绪」一眼可见
 	if c.APIBaseURL != "" {
-		if pub, err := fetchBackFacePub(c.APIBaseURL); err != nil {
+		if pub, err := fetchBackFacePub(cloudHTTPBase()); err != nil {
 			fmt.Printf("  back 公钥  ⚠️ 取不到: %v\n", err)
 		} else {
 			fmt.Printf("  back 公钥  %s\n", pub)
@@ -233,7 +224,7 @@ func authLogout() int {
 	// ⚠️ 必须先吊销**服务端**会话。只删本地文件的话，那条会话还活着、
 	// refresh token 还能继续换出新凭证 —— 那不叫登出，只是忘了。
 	if cred != nil && cred.RefreshToken != "" {
-		c := newBackClient(cred.APIBaseURL, cred.Token)
+		c := newBackClient(cloudHTTPBase(), cred.Token)
 		if _, code, err := c.doJSON("POST", "/api/v1/auth/revoke-session", map[string]string{
 			"refresh_token": cred.RefreshToken,
 		}); err != nil {

@@ -124,6 +124,17 @@ func RemoveCredential() error {
 // ⚠️ 时间戳/签名那些是**节点面**的事（cmd/mynetd/nodeface.go），这里走的是
 // **用户面**：Bearer token（Sanctum），与浏览器里的 GUI 同一套。
 
+// cloudHTTPBase CLI 与云端通信的**唯一出口**：本机 mynetd 的中继
+// （CLI → localapi /api/v1/relay → gateway → back）。
+//
+// 铁律：**终端不直连 api_base** —— 节点侧一切云通信必须经 gateway。
+// `base + <back-path>` 正好拼成 `…/api/v1/relay?path=/api/v1/…`，
+// 中继侧原样透传 method/body/头（含 Authorization）。
+// ⚠️ 经中继的路径**不能带 `?`**（path 是 query 参数）—— 现有 CLI 路径均无 query。
+func cloudHTTPBase() string {
+	return "http://" + DefaultLocalAPI + "/api/v1/relay?path="
+}
+
 const backHTTPTimeout = 30 * time.Second
 
 // backQuickTimeout UI 首屏/身份查询短超时（3s）。
@@ -147,9 +158,9 @@ func newBackClientQuick(cred *Credential) *backClient {
 	return c
 }
 
-// newBackClientFor 用已存的凭证建客户端（带自动续期）。
+// newBackClientFor 用已存的凭证建客户端（带自动续期）。基址恒为中继出口（不碰 api_base）。
 func newBackClientFor(cred *Credential) *backClient {
-	c := newBackClient(cred.APIBaseURL, cred.Token)
+	c := newBackClient(cloudHTTPBase(), cred.Token)
 	c.cred = cred
 	c.onRefresh = SaveCredential // 续期后立即落盘新 refresh token
 
