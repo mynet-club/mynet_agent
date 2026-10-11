@@ -50,8 +50,8 @@ func TestDynamicIPSetCmdsIncrementalNotFlush(t *testing.T) {
 		t.Fatalf("动态增量禁止 flush:\n%s", text)
 	}
 	for _, want := range []string{
-		"nft add element ip mynet_proxy dst4 { 1.2.3.4 }",
-		"nft add element ip mynet_proxy dst4 { 5.6.7.8 }",
+		"nft add element ip mynet_proxy mynet_proxy { 1.2.3.4 }",
+		"nft add element ip mynet_proxy mynet_proxy { 5.6.7.8 }",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("缺 %q\n%s", want, text)
@@ -72,7 +72,7 @@ func TestDynamicIPSetDelCmds(t *testing.T) {
 	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
 	cmds := DynamicIPSetDelCmds(snap, []string{"1.1.1.1"}, "", "", "")
 	text := joinCmds(cmds)
-	if !strings.Contains(text, "nft delete element ip mynet_proxy dst4 { 1.1.1.1 }") {
+	if !strings.Contains(text, "nft delete element ip mynet_proxy mynet_proxy { 1.1.1.1 }") {
 		t.Fatalf("text=%s", text)
 	}
 	for _, c := range cmds {

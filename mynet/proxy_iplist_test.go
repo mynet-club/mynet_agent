@@ -85,9 +85,9 @@ func TestWriteNftSetFragment(t *testing.T) {
 	}
 	text := string(raw)
 	for _, want := range []string{
-		"add set ip mynet_proxy dst4 { type ipv4_addr; flags interval; }",
-		"add element ip mynet_proxy dst4 { 1.0.0.0/8 }",
-		"add element ip mynet_proxy dst4 { 10.0.0.0/8 }",
+		"add set ip mynet_proxy mynet_proxy { type ipv4_addr; flags interval; }",
+		"add element ip mynet_proxy mynet_proxy { 1.0.0.0/8 }",
+		"add element ip mynet_proxy mynet_proxy { 10.0.0.0/8 }",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("缺 %q\n%s", want, text)

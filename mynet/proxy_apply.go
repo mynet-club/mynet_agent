@@ -84,7 +84,10 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	if !preferBSDNetTools(snap) {
 		if rt.ExitVia != "" {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"ip", "route", "replace", "default", "via", rt.ExitVia, "dev", dev, "table", fmt.Sprintf("%d", table),
+				// onlink：tun 的对端不是 on-link 网关，不带 onlink 会 "Nexthop has
+				// invalid gateway"（2026-10-11 .182 实测）。旧 Lua 用 nexthop 多路径形式，
+				// 等价效果；单一出口时 onlink 更小。
+				"ip", "route", "replace", "default", "via", rt.ExitVia, "dev", dev, "table", fmt.Sprintf("%d", table), "onlink",
 			}})
 		} else {
 			cmds = append(cmds, routeCmd{argv: []string{
@@ -150,12 +153,14 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 	}
 	if snap.Capabilities["nft"] {
 		return []routeCmd{
-			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}},
-			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "dst4",
+			// 自建单表：集合与打标规则**同表**（nft 的 @set 只能引用同表集合 ——
+			// 旧版把集合放 `ip mynet_proxy`、规则放 `ip mangle`，跨表引用天然不生效）。
+			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
+			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "mynet_proxy",
 				"{ type ipv4_addr; flags interval; }"}, optional: true},
 			// 从文件灌元素（nft -f 片段由执行器包装；此处用 nft add element 批量不现实，
 			// 真正加载走 proxyLoadIPSetFile —— 命令仅占位确保 set 存在）。
-			{argv: []string{"nft", "flush", "set", "ip", "mynet_proxy", "dst4"}, optional: true},
+			{argv: []string{"nft", "flush", "set", "ip", "mynet_proxy", "mynet_proxy"}, optional: true},
 		}
 	}
 	if snap.Capabilities["iptables"] {
@@ -180,27 +185,29 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 
 	if snap.Capabilities["nft"] {
 		cmds := []routeCmd{
-			{argv: []string{"nft", "add", "chain", "ip", "mangle", "PREROUTING",
+			// 表由 proxyIPSetCmds（第 1 步）建；这里再兜一次，已存在即跳过。
+			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
+			{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "PREROUTING",
 				"{ type filter hook prerouting priority -150; }"}, optional: true},
 			// 本机 App（消费者=入口）
-			{argv: []string{"nft", "add", "chain", "ip", "mangle", "OUTPUT",
+			{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "OUTPUT",
 				"{ type filter hook output priority -150; }"}, optional: true},
 		}
 		// LAN 回包不重打 mark（防路由回环）
 		if rt.LANBridge != "" {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mangle", "PREROUTING",
+				"nft", "add", "rule", "ip", "mynet_proxy", "PREROUTING",
 				"iifname", rt.TunDevice, "ct", "state", "established,related", "return",
 			}, optional: true})
 		}
 		mark := func(chain, daddrExpr string) []string {
-			base := []string{"nft", "add", "rule", "ip", "mangle", chain}
+			base := []string{"nft", "add", "rule", "ip", "mynet_proxy", chain}
 			if inverted {
 				return append(base, "ip", "daddr", "!=", daddrExpr, "meta", "mark", "set", fwHex)
 			}
 			return append(base, "ip", "daddr", daddrExpr, "meta", "mark", "set", fwHex)
 		}
-		setRef := "@mynet_proxy dst4"
+		setRef := "@mynet_proxy"
 		cmds = append(cmds, routeCmd{argv: mark("PREROUTING", setRef)})
 		cmds = append(cmds, routeCmd{argv: mark("OUTPUT", setRef)})
 		return cmds
@@ -247,24 +254,24 @@ func proxySelfExemptCmds(snap *shared.SystemSnapshot, rt ProxyRuntime) []routeCm
 	// 2) mangle：本机隧道 UDP 出站不打标（先 return 再 mark）
 	if snap.Capabilities["nft"] {
 		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "mangle", "OUTPUT",
+			routeCmd{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "OUTPUT",
 				"{ type filter hook output priority -150; }"}, optional: true},
 		)
 		if rt.ExitEndpoint != "" {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mangle", "OUTPUT",
+				"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
 				"ip", "daddr", rt.ExitEndpoint, "return",
 			}, optional: true})
 		}
 		if rt.TunnelLocalPort > 0 {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "mangle", "OUTPUT",
+				"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
 				"udp", "sport", fmt.Sprintf("%d", rt.TunnelLocalPort), "return",
 			}, optional: true})
 		}
 		// 回环 / 本机解析器
 		cmds = append(cmds, routeCmd{argv: []string{
-			"nft", "add", "rule", "ip", "mangle", "OUTPUT",
+			"nft", "add", "rule", "ip", "mynet_proxy", "OUTPUT",
 			"oifname", "lo", "return",
 		}, optional: true})
 		return cmds

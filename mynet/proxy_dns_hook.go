@@ -118,7 +118,7 @@ func DynamicIPSetCmds(snap *shared.SystemSnapshot, ips []string, nftSet, nftKey,
 		nftSet = "mynet_proxy"
 	}
 	if nftKey == "" {
-		nftKey = "dst4"
+		nftKey = "mynet_proxy"
 	}
 	if ipsetName == "" {
 		ipsetName = "mynet_proxy"
@@ -156,7 +156,7 @@ func DynamicIPSetDelCmds(snap *shared.SystemSnapshot, ips []string, nftSet, nftK
 		nftSet = "mynet_proxy"
 	}
 	if nftKey == "" {
-		nftKey = "dst4"
+		nftKey = "mynet_proxy"
 	}
 	if ipsetName == "" {
 		ipsetName = "mynet_proxy"

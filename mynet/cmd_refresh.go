@@ -91,6 +91,32 @@ func varDir() string {
 	return sharedVarDir()
 }
 
+// bundledProxyListPath 随包 IP 列表路径（旧 Lua `proxy_sources/` 的延续）。
+// region+policy 经 domain.ResolveProxySplit 解出列表源（international/china），映射到
+// 随包文件名；取不到 home 或文件不存在都返回 ""（不猜、不造）。
+func bundledProxyListPath(p *domain.ProxyPolicy) string {
+	src, _, err := domain.ResolveProxySplit(p.Region, p.Policy)
+	if err != nil {
+		return ""
+	}
+	var name string
+	switch src {
+	case domain.ProxyListInternational:
+		name = "interip.txt"
+	case domain.ProxyListChina:
+		name = "chinaip.txt"
+	}
+	home := os.Getenv("MYNET_HOME")
+	if name == "" || home == "" {
+		return ""
+	}
+	f := filepath.Join(home, "conf", "proxy", "proxy_sources", name)
+	if _, err := os.Stat(f); err != nil {
+		return ""
+	}
+	return f
+}
+
 // gnbConfDir gnb 原生配置目录 —— **投影目录** driver/gnb/conf/{nodeID}。
 //
 // 与 writeGnbProjection / ApplyFromActive 同一路径。此前这里是 var/gnb，
@@ -247,6 +273,12 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 				src = proxyPolicy.Split.ListSource
 			}
 			rt.IPSetFile = ProxyListCachePath(filepath.Join(varDir(), "proxy-lists"), src)
+		} else if f := bundledProxyListPath(proxyPolicy); f != "" {
+			// 本地 client 策略没有云端解算的 split（例：纯本机 Local 轨、或云侧无许可）→
+			// 回落到**随包列表**（旧 Lua 行为：domestic→interip.txt / international→chinaip.txt）。
+			// 不回落的后果：集合空 → 打标规则匹配不到任何目的 → 代理形同没开
+			// （2026-10-11 .182 实测）。
+			rt.IPSetFile = f
 		}
 		plan.Proxy = planProxy(proxyPolicy, rt)
 	}

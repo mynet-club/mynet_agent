@@ -92,7 +92,7 @@ func TestProxyClientCmdsHasPolicyRouteAndMark(t *testing.T) {
 		"ip route replace default via 10.20.0.250 dev gnb_tun table 200", // GUARD-OK 测试断言命令串，非执行点
 		"ip rule add fwmark 0xc8 lookup 200 prio 31800",
 		"ip route replace 192.0.2.1/32 dev eth0", // GUARD-OK 测试断言命令串，非执行点
-		"nft add rule ip mangle PREROUTING ip daddr @mynet_proxy dst4 meta mark set 0xc8",
+		"nft add rule ip mynet_proxy PREROUTING ip daddr @mynet_proxy meta mark set 0xc8",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("缺少命令 %q\n---\n%s", want, text)
@@ -132,7 +132,7 @@ func TestProxyMatchModeInvertedUsesNegatedMatch(t *testing.T) {
 	}
 	rt := ProxyRuntime{TunDevice: "gnb_tun", ExitVia: "10.20.0.250", IPSetFile: "/tmp/chinaip.txt"}
 	text := joinCmds(proxyClientCmds(snapNft(), p, rt))
-	want := "nft add rule ip mangle PREROUTING ip daddr != @mynet_proxy dst4 meta mark set 0xc8"
+	want := "nft add rule ip mynet_proxy PREROUTING ip daddr != @mynet_proxy meta mark set 0xc8"
 	if !strings.Contains(text, want) {
 		t.Fatalf("inverted 应使用 != 匹配\n---\n%s", text)
 	}
@@ -405,7 +405,7 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 	for _, want := range []string{
 		"table 200",
 		"fwmark 0xc8",
-		"daddr @mynet_proxy dst4 meta mark set 0xc8",
+		"daddr @mynet_proxy meta mark set 0xc8",
 		// mynetBinPath() 给绝对路径（服务环境 PATH 不含 mynet）——只查子命令
 		"proxy dns-split 223.5.5.5,119.29.29.29 8.8.8.8",
 	} {
@@ -422,13 +422,13 @@ func TestProxyMarkCoversOUTPUTAndPREROUTING(t *testing.T) {
 	p := mustPolicy(t, "domestic", "whitelist")
 	rt := ProxyRuntime{TunDevice: "gnb_tun", ExitVia: "10.20.0.250", IPSetFile: "/tmp/x"}
 	text := joinCmds(proxyMarkCmds(snapNft(), p, rt, 0xc8))
-	if !strings.Contains(text, "chain ip mangle OUTPUT") {
+	if !strings.Contains(text, "chain ip mynet_proxy OUTPUT") {
 		t.Fatalf("同机必须打 OUTPUT:\n%s", text)
 	}
-	if !strings.Contains(text, "chain ip mangle PREROUTING") {
+	if !strings.Contains(text, "chain ip mynet_proxy PREROUTING") {
 		t.Fatalf("LAN 仍要 PREROUTING:\n%s", text)
 	}
-	if !strings.Contains(text, "OUTPUT ip daddr @mynet_proxy dst4 meta mark set 0xc8") {
+	if !strings.Contains(text, "OUTPUT ip daddr @mynet_proxy meta mark set 0xc8") {
 		t.Fatalf("OUTPUT mark 缺:\n%s", text)
 	}
 }
@@ -449,9 +449,9 @@ func TestProxySelfExemptBeforeMark(t *testing.T) {
 	// 豁免
 	for _, want := range []string{
 		"ip route replace 203.0.113.10/32 via 192.0.2.1 dev eth0", // GUARD-OK 测试断言命令串，非执行点
-		"nft add rule ip mangle OUTPUT ip daddr 203.0.113.10 return",
-		"nft add rule ip mangle OUTPUT udp sport 9016 return",
-		"nft add rule ip mangle OUTPUT oifname lo return",
+		"nft add rule ip mynet_proxy OUTPUT ip daddr 203.0.113.10 return",
+		"nft add rule ip mynet_proxy OUTPUT udp sport 9016 return",
+		"nft add rule ip mynet_proxy OUTPUT oifname lo return",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("缺自环豁免 %q\n%s", want, text)
@@ -464,7 +464,7 @@ func TestProxySelfExemptBeforeMark(t *testing.T) {
 		if acc < 0 && strings.Contains(s, "daddr 203.0.113.10 return") {
 			acc = i
 		}
-		if mark < 0 && strings.Contains(s, "mangle OUTPUT") && strings.Contains(s, "meta mark set") {
+		if mark < 0 && strings.Contains(s, "mynet_proxy OUTPUT") && strings.Contains(s, "meta mark set") {
 			mark = i
 		}
 	}
