@@ -165,13 +165,28 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		fmt.Println("enabled: mynet（gnb 待配置后 /etc/init.d/mynet start）")
 	}
 
-	warnGnbMissing(gnbBin, "mynet 服务会起不来。请装 gnb 或 --gnb-bin 指定。")
+	// gnb 就位检查（**OpenWrt 方言**）：gnb 由 ipk 落在 $home/driver/gnb/bin（与 init 的
+	// 路径解析同序），**不在** /usr/local/bin —— 拿别平台的默认位检查会把「装得好好的」
+	// 误报成「服务会起不来」（.182 与 arm64 测试 VM 上每次 install/opkg 升级都误报）。
+	if !gnbPresentOpenWrt(home) {
+		fmt.Fprintf(os.Stderr, "⚠️ 未找到 gnb（%s 与 PATH 都没有）—— mynet 服务会起不来。请装 gnb 的 ipk。\n",
+			filepath.Join(home, "driver", "gnb", "bin", "gnb"))
+	}
 
 	fmt.Println("\n下一步（节点身份，install 不代劳）：")
 	fmt.Printf("  1) %s setup --local --node-id <ID>   # 或 --online\n", mynetBin)
 	fmt.Println("  2) 同步配置（bundle / LuCI / mynet refresh-config）")
 	fmt.Println("  3) /etc/init.d/mynet start            # procd 拉起 gnb + 装路由")
 	return 0
+}
+
+// gnbPresentOpenWrt gnb 是否就位：与 init 的解析同序 —— $home/driver/gnb/bin/gnb → PATH。
+func gnbPresentOpenWrt(home string) bool {
+	if fileExists(filepath.Join(home, "driver", "gnb", "bin", "gnb")) {
+		return true
+	}
+	_, err := exec.LookPath("gnb")
+	return err == nil
 }
 
 func writeOpenWrtEnv(path, home, gateways, binDir string) error {

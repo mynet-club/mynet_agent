@@ -132,6 +132,33 @@ func TestOpenWrtInstallIsServiceOnly(t *testing.T) {
 	}
 }
 
+// gnb 就位检查必须用 **OpenWrt 方言**路径（$home/driver/gnb/bin），不得拿别平台的
+// /usr/local/bin 默认位判 —— 否则每次 install/opkg 升级都误报「服务会起不来」。
+func TestOpenWrtGnbPresentCheck(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PATH", t.TempDir()) // 隔离 PATH，排除系统 gnb 干扰
+	if gnbPresentOpenWrt(home) {
+		t.Fatal("空 home 且 PATH 无 gnb 时应判缺")
+	}
+	binDir := filepath.Join(home, "driver", "gnb", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gnb"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !gnbPresentOpenWrt(home) {
+		t.Fatal("$home/driver/gnb/bin/gnb 存在时应判就位")
+	}
+	src, err := os.ReadFile("cmd_install_openwrt.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), "warnGnbMissing(gnbBin") {
+		t.Fatal("OpenWrt 安装不得再用平台默认位 /usr/local/bin 误报 gnb 缺失")
+	}
+}
+
 // OpenWrt 服务安装必须含 network/zone 配置（否则 enable 了也转发不通）
 func TestOpenWrtInstallSetsNetworkZone(t *testing.T) {
 	src, err := os.ReadFile("cmd_install_openwrt.go")
