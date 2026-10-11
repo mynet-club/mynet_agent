@@ -215,12 +215,12 @@ jobs:
             pub lua openwrt "all" "lua_openwrt_all_${VER}.ipk"
           fi
 
-  summary:
-    needs: ipk
-    runs-on: ubuntu-latest
-    steps:
-      # 产物不再走 GitHub artifact（配额耗尽），分发在 ctl；这里只列出 ctl 索引确认
+      # 只列 ctl 索引确认。曾单起一个 `summary` runner 干这一条 curl ——
+      # 空烧一分钟，且账户额度见底时「作业无法启动」会把它变成**假红**
+      # （2026-10-11：3 个 ipk 腿全绿，summary 因 spending limit 未启动 → 整轮红）。
+      # 折进 amd64 腿（lua 也只在该腿发），不另占 runner。
       - name: List ctl releases
+        if: matrix.arch == 'amd64'
         env:
           CTL_URL: ${{ secrets.CTL_URL }}
         run: |
