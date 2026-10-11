@@ -2,6 +2,7 @@ package mynet
 
 // mynet proxy —— 代理分流的执行入口（apply 内部 exec，也可手动跑）。
 //
+//	mynet proxy apply [--dry-run]               把当前意图落到系统（只动 proxy 那一套）
 //	mynet proxy dns-split <domestic-csv> <foreign>
 //	mynet proxy resolv <server>
 //	mynet proxy status
@@ -20,10 +21,13 @@ import (
 
 func cmdProxy(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-split <domestic-csv> <foreign> | resolv <server> | status | migrate [--dry-run]")
+		fmt.Fprintln(os.Stderr, "用法: mynet proxy apply [--dry-run] | dns-split <domestic-csv> <foreign> | resolv <server> | status | migrate [--dry-run]")
 		return 2
 	}
 	switch args[0] {
+	case "apply":
+		// 把当前 proxy 意图落到系统：只装/清 proxy 那一套，不碰 OS 路由/防火墙/接口。
+		return proxyApply(len(args) > 1 && args[1] == "--dry-run")
 	case "dns-split":
 		if len(args) < 3 {
 			fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-split <domestic-csv> <foreign>")
@@ -46,6 +50,35 @@ func cmdProxy(args []string) int {
 		fmt.Fprintf(os.Stderr, "proxy: 未知子命令 %q\n", args[0])
 		return 2
 	}
+}
+
+// proxyApply 把当前 proxy 意图落到系统 —— **只动 proxy 那一套**：nft 打标集合、
+// fwmark 规则、table 200、出口规则、DNS 产物。**不碰** OS 路由/防火墙/接口/默认网关
+// （那是另一关注点；开/关代理不该顺带重刷路由面，2026-10-11 裁定）。
+//
+// 命名空间成员：本地改 proxy（localapi 写意图）后由 mynetd 派发这一条立即生效，
+// 不必等下一次 bundle/reload。Proxy 非空则装、为空则（intent 有记录时）清理历史钉扎。
+func proxyApply(dry bool) int {
+	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy apply: 读 system.json 失败（先跑 mynet detector）: %v\n", err)
+		return 1
+	}
+	env, err := loadBundleEnvelope()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy apply: 读 bundle 失败（先让 mynetd 拉一版）: %v\n", err)
+		return 1
+	}
+	plan, err := planFromBundle(env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy apply: %v\n", err)
+		return 1
+	}
+	plan.Routes = nil
+	plan.Firewall = nil
+	plan.Interfaces = nil
+	plan.ProxyOnly = true
+	return executeApply(snap, &plan, dry)
 }
 
 // proxyMigrate 折叠旧 Lua 权威 conf 到统一意图（CLI 入口）。

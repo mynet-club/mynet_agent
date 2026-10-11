@@ -98,9 +98,9 @@ func TestPluginProxyPostLocalThenWriteback(t *testing.T) {
 		t.Fatalf("应派发执行器 plugin apply proxy，got %v", applied)
 	}
 	// 第三段：写意图 + 驱动投影之后必须刷周边，但只刷 proxy 段
-	// （`--proxy-only`：只动 fwmark/table 200/打标集合，不碰 OS 路由）。
-	if len(applied) < 2 || applied[1] != "apply --proxy-only" {
-		t.Fatalf("应在 plugin apply 之后派发 apply --proxy-only 刷 proxy 段，got %v", applied)
+	// （`proxy apply`：只动 fwmark/table 200/打标集合，不碰 OS 路由）。
+	if len(applied) < 2 || applied[1] != "proxy apply" {
+		t.Fatalf("应在 plugin apply 之后派发 proxy apply 刷 proxy 段，got %v", applied)
 	}
 	if wroteRev == 0 {
 		t.Fatal("应发生回写")

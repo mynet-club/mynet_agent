@@ -45,7 +45,6 @@ func cmdApply(args []string) int {
 	auto := false
 	active := false
 	clear := false
-	proxyOnly := false
 	planPath := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -57,8 +56,6 @@ func cmdApply(args []string) int {
 			active = true
 		case "--clear":
 			clear = true
-		case "--proxy-only":
-			proxyOnly = true
 		case "--out", "--plan":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "缺少参数值")
@@ -108,16 +105,6 @@ func cmdApply(args []string) int {
 			fmt.Fprintf(os.Stderr, "apply --auto: %v\n", err)
 			return 1
 		}
-		if proxyOnly {
-			// 开/关代理只该动它自己那套（nft 打标集合 + fwmark 规则 + table 200），
-			// 不碰 OS 路由/防火墙/接口与钉默认网关 —— 那是另一关注点（2026-10-11 裁定）。
-			// 置空非 proxy 段后交给 executeApply：Proxy 非空则装、为空则清理历史钉扎。
-			plan.Routes = nil
-			plan.Firewall = nil
-			plan.Interfaces = nil
-			plan.ProxyOnly = true
-			return executeApply(snap, &plan, dry)
-		}
 		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 {
 			// 不是错误：没有对端时本来就没有路由要装。但要**说出来**，
 			// 否则「apply 成功」和「apply 什么都没做」在日志里长得一样。
@@ -133,7 +120,6 @@ func cmdApply(args []string) int {
 		fmt.Fprintln(os.Stderr, "  --active  写驱动投影 driver/**（不装 OS 路由）")
 		fmt.Fprintln(os.Stderr, "  --auto    装 OS 路由/防火墙（不改 driver conf）")
 		fmt.Fprintln(os.Stderr, "  --clear   清自有隧道路由")
-		fmt.Fprintln(os.Stderr, "  --proxy-only  只刷 proxy 段（开/关代理用；不碰 OS 路由/防火墙）")
 		return 2
 	}
 

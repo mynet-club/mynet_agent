@@ -137,10 +137,10 @@ func (s *Server) postPluginProxy(w http.ResponseWriter, r *http.Request) {
 	// 1b) 刷周边：client 分流的 nft/ipset/ip rule/table 都在 `mynet apply` 里，写意图 +
 	// 驱动投影之后必须补这一次，否则页面开关"看起来生效、周边没装"，要等下一次
 	// bundle/reload 才落地（2026-10-11 实测的时通时断来源之一）。
-	// ⚠️ 用 `--proxy-only`：开/关代理只该动它自己那套（fwmark 规则 + table 200 + 打标
-	// 集合），**不碰 OS 路由/防火墙/接口** —— 那是另一关注点，重刷多余且会惊动路由面。
+	// ⚠️ 派发 `proxy apply`：开/关代理只该动它自己那套（fwmark 规则 + table 200 +
+	// 打标集合），**不碰 OS 路由/防火墙/接口** —— 那是另一关注点，重刷多余且会惊动路由面。
 	if s.Ops != nil {
-		if _, err := s.Ops([]string{"apply", "--proxy-only"}); err != nil {
+		if _, err := s.Ops([]string{"proxy", "apply"}); err != nil {
 			st.MarkWritebackFail(err, now)
 			_ = s.saveProxyState(dir, st)
 			writeJSON(w, 500, map[string]any{
