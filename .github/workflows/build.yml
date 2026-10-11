@@ -70,11 +70,11 @@ jobs:
           if [ "${{ github.ref_type }}" = "tag" ]; then
             V="${{ github.ref_name }}"
           else
-            SHA=$(git describe --tags --always --dirty)
-            case "$SHA" in
-              v*) V="$SHA" ;;
-              *)  V="v0.0.0-$SHA" ;;
-            esac
+            # 短 sha，不要 `git describe`：全历史/近 tag 时会给出 v0.1.2-20-g<sha>
+            # 这种**两个连字符**的形式，ctl 的 validateVersion 只允许一个 [.\-]
+            # 后缀段 → 上传被判无效版本号回 500（2026-10-11 实测）。
+            SHA=$(git rev-parse --short HEAD)
+            V="v0.0.0-$SHA"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "VERSION=$V"

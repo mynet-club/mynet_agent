@@ -60,11 +60,17 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          SHA=$(git describe --tags --always --dirty)
-          case "$SHA" in
-            v*) V="$SHA" ;;
-            *)  V="v0.0.0-$SHA" ;;
-          esac
+          # 只在 HEAD **正好**落在 tag 上时用 tag；否则 v0.0.0-<短 sha>。
+          # ⚠️ 不要用 `git describe --tags --always`：全历史（fetch-depth: 0）下它会
+          # 给出 `v0.1.2-20-g11d6231` 这种**两个连字符**的形式，而 ctl 的
+          # validateVersion（ReleaseDomainService.php:259）只允许一个 [.\-] 后缀段
+          # ⇒ 上传被判「无效的版本号格式」回 500（2026-10-11 实测）。
+          TAG=$(git tag --points-at HEAD | head -1)
+          if [ -n "$TAG" ]; then
+            V="$TAG"
+          else
+            V="v0.0.0-$(git rev-parse --short HEAD)"
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
       - name: Install deps
