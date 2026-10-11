@@ -80,7 +80,7 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	//    （2026-10-11 .182 实测：集合 17789 → 0），而集合由列表步骤灌好，必须留着。
 	//    optional：链还没建时（首跑）容错。
 	if snap.Capabilities["nft"] {
-		for _, ch := range []string{"PREROUTING", "OUTPUT"} {
+		for _, ch := range []string{"PREROUTING"} {
 			cmds = append(cmds, routeCmd{
 				argv: []string{"nft", "flush", "chain", "ip", "mynet_proxy", ch}, optional: true})
 		}
@@ -208,28 +208,27 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 		cmds := []routeCmd{
 			// 表由 proxyIPSetCmds（第 1 步）建；这里再兜一次，已存在即跳过。
 			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
+			// ⚠️ **只挂 PREROUTING**（转发流量 = LAN 客户端）。**不挂 OUTPUT**：
+			// Linux（含 OpenWrt）下本地发出包的 FIB 查找发生在 OUTPUT hook **之前**，
+			// OUTPUT 里 `meta mark set` 改不了这一包的路由 —— 「代理由口机自身」既违铁律
+			// 又技术上不成立（2026-10-11 真机实证：强制走隧道成功、打标路径本地必然失败）。
 			{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "PREROUTING",
 				"{ type filter hook prerouting priority -150; }"}, optional: true},
-			// 本机 App（消费者=入口）
-			{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "OUTPUT",
-				"{ type filter hook output priority -150; }"}, optional: true},
 		}
 		// LAN 回包不重打 mark（防路由回环）
 		if rt.LANBridge != "" {
 			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "PREROUTING",
 				"iifname", rt.TunDevice, "ct", "state", "established,related", "return"})...)
 		}
-		markSpec := func(chain, daddrExpr string) []string {
+		markSpec := func(daddrExpr string) []string {
 			if inverted {
-				return []string{"ip", "mynet_proxy", chain, "ip", "daddr", "!=", daddrExpr,
-					"meta", "mark", "set", fwHex}
+				return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", "!=", daddrExpr,
+					"meta", "mark", "set", fwHex, "counter"}
 			}
-			return []string{"ip", "mynet_proxy", chain, "ip", "daddr", daddrExpr,
-				"meta", "mark", "set", fwHex}
+			return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", daddrExpr,
+				"meta", "mark", "set", fwHex, "counter"}
 		}
-		setRef := "@mynet_proxy"
-		cmds = append(cmds, nftRule(markSpec("PREROUTING", setRef))...)
-		cmds = append(cmds, nftRule(markSpec("OUTPUT", setRef))...)
+		cmds = append(cmds, nftRule(markSpec("@mynet_proxy"))...)
 		return cmds
 	}
 
@@ -240,13 +239,11 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 		if inverted {
 			neg = []string{"!"}
 		}
-		mark := func(chain string) []string {
-			argv := []string{"iptables", "-t", "mangle", "-A", chain}
-			argv = append(argv, neg...)
-			argv = append(argv, setMatch...)
-			return append(argv, jump...)
-		}
-		return []routeCmd{{argv: mark("PREROUTING")}, {argv: mark("OUTPUT")}}
+		argv := []string{"iptables", "-t", "mangle", "-A", "PREROUTING"}
+		argv = append(argv, neg...)
+		argv = append(argv, setMatch...)
+		argv = append(argv, jump...)
+		return []routeCmd{{argv: argv}}
 	}
 	return nil
 }
@@ -271,43 +268,9 @@ func proxySelfExemptCmds(snap *shared.SystemSnapshot, rt ProxyRuntime) []routeCm
 		}
 	}
 
-	// 2) mangle：本机隧道 UDP 出站不打标（先 return 再 mark）
-	if snap.Capabilities["nft"] {
-		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "OUTPUT",
-				"{ type filter hook output priority -150; }"}, optional: true},
-		)
-		if rt.ExitEndpoint != "" {
-			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
-				"ip", "daddr", rt.ExitEndpoint, "return"})...)
-		}
-		if rt.TunnelLocalPort > 0 {
-			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
-				"udp", "sport", fmt.Sprintf("%d", rt.TunnelLocalPort), "return"})...)
-		}
-		// 回环 / 本机解析器
-		cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "OUTPUT",
-			"oifname", "lo", "return"})...)
-		return cmds
-	}
-	if snap.Capabilities["iptables"] {
-		if rt.ExitEndpoint != "" {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"iptables", "-t", "mangle", "-A", "OUTPUT",
-				"-d", rt.ExitEndpoint, "-j", "RETURN",
-			}, optional: true})
-		}
-		if rt.TunnelLocalPort > 0 {
-			cmds = append(cmds, routeCmd{argv: []string{
-				"iptables", "-t", "mangle", "-A", "OUTPUT",
-				"-p", "udp", "--sport", fmt.Sprintf("%d", rt.TunnelLocalPort), "-j", "RETURN",
-			}, optional: true})
-		}
-		cmds = append(cmds, routeCmd{argv: []string{
-			"iptables", "-t", "mangle", "-A", "OUTPUT", "-o", "lo", "-j", "RETURN",
-		}, optional: true})
-		return cmds
-	}
+	// 2) 已删除：原「本机隧道 UDP 出站不打标（OUTPUT return）」豁免。
+	//    既然不再挂 OUTPUT 打标（见 proxyMarkCmds：本机自身不可代理是铁律），
+	//    OUTPUT 链就没有可豁免的对象了；出口物理 endpoint 的 /32 钉扎（上面第 1 步）保留。
 	return cmds
 }
 

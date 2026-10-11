@@ -418,22 +418,27 @@ func TestProxyFromFixtureEndToEnd(t *testing.T) {
 	}
 }
 
-func TestProxyMarkCoversOUTPUTAndPREROUTING(t *testing.T) {
+// 铁律：Linux（含 OpenWrt）**不能代理由口机自身** —— 本地发出包的 FIB 查找发生在
+// OUTPUT hook **之前**，OUTPUT 打标改不了这一包的路由。所以只挂 PREROUTING（转发 =
+// LAN 客户端），绝不挂 OUTPUT（2026-10-11 真机实证）。
+func TestProxyMarkOnlyPREROUTING(t *testing.T) {
 	p := mustPolicy(t, "domestic", "whitelist")
 	rt := ProxyRuntime{TunDevice: "gnb_tun", ExitVia: "10.20.0.250", IPSetFile: "/tmp/x"}
 	text := joinCmds(proxyMarkCmds(snapNft(), p, rt, 0xc8))
-	if !strings.Contains(text, "chain ip mynet_proxy OUTPUT") {
-		t.Fatalf("同机必须打 OUTPUT:\n%s", text)
-	}
 	if !strings.Contains(text, "chain ip mynet_proxy PREROUTING") {
-		t.Fatalf("LAN 仍要 PREROUTING:\n%s", text)
+		t.Fatalf("LAN 转发要 PREROUTING:\n%s", text)
 	}
-	if !strings.Contains(text, "OUTPUT ip daddr @mynet_proxy meta mark set 0xc8") {
-		t.Fatalf("OUTPUT mark 缺:\n%s", text)
+	if !strings.Contains(text, "PREROUTING ip daddr @mynet_proxy meta mark set 0xc8 counter") {
+		t.Fatalf("PREROUTING 打标（带 counter）缺:\n%s", text)
+	}
+	if strings.Contains(text, "OUTPUT") {
+		t.Fatalf("不得挂 OUTPUT 打标（本机自身不可代理是铁律）:\n%s", text)
 	}
 }
 
-func TestProxySelfExemptBeforeMark(t *testing.T) {
+// 自环豁免：出口物理 endpoint 的 /32 钉到物理口（主表，高于策略路由）。
+// 不再有 OUTPUT 链上的 return 豁免 —— 没有 OUTPUT 打标就无需豁免。
+func TestProxySelfExemptPinsExitEndpoint(t *testing.T) {
 	p := mustPolicy(t, "domestic", "whitelist")
 	rt := ProxyRuntime{
 		TunDevice:       "gnb_tun",
@@ -444,32 +449,12 @@ func TestProxySelfExemptBeforeMark(t *testing.T) {
 		WANGateway:      "192.0.2.1",
 		IPSetFile:       "/tmp/x",
 	}
-	cmds := proxyClientCmds(snapNft(), p, rt)
-	text := joinCmds(cmds)
-	// 豁免
-	for _, want := range []string{
-		"ip route replace 203.0.113.10/32 via 192.0.2.1 dev eth0", // GUARD-OK 测试断言命令串，非执行点
-		"nft add rule ip mynet_proxy OUTPUT ip daddr 203.0.113.10 return",
-		"nft add rule ip mynet_proxy OUTPUT udp sport 9016 return",
-		"nft add rule ip mynet_proxy OUTPUT oifname lo return",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("缺自环豁免 %q\n%s", want, text)
-		}
+	text := joinCmds(proxyClientCmds(snapNft(), p, rt))
+	if !strings.Contains(text, "ip route replace 203.0.113.10/32 via 192.0.2.1 dev eth0") { // GUARD-OK 测试断言命令串，非执行点
+		t.Fatalf("出口 endpoint 应钉物理口（主表 /32）:\n%s", text)
 	}
-	// 顺序：豁免 return 必须在 OUTPUT mark 之前
-	acc, mark := -1, -1
-	for i, c := range cmds {
-		s := strings.Join(c.argv, " ")
-		if acc < 0 && strings.Contains(s, "daddr 203.0.113.10 return") {
-			acc = i
-		}
-		if mark < 0 && strings.Contains(s, "mynet_proxy OUTPUT") && strings.Contains(s, "meta mark set") {
-			mark = i
-		}
-	}
-	if acc < 0 || mark < 0 || acc > mark {
-		t.Fatalf("endpoint 豁免须在 mark 之前: exempt=%d mark=%d", acc, mark)
+	if strings.Contains(text, "OUTPUT") {
+		t.Fatalf("不应再有 OUTPUT 链/规则（本机自身不可代理是铁律）:\n%s", text)
 	}
 }
 
