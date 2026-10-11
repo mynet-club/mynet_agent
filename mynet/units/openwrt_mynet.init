@@ -237,7 +237,14 @@ start_wg_interface() {
 	# 无 wg-quick 时用 ip + wg 最小集（OpenWrt 精简环境）
 	log "ip+wg setup ($conf)"
 	ip link add dev "$VPN_INTERFACE" type wireguard 2>/dev/null || true
-	wg setconf "$VPN_INTERFACE" "$conf" || return 1
+	# ⚠️ `wg setconf` **只认 wg 自己的键**，而 conf 是 wg-quick 格式（含 Address/Table/DNS…）：
+	# 直接喂它会 `Line unrecognized: Address=…` 直接失败（2026-10-11 在 .182 实测）。
+	# 先剥成 wg 形态再喂；键表与 agent 的 StripWGQuickKeys / `wg-quick strip` 一致。
+	local wgconf
+	wgconf=$(mktemp)
+	sed -E '/^(Address|MTU|Table|DNS|PreUp|PostUp|PreDown|PostDown|SaveConfig)[[:space:]]*=/d' "$conf" > "$wgconf"
+	wg setconf "$VPN_INTERFACE" "$wgconf" || { rm -f "$wgconf"; return 1; }
+	rm -f "$wgconf"
 	# 地址在 conf 的 [Interface] Address= 里，wg-quick 会读；纯 wg 不会
 	local addr
 	addr=$(sed -n 's/^Address[[:space:]]*=[[:space:]]*//p' "$conf" | head -1 | cut -d, -f1)
