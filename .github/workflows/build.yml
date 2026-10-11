@@ -149,23 +149,27 @@ jobs:
           fi
           ls -la dist/
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mynet_agent_${{ matrix.goos }}_${{ matrix.ctlarch }}
-          path: |
-            dist/*.tgz
-            dist/*.zip
-          if-no-files-found: error
-
-  upgrade-artifacts:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - name: List upgrade artifacts
+      # 分发=ctl（不再用 upload-artifact：GitHub artifact 配额已耗尽）。
+      # 契约：POST {CTL_URL}/api/v2/releases，multipart，Bearer token(scope=release:upload)。
+      # 产物名已是 ctl SSOT（mynet_agent_<platform>_<arch>_<ver>.{tgz,zip}），无需改名。
+      - name: Publish to ctl
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          CTL_URL: ${{ secrets.CTL_URL }}
+          CTL_TOKEN: ${{ secrets.CTL_RELEASE_TOKEN }}
         run: |
-          echo "## 升级可用产物" >> "$GITHUB_STEP_SUMMARY"
-          echo "（OpenWrt ipk 见 build_openwrt.yml）" >> "$GITHUB_STEP_SUMMARY"
-          find artifacts -type f | tee -a "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          [ -n "$CTL_URL" ]   || { echo "ERROR: 缺 secrets.CTL_URL（ctl 基址）"; exit 1; }
+          [ -n "$CTL_TOKEN" ] || { echo "ERROR: 缺 secrets.CTL_RELEASE_TOKEN（scope=release:upload）"; exit 1; }
+          stable=0; [ "$REF_TYPE" = "tag" ] && stable=1   # is_stable 必须发 1/0
+          f=$(ls dist/*.tgz dist/*.zip 2>/dev/null | head -1)
+          [ -n "$f" ] || { echo "ERROR: dist 下无产物"; exit 1; }
+          echo "→ publish mynet_agent ${{ matrix.goos }} ${{ matrix.ctlarch }} $f (is_stable=$stable)"
+          curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
+            -H "Authorization: Bearer $CTL_TOKEN" \
+            -F "product=mynet_agent" -F "version=${VER}" \
+            -F "platform=${{ matrix.goos }}" -F "arch=${{ matrix.ctlarch }}" \
+            -F "is_stable=$stable" -F "file=@$f"
+          echo
+
