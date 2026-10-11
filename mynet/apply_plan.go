@@ -205,12 +205,20 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		// 代理分流（L6）：先取 IP 列表并生成 set 片段，再跑策略路由/DNS
 		rt := plan.Proxy.Runtime
 		rt.TunDevice = resolveDevice(rt.TunDevice, plan.LocalAddresses)
-		if ref := proxyIPListRef(plan.Proxy.Policy); ref != nil && rt.IPSetFile != "" {
-			if _, err := FetchProxyIPList(ref, rt.IPSetFile, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "proxy ip list: %v\n", err)
-				log.Error("IP 列表获取失败", "err", err)
-				fail = 1
-			} else {
+		if rt.IPSetFile != "" {
+			// 有 ref（云端解算的列表源）才需要先取；**本地回落文件**（随包 proxy_sources）
+			// 直接用盘上的，不再要求 ref —— 否则集合为空、打标匹配不到任何目的
+			// （2026-10-11 .182 实测：集合 0 条）。
+			fetchOK := true
+			if ref := proxyIPListRef(plan.Proxy.Policy); ref != nil {
+				if _, err := FetchProxyIPList(ref, rt.IPSetFile, nil); err != nil {
+					fmt.Fprintf(os.Stderr, "proxy ip list: %v\n", err)
+					log.Error("IP 列表获取失败", "err", err)
+					fail = 1
+					fetchOK = false
+				}
+			}
+			if fetchOK {
 				if snap.Capabilities["nft"] {
 					if err := WriteNftSetFragment(rt.IPSetFile); err != nil {
 						fmt.Fprintf(os.Stderr, "proxy nft fragment: %v\n", err)

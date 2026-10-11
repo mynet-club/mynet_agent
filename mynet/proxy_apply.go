@@ -73,6 +73,15 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	dev := rt.TunDevice
 	var cmds []routeCmd
 
+	// 0) 先把本表全部规则清掉再按序重加 —— 幂等的地基：`nft add rule` 允许同规则多份，
+	//    只 add 不删则重复 apply 会堆积；而本机 nft 不支持按 spec 删规则（只认 handle），
+	//    所以整表 flush 是唯一干净的收敛法。表是**自建**的，不会碰到别人的规则。
+	//    optional：表还没建时（首跑）容错。
+	if snap.Capabilities["nft"] {
+		cmds = append(cmds, routeCmd{
+			argv: []string{"nft", "flush", "table", "ip", "mynet_proxy"}, optional: true})
+	}
+
 	// 1) IP 集合：nft 优先，ipset 兜底
 	cmds = append(cmds, proxyIPSetCmds(snap, p, rt, fw)...)
 
@@ -173,13 +182,13 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 }
 
 // proxyMarkCmds 打 fwmark：PREROUTING（LAN 转发）+ OUTPUT（本机 App，同机形态）。
-// nftRule 幂等地落一条 nft 规则：先按**同样的 spec** 删（optional —— 没装过/已失效都
-// 不算失败），再 add。`nft add rule` 允许同规则多份：只 add 不删，重复 apply 会**堆积**
-// 重复规则（2026-10-11 .182 实测要求修）。delete 按 spec 匹配，顺带清掉历史堆积。
+// nftRule 一条 nft 规则的 argv。
+//
+// 幂等由 apply 开头的 `nft flush table ip mynet_proxy` 保证（每次先清空本表全部规则、
+// 再按序重加）。**不能**用 `nft delete rule <spec>`：本机 nft 版本只认 handle，按 spec
+// 删会报 "unexpected …, expecting handle"（2026-10-11 .182 实测）。
 func nftRule(spec []string) []routeCmd {
-	del := append([]string{"nft", "delete", "rule"}, spec...)
-	add := append([]string{"nft", "add", "rule"}, spec...)
-	return []routeCmd{{argv: del, optional: true}, {argv: add}}
+	return []routeCmd{{argv: append([]string{"nft", "add", "rule"}, spec...)}}
 }
 
 // 历史教训：只写 PREROUTING 时，消费者=入口的 PC 上**本机流量根本不会被标记**。
