@@ -162,9 +162,13 @@ jobs:
           set -euo pipefail
           [ -n "$CTL_URL" ]   || { echo "ERROR: 缺 secrets.CTL_URL（ctl 基址）"; exit 1; }
           [ -n "$CTL_TOKEN" ] || { echo "ERROR: 缺 secrets.CTL_RELEASE_TOKEN（scope=release:upload）"; exit 1; }
-          stable=0; [ "$REF_TYPE" = "tag" ] && stable=1   # is_stable 必须发 1/0
-          f=$(ls dist/*.tgz dist/*.zip 2>/dev/null | head -1)
-          [ -n "$f" ] || { echo "ERROR: dist 下无产物"; exit 1; }
+          stable=0; if [ "$REF_TYPE" = "tag" ]; then stable=1; fi   # is_stable 必须发 1/0
+          # ⚠️ 不要 `f=$(ls dist/*.tgz dist/*.zip | head -1)`：两个 glob 必有一个不匹配，
+          #    `ls` 退 2，配 `set -o pipefail` 会让整个 publish 步以 exit 2 失败（实测）。
+          shopt -s nullglob
+          files=(dist/*.tgz dist/*.zip)
+          if [ "${#files[@]}" -eq 0 ]; then echo "ERROR: dist 下无产物"; exit 1; fi
+          f="${files[0]}"
           echo "→ publish mynet_agent ${{ matrix.goos }} ${{ matrix.ctlarch }} $f (is_stable=$stable)"
           curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
             -H "Authorization: Bearer $CTL_TOKEN" \

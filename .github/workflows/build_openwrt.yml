@@ -170,7 +170,7 @@ jobs:
           set -euo pipefail
           [ -n "$CTL_URL" ]   || { echo "ERROR: 缺 secrets.CTL_URL（ctl 基址）"; exit 1; }
           [ -n "$CTL_TOKEN" ] || { echo "ERROR: 缺 secrets.CTL_RELEASE_TOKEN（scope=release:upload）"; exit 1; }
-          stable=0; [ "$REF_TYPE" = "tag" ] && stable=1   # is_stable 必须发 1/0
+          stable=0; if [ "$REF_TYPE" = "tag" ]; then stable=1; fi   # is_stable 必须发 1/0
           cd "$GITHUB_WORKSPACE/dist-ipk"
           pub() { # product platform arch file
             echo "→ publish $1 $2 $3 $4 (is_stable=$stable)"
