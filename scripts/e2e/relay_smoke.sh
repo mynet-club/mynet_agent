@@ -4,7 +4,7 @@
 # 路径（硬约束：浏览器/脚本只打本机，不出门）：
 #   脚本 → 127.0.0.1:8096/api/v1/relay?path=/api/v1/...
 #        → gw.mynet.club/v1/relay?path=...
-#        → api.mynet.club/api/v1/...
+#        → <back>/api/v1/...（back 部署地址不落仓库）
 #
 # 场景（用户指定）：
 #   1. 注册 yjf@nwu.edu.cn（跳过邮件激活 —— 框架 login 不检查 email_verified_at）
@@ -52,7 +52,7 @@ die()  { printf '\n✗ 停在：%s\n' "$1"; printf '  已通过 %s / 失败 %s\n
 
 CODE=""; BODY=""
 # req METHOD BACK_PATH [token] [json-body] [extra-header]
-# 全部经 mynetd relay，不直连 api.mynet.club
+# 全部经 mynetd relay，不直连后端 API
 req() {
   _m=$1; _path=$2; _tok=${3:-}; _body=${4:-}; _hdr=${5:-}
   _url="$RELAY/api/v1/relay?path=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$_path")"

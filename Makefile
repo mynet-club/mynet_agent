@@ -21,6 +21,7 @@ test:
 	@echo "▸ test"
 	@go test ./...
 	@sh scripts/check-route-writers.sh
+	@sh scripts/check-no-back-url.sh
 	# PHP: php vendor/bin/phpunit
 	# Vue: npm run test:unit
 

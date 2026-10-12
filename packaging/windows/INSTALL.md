@@ -58,8 +58,8 @@ C:\mynet\bin\mynet.exe install `
 ```powershell
 $env:MYNET_HOME = "C:\mynet"
 # 密码用 stdin，避免进历史
-"Lyt@..." | C:\mynet\bin\mynet.exe auth login `
-  --api https://api.mynet.club --email "你的邮箱" --password-stdin
+"你的密码" | C:\mynet\bin\mynet.exe auth login `
+  --email "你的邮箱" --password-stdin
 ```
 
 凭证：`C:\mynet\conf\credential.json`（0600 等价 ACL）。

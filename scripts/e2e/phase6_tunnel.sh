@@ -41,13 +41,14 @@ A_USER="${P6_USER:-arthur}"
 B_USER="${P6_USER:-arthur}"
 MH="${P6_HOME:-/opt/mynet}"   # MYNET_HOME，绝对路径（systemd 安装后的默认位置）
 GW="${P6_GW:-wss://stage-gw.mynet.club/v1/node/connect}"
-API="${P6_API:-https://stage-api.mynet.club}"
+API="${P6_API:-}"
 
 pass=0; fail=0
 ok()  { printf '  ✓ %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  ✗ %s\n' "$1"; fail=$((fail+1)); }
 phase() { printf '\n━━━ %s ━━━\n' "$1"; }
 die() { printf '\n✗ 停在：%s\n' "$1"; printf '  已通过 %s / 失败 %s\n' "$pass" "$fail"; exit 1; }
+[ -n "$API" ] || die "需要 P6_API（staging 后端 API 地址，不落仓库）"
 
 [ -n "$A_ID" ] && [ -n "$B_ID" ] && [ -n "$A_IP" ] && [ -n "$B_IP" ] ||
   die "需要 P6_ID_A / P6_ID_B / P6_IP_A / P6_IP_B（节点 ID 与平台分配的 overlay IP）"

@@ -24,7 +24,7 @@ func seedLegacy(t *testing.T, home string) {
 	t.Helper()
 	c := filepath.Join(home, "conf")
 	writeFileT(t, filepath.Join(c, "config.json"),
-		`{"mode":"online","server_config":{"api_base_url":"https://api.mynet.club/api/v2"}}`)
+		`{"mode":"online","server_config":{"api_base_url":"https://legacy.example.invalid/api/v2"}}`)
 	writeFileT(t, filepath.Join(c, "zone.json"),
 		`{"zone_id":"3678250676883169","zone_name":"MyNet Nomadic Village"}`)
 	writeFileT(t, filepath.Join(c, "mynet.conf"),
@@ -70,7 +70,8 @@ func TestAdoptLegacyConfig_AdoptsOnline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("profile 应写入: %v", err)
 	}
-	if prof.APIBase != "https://api.mynet.club/api/v2" || prof.TenantName != "MyNet Nomadic Village" {
+	// api_base_url 不再采纳（2026-10 全面取消）：只认身份面
+	if prof.TenantName != "MyNet Nomadic Village" {
 		t.Fatalf("profile 内容错: %+v", prof)
 	}
 	// 旧文件不得被动过

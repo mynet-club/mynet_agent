@@ -14,7 +14,7 @@
 # 任一步失败立即停并说清卡在哪，不继续往下跑出一串无意义的错。
 #
 # 用法：
-#   STAGE_API=https://stage-api.mynet.club STAGE_GW=https://stage-gw.mynet.club \
+#   STAGE_API=https://<staging-back> STAGE_GW=wss://<staging-gw> \
 #     sh scripts/e2e/zero_to_one.sh
 #   加 --preflight-only 只跑 Phase 0（部署自检，不需要节点）
 #
@@ -34,7 +34,7 @@ phase(){ printf '\n━━━ %s ━━━\n' "$1"; }
 # 硬停：0→1 是一条链，前一步没成后面全是噪音
 die()  { printf '\n✗ 停在：%s\n' "$1"; printf '  已通过 %s 步 / 失败 %s 步\n' "$pass" "$fail"; exit 1; }
 
-[ -n "$API" ] || die "需要 STAGE_API（如 https://stage-api.mynet.club）"
+[ -n "$API" ] || die "需要 STAGE_API（staging 后端 API 地址，只从运维面取，不落仓库）"
 command -v curl >/dev/null 2>&1 || die "缺 curl"
 command -v python3 >/dev/null 2>&1 || die "缺 python3（用来解析 JSON，不假设装了 jq）"
 

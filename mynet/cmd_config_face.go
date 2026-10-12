@@ -66,7 +66,7 @@ type remoteTenant struct {
 
 // fetchRemoteTenants 不再直连 back（架构：请求走 WS relay）。
 // executor 是独立进程，无法走 WS —— 远程租户列表由 localapi 经 relay 补，
-// 这里只出本地缓存（profile 里的名字）。直连 api.mynet.club 会拖死首屏 30s。
+// 这里只出本地缓存（profile 里的名字）。直连云端 API 会拖死首屏 30s。
 func fetchRemoteTenants(cred *Credential) []remoteTenant {
 	return nil // 本地缓存优先；远程补名走 WS relay（localapi）
 }
@@ -331,7 +331,7 @@ func backFacePubFor(mode *domain.ModeFile) (string, string) {
 	if cred == nil || cred.Token == "" {
 		return "", "未登录：back 节点面公钥未取到 —— 登录后 mynet config keys sync 会回填"
 	}
-	pub, err := fetchBackFacePub(cloudHTTPBase())
+	pub, err := fetchBackFacePub()
 	if err != nil {
 		return "", "取 back 节点面公钥失败（" + err.Error() + "）—— 可稍后 mynet config keys sync 回填"
 	}
@@ -652,8 +652,8 @@ func configFaceIdentity() int {
 		"logged_in": false,
 	}
 	cfg := utils.LoadAgentCfg()
-	// 架构口径：客户端/浏览器只打本机 localapi，请求经 WS relay 到 back。
-	// api_base 不该是 api.mynet.club（那是 back 部署地址，诊断用 back_url）。
+	// 架构口径：客户端/浏览器只打本机 localapi，请求经 gateway 中继到 back。
+	// api_base 键放的是**本机 localapi 基址** —— 云端地址不下发、不出现在任何用户面。
 	out["api_base"] = localAPIBase()
 	out["gateway"] = cfg.Gateway
 	cred := LoadCredential()
@@ -673,7 +673,7 @@ func configFaceIdentity() int {
 
 		}
 	}
-	// ⚠️ 不直连云端补节点名（架构：请求走 WS relay；直连 api.mynet.club 违规，
+	// ⚠️ 不直连云端补节点名（架构：请求走 WS relay；直连云端 API 违规，
 	// 且网络慢会拖死 wizard/state 30s）。显示名由 localapi 经 relay 补或用本地缓存。
 	// 联网：拉租户列表补名字（本地有缓存 profile 优先，云端补显示名）
 	remote := fetchRemoteTenants(cred)
@@ -951,7 +951,6 @@ func configFacePullOnly(downloadOnly bool) int {
 	return printJSON(map[string]any{
 		"pulled":   true,
 		"node_id":  nodeID,
-		"api_base": cred.APIBaseURL,
 		"bundle":   filepath.Join(utils.VarDir(), "bundle.json"),
 		"parity":   par,
 		"message":  "已从服务端拉取并生成运行配置",

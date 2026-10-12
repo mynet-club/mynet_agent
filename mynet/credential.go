@@ -52,7 +52,6 @@ type Credential struct {
 	// 绑定的稳定设备指纹。换机复制 credential 后指纹对不上，back 应 401 并吊销。
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 	TenantID          string `json:"tenant_id,omitempty"`
-	APIBaseURL        string `json:"api_base_url,omitempty"`
 	CreatedAt         string `json:"created_at,omitempty"`
 	AuthExpiresAt     string `json:"auth_token_expires_at,omitempty"`
 	RefreshExpiresAt  string `json:"refresh_token_expires_at,omitempty"`
@@ -160,16 +159,18 @@ func newBackClientQuick(cred *Credential) *backClient {
 
 // newBackClientFor 用已存的凭证建客户端（带自动续期）。基址恒为中继出口（不碰 api_base）。
 func newBackClientFor(cred *Credential) *backClient {
-	c := newBackClient(cloudHTTPBase(), cred.Token)
+	c := newBackClient(cred.Token)
 	c.cred = cred
 	c.onRefresh = SaveCredential // 续期后立即落盘新 refresh token
 
 	return c
 }
 
-func newBackClient(baseURL, token string) *backClient {
+// newBackClient 无凭证/登录前的客户端。基址**恒为**中继出口 ——
+// 本函数不收 base 参数，就是「禁止直连 api_base」的编译期形态（2026-10-12 全面取消）。
+func newBackClient(token string) *backClient {
 	return &backClient{
-		base:  strings.TrimRight(baseURL, "/"),
+		base:  cloudHTTPBase(),
 		token: token,
 		hc:    &http.Client{Timeout: backHTTPTimeout},
 	}

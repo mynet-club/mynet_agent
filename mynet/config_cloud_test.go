@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +19,10 @@ func TestAllCloudNodesFollowsEveryPage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rows, err := allCloudNodes(newBackClient(srv.URL, "token"))
+	// 直接构造 client 打 httptest（newBackClient 基址恒为中继，不收 base）
+	rows, err := allCloudNodes(&backClient{
+		base: strings.TrimRight(srv.URL, "/"), token: "token", hc: http.DefaultClient,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

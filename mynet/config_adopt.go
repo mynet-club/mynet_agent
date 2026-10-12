@@ -72,7 +72,6 @@ func AdoptLegacyConfig(home string, dry bool) (AdoptResult, error) {
 	prof := &domain.OnlineProfile{
 		TenantID:   leg.TenantID,
 		TenantName: leg.TenantName,
-		APIBase:    leg.APIBase,
 		Gateway:    strings.TrimSpace(os.Getenv("MYNET_GATEWAYS")),
 		Driver:     driver,
 		NodeID:     leg.NodeID,
@@ -135,12 +134,12 @@ func configAdopt(dry bool) int {
 	return 0
 }
 
-// legacyConfig 旧 Lua 配置里用得到的字段（其余一律不读，尤其不读 token）。
+// legacyConfig 旧 Lua 配置里用得到的字段（其余一律不读，尤其不读 token；
+// api_base_url 也不读 —— 2026-10-12 起后端地址不下发、不落配置）。
 type legacyConfig struct {
 	Mode       string
 	TenantID   string
 	TenantName string
-	APIBase    string
 	NodeID     string
 	NodeName   string
 	Driver     string
@@ -158,14 +157,10 @@ func readLegacy(home string) *legacyConfig {
 		found = true
 		l.sources = append(l.sources, "conf/config.json")
 		var c struct {
-			Mode         string `json:"mode"`
-			ServerConfig struct {
-				APIBaseURL string `json:"api_base_url"`
-			} `json:"server_config"`
+			Mode string `json:"mode"`
 		}
 		if json.Unmarshal(raw, &c) == nil {
 			l.Mode = c.Mode
-			l.APIBase = c.ServerConfig.APIBaseURL
 		}
 	}
 

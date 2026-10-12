@@ -69,7 +69,6 @@ sudo -E /opt/mynet/bin/mynet install \
 ```bash
 export MYNET_HOME=/var/lib/mynet
 /opt/mynet/bin/mynet auth login \
-  --api https://api.mynet.club \
   --email '你的邮箱' \
   --password-stdin   # 密码从 stdin 读，不进 shell 历史
 ```

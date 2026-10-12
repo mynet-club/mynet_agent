@@ -3,7 +3,7 @@ package mynet
 // setup --local / --online —— 配置树 v2。
 //
 //	mynet setup --local  --node-id ID [--overlay CIDR] [--vpn-type gnb|wireguard]
-//	mynet setup --online --tenant T --node-id ID [--vpn-type …] [--api-base URL]
+//	mynet setup --online --tenant T --node-id ID [--vpn-type …]
 //
 // 旧 mynet.conf 单文件写盘已删除：身份进 keys/，意图进 intent.json / profile.json。
 //
@@ -37,7 +37,6 @@ func cmdSetupV2(args []string) int {
 		overlay   = ""
 		vpnType   = "gnb"
 		backPub   = ""
-		apiBase   = ""
 		nodeName  = ""
 	)
 	for i := 0; i < len(args); i++ {
@@ -87,12 +86,10 @@ func cmdSetupV2(args []string) int {
 				return 2
 			}
 			backPub = v
-		case "--api-base":
-			v, ok := need()
-			if !ok {
-				return 2
-			}
-			apiBase = v
+		case "--api-base": // 已取消（2026-10-12）：后端地址不入参，指因报错
+			// 2026-10-12 全面取消：后端地址不下发、不入参、不落配置。
+			fmt.Fprintln(os.Stderr, "--api-base 已取消：云通信统一经 gateway 中继 —— 请去掉该参数")
+			return 2
 		case "--name":
 			v, ok := need()
 			if !ok {
@@ -149,7 +146,6 @@ func cmdSetupV2(args []string) int {
 			Schema:   domain.ConfigSchemaVersion,
 			Mode:     domain.ModeOnline,
 			TenantID: tenant,
-			APIBase:  apiBase,
 			Driver:   driverType,
 			NodeID:   nodeID,
 			NodeName: nodeName,
@@ -215,7 +211,7 @@ func cmdSetupV2(args []string) int {
 
 const usageSetupV2 = `用法:
   mynet setup --local  --node-id ID [--overlay CIDR] [--vpn-type gnb|wireguard] [--name N]
-  mynet setup --online --tenant T --node-id ID [--vpn-type …] [--api-base URL]
+  mynet setup --online --tenant T --node-id ID [--vpn-type …]
 
 setup 只写 profile/intent 并激活，**不生成密钥**：
   导入私钥: mynet config keys set --private … --public … --node-id …

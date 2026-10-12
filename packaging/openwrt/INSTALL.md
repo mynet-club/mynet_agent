@@ -60,7 +60,6 @@ OpenWrt 服务走 **procd**（`mynetd` + gnb 实例）；`mynet install` 会写 
 ```sh
 export MYNET_HOME=/etc/mynet
 /usr/sbin/mynet auth login \
-  --api https://api.mynet.club \
   --email '你的邮箱' --password-stdin
 ```
 

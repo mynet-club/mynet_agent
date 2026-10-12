@@ -178,7 +178,6 @@ type OnlineProfile struct {
 	Mode       ConfigMode `json:"mode"` // 恒为 online
 	TenantID   string     `json:"tenant_id"`
 	TenantName string     `json:"tenant_name,omitempty"`
-	APIBase    string     `json:"api_base,omitempty"`
 	// Gateway 覆盖 agent.json 的默认网关；空则用全局。
 	Gateway  string        `json:"gateway,omitempty"`
 	Driver   VPNDriverType `json:"driver"`

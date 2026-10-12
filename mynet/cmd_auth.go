@@ -11,7 +11,7 @@ import (
 
 // cmdAuth — 账号态（登录/状态/登出）。
 //
-//	mynet auth login --api URL --email E [--password-stdin | --password P]
+//	mynet auth login --email E [--password-stdin | --password P]
 //	mynet auth status
 //	mynet auth logout
 //
@@ -30,7 +30,7 @@ import (
 func cmdAuth(args []string) int {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "用法: mynet auth <login|status|logout> [参数]")
-		fmt.Fprintln(os.Stderr, "  login  --api URL --email E [--password-stdin | --password P] [--tenant ID]")
+		fmt.Fprintln(os.Stderr, "  login  --email E [--password-stdin | --password P] [--tenant ID]")
 		fmt.Fprintln(os.Stderr, "  status")
 		fmt.Fprintln(os.Stderr, "  logout")
 		return 2
@@ -50,17 +50,13 @@ func cmdAuth(args []string) int {
 
 func authLogin(args []string) int {
 	// 铁律：终端**只经 gateway**（本机 mynetd 中继），不直连 api_base。
-	api, email, password, tenant := cloudHTTPBase(), "", "", ""
+	email, password, tenant := "", "", ""
 	fromStdin := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--api":
-			if i+1 >= len(args) {
-				return authUsage("--api 需要 URL")
-			}
-			i++
-			// 兼容旧命令行：不再使用；云通信统一走中继。
-			fmt.Fprintf(os.Stderr, "⚠ 忽略 --api %s：终端统一经 gateway 中继，不直连 api_base\n", args[i])
+		case "--api": // 已取消（2026-10-12）：后端地址不入参，指因报错
+			// 2026-10-12 全面取消：后端地址不下发、不入参、不落配置。
+			return authUsage("--api 已取消：终端统一经 gateway 中继 —— 请去掉该参数")
 		case "--email":
 			if i+1 >= len(args) {
 				return authUsage("--email 需要值")
@@ -104,7 +100,7 @@ func authLogin(args []string) int {
 		return authUsage("需要密码：--password-stdin（推荐，脚本可用）或 --password P")
 	}
 
-	c := newBackClient(api, "")
+	c := newBackClient("")
 	raw, code, err := c.doJSON("POST", "/api/v1/auth/login", map[string]string{
 		"email":    email,
 		"password": password,
@@ -156,7 +152,6 @@ func authLogin(args []string) int {
 		RefreshExpiresAt:  expiryFrom(env.Data.RefreshExpiresIn),
 		MachineID:         machineID(),
 		DeviceFingerprint: DeviceFingerprint(),
-		APIBaseURL:        api,
 		TenantID:          anyToStr(env.Data.TenantID),
 		CreatedAt:         nowISO(),
 	}
@@ -178,7 +173,7 @@ func authLogin(args []string) int {
 
 	// 顺手取一次 back 公钥并告诉用户 —— 向导下一步要往 mynet.conf 里写它。
 	// 取不到不致命（可由运维手工给），但要明说。
-	pub, err := fetchBackFacePub(api)
+	pub, err := fetchBackFacePub()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️ 取 back 节点面公钥失败: %v\n", err)
 		fmt.Fprintf(os.Stderr, "   后续 mynet node claim 需要它；或用 --back-pub 显式给\n")
@@ -199,21 +194,18 @@ func authStatus() int {
 			return 1
 		}
 		fmt.Println("未登录（无 credential.json 或 token 为空）")
-		fmt.Println("  登录: mynet auth login --api https://… --email you@example.com --password-stdin")
+		fmt.Println("  登录: mynet auth login --email you@example.com --password-stdin")
 		return 1
 	}
 	fmt.Printf("已登录 %s (user_id=%s tenant_id=%s)\n", c.UserEmail, c.UserID, c.TenantID)
-	fmt.Printf("  api      %s\n", c.APIBaseURL)
 	fmt.Printf("  token    %s…（%d 字符）\n", truncate(c.Token, 12), len(c.Token))
 	fmt.Printf("  文件     %s\n", credentialPath())
 
 	// 顺手探一次 back 公钥，让「向导前置是否就绪」一眼可见
-	if c.APIBaseURL != "" {
-		if pub, err := fetchBackFacePub(cloudHTTPBase()); err != nil {
-			fmt.Printf("  back 公钥  ⚠️ 取不到: %v\n", err)
-		} else {
-			fmt.Printf("  back 公钥  %s\n", pub)
-		}
+	if pub, err := fetchBackFacePub(); err != nil {
+		fmt.Printf("  back 公钥  ⚠️ 取不到: %v\n", err)
+	} else {
+		fmt.Printf("  back 公钥  %s\n", pub)
 	}
 
 	return 0
@@ -224,7 +216,7 @@ func authLogout() int {
 	// ⚠️ 必须先吊销**服务端**会话。只删本地文件的话，那条会话还活着、
 	// refresh token 还能继续换出新凭证 —— 那不叫登出，只是忘了。
 	if cred != nil && cred.RefreshToken != "" {
-		c := newBackClient(cloudHTTPBase(), cred.Token)
+		c := newBackClient(cred.Token)
 		if _, code, err := c.doJSON("POST", "/api/v1/auth/revoke-session", map[string]string{
 			"refresh_token": cred.RefreshToken,
 		}); err != nil {
@@ -252,7 +244,7 @@ func expiryFrom(seconds int) string {
 }
 
 func authUsage(msg string) int {
-	fmt.Fprintln(os.Stderr, "用法: mynet auth login --api URL --email E [--password-stdin | --password P] [--tenant ID]")
+	fmt.Fprintln(os.Stderr, "用法: mynet auth login --email E [--password-stdin | --password P] [--tenant ID]")
 	if msg != "" {
 		fmt.Fprintln(os.Stderr, "     ", msg)
 	}
@@ -261,8 +253,8 @@ func authUsage(msg string) int {
 
 // fetchBackFacePub 取 back 的**节点面公钥**（公开端点，见 mynet_back 的
 // GET /api/v1/system/back-face-key）。没有它就没法往 mynet.conf 写 BACK_PUB_HEX。
-func fetchBackFacePub(apiBase string) (string, error) {
-	c := newBackClient(apiBase, "")
+func fetchBackFacePub() (string, error) {
+	c := newBackClient("")
 	var data struct {
 		PublicKeyHex string `json:"public_key_hex"`
 		Algorithm    string `json:"algorithm"`

@@ -12,8 +12,6 @@ import (
 
 // AgentCfg conf/agent.json
 type AgentCfg struct {
-	// APIBase 业务 API（登录/拉节点/拉 bundle）。默认 https://gw.mynet.club
-	APIBase string `json:"api_base,omitempty"`
 	// Gateway 节点面 WS 网关。默认 wss://gw.mynet.club
 	Gateway string `json:"gateway,omitempty"`
 	// AutoRestoreTunnel mynetd 启动时按上次状态拉起 gnb|wg
@@ -23,10 +21,7 @@ type AgentCfg struct {
 // 默认端点（产品约定 gw.mynet.club）。
 // ⚠️ Gateway 是 **WS 拨号 URL**，必须带路径 `/v1/node/connect` ——
 // 裸 `wss://gw.mynet.club` 打到 nginx 根会 404（183 实测）。
-const (
-	DefaultAPIBase = "https://api.mynet.club"
-	DefaultGateway = "wss://gw.mynet.club/v1/node/connect"
-)
+const DefaultGateway = "wss://gw.mynet.club/v1/node/connect"
 
 // NormalizeGatewayURL 保证 WS 网关带 `/v1/node/connect`。
 //
@@ -56,7 +51,7 @@ func AgentConfigPath() string {
 
 // LoadAgentCfg 读配置；缺文件/缺字段时补默认。
 func LoadAgentCfg() AgentCfg {
-	c := AgentCfg{APIBase: DefaultAPIBase, Gateway: DefaultGateway}
+	c := AgentCfg{Gateway: DefaultGateway}
 	raw, err := os.ReadFile(AgentConfigPath())
 	if err != nil {
 		return c
@@ -64,9 +59,6 @@ func LoadAgentCfg() AgentCfg {
 	var j AgentCfg
 	if err := json.Unmarshal(raw, &j); err != nil {
 		return c
-	}
-	if j.APIBase != "" {
-		c.APIBase = j.APIBase
 	}
 	if j.Gateway != "" {
 		c.Gateway = NormalizeGatewayURL(j.Gateway)

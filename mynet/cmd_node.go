@@ -225,7 +225,7 @@ func nodeClaim(args []string) int {
 	// 1) back 的节点面公钥（写 mynet.conf 的 BACK_PUB_HEX）。
 	//    公开端点，向导/装机都靠它；取不到时才允许 --back-pub 显式给。
 	if backPub == "" {
-		pub, err := fetchBackFacePub(cloudHTTPBase())
+		pub, err := fetchBackFacePub()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "取 back 节点面公钥失败: %v\n", err)
 			fmt.Fprintln(os.Stderr, "  用 --back-pub <hex> 显式指定（运维可从服务器上的 back_face_pub 读）")
@@ -376,7 +376,7 @@ func requireCred() *Credential {
 	cred := LoadCredential()
 	if cred == nil {
 		fmt.Fprintln(os.Stderr, "未登录。先跑:")
-		fmt.Fprintln(os.Stderr, "  mynet auth login --api https://… --email you@example.com --password-stdin")
+		fmt.Fprintln(os.Stderr, "  mynet auth login --email you@example.com --password-stdin")
 		os.Exit(1)
 	}
 
