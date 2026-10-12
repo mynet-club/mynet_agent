@@ -206,8 +206,13 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 
 	if snap.Capabilities["nft"] {
 		cmds := []routeCmd{
-			// 表由 proxyIPSetCmds（第 1 步）建；这里再兜一次，已存在即跳过。
+			// 表/集合由 proxyIPSetCmds（第 1 步）建；这里再兜一次，已存在即跳过。
+			// ⚠️ 集合必须兜：打标规则**无条件**引用 @mynet_proxy，没有列表文件时
+			// IPSetSetCmds 不建集合 → add rule 失败、apply 整条废掉
+			// （2026-10-12 .178 首装实证）。空集 = 无命中，是合法状态。
 			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
+			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "mynet_proxy",
+				"{ type ipv4_addr; flags interval; }"}, optional: true},
 			// ⚠️ **只挂 PREROUTING**（转发流量 = LAN 客户端）。**不挂 OUTPUT**：
 			// Linux（含 OpenWrt）下本地发出包的 FIB 查找发生在 OUTPUT hook **之前**，
 			// OUTPUT 里 `meta mark set` 改不了这一包的路由 —— 「代理由口机自身」既违铁律
@@ -233,6 +238,8 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 	}
 
 	if snap.Capabilities["iptables"] {
+		// 集合同理兜一次（见 nft 分支注释）：--match-set 引用不存在的集合会整条失败
+		cmds := []routeCmd{{argv: []string{"ipset", "create", "mynet_proxy", "hash:net", "-exist"}}}
 		setMatch := []string{"-m", "set", "--match-set", "mynet_proxy", "dst"}
 		jump := []string{"-j", "MARK", "--set-mark", fwHex}
 		var neg []string
@@ -243,7 +250,7 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 		argv = append(argv, neg...)
 		argv = append(argv, setMatch...)
 		argv = append(argv, jump...)
-		return []routeCmd{{argv: argv}}
+		return append(cmds, routeCmd{argv: argv})
 	}
 	return nil
 }
