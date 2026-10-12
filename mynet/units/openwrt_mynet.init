@@ -2,9 +2,13 @@
 # mynet — 隧道服务（procd 托管，E-1）· 双驱动 gnb | wireguard
 # 由 `mynet install` 写入 /etc/init.d/mynet（OpenWrt 分支）。
 #
-# 驱动分支由 mynet.conf 的 VPN_TYPE 决定（gnb | wireguard）：
+# 驱动分支自动判定（driver/gnb/conf 存在 → gnb；driver/wireguard → wireguard）：
 #   gnb       — 常驻进程，procd instance + respawn（E-1）
 #   wireguard — 内核接口，无守护进程；start 装接口，stop 拆接口
+#
+# ⚠️ **不读旧扁平 conf/mynet.conf**：v2 起 agent 全 JSON（conf/ 是意图、var/ 是状态），
+#    只有 gnb 驱动读它自己的 driver/gnb/conf/<id>/node.conf。init 需要的东西
+#    全部可从这三处推出（见 load_config）—— 旧扁平 conf 是 Lua 时代残留，已退役。
 #
 # 路由唯一写入者仍是 `mynet apply`（route-apply-unification）。
 # 安全红线：不按名字杀进程。
@@ -12,7 +16,8 @@ USE_PROCD=1
 START=99
 STOP=10
 
-CONFIG_FILE="${MYNET_CONFIG_FILE:-/etc/mynet/conf/mynet.conf}"
+# 可选覆盖（过渡/调试）；**不存在也能跑**
+CONFIG_FILE="${MYNET_CONFIG_FILE:-}"
 MYNET_HOME="${MYNET_HOME:-/etc/mynet}"
 
 log() { logger -t mynet "$*"; echo "[MyNet] $*"; }
@@ -38,24 +43,61 @@ bundle_tun_device() {
 	return 0
 }
 
+# 驱动原生 conf 目录（gnb：driver/gnb/conf/<nodeId>/）。
+gnb_confdir() {
+	ls -d "$MYNET_HOME"/driver/gnb/conf/*/ 2>/dev/null | head -1
+}
+
+# 从驱动自己的 node.conf 取接口名 —— gnb 读 .conf 是它的方言，不属"agent 读 conf"。
+driver_ifname() {
+	local d
+	d=$(gnb_confdir)
+	[ -n "$d" ] || return 0
+	sed -n 's/^ifname[[:space:]][[:space:]]*//p' "$d/node.conf" 2>/dev/null | head -1
+}
+
+# 从驱动 conf 目录名取 nodeId（与 agent 的 driver/gnb/conf/<nodeId> 同构）。
+driver_nodeid() {
+	local d
+	d=$(gnb_confdir)
+	[ -n "$d" ] || return 0
+	basename "${d%/}"
+}
+
 load_config() {
-	[ -f "$CONFIG_FILE" ] || { log "ERROR: Config not found: $CONFIG_FILE"; return 1; }
-	. "$CONFIG_FILE"
-	VPN_TYPE="${MYNET_VPN_TYPE:-${VPN_TYPE:-gnb}}"
-	VPN_INTERFACE="${MYNET_VPN_INTERFACE:-${VPN_INTERFACE:-}}"
+	# 可选覆盖文件（过渡用）；没有也能跑
+	if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+		. "$CONFIG_FILE"
+	fi
+
+	# VPN_TYPE：env > 覆盖文件 > 按驱动目录自动判定（无兜底默认名，只有"哪个驱动在"）
+	VPN_TYPE="${MYNET_VPN_TYPE:-${VPN_TYPE:-}}"
+	if [ -z "$VPN_TYPE" ]; then
+		if [ -d "$MYNET_HOME/driver/gnb/conf" ]; then
+			VPN_TYPE=gnb
+		elif [ -d "$MYNET_HOME/driver/wireguard" ]; then
+			VPN_TYPE=wireguard
+		else
+			log "ERROR: 找不到驱动配置目录（$MYNET_HOME/driver/{gnb/conf,wireguard}）—— 先同步配置或装 gnb"
+			return 1
+		fi
+	fi
 	case "$VPN_TYPE" in
 		gnb|wireguard|wg) ;;
 		*) log "ERROR: unknown VPN_TYPE=$VPN_TYPE (want gnb|wireguard)"; return 1 ;;
 	esac
 	# wg 旧名归一
 	[ "$VPN_TYPE" = "wg" ] && VPN_TYPE=wireguard
-	# 接口名：显式配置 > bundle 权威 > 报错。**不给兜底默认名**（gnb_tun / wg0 都不行）：
-	# 名字决定流量进哪条隧道，一台主机多个 zone 共存时（现网网关 182）兜底出来的
-	# 恰好是别人的接口，而 ip link / wg-quick / uci 只要名字可用就执行成功、不报错 ——
-	# 症状变成「服务起来了、防火墙绑错口」，比启动失败难查得多。
+
+	# 接口名：显式配置 > bundle 权威 > 驱动自己的 node.conf。**不给通用兜底默认名**
+	# （gnb_tun / wg0 都不行）：名字决定流量进哪条隧道，一台主机多个 zone 共存时
+	# 兜底出来的恰好是别人的接口，而 ip link / wg-quick / uci 只要名字可用就执行成功、
+	# 不报错 —— 症状变成「服务起来了、防火墙绑错口」，比启动失败难查得多。
+	VPN_INTERFACE="${MYNET_VPN_INTERFACE:-${VPN_INTERFACE:-}}"
 	[ -n "$VPN_INTERFACE" ] || VPN_INTERFACE=$(bundle_tun_device) || return 1
+	[ -n "$VPN_INTERFACE" ] || [ "$VPN_TYPE" != "gnb" ] || VPN_INTERFACE=$(driver_ifname)
 	[ -n "$VPN_INTERFACE" ] || {
-		log "ERROR: VPN_INTERFACE 未配置，bundle 里也没有接口名（先同步配置，或在 $CONFIG_FILE 设 MYNET_VPN_INTERFACE）"
+		log "ERROR: VPN_INTERFACE 取不到（bundle 里没有、驱动 node.conf 也没有）—— 先同步配置"
 		return 1
 	}
 	# OS 路由 SSOT = bundle.network.routes，由 `mynet apply --auto` 唯一写入；
@@ -65,7 +107,11 @@ load_config() {
 
 get_node_id_from_conf() {
 	if [ -n "$NODE_ID" ]; then echo "$NODE_ID"; return; fi
-	sed -n 's/^NODE_ID=//p' "$CONFIG_FILE" 2>/dev/null | head -1
+	if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+		sed -n 's/^NODE_ID=//p' "$CONFIG_FILE" 2>/dev/null | head -1
+		return
+	fi
+	driver_nodeid
 }
 
 # procd 是异步拉起：gnb 起来到 tun 出现之间有几百 ms~几秒的窗口。
