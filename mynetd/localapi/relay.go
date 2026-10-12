@@ -1,11 +1,9 @@
 package localapi
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -40,7 +38,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 	if gw == "" {
 		writeJSON(w, 502, map[string]any{
 			"success": false,
-			"message": "未配置 MYNET_GATEWAYS —— 平台面需要 gateway 中继",
+			"message": "网关未配置 —— $MYNET_GATEWAYS / conf/gateways.json / conf/agent.json.gateway 三处均无；平台面需要 gateway 中继",
 		})
 		return
 	}
@@ -100,22 +98,22 @@ const relayTimeout = 30 * time.Second // 与 gateway 侧一致
 
 // firstGateway 返回 gateway **relay 基址**（形如 https://gw.mynet.club，无尾斜杠、无路径）。
 //
+// 网关来源走 utils.ExplicitGateways（env → conf/gateways.json → agent.json 显式值），
+// 只认显式配置：没配就是 502 指因，不吃 LoadAgentCfg 的代码默认。
+// ⚠️ 不许在这里各自 os.Getenv —— 曾只读 env+agent.json 漏掉 gateways.json，
+// .178 登录中继 502（2026-10-12 实测）。
+//
 // MYNET_GATEWAYS / agent.json 是 WS 拨号 URL（wss://host/v1/node/connect）。
 // relay 是同主机的 HTTPS 面，挂在 **根路径** `/v1/relay`（gateway/server.go），
 // 不能把 WS 路径原样拼上去 —— 否则打到
 // `https://gw.mynet.club/v1/node/connect/v1/relay`，gateway 返回 Go 默认 404。
 // 与 cmd/mynetd/backclient.go 的 newBackClient 同一推导：scheme 映射 + 只取 Host。
 func firstGateway() string {
-	gw := os.Getenv("MYNET_GATEWAYS")
-	if gw == "" {
-		// launchd/桌面安装不一定注入 MYNET_GATEWAYS：回退 agent.json 里**显式**的 gateway。
-		// 不用 LoadAgentCfg 的代码默认值 —— 那是 WS 拨号默认；relay 要的是「本机确实配了网关」。
-		gw = agentGatewayExplicit()
-	}
-	if gw == "" {
+	list, _, ok := utils.ExplicitGateways()
+	if !ok || len(list) == 0 {
 		return ""
 	}
-	return wsToRelayBase(strings.Split(gw, ",")[0])
+	return wsToRelayBase(list[0])
 }
 
 // wsToRelayBase 把 WS/HTTP 网关 URL 归一成 relay 基址 `scheme://host`。
@@ -139,19 +137,4 @@ func wsToRelayBase(raw string) string {
 		return ""
 	}
 	return scheme + "://" + u.Host
-}
-
-// agentGatewayExplicit 只读 agent.json 文件里写明的 gateway，不读代码默认。
-func agentGatewayExplicit() string {
-	b, err := os.ReadFile(utils.AgentConfigPath())
-	if err != nil {
-		return ""
-	}
-	var j struct {
-		Gateway string `json:"gateway"`
-	}
-	if err := json.Unmarshal(b, &j); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(j.Gateway)
 }

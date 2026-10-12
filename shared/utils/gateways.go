@@ -18,29 +18,61 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
+
+// ExplicitGateways 只认**显式配置**（env → gateways.json → agent.json 显式值），
+// 不吃 LoadAgentCfg 的代码默认 —— relay/wizard 这类要「没配就 502 指因」的调用方用它。
+// ⚠️ 各调用方必须走本函数或 ResolveGateways，禁止各自 os.Getenv ——
+// relay 曾只读 env+agent.json 漏掉 gateways.json，登录中继 502（2026-10-12 .178 实测）。
+func ExplicitGateways() (list []string, source string, ok bool) {
+	// 1. 环境变量（调试/一次性覆盖）
+	if v := os.Getenv("MYNET_GATEWAYS"); v != "" {
+		return splitGateways(v), "env", true
+	}
+	// 2. conf/gateways.json（配置面）
+	if g := gatewaysFromJSON(GatewaysFile()); len(g) > 0 {
+		return g, "gateways.json", true
+	}
+	// 3. conf/agent.json 显式 gateway（不是代码默认）
+	if g := agentGatewayExplicit(); g != "" {
+		return []string{NormalizeGatewayURL(g)}, "agent.json", true
+	}
+	return nil, "empty", false
+}
 
 // ResolveGateways 解析网关列表（已 Normalize）。
 // 返回 (list, source, err)。source: env | gateways.json | agent.json | empty。
 func ResolveGateways() (list []string, source string, err error) {
-	// 1. 环境变量（调试/一次性覆盖）
-	if v := os.Getenv("MYNET_GATEWAYS"); v != "" {
-		return splitGateways(v), "env", nil
+	if list, src, ok := ExplicitGateways(); ok {
+		return list, src, nil
 	}
-	// 2. conf/gateways.json（配置面）
-	if g := gatewaysFromJSON(GatewaysFile()); len(g) > 0 {
-		return g, "gateways.json", nil
-	}
-	// 3. conf/agent.json
+	// 4. 产品默认（LoadAgentCfg 无文件时补 DefaultGateway）—— 心跳/WS 允许走默认。
 	if g := LoadAgentCfg().Gateway; g != "" {
 		return []string{NormalizeGatewayURL(g)}, "agent.json", nil
 	}
-	// 4. 都没有
+	// 5. 都没有
 	return nil, "empty", fmt.Errorf(
 		"网关未配置且无回退 —— 心跳/WS/拉 bundle 都不会启动；"+
 			"请 export MYNET_GATEWAYS=wss://gw.mynet.club/v1/node/connect，"+
 			"或写入 %s（JSON 字符串数组），或配置 conf/agent.json 的 gateway", GatewaysFile())
+}
+
+// agentGatewayExplicit 只读 agent.json 文件里写明的 gateway，不读代码默认。
+// 用 confDir()（不建目录）：纯解析不该有副作用。
+func agentGatewayExplicit() string {
+	b, err := os.ReadFile(filepath.Join(confDir(), "agent.json"))
+	if err != nil {
+		return ""
+	}
+	var j struct {
+		Gateway string `json:"gateway"`
+	}
+	if err := json.Unmarshal(b, &j); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(j.Gateway)
 }
 
 // RequireGateways 节点模式必须能解析出网关；否则指因退出。

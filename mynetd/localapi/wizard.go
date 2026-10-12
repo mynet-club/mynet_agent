@@ -16,14 +16,13 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet"
-	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // relayToBack 经 gateway /v1/relay 打 back 路径（本机 WebUI 的唯一出网方式）。
 func relayToBack(ctx context.Context, method, backPath string, body []byte) ([]byte, int, error) {
 	gw := firstGateway()
 	if gw == "" {
-		return nil, 0, fmt.Errorf("未配置 MYNET_GATEWAYS，无法中继到 back")
+		return nil, 0, fmt.Errorf("网关未配置（$MYNET_GATEWAYS / conf/gateways.json / conf/agent.json.gateway 均无），无法中继到 back")
 	}
 	target := strings.TrimRight(gw, "/") + "/v1/relay?path=" + url.QueryEscape(backPath)
 	var rd io.Reader
@@ -125,8 +124,7 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
-		// 旧字段忽略：本机页不填 API
-		APIBaseURL string `json:"api_base_url"`
+		// 旧字段 api_base_url 已取消：后端地址不下发、不入参（未知键静默忽略）。
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "bad json"})
@@ -183,10 +181,6 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 会话落盘（0600）：token 不回浏览器
-	apiBase := utils.LoadAgentCfg().APIBase
-	if apiBase == "" {
-		apiBase = utils.DefaultAPIBase
-	}
 	cred := &mynet.Credential{
 		UserID:            anyToStrSafe(env.Data.User.UserID),
 		UserEmail:         env.Data.User.Email,
@@ -195,7 +189,6 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 		AuthExpiresAt:     expiryFromSecs(env.Data.AuthTokenExpiresIn),
 		RefreshExpiresAt:  expiryFromSecs(env.Data.RefreshExpiresIn),
 		TenantID:          anyToStrSafe(env.Data.TenantID),
-		APIBaseURL:        apiBase,
 		MachineID:         machineName(),
 		DeviceFingerprint: mynet.DeviceFingerprint(),
 		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
@@ -271,7 +264,6 @@ func (s *Server) handleWizardState(w http.ResponseWriter, r *http.Request) {
 		var c map[string]any
 		if json.Unmarshal(b, &c) == nil {
 			st["user_email"] = c["user_email"]
-			st["api_base_url"] = c["api_base_url"]
 			st["auth_token_expires_at"] = c["auth_token_expires_at"]
 			st["refresh_token_expires_at"] = c["refresh_token_expires_at"]
 		}

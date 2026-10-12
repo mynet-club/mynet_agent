@@ -91,6 +91,27 @@ func TestResolveGatewaysEmptyMustError(t *testing.T) {
 	}
 }
 
+// 显式解析（relay/wizard 用）：三处都没配 → ok=false，绝不落代码默认。
+func TestExplicitGatewaysNoDefaultFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_GATEWAYS", "")
+	if _, _, ok := ExplicitGateways(); ok {
+		t.Fatal("完全未配置时 ExplicitGateways 必须 ok=false（不吃 DefaultGateway）")
+	}
+	// agent.json 没有 gateway 字段同样算未配
+	if err := os.MkdirAll(filepath.Join(home, "conf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "conf", "agent.json"),
+		[]byte(`{"auto_restore_tunnel":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := ExplicitGateways(); ok {
+		t.Fatal("agent.json 无 gateway 字段时 ExplicitGateways 必须 ok=false")
+	}
+}
+
 // 单个字符串也吃（不是数组）。
 func TestGatewaysFromJSONSingleString(t *testing.T) {
 	dir := t.TempDir()

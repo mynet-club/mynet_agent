@@ -73,7 +73,7 @@ func TestWizardLoginSanitizesOutput(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	rec := wizardReq(t, s, http.MethodPost, "/api/v1/wizard/login", `{
-		"api_base_url":"https://api.mynet.club","email":"a@b.c","password":"pw"
+		"api_base_url":"https://legacy.example.invalid","email":"a@b.c","password":"pw"
 	}`)
 	body := rec.Body.String()
 	if strings.Contains(body, strings.Repeat("A", 40)) {
@@ -134,7 +134,7 @@ func TestWizardStateReflectsDiskNotMemory(t *testing.T) {
 
 	// 写出凭证与节点身份 → 状态要跟着变
 	mustMkdirWrite(t, filepath.Join(home, "conf", "credential.json"),
-		`{"user_email":"a@b.c","token":"x","refresh_token":"y","api_base_url":"https://api.mynet.club"}`)
+		`{"user_email":"a@b.c","token":"x","refresh_token":"y","api_base_url":"https://legacy.example.invalid"}`)
 	mustMkdirWrite(t, filepath.Join(home, "conf", "mynet.conf"),
 		"NODE_ID=123\nNODE_PRIV_HEX=ab\nNODE_PUB_HEX=cd\nBACK_PUB_HEX=ef\n")
 	mustMkdirWrite(t, filepath.Join(home, "var", "bundle.json"), `{"generation":"g1"}`)
@@ -249,9 +249,11 @@ func TestRelayRequiresPath(t *testing.T) {
 	}
 }
 
-// 未配 MYNET_GATEWAYS 时要明确 502，而不是悄悄空转。
+// 未配网关时要明确 502，而不是悄悄空转。
+// MYNET_HOME 隔离到空目录：否则开发机上真实 conf/gateways.json 会让用例假红/假绿。
 func TestRelayWithoutGatewayIs502(t *testing.T) {
-	os.Unsetenv("MYNET_GATEWAYS")
+	t.Setenv("MYNET_GATEWAYS", "")
+	t.Setenv("MYNET_HOME", t.TempDir())
 	s := NewServer(Config{Token: "t"})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/api/v1/relay?path=/api/v1/nodes", nil)
