@@ -949,11 +949,11 @@ func configFacePullOnly(downloadOnly bool) int {
 	local, _, _ := LoadNodeConfKV()
 	par := CheckGNBParity(local, nil)
 	return printJSON(map[string]any{
-		"pulled":   true,
-		"node_id":  nodeID,
-		"bundle":   filepath.Join(utils.VarDir(), "bundle.json"),
-		"parity":   par,
-		"message":  "已从服务端拉取并生成运行配置",
+		"pulled":  true,
+		"node_id": nodeID,
+		"bundle":  filepath.Join(utils.VarDir(), "bundle.json"),
+		"parity":  par,
+		"message": "已从服务端拉取并生成运行配置",
 	})
 }
 
