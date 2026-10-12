@@ -2,6 +2,7 @@ package mynet
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -265,6 +266,29 @@ func writeEnvFile(path, home, gateways, binDir string) error {
 		"MYNET_BIN=" + filepath.Join(binDir, "mynet") + "\n"
 
 	return os.WriteFile(path, []byte(body), 0o600)
+}
+
+// writeGatewaysFile 写 `$HOME/conf/gateways.json` —— 网关列表的**配置面**
+// （原 mynetd.env 的 MYNET_GATEWAYS，2026-10-12 裁定归 conf/）。
+//
+// 为什么不是 env 文件：env 只留给「服务单元必须在进程起来前给出」的 MYNET_HOME；
+// gateways 是进程自己读得到的，属 conf/（spec/paths.md §2.1）。
+func writeGatewaysFile(home, gateways string) error {
+	confDir := filepath.Join(home, "conf")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		return err
+	}
+	list := []string{}
+	for _, g := range strings.Split(gateways, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			list = append(list, g)
+		}
+	}
+	body, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(confDir, "gateways.json"), append(body, '\n'), 0o644)
 }
 
 func copyFile(src, dst string, perm os.FileMode) error {

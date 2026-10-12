@@ -42,7 +42,7 @@ Type=simple
 # MYNET_HOME 由环境文件提供；ExecStart 里用 ${MYNET_HOME} 展开
 # （systemd 支持 EnvironmentFile 里的变量展开，但**第一个 token 必须是绝对路径**，
 #  所以 gnb 的位置不能写成变量）
-EnvironmentFile=-/etc/mynet/mynetd.env
+Environment=MYNET_HOME=__MYNET_HOME__
 ExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/var/gnb
 
 # 数据面不能有单点：gnb 挂了必须自动拉起，否则节点「进程都在、网络没了」

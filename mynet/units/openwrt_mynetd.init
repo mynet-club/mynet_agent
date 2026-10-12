@@ -16,13 +16,13 @@ start_service() {
 	# 前一次整份**替换**掉 —— 实测分两次调用时进程只剩最后一项（MYNET_EXECUTOR），
 	# MYNET_HOME / MYNET_GATEWAYS 全丢，于是 mynetd 与经执行器委派的 `mynet config`
 	# 都按 exe 目录推 home（得到 /usr/sbin/...），拉 bundle/心跳/身份查询全错位。
-	_env="MYNET_EXECUTOR=lua"
-	[ -f /etc/mynet/mynetd.env ] && _env="$_env $(grep -v '^#' /etc/mynet/mynetd.env | xargs)"
-	procd_set_param env $_env
+	#
+	# MYNET_HOME 由 install 写进本行（不再有 mynetd.env —— 见 spec/paths.md §2.1）；
+	# 网关列表归 $MYNET_HOME/conf/gateways.json，由 mynetd 自己读。
+	procd_set_param env MYNET_EXECUTOR=lua MYNET_HOME=__MYNET_HOME__
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	procd_set_param file /etc/mynet/conf/mynet.conf
 	procd_close_instance
 }
 

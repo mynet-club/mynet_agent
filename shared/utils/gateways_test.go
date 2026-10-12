@@ -23,23 +23,26 @@ func TestResolveGatewaysEnv(t *testing.T) {
 	}
 }
 
-func TestResolveGatewaysEnvFile(t *testing.T) {
+// 2026-10-12：网关列表从 mynetd.env 改到 conf/gateways.json（JSON 数组）。
+func TestResolveGatewaysFromJSON(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MYNET_HOME", home)
 	t.Setenv("MYNET_GATEWAYS", "")
-	// MYNET_GATEWAYS 空串视为未设？Getenv 返回 "" 即走回退
-	envFile := filepath.Join(home, "mynetd.env")
-	if err := os.WriteFile(envFile, []byte("MYNET_HOME="+home+"\nMYNET_GATEWAYS=wss://file-gw.example.com\n"), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "conf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("[" + "\n" + `  "wss://gw1.example.com",` + "\n" + `  "wss://gw2.example.com"` + "\n" + "]\n")
+	if err := os.WriteFile(filepath.Join(home, "conf", "gateways.json"), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	list, src, err := ResolveGateways()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src != "mynetd.env" {
+	if src != "gateways.json" {
 		t.Fatalf("src=%s", src)
 	}
-	if len(list) != 1 {
+	if len(list) != 2 {
 		t.Fatalf("list=%v", list)
 	}
 }
@@ -88,13 +91,15 @@ func TestResolveGatewaysEmptyMustError(t *testing.T) {
 	}
 }
 
-func TestGatewaysFromEnvFileQuoted(t *testing.T) {
+// 单个字符串也吃（不是数组）。
+func TestGatewaysFromJSONSingleString(t *testing.T) {
 	dir := t.TempDir()
-	p := filepath.Join(dir, "mynetd.env")
-	if err := os.WriteFile(p, []byte(`MYNET_GATEWAYS="wss://q.example.com"`), 0o600); err != nil {
+	p := filepath.Join(dir, "gateways.json")
+	if err := os.WriteFile(p, []byte(`"wss://q.example.com/v1/node/connect"`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if v := gatewaysFromEnvFile(p); v != "wss://q.example.com" {
-		t.Fatalf("v=%q", v)
+	got := gatewaysFromJSON(p)
+	if len(got) != 1 || got[0] != "wss://q.example.com/v1/node/connect" {
+		t.Fatalf("got=%v", got)
 	}
 }

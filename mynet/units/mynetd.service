@@ -21,9 +21,10 @@
 # `-console`（D-8/D-12）无 WS、无节点身份、不碰驱动，**非 root 可跑**，
 # 是桌面/GUI 场景。本单元是节点模式专用。
 #
-# ── 配置走 EnvironmentFile，不进 unit ───────────────────────────
-# 部署值随环境变（MYNET_HOME 路径、gateway 地址），unit 保持通用。
-# 见同目录 mynetd.env.example。
+# ── MYNET_HOME 由 install 写入本行（不再有 mynetd.env）─────────────────
+# 为什么 home 必须在 unit 而不是 conf/：服务管理器要在**进程起来之前**设好它，
+# 而 conf/ 得先知道 home 才找得到 —— 鸡生蛋。其余运行参数（网关列表）归
+# $MYNET_HOME/conf/gateways.json，由进程自己读（spec/paths.md §2.1）。
 
 [Unit]
 Description=MyNet node daemon (bundle sync + heartbeat + tunnel lifecycle)
@@ -33,7 +34,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/mynet/mynetd.env
+Environment=MYNET_HOME=__MYNET_HOME__
 ExecStart=/opt/mynet/bin/mynetd -listen 127.0.0.1:8096
 
 # 收到 SIGTERM 后优雅退出：main.go 的 defer cancel() 会收尾 WS 与 localapi。

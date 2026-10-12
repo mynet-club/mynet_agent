@@ -1,49 +1,36 @@
 package utils
 
-// 网关解析 —— U3 / core-remediation-plan 主线④。
+// 网关解析 —— U3 / core-remediation-plan 主线④，2026-10-12 改配置面。
 //
 // 问题：心跳/WS/自动拉 bundle **只认 MYNET_GATEWAYS 环境变量**，无回退 →
 // systemd/launchd 没写 env 时「静默不启动」（session-pitfalls #16）。
 //
-// 回退链（spec/paths.md §2）：
-//   1. $MYNET_GATEWAYS          显式覆盖（逗号分隔多个）
-//   2. $MYNET_HOME/mynetd.env   服务单元加载的 env 文件
-//   3. conf/agent.json.gateway  机器级配置
+// 回退链（spec/paths.md §2.1）：
+//   1. $MYNET_GATEWAYS           显式覆盖（逗号分隔多个）
+//   2. conf/gateways.json        配置面（install/迁移写入；JSON 字符串数组）
+//   3. conf/agent.json.gateway   机器级配置
 //   4. 都没有 → 返回空 + 明确错误（调用方必须指因，禁止静默）
 //
-// 对称缺口：proxy 回写已回退读 agent.json，心跳/WS 此前不回退 —— 本函数统一。
+// ⚠️ `mynetd.env` 已退役（2026-10-12 裁定）：它是"两代同名配置"里的旧一代，
+// 不留读取 shim —— 迁移时由 install 把网关写进 conf/gateways.json。
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
-// GatewaysEnvFile 服务 env 文件路径（install 写入）。
-func GatewaysEnvFile() string {
-	return filepath.Join(GetMyNetHome(), "mynetd.env")
-}
-
 // ResolveGateways 解析网关列表（已 Normalize）。
-// 返回 (list, source, err)。source: env | mynetd.env | agent.json | empty。
+// 返回 (list, source, err)。source: env | gateways.json | agent.json | empty。
 func ResolveGateways() (list []string, source string, err error) {
-	// 1. 环境变量
+	// 1. 环境变量（调试/一次性覆盖）
 	if v := os.Getenv("MYNET_GATEWAYS"); v != "" {
 		return splitGateways(v), "env", nil
 	}
-	// 2. mynetd.env（MYNET_HOME 下）
-	if v := gatewaysFromEnvFile(GatewaysEnvFile()); v != "" {
-		return splitGateways(v), "mynetd.env", nil
-	}
-	// 2b. 平台服务 env 常见位（未设 MYNET_HOME 时）
-	for _, p := range []string{
-		"/etc/mynet/mynetd.env",
-		"/etc/mynetd.env",
-	} {
-		if v := gatewaysFromEnvFile(p); v != "" {
-			return splitGateways(v), p, nil
-		}
+	// 2. conf/gateways.json（配置面）
+	if g := gatewaysFromJSON(GatewaysFile()); len(g) > 0 {
+		return g, "gateways.json", nil
 	}
 	// 3. conf/agent.json
 	if g := LoadAgentCfg().Gateway; g != "" {
@@ -51,9 +38,9 @@ func ResolveGateways() (list []string, source string, err error) {
 	}
 	// 4. 都没有
 	return nil, "empty", fmt.Errorf(
-		"MYNET_GATEWAYS 未配置且无回退 —— 心跳/WS/拉 bundle 都不会启动；"+
+		"网关未配置且无回退 —— 心跳/WS/拉 bundle 都不会启动；"+
 			"请 export MYNET_GATEWAYS=wss://gw.mynet.club/v1/node/connect，"+
-			"或写入 %s，或配置 conf/agent.json 的 gateway", GatewaysEnvFile())
+			"或写入 %s（JSON 字符串数组），或配置 conf/agent.json 的 gateway", GatewaysFile())
 }
 
 // RequireGateways 节点模式必须能解析出网关；否则指因退出。
@@ -80,23 +67,27 @@ func splitGateways(v string) []string {
 	return out
 }
 
-// gatewaysFromEnvFile 读 MYNET_GATEWAYS=... 行。
-func gatewaysFromEnvFile(path string) string {
+// gatewaysFromJSON 读 conf/gateways.json：JSON 字符串数组（也吃单个字符串）。
+func gatewaysFromJSON(path string) []string {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return nil
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	var list []string
+	if json.Unmarshal(b, &list) == nil {
+		var out []string
+		for _, g := range list {
+			if g = strings.TrimSpace(g); g != "" {
+				out = append(out, NormalizeGatewayURL(g))
+			}
 		}
-		if !strings.HasPrefix(line, "MYNET_GATEWAYS=") {
-			continue
-		}
-		v := strings.TrimPrefix(line, "MYNET_GATEWAYS=")
-		v = strings.Trim(v, `"'`)
-		return v
+		return out
 	}
-	return ""
+	var one string
+	if json.Unmarshal(b, &one) == nil {
+		if one = strings.TrimSpace(one); one != "" {
+			return []string{NormalizeGatewayURL(one)}
+		}
+	}
+	return nil
 }

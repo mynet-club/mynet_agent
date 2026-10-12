@@ -54,7 +54,6 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 	// OpenWrt 惯例：二进制在 sbin（由 ipk 装好）
 	binDir := filepath.Join(prefix, "sbin")
-	envPath := "/etc/mynet/mynetd.env"
 	initDir := "/etc/init.d"
 	mynetBin := filepath.Join(binDir, "mynet")
 	mynetdBin := filepath.Join(binDir, "mynetd")
@@ -63,8 +62,8 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	fmt.Printf("  检查二进制已在位（ipk 负责安装）: %s, %s\n", mynetdBin, mynetBin)
 	fmt.Println("  配置 mynet 网络/防火墙 zone（network.mynet + zone + forwarding）")
 	fmt.Printf("  写 %s/{mynetd,mynet}（procd 服务单元）\n", initDir)
-	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_EXECUTOR=lua)\n",
-		envPath, home, gateways)
+	fmt.Printf("  写 %s/conf/gateways.json（网关列表）+ 把 MYNET_HOME=%s 写进 procd env（不再有 env 文件）\n",
+		home, home)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
 	if enable {
 		fmt.Println("  /etc/init.d/mynetd enable && start")
@@ -124,12 +123,12 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		fmt.Println("configured network.mynet + firewall zone mynet，device=" + tunDev)
 	}
 
-	// 3) env
-	if err := writeOpenWrtEnv(envPath, home, gateways, binDir); err != nil {
+	// 3) 网关列表（conf/gateways.json；不再有 mynetd.env）
+	if err := writeGatewaysFile(home, gateways); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Println("installed", envPath)
+	fmt.Println("installed", filepath.Join(home, "conf", "gateways.json"))
 
 	// 4) procd init（服务单元；文件二进制仍归 ipk）
 	for _, name := range OpenWrtInitNames {
@@ -138,6 +137,8 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 			fmt.Fprintf(os.Stderr, "init %s 未嵌入\n", name)
 			return 1
 		}
+		// MYNET_HOME 写进 init 的 procd env（不再有 env 文件；见 spec/paths.md §2.1）
+		body = strings.ReplaceAll(body, "__MYNET_HOME__", home)
 		dst := filepath.Join(initDir, name)
 		if err := os.WriteFile(dst, []byte(body), 0o755); err != nil {
 			fmt.Fprintf(os.Stderr, "install %s: %v\n", dst, err)
@@ -187,16 +188,6 @@ func gnbPresentOpenWrt(home string) bool {
 	}
 	_, err := exec.LookPath("gnb")
 	return err == nil
-}
-
-func writeOpenWrtEnv(path, home, gateways, binDir string) error {
-	body := "# 由 mynet install 生成（OpenWrt）。改配置请改这里\n" +
-		"MYNET_HOME=" + home + "\n" +
-		"MYNET_GATEWAYS=" + gateways + "\n" +
-		"MYNET_BIN=" + filepath.Join(binDir, "mynet") + "\n" +
-		"MYNET_EXECUTOR=lua\n" +
-		"PATH=" + binDir + ":/usr/sbin:/usr/bin:/sbin:/bin\n"
-	return os.WriteFile(path, []byte(body), 0o600)
 }
 
 // setupOpenWrtNetworkZone — 服务前置：mynet 网络接口 + 防火墙 zone。

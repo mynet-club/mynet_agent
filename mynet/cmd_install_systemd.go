@@ -70,7 +70,6 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 
 	binDir := filepath.Join(prefix, "bin")
-	envPath := "/etc/mynet/mynetd.env"
 	unitDir := "/etc/systemd/system"
 
 	printInstallActionsHeader("服务安装", dry)
@@ -79,8 +78,8 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
 	fmt.Printf("  置备 gnb 四件套到标准位 %s/driver/gnb/bin（源: 包内位 → /usr/local/bin → --gnb-bin 同目录）\n", home)
-	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
-		envPath, home, gateways, binDir)
+	fmt.Printf("  写 %s/conf/gateways.json（网关列表）+ 把 MYNET_HOME=%s 写进 unit（不再有 env 文件）\n",
+		home, home)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
 	if enable {
 		fmt.Println("  systemctl daemon-reload")
@@ -140,13 +139,13 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	// 2d) gnb 四件套置备到「标准位」
 	provisionDriverAndReport(prefix, home, gnbBin)
 
-	// 3) 环境文件 + 4) 单元
-	if err := writeEnvFile(envPath, home, gateways, binDir); err != nil {
+	// 3) 网关列表（conf/gateways.json）+ 4) 单元（MYNET_HOME 写进 unit，不再有 env 文件）
+	if err := writeGatewaysFile(home, gateways); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	fmt.Println("installed", envPath)
-	if err := writeSystemdUnits(unitDir, gnbBin); err != nil {
+	fmt.Println("installed", filepath.Join(home, "conf", "gateways.json"))
+	if err := writeSystemdUnits(unitDir, gnbBin, home); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -220,7 +219,7 @@ func uninstallSystemd(home string, keepBin, dry bool) int {
 // ⚠️ gnb 的路径是写死的绝对路径：systemd 的 ExecStart **第一个 token 必须是绝对路径**，
 // 不能是 ${VAR}。所以装的 gnb 不在默认位置时要替换进单元里 —— 否则单元装得上、
 // 起不来，而错误只在启动那一刻才出现。
-func writeSystemdUnits(unitDir, gnbBin string) error {
+func writeSystemdUnits(unitDir, gnbBin, home string) error {
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return err
 	}
@@ -229,6 +228,8 @@ func writeSystemdUnits(unitDir, gnbBin string) error {
 		if u == "mynet_gnb" {
 			body = strings.ReplaceAll(body, "/usr/local/bin/gnb", gnbBin)
 		}
+		// MYNET_HOME 写进 unit（不再有 EnvironmentFile；见 spec/paths.md §2.1）
+		body = strings.ReplaceAll(body, "__MYNET_HOME__", home)
 		dst := filepath.Join(unitDir, unitFileName(u))
 		if err := os.WriteFile(dst, []byte(body), 0o644); err != nil {
 			return err
