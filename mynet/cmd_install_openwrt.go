@@ -207,6 +207,10 @@ func setupOpenWrtNetworkZone(home string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("firewall.mynet install: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
+		// include 持久化物必留（fw4 reload 不丢规则）：Go 生成同名脚本顶掉旧物
+		if err := WriteFirewallInclude(home, ""); err != nil {
+			return "", fmt.Errorf("firewall include: %w", err)
+		}
 		return "", nil
 	}
 
@@ -220,6 +224,10 @@ func setupOpenWrtNetworkZone(home string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("%v: %w (%s)", c, err, strings.TrimSpace(string(out)))
 		}
+	}
+	// include 持久化物必留（fw4 reload 不丢规则）
+	if err := WriteFirewallInclude(home, dev); err != nil {
+		return "", fmt.Errorf("firewall include: %w", err)
 	}
 
 	return dev, nil

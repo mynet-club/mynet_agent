@@ -116,10 +116,14 @@ func Run(args []string) int {
 		return 2
 	case "firewall":
 		// firewall doctor —— 两层检查：云侧清单 + 机内 nft/iptables（N5）
+		// firewall sync —— OpenWrt：include 持久化 + UCI device 跟随 tun 名
 		if len(rest) > 0 && rest[0] == "doctor" {
 			return cmdFirewallDoctor(rest[1:])
 		}
-		fmt.Fprintln(os.Stderr, "用法: mynet firewall doctor [--json] [--port N]")
+		if len(rest) > 0 && rest[0] == "sync" {
+			return cmdFirewallSync(rest[1:])
+		}
+		fmt.Fprintln(os.Stderr, "用法: mynet firewall doctor [--json] [--port N] | sync")
 		return 2
 	case "gate":
 		// P7 再部署门禁：G-subject/route/fw/sync/update

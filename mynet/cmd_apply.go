@@ -112,7 +112,12 @@ func cmdApply(args []string) int {
 			return 0
 		}
 
-		return executeApply(snap, &plan, dry)
+		rc := executeApply(snap, &plan, dry)
+		if rc == 0 && !dry {
+			// OpenWrt：include 持久化 + UCI device 跟随 tun 名（firewall.mynet.include 必留）
+			syncFirewallAfterApply()
+		}
+		return rc
 	}
 
 	if planPath == "" {
