@@ -153,7 +153,7 @@ func runAgent(ctx context.Context) {
 
 	// 双轨/回写：即使未设 MYNET_GATEWAYS，也按 conf/agent.json 装配 ProxyWriteback，
 	// 否则 WebUI 改 proxy 永远 dirty（回写回调为 nil）。
-	// U3：网关走统一回退链（env → mynetd.env → agent.json），不再只认环境变量。
+	// U3：网关走统一回退链（env → conf/gateways.json → agent.json），不再只认环境变量。
 	if api.ProxyWriteback == nil {
 		if id, idErr := loadNodeIdentity(""); idErr == nil {
 			gwURL := ""
@@ -204,7 +204,7 @@ func runAgent(ctx context.Context) {
 	var bundlePullDone chan struct{}
 
 	// WS → gateway（C-3 只带 X-Node-Id）。
-	// U3：回退链 env → mynetd.env → agent.json；都没有则**指因跳过**，不静默。
+	// U3：回退链 env → conf/gateways.json → agent.json；都没有则**指因跳过**，不静默。
 	if gateways, gwSrc, gwErr := utils.RequireGateways(); gwErr == nil {
 		logger.Info("网关已解析", "source", gwSrc, "gateways", gateways)
 		nodeID := os.Getenv("MYNET_NODE_ID")
@@ -344,7 +344,7 @@ func runAgent(ctx context.Context) {
 		// U3：回退链也没有网关 —— 指因，禁止静默（session-pitfalls #16）
 		logger.Error("心跳/WS/自动拉 bundle 全部未启动：网关未配置",
 			"why", gwErr.Error(),
-			"处置", "export MYNET_GATEWAYS=... 或写 $MYNET_HOME/mynetd.env 或 conf/agent.json")
+			"处置", "export MYNET_GATEWAYS=... 或写 $MYNET_HOME/conf/gateways.json 或 conf/agent.json")
 	}
 
 	// 启动心跳。放在节点面客户端装配**之后**（理由见上面 hb 创建处）：
