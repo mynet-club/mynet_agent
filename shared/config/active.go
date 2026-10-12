@@ -68,7 +68,21 @@ func MigrateLegacyModeFile(home string) {
 	if err := os.MkdirAll(filepath.Dir(cur), 0o700); err != nil {
 		return
 	}
-	_ = os.Rename(legacy, cur)
+	if err := os.Rename(legacy, cur); err != nil {
+		// 跨挂载点 rename 会 EXDEV 失败（如 MYNET_CONFIG_HOME 在别的盘）——
+		// 退化为复制 + 校验 + 删原。**不能吞错**：静默失败会让节点看起来"没配置"。
+		b, rerr := os.ReadFile(legacy)
+		if rerr != nil {
+			return
+		}
+		if werr := os.WriteFile(cur, b, 0o600); werr != nil {
+			return
+		}
+		if _, serr := os.Stat(cur); serr != nil {
+			return // 写没落盘，别删原件
+		}
+		_ = os.Remove(legacy)
+	}
 }
 
 // LoadMode 读 mode.json。不存在返回 (nil, nil)。

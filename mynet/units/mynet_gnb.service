@@ -39,8 +39,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# MYNET_HOME 由环境文件提供；ExecStart 里用 ${MYNET_HOME} 展开
-# （systemd 支持 EnvironmentFile 里的变量展开，但**第一个 token 必须是绝对路径**，
+# MYNET_HOME 由 install 写进下面的 Environment=；ExecStart 里用 ${MYNET_HOME} 展开
+# （systemd 支持 Environment 里的变量展开，但**第一个 token 必须是绝对路径**，
 #  所以 gnb 的位置不能写成变量）
 Environment=MYNET_HOME=__MYNET_HOME__
 ExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/var/gnb
