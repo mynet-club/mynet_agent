@@ -37,12 +37,17 @@ func WriteFirewallInclude(home, tunDev string) error {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		return fmt.Errorf("写 include: %w", err)
 	}
-	// UCI 登记：config include 'mynet_include'（type script）。
-	// section 名统一叫 mynet_include —— 与旧一代同名同址，两代同名即旧的一代被顶掉。
-	step := `s=$(uci show firewall | awk -F"[.=]" '/^firewall\..*\.name=.mynet_include.$/ {print $2; exit}'); ` +
-		`[ -n "$s" ] || s=$(uci add firewall include); ` +
-		`uci set firewall.$s.name=mynet_include; uci set firewall.$s.type=script; ` +
-		`uci set firewall.$s.path=` + path + `; uci commit firewall`
+	// UCI 登记：命名段 `config include 'mynet_include'`（type script）。
+	// 段名即标识 —— fw4 的 include 段**不认 name option**（写 name 会报
+	// unknown option 并被忽略，2026-10-12 .178 实证），别加。
+	// 顺手清掉旧写法留下的匿名 @include 段（两代同名即旧的一代）。
+	step := `for x in $(uci show firewall | awk -F"[.=]" '/^firewall\..*=include$/ {print $2}'); do ` +
+		`[ "$x" = "mynet_include" ] && continue; ` +
+		`[ "$(uci -q get firewall.$x.path)" = "` + path + `" ] && uci -q delete firewall.$x; ` +
+		`done; ` +
+		`uci -q get firewall.mynet_include >/dev/null || uci set firewall.mynet_include=include; ` +
+		`uci set firewall.mynet_include.type=script; ` +
+		`uci set firewall.mynet_include.path=` + path + `; uci commit firewall`
 	if out, err := exec.Command("sh", "-c", step).CombinedOutput(); err != nil {
 		return fmt.Errorf("uci include 登记: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
