@@ -50,8 +50,11 @@ func TestConfigTreeLayout(t *testing.T) {
 	if gn != filepath.Join(dir, "driver", "gnb", "conf", "8107") {
 		t.Fatalf("GnbNodeConfDir=%s", gn)
 	}
-	if ModeFilePath() != filepath.Join(dir, "mode.json") {
-		t.Fatalf("ModeFilePath=%s", ModeFilePath())
+	if ModeFilePath() != filepath.Join(dir, "conf", "mode.json") {
+		t.Fatalf("ModeFilePath=%s（mode.json 在 conf/ 下）", ModeFilePath())
+	}
+	if GatewaysFile() != filepath.Join(dir, "conf", "gateways.json") {
+		t.Fatalf("GatewaysFile=%s", GatewaysFile())
 	}
 	if !strings.Contains(LastGoodDir(), filepath.Join("state", "last-good")) {
 		t.Fatalf("LastGoodDir=%s", LastGoodDir())

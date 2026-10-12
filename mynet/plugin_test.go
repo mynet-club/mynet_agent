@@ -73,8 +73,8 @@ func TestExportImportIncludesModeAndConf(t *testing.T) {
 	// 这里造最小 intent 以便 Apply 成功
 	_ = cmdConfigImport([]string{out}) // 可能 Apply 失败也行，至少 conf/mode 进了
 
-	if _, err := os.Stat(filepath.Join(dst, "mode.json")); err != nil {
-		t.Fatalf("缺 mode.json: %v", err)
+	if _, err := os.Stat(filepath.Join(dst, "conf", "mode.json")); err != nil {
+		t.Fatalf("缺 mode.json（2026-10-12 起在 conf/ 下）: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dst, "conf", "local", "intent.json")); err != nil {
 		t.Fatalf("缺 intent: %v", err)

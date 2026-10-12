@@ -368,11 +368,24 @@ func lookPathAny(name string) string {
 	return ""
 }
 
+// readModeFile 读该 home 下的 mode.json：2026-10-12 起在 `conf/` 下，旧位置只读兼容。
+func readModeFile(home string) ([]byte, error) {
+	for _, p := range []string{
+		filepath.Join(home, "conf", "mode.json"),
+		filepath.Join(home, "mode.json"),
+	} {
+		if b, err := os.ReadFile(p); err == nil {
+			return b, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
 // gnbProjectionDir 与 mynet 的 gnbConfDir 同一口径：
 // driver/gnb/conf/{nodeID}（apply 投影），旧 var/gnb 仅作回退。
 func gnbProjectionDir(home string) string {
 	nodeID := ""
-	if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+	if raw, err := readModeFile(home); err == nil {
 		var m struct {
 			Active struct {
 				NodeID string `json:"node_id"`
@@ -773,7 +786,7 @@ func overlayFromRouteConf(path string) string {
 }
 
 func activeNodeID(home string) string {
-	raw, err := os.ReadFile(filepath.Join(home, "mode.json"))
+	raw, err := readModeFile(home)
 	if err != nil {
 		return ""
 	}
@@ -787,7 +800,7 @@ func activeNodeID(home string) string {
 }
 
 func activeTenantID(home string) string {
-	raw, err := os.ReadFile(filepath.Join(home, "mode.json"))
+	raw, err := readModeFile(home)
 	if err != nil {
 		return ""
 	}

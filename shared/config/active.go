@@ -34,13 +34,46 @@ func (s *Store) root() string {
 
 func (s *Store) modePath() string {
 	if s.Root != "" {
-		return filepath.Join(s.Root, "mode.json")
+		return filepath.Join(s.Root, "conf", "mode.json")
 	}
 	return utils.ModeFilePath()
 }
 
+// legacyModePath 旧位置（HOME 根）—— 只为一次性迁移认它，不再写入。
+func (s *Store) legacyModePath() string {
+	return filepath.Join(s.root(), "mode.json")
+}
+
+// MigrateLegacyModeFile 把 HOME 根的旧 mode.json 搬到 `conf/mode.json`（幂等）。
+//
+// 2026-10-12 布局裁定：mode.json 属"身份"，归 conf/。老节点在 HOME 根留着一份，
+// 这里做**一次性**搬迁；新位置一旦存在就什么都不做。
+// **所有读 mode.json 的入口都该在读之前调它**（Store.LoadMode 已内置；mynetd 的
+// nodeface 直接读文件，也显式调）。
+func MigrateLegacyModeFile(home string) {
+	if home == "" {
+		home = utils.GetMyNetHome()
+	}
+	cur := utils.ModeFilePath() // 认 MYNET_CONFIG_HOME 覆盖
+	legacy := filepath.Join(home, "mode.json")
+	if cur == legacy {
+		return
+	}
+	if _, err := os.Stat(cur); err == nil {
+		return // 已有新的，不动
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		return // 旧的也没有
+	}
+	if err := os.MkdirAll(filepath.Dir(cur), 0o700); err != nil {
+		return
+	}
+	_ = os.Rename(legacy, cur)
+}
+
 // LoadMode 读 mode.json。不存在返回 (nil, nil)。
 func (s *Store) LoadMode() (*domain.ModeFile, error) {
+	MigrateLegacyModeFile(s.root())
 	raw, err := os.ReadFile(s.modePath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -53,6 +86,7 @@ func (s *Store) LoadMode() (*domain.ModeFile, error) {
 
 // SaveMode 原子写 mode.json（0600）。
 func (s *Store) SaveMode(m *domain.ModeFile) error {
+	MigrateLegacyModeFile(s.root())
 	if m == nil {
 		return fmt.Errorf("mode 为空")
 	}

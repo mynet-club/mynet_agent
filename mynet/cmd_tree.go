@@ -78,7 +78,7 @@ func treeDoctor(args []string) int {
 		info := treeInfo{
 			Path:      t.Path,
 			Kind:      t.Kind,
-			HasMode:   fileExists(filepath.Join(t.Path, "mode.json")),
+			HasMode:   modeFileIn(t.Path) != "",
 			HasDriver: isDir(filepath.Join(t.Path, "driver")),
 			NodeDirs:  listNodeDirs(t.Path),
 		}
@@ -188,7 +188,7 @@ func treeConsolidate(args []string) int {
 			continue
 		}
 		// 只动明显的残留：有 driver/ 或 mode.json 或多 node 目录
-		hasMode := fileExists(filepath.Join(t.Path, "mode.json"))
+		hasMode := modeFileIn(t.Path) != ""
 		hasDriver := isDir(filepath.Join(t.Path, "driver"))
 		nodeDirs := listNodeDirs(t.Path)
 		if !hasMode && !hasDriver && len(nodeDirs) == 0 {
@@ -211,11 +211,25 @@ func treeConsolidate(args []string) int {
 	return 0
 }
 
+// modeFileIn 该树下现有的 mode.json 路径：2026-10-12 起在 `conf/` 下，
+// 旧树在根（只读兼容）。认树必须两个位置都认，否则老树会被判成"没配置"。
+func modeFileIn(root string) string {
+	for _, p := range []string{
+		filepath.Join(root, "conf", "mode.json"),
+		filepath.Join(root, "mode.json"),
+	} {
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
 func storeRootOf(confDir, fallback string) string {
 	// 向上找含 mode.json 或 driver/ 的根
 	p := filepath.Clean(confDir)
 	for i := 0; i < 6; i++ {
-		if fileExists(filepath.Join(p, "mode.json")) || isDir(filepath.Join(p, "driver")) {
+		if modeFileIn(p) != "" || isDir(filepath.Join(p, "driver")) {
 			return p
 		}
 		parent := filepath.Dir(p)

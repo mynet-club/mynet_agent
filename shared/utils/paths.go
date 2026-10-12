@@ -78,13 +78,21 @@ func HomeSource() string {
 
 // ── v2 配置树 ─────────────────────────────────────────────────
 
-// ConfDir $HOME/conf —— 真相源（意图 + 身份 + 插件配置）。
-func ConfDir() string {
+// confDir 只算路径，**不建目录**（认 MYNET_CONFIG_HOME）。
+//
+// ⚠️ 与 ConfDir 分开是有意的：**取路径不该有副作用**。`mynet install --dry-run`
+// 断言"什么都不碰"，而 ModeFilePath/GatewaysFile 这类纯取值一旦顺手建目录就会破坏它
+// （2026-10-12 实测被 TestInstallDryRunDoesNotTouchFilesystem 抓到）。
+func confDir() string {
 	if v := os.Getenv(envConfigHome); v != "" {
-		_ = SafeCreateDir(v, 0o700)
 		return v
 	}
-	d := filepath.Join(GetMyNetHome(), "conf")
+	return filepath.Join(GetMyNetHome(), "conf")
+}
+
+// ConfDir $HOME/conf —— 真相源（意图 + 身份 + 插件配置）。**会建目录**（写入方用）。
+func ConfDir() string {
+	d := confDir()
 	_ = SafeCreateDir(d, 0o700)
 	return d
 }
@@ -256,9 +264,18 @@ func StateDir() string {
 	return d
 }
 
-// ModeFilePath mode.json。
+// ModeFilePath mode.json —— 在 `conf/` 下（2026-10-12 裁定：conf/ 是唯一可手改面，
+// mode.json 属"身份"，从 HOME 根移进来）。
+//
+// ⚠️ 旧节点在 HOME 根有一份 legacy；`config.Store.LoadMode` 会做一次性迁移（见其实现）。
 func ModeFilePath() string {
-	return filepath.Join(GetMyNetHome(), "mode.json")
+	return filepath.Join(confDir(), "mode.json")
+}
+
+// GatewaysFile 网关列表 —— `conf/gateways.json`（原 mynetd.env 的 MYNET_GATEWAYS 归这里）。
+// 内容：JSON 字符串数组，与 MYNET_GATEWAYS 的逗号分隔等价。
+func GatewaysFile() string {
+	return filepath.Join(confDir(), "gateways.json")
 }
 
 // LastGoodDir Apply 成功快照。

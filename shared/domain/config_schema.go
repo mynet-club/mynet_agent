@@ -38,7 +38,7 @@ func (m ConfigMode) Valid() bool {
 	return m == ModeLocal || m == ModeOnline
 }
 
-// ModeFile $MYNET_HOME/mode.json —— 激活谁。
+// ModeFile `$MYNET_HOME/conf/mode.json` —— 激活谁（2026-10-12 起在 conf/ 下）。
 type ModeFile struct {
 	Schema int          `json:"schema"`
 	Mode   ConfigMode   `json:"mode"`

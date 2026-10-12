@@ -481,7 +481,12 @@ func modeActiveNodeID(home string) string {
 	if home == "" {
 		home = GetMyNetHome()
 	}
-	b, err := os.ReadFile(filepath.Join(home, "mode.json"))
+	// mode.json 2026-10-12 起在 conf/ 下；旧位置只**读**兼容
+	// （搬迁由 shared/config 做 —— utils 不能反向依赖 config，故这里不做迁移）。
+	b, err := os.ReadFile(filepath.Join(home, "conf", "mode.json"))
+	if err != nil {
+		b, err = os.ReadFile(filepath.Join(home, "mode.json"))
+	}
 	if err != nil {
 		return ""
 	}

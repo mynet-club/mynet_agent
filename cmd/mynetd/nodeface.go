@@ -9,6 +9,7 @@ import (
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
+	"github.com/mynet-club/mynet_agent/shared/config"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
@@ -56,7 +57,8 @@ func nodeKeysDir() (string, error) {
 	}
 	nodeID := ""
 	space := filepath.Join(home, "conf", "local")
-	if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+	config.MigrateLegacyModeFile(home) // 老节点：HOME 根的 mode.json 一次性搬进 conf/
+	if raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json")); err == nil {
 		var mode struct {
 			Mode   string `json:"mode"`
 			Active struct {
@@ -103,7 +105,8 @@ func loadNodeIdentity(_ string) (*nodeIdentity, error) {
 	if nodeID == "" {
 		// 退回 mode.json 的 active.node_id
 		if home := os.Getenv("MYNET_HOME"); home != "" {
-			if raw, err := os.ReadFile(filepath.Join(home, "mode.json")); err == nil {
+			config.MigrateLegacyModeFile(home)
+			if raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json")); err == nil {
 				var m struct {
 					Active struct {
 						NodeID string `json:"node_id"`

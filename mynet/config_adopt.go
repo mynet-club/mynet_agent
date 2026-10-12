@@ -237,7 +237,7 @@ func saveLegacyAdoptMarker(home string, sources []string) error {
 		Wrote   []string `json:"wrote"`
 	}{
 		Schema: 1, Adopted: time.Now().UTC().Format(time.RFC3339),
-		Sources: sources, Wrote: []string{"conf/online/<tenant>/profile.json", "mode.json"},
+		Sources: sources, Wrote: []string{"conf/online/<tenant>/profile.json", "conf/mode.json"},
 	}
 	raw, err := json.MarshalIndent(mk, "", "  ")
 	if err != nil {

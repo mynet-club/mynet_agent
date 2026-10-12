@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mynet-club/mynet_agent/shared/config"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
@@ -212,7 +213,8 @@ func toStringAny(v any) string {
 
 // activeNodeID 从 mode.json 读激活节点（轻量，不引 config.Store 全套）。
 func activeNodeID() string {
-	b, err := os.ReadFile(filepath.Join(utils.GetMyNetHome(), "mode.json"))
+	config.MigrateLegacyModeFile("") // 老节点：HOME 根 → conf/（一次性）
+	b, err := os.ReadFile(utils.ModeFilePath())
 	if err != nil {
 		return ""
 	}
