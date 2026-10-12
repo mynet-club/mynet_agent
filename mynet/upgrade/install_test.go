@@ -378,7 +378,7 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 // gnb 套件：四件整套装、缺件拒装（R2 同套件配套，缺件不捡异构建）。
 func TestInstallGNBSuite(t *testing.T) {
 	suite := map[string]string{
-		"gnb": "#!/bin/sh\necho GNB version Dev 1.6.8",
+		"gnb":     "#!/bin/sh\necho GNB version Dev 1.6.8",
 		"gnb_ctl": "ctl", "gnb_es": "es", "gnb_crypto": "crypto",
 	}
 	a, _ := serveArtifact(t, makeTgz(t, "gnb_linux_amd64", suite))
