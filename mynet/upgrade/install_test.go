@@ -374,3 +374,39 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 		}
 	}
 }
+
+// gnb 套件：四件整套装、缺件拒装（R2 同套件配套，缺件不捡异构建）。
+func TestInstallGNBSuite(t *testing.T) {
+	suite := map[string]string{
+		"gnb": "#!/bin/sh\necho GNB version Dev 1.6.8",
+		"gnb_ctl": "ctl", "gnb_es": "es", "gnb_crypto": "crypto",
+	}
+	a, _ := serveArtifact(t, makeTgz(t, "gnb_linux_amd64", suite))
+	a.Component = ComponentGNB
+	binDir := t.TempDir()
+	// 四件齐全 → 装成
+	if err := InstallWith(a, InstallOptions{BinDir: binDir, RemoveBackup: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range gnbBinaryNames {
+		if _, err := os.Stat(filepath.Join(binDir, n)); err != nil {
+			t.Fatalf("缺 %s: %v", n, err)
+		}
+	}
+
+	// 缺 gnb_ctl → 拒装（半套 = tools_missing）
+	partial := map[string]string{"gnb": suite["gnb"], "gnb_es": "es", "gnb_crypto": "crypto"}
+	a2, _ := serveArtifact(t, makeTgz(t, "gnb_linux_amd64", partial))
+	a2.Component = ComponentGNB
+	err := InstallWith(a2, InstallOptions{BinDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "gnb_ctl") {
+		t.Fatalf("缺件必须点名 gnb_ctl 拒装: %v", err)
+	}
+
+	// agent 件里不该认出 gnb 名单（防组件串味）
+	a3, _ := serveArtifact(t, makeTgz(t, "mynet_agent", map[string]string{"mynet": "x"}))
+	a3.Component = ComponentGNB
+	if err := InstallWith(a3, InstallOptions{BinDir: t.TempDir()}); err == nil {
+		t.Fatal("agent 产物不得按 gnb 套件装")
+	}
+}

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // Install 落盘安装：下载 → sha256 校验 → 解包 → 备份 → 原子替换 → 自检 → 失败回滚。
@@ -28,9 +30,30 @@ const (
 	backupSuffix    = ".bak"
 )
 
-// binaryNames 产物里会被安装的可执行文件。
+// binaryNamesFor 产物里会被安装的可执行文件（按组件取套件名）。
 // webui.html 不在此列——它由 mynetd 的 embed 构建烘进去，不单独落盘替换。
-var binaryNames = []string{"mynet", "mynetd", "mynet_gateway"}
+//
+// gnb 是**四件套同目录配套**（AGENTS §1.1 / paths.md R2）：缺件不得捡异构建，
+// 所以 gnb 按整套装（suiteComplete），缺一个就拒装。
+var (
+	agentBinaryNames = []string{"mynet", "mynetd", "mynet_gateway"}
+	gnbBinaryNames   = []string{"gnb", "gnb_ctl", "gnb_es", "gnb_crypto"}
+	wgBinaryNames    = []string{"wg", "wg-quick"}
+)
+
+func binaryNamesFor(c Component) []string {
+	switch c {
+	case ComponentGNB:
+		return gnbBinaryNames
+	case ComponentWireGuard:
+		return wgBinaryNames
+	default:
+		return agentBinaryNames
+	}
+}
+
+// suiteComplete 该组件是否必须整套齐全才许装。
+func suiteComplete(c Component) bool { return c == ComponentGNB }
 
 // defaultInstall 用默认选项安装。
 func defaultInstall(a Artifact) error {
@@ -66,12 +89,18 @@ func InstallWith(a Artifact, opts InstallOptions) error {
 		return fmt.Errorf("install: 产物缺少 sha256 校验和，拒绝安装（%s）", a.URL)
 	}
 
+	names := binaryNamesFor(a.Component)
 	binDir := opts.BinDir
 	if binDir == "" {
-		var err error
-		binDir, err = currentBinDir()
-		if err != nil {
-			return fmt.Errorf("install: 推断安装目录失败: %w", err)
+		if a.Component == ComponentGNB {
+			// gnb 套件落 driver/gnb/bin（与投影 conf 同根），不进 agent 的 bin。
+			binDir = utils.GnbBinDir()
+		} else {
+			var err error
+			binDir, err = currentBinDir()
+			if err != nil {
+				return fmt.Errorf("install: 推断安装目录失败: %w", err)
+			}
 		}
 	}
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -107,12 +136,29 @@ func InstallWith(a Artifact, opts InstallOptions) error {
 		return fmt.Errorf("install: 解包: %w", err)
 	}
 
-	srcDir, found, err := locateBinaries(unpacked)
+	srcDir, found, err := locateBinaries(unpacked, names)
 	if err != nil {
 		return err
 	}
 	if len(found) == 0 {
-		return fmt.Errorf("install: 产物里没有 %s 中的任何一个", strings.Join(binaryNames, "/"))
+		return fmt.Errorf("install: 产物里没有 %s 中的任何一个", strings.Join(names, "/"))
+	}
+	if suiteComplete(a.Component) {
+		var missing []string
+		have := map[string]bool{}
+		for _, n := range found {
+			have[n] = true
+		}
+		for _, n := range names {
+			if !have[n] {
+				missing = append(missing, n)
+			}
+		}
+		if len(missing) > 0 {
+			// R2：gnb_ctl/gnb_es 必须与 gnb 同套件；缺件装半套 = tools_missing
+			return fmt.Errorf("install: %s 套件缺件 %s（整套 %s 缺一不装）",
+				a.Component, strings.Join(missing, "/"), strings.Join(names, "/"))
+		}
 	}
 
 	// ── 备份 → 替换 → 自检 → 失败回滚 ──────────────────────────
@@ -122,7 +168,7 @@ func InstallWith(a Artifact, opts InstallOptions) error {
 	}
 
 	if err := replaceBinaries(srcDir, binDir, found); err != nil {
-		restoreErr := restoreBinaries(binDir, backups)
+		restoreErr := restoreBinaries(binDir, backups, names)
 		if restoreErr != nil {
 			return fmt.Errorf("install: 替换失败（%w），且回滚也失败（%v）—— 需人工介入", err, restoreErr)
 		}
@@ -131,10 +177,14 @@ func InstallWith(a Artifact, opts InstallOptions) error {
 
 	check := opts.HealthCheck
 	if check == nil {
-		check = defaultHealthCheck
+		if a.Component == ComponentGNB {
+			check = gnbHealthCheck
+		} else {
+			check = defaultHealthCheck
+		}
 	}
 	if err := check(binDir); err != nil {
-		restoreErr := restoreBinaries(binDir, backups)
+		restoreErr := restoreBinaries(binDir, backups, names)
 		if restoreErr != nil {
 			return fmt.Errorf("install: 自检失败（%w），且回滚也失败（%v）—— 需人工介入", err, restoreErr)
 		}
@@ -336,7 +386,7 @@ func safeJoin(base, name string) (string, error) {
 //
 // 要求同目录：产物是「一整套二进制」，混装不同目录的版本会造成
 // mynet 与 mynetd 版本不一致（共享内存布局/协议可能不兼容）。
-func locateBinaries(root string) (string, []string, error) {
+func locateBinaries(root string, names []string) (string, []string, error) {
 	byName := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -346,7 +396,7 @@ func locateBinaries(root string) (string, []string, error) {
 			return nil
 		}
 		base := filepath.Base(path)
-		for _, want := range binaryNames {
+		for _, want := range names {
 			if base == want {
 				if prev, dup := byName[want]; dup {
 					return fmt.Errorf("产物里有多个 %s：%s 与 %s", want, prev, path)
@@ -373,7 +423,7 @@ func locateBinaries(root string) (string, []string, error) {
 	}
 
 	found := make([]string, 0, len(byName))
-	for _, n := range binaryNames {
+	for _, n := range names {
 		if _, ok := byName[n]; ok {
 			found = append(found, n)
 		}
@@ -407,7 +457,7 @@ func backupBinaries(binDir string, names []string) (map[string]string, error) {
 		_ = os.Remove(bak)
 		if err := os.Rename(cur, bak); err != nil {
 			// 已改名的要回滚回去，不留半备份状态
-			_ = restoreBinaries(binDir, backups)
+			_ = restoreBinaries(binDir, backups, names)
 			return nil, fmt.Errorf("备份 %s: %w", name, err)
 		}
 		backups[name] = bak
@@ -455,9 +505,9 @@ func replaceBinaries(srcDir, binDir string, names []string) error {
 }
 
 // restoreBinaries 从备份恢复。缺失的备份项按「原本就不存在」处理（删掉新文件）。
-func restoreBinaries(binDir string, backups map[string]string) error {
+func restoreBinaries(binDir string, backups map[string]string, names []string) error {
 	var firstErr error
-	for _, name := range binaryNames {
+	for _, name := range names {
 		bak, ok := backups[name]
 		if !ok {
 			// 原本没有这个二进制，回滚就是把它删掉
@@ -508,6 +558,23 @@ func defaultHealthCheck(binDir string) error {
 	}
 	if strings.TrimSpace(out) == "" {
 		return fmt.Errorf("自检失败：%s version 无输出", bin)
+	}
+	return nil
+}
+
+// gnbHealthCheck gnb 套件自检：gnb --version 能跑且带版本串。
+// 只探 gnb 本体（四件套同目录已由完整性检查保证），不碰 gnb_ctl ——
+// 它输出的是 ctl block，不适合当探针。
+func gnbHealthCheck(binDir string) error {
+	bin := filepath.Join(binDir, "gnb")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "--version").Output()
+	if err != nil {
+		return fmt.Errorf("自检失败（%s --version）: %w", bin, err)
+	}
+	if !strings.Contains(string(out), "GNB") {
+		return fmt.Errorf("自检失败：%s --version 输出不含 GNB 版本串：%q", bin, out)
 	}
 	return nil
 }

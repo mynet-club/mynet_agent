@@ -237,6 +237,12 @@ func GnbConfDir() string {
 	return d
 }
 
+// GnbBinDir gnb 套件目录：driver/gnb/bin（四件套同目录配套，paths.md R2）。
+// 纯路径不建目录 —— 谁装谁建（upgrade 的 InstallWith 会 MkdirAll）。
+func GnbBinDir() string {
+	return filepath.Join(GetMyNetHome(), "driver", "gnb", "bin")
+}
+
 // GnbNodeConfDir driver/gnb/conf/{nodeID}（AGENTS.md §1.1 布局不变）。
 func GnbNodeConfDir(nodeID string) (string, error) {
 	if err := ValidateDirName(nodeID); err != nil {
