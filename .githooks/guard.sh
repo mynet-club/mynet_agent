@@ -383,6 +383,12 @@ fi
 #    确需入库的非产物二进制走 C4_ALLOW，且必须在提交说明里写明理由。
 #      C4_ALLOW 可用环境变量覆盖（自测与临时放行用），默认空 —— 实测 api/ctl/gui/agent 四仓零命中。
 C4_ALLOW="${C4_ALLOW:-}" # 空格分隔的路径前缀白名单
+# 仓内**持久**白名单：`.guard-c4-allow`（每行一个路径前缀，# 注释）。
+# 用途：确需入库的**依赖二进制**（如安装器随包分发的 wintun.dll）—— 环境变量只在
+# 当次提交有效，提交后失效；入库件必须走这份文件并同步其 provenance。
+if [ -n "${ROOT:-}" ] && [ -f "$ROOT/.guard-c4-allow" ]; then
+  C4_ALLOW="$C4_ALLOW $(grep -v "^[[:space:]]*#" "$ROOT/.guard-c4-allow" 2>/dev/null | tr "\n" " " || true)"
+fi
 c4=0
 for f in $FILES; do
   c4_allow_hit=0
@@ -412,7 +418,7 @@ for f in $FILES; do
       ;;
   esac
   if [ -n "$c4_hit" ]; then
-    bad "C4 编译产物不得入库（$c4_hit）: $f —— 删掉，或把构建输出指到仓库外"
+    bad "C4 编译产物不得入库（${c4_hit}）: ${f} —— 删掉，或把构建输出指到仓库外"
     c4=1
   fi
 done
