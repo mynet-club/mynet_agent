@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"
@@ -248,8 +247,8 @@ func nodeClaim(args []string) int {
 	}
 
 	// setup only selects the profile; prepare identity without rotating existing keys.
-	space := filepath.Join(confDir(), "online", tenantOr(cred))
-	dir, err := utils.NodeKeysDir(space, nodeID)
+	// D4-E：密钥就存节点唯一存放位 conf/<form>/<nodeId>/
+	dir, err := utils.NodeRuntimeDir(utils.NodeFormOnline, nodeID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -310,8 +309,8 @@ func nodeClaim(args []string) int {
 
 	// 6) 渲染驱动原生配置 —— **claim 必须做到这一步**。
 	//
-	// ⚠️ 只下载 bundle 是**没做完**：var/gnb/ 里要有 node.conf / route.conf /
-	// address.conf / security/ / ed25519/ 才轮得到 gnb 起进程。
+	// ⚠️ 只下载 bundle 是**没做完**：节点目录（conf/<form>/<nodeId>/）里要有
+	// node.conf / route.conf / address.conf / security/ / ed25519/ 才轮得到 gnb 起进程。
 	// 早期版本 claim 到 downloadBundle 就收尾，向导随后 `service start gnb`
 	// 直接失败在「找不到 node.conf」—— 而 claim 还打印「完成」，把人引向下一步。
 	// 那正是「向导没把活干完」的形态：每一步都绿，最后一步才发现前面少干了事。
@@ -397,11 +396,10 @@ func tenantOr(cred *Credential) string {
 	return "default"
 }
 
-// readNodePublicKey 读 conf/online/{tenant}/nodes/{nodeID}/keys/node.public。
-// 密钥挂**节点**不挂租户（setup_v2 的 NodeKeysDir）；claim 上传的是这把 public。
+// readNodePublicKey 读节点身份公钥（D4-E：节点唯一存放位 conf/<form>/<nodeId>/）。
+// claim 上传的是这把 public；旧 keys/ 树由 LoadNodeKeys 只读兼容。
 func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
-	space := filepath.Join(confDir(), "online", tenantOr(cred))
-	keysDir, err := utils.NodeKeysDir(space, nodeID)
+	keysDir, err := utils.NodeRuntimeDir(utils.NodeFormOnline, nodeID)
 	if err != nil {
 		return "", err
 	}
@@ -410,7 +408,7 @@ func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
 		return "", err
 	}
 	if pub == "" {
-		return "", fmt.Errorf("node.public 为空")
+		return "", fmt.Errorf("node public key 为空")
 	}
 	return pub, nil
 }

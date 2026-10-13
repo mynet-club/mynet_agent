@@ -126,22 +126,18 @@ func cmdSetupV2(args []string) int {
 	// 不生成密钥。profile/intent 与 keys 分离：
 	// 有私钥 → config keys set 导入；没有 → config keys generate 显式新建。
 	store := &config.Store{}
-	var sourceDir string
 
 	if local {
-		sourceDir = utils.LocalConfDir()
 		li := domain.NewLocalIntent(driverType, nodeID, overlay)
 		if err := store.SaveLocalIntent(&li); err != nil {
 			fmt.Fprintf(os.Stderr, "write intent: %v\n", err)
 			return 1
 		}
 	} else {
-		td, err := utils.OnlineTenantDir(tenant)
-		if err != nil {
+		if _, err := utils.OnlineTenantDir(tenant); err != nil {
 			fmt.Fprintf(os.Stderr, "tenant: %v\n", err)
 			return 2
 		}
-		sourceDir = td
 		prof := &domain.OnlineProfile{
 			Schema:   domain.ConfigSchemaVersion,
 			Mode:     domain.ModeOnline,
@@ -168,9 +164,24 @@ func cmdSetupV2(args []string) int {
 		fmt.Fprintf(os.Stderr, "activate: %v\n", err)
 		return 1
 	}
+	// D4-E：nodeID 全局唯一、写进 mode.json 的 active.node_id（tenant 维度也收在这里）。
+	// UseLocal 不带 node（历史形状）—— 这里补写，否则 ActiveNodeInfo()/gnbConfDir() 只能
+	// 退化到 default 兜底，投影与密钥会落错目录。
+	if mode.Active.NodeID != nodeID {
+		mode.Active.NodeID = nodeID
+		if err := store.SaveMode(&mode); err != nil {
+			fmt.Fprintf(os.Stderr, "mode.json 回写 node_id: %v\n", err)
+			return 1
+		}
+	}
 
-	// 密钥目录位置（不写入）
-	keysDir, kerr := utils.NodeKeysDir(sourceDir, nodeID)
+	// 密钥目录位置（不写入）—— D4-E：节点唯一存放位 conf/<form>/<nodeId>/
+	// （form 跟 setup 的 --local/--online，不按 keys/ 旧树报）
+	form := utils.NodeFormLocal
+	if online {
+		form = utils.NodeFormOnline
+	}
+	keysDir, kerr := utils.NodeRuntimeDir(form, nodeID)
 	if kerr != nil {
 		fmt.Fprintf(os.Stderr, "keys dir: %v\n", kerr)
 		return 1

@@ -2,13 +2,14 @@
 # mynet — 隧道服务（procd 托管，E-1）· 双驱动 gnb | wireguard
 # 由 `mynet install` 写入 /etc/init.d/mynet（OpenWrt 分支）。
 #
-# 驱动分支自动判定（driver/gnb/conf 存在 → gnb；driver/wireguard → wireguard）：
+# 驱动分支自动判定（节点唯一存放位 conf/<form>/<nodeId>/ 里有 node.conf → gnb；
+# 有 wg.conf → wireguard；旧 driver/{gnb/conf,wireguard} 只作回退）：
 #   gnb       — 常驻进程，procd instance + respawn（E-1）
 #   wireguard — 内核接口，无守护进程；start 装接口，stop 拆接口
 #
 # ⚠️ **不读旧扁平 conf/mynet.conf**：v2 起 agent 全 JSON（conf/ 是意图、var/ 是状态），
-#    只有 gnb 驱动读它自己的 driver/gnb/conf/<id>/node.conf。init 需要的东西
-#    全部可从这三处推出（见 load_config）—— 旧扁平 conf 是 Lua 时代残留，已退役。
+#    只有 gnb 驱动读它自己的节点目录 node.conf（D4-E：conf/<form>/<nodeId>/）。
+#    init 需要的东西全部可从这三处推出（见 load_config）—— 旧扁平 conf 已退役。
 #
 # 路由唯一写入者仍是 `mynet apply`（route-apply-unification）。
 # 安全红线：不按名字杀进程。
@@ -43,8 +44,24 @@ bundle_tun_device() {
 	return 0
 }
 
-# 驱动原生 conf 目录（gnb：driver/gnb/conf/<nodeId>/）。
+# 节点唯一存放位（D4-E）：$MYNET_HOME/conf/<form>/<nodeId>（form+node 取 mode.json）。
+node_confdir() {
+	local modefile="$MYNET_HOME/conf/mode.json"
+	[ -f "$modefile" ] || modefile="$MYNET_HOME/mode.json"
+	[ -f "$modefile" ] || return 0
+	local form node
+	form=$(jsonfilter -i "$modefile" -e '@.mode' 2>/dev/null)
+	node=$(jsonfilter -i "$modefile" -e '@.active.node_id' 2>/dev/null)
+	[ "$form" = "online" ] || form="local"
+	[ -n "$node" ] || return 0
+	[ -d "$MYNET_HOME/conf/$form/$node" ] && echo "$MYNET_HOME/conf/$form/$node"
+}
+
+# 驱动原生 conf 目录（gnb）：节点唯一存放位（D4-E）；旧 driver/gnb/conf/<nodeId>/ 只作回退。
 gnb_confdir() {
+	local d
+	d=$(node_confdir)
+	[ -n "$d" ] && { echo "$d"; return 0; }
 	ls -d "$MYNET_HOME"/driver/gnb/conf/*/ 2>/dev/null | head -1
 }
 
@@ -56,7 +73,7 @@ driver_ifname() {
 	sed -n 's/^ifname[[:space:]][[:space:]]*//p' "$d/node.conf" 2>/dev/null | head -1
 }
 
-# 从驱动 conf 目录名取 nodeId（与 agent 的 driver/gnb/conf/<nodeId> 同构）。
+# 从驱动 conf 目录名取 nodeId（节点目录与旧 driver/gnb/conf/<nodeId> 同构）。
 driver_nodeid() {
 	local d
 	d=$(gnb_confdir)
@@ -70,15 +87,20 @@ load_config() {
 		. "$CONFIG_FILE"
 	fi
 
-	# VPN_TYPE：env > 覆盖文件 > 按驱动目录自动判定（无兜底默认名，只有"哪个驱动在"）
+	# VPN_TYPE：env > 覆盖文件 > 按驱动配置自动判定（无兜底默认名，只有"哪个驱动在"）
 	VPN_TYPE="${MYNET_VPN_TYPE:-${VPN_TYPE:-}}"
 	if [ -z "$VPN_TYPE" ]; then
-		if [ -d "$MYNET_HOME/driver/gnb/conf" ]; then
+		_nd=$(node_confdir)
+		if [ -n "$_nd" ] && [ -f "$_nd/node.conf" ]; then
 			VPN_TYPE=gnb
-		elif [ -d "$MYNET_HOME/driver/wireguard" ]; then
+		elif [ -n "$_nd" ] && [ -f "$_nd/wg.conf" ]; then
+			VPN_TYPE=wireguard
+		elif [ -d "$MYNET_HOME/driver/gnb/conf" ]; then
+			VPN_TYPE=gnb
+		elif [ -d "$MYNET_HOME/driver/wireguard" ] || [ -f "$MYNET_HOME/var/wg.conf" ]; then
 			VPN_TYPE=wireguard
 		else
-			log "ERROR: 找不到驱动配置目录（$MYNET_HOME/driver/{gnb/conf,wireguard}）—— 先同步配置或装 gnb"
+			log "ERROR: 找不到驱动配置（节点目录 conf/<form>/<nodeId>/ 或旧 driver/ 树）—— 先同步配置"
 			return 1
 		fi
 	fi
@@ -248,13 +270,18 @@ stop_gnb_instance() {
 }
 
 # ── wireguard：内核接口（无常驻进程）─────────────────────────
-# conf 约定（与 WireGuardDriver.WriteIntent 对齐）：
-#   /etc/wireguard/<iface>.conf  或  $MYNET_HOME/var/wg.conf
+# conf 约定（与 WireGuardDriver.WriteIntent 对齐，D4-E）：
+#   节点唯一存放位 conf/<form>/<nodeId>/wg.conf 为权威；
+#   $MYNET_HOME/var/wg.conf 与 /etc/wireguard/<iface>.conf 为兼容回退。
 wg_conf_path() {
-	if [ -f "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
-		echo "/etc/wireguard/${VPN_INTERFACE}.conf"
+	local nd
+	nd=$(node_confdir)
+	if [ -n "$nd" ] && [ -f "$nd/wg.conf" ]; then
+		echo "$nd/wg.conf"
 	elif [ -f "$MYNET_HOME/var/wg.conf" ]; then
 		echo "$MYNET_HOME/var/wg.conf"
+	elif [ -f "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
+		echo "/etc/wireguard/${VPN_INTERFACE}.conf"
 	else
 		return 1
 	fi
@@ -263,21 +290,14 @@ wg_conf_path() {
 start_wg_interface() {
 	local conf
 	conf=$(wg_conf_path) || {
-		log "ERROR: wireguard conf not found (want /etc/wireguard/${VPN_INTERFACE}.conf or $MYNET_HOME/var/wg.conf)"
+		log "ERROR: wireguard conf not found (want conf/<form>/<nodeId>/wg.conf or $MYNET_HOME/var/wg.conf)"
 		return 1
 	}
-	if command -v wg-quick >/dev/null 2>&1; then
+	# wg-quick 只吃 /etc/wireguard/<iface>.conf（按文件名推接口名）；
+	# 其它路径喂它会建出名叫 "wg" 之类的错误接口 —— 一律走 ip+wg 路线。
+	if command -v wg-quick >/dev/null 2>&1 && [ "$conf" = "/etc/wireguard/${VPN_INTERFACE}.conf" ]; then
 		log "wg-quick up ($conf)"
-		# wg-quick 认接口名时读 /etc/wireguard/<if>.conf；
-		# 非标准路径时传 conf 文件本身。
-		case "$conf" in
-			"/etc/wireguard/${VPN_INTERFACE}.conf")
-				wg-quick up "$VPN_INTERFACE" || return 1
-				;;
-			*)
-				wg-quick up "$conf" || return 1
-				;;
-		esac
+		wg-quick up "$VPN_INTERFACE" || return 1
 		return 0
 	fi
 	# 无 wg-quick 时用 ip + wg 最小集（OpenWrt 精简环境）

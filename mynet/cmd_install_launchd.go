@@ -289,7 +289,7 @@ func installDarwin(prefix, home, gateways, gnbBin string, enable, dry bool) int 
 	fmt.Printf("  写 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
 	fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
-	fmt.Printf("  置备 gnb 四件套到标准位 %s/driver/gnb/bin（源: 包内位 → /usr/local/bin → --gnb-bin 同目录）\n", home)
+	fmt.Printf("  置备 gnb 四件套到标准位 %s/bin（源: 旧 home 树/包内位 → /usr/local/bin → --gnb-bin 同目录）\n", prefix)
 	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
 		envPath, home, gateways, binDir)
 	fmt.Printf("  建 %s/{conf,var}\n", home)

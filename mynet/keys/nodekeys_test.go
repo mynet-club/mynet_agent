@@ -37,6 +37,7 @@ func TestGenerateNodeKeysFormats(t *testing.T) {
 }
 
 // 落盘 → 回读：字段、权限、meta 一次对齐。
+// D4-E：gnb 身份落节点目录的 security/<nodeID>.{private,public}（128/64 hex **无换行**）。
 func TestWriteLoadNodeKeysRoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "keys")
 	priv, pub, algo, err := GenerateNodeKeys("gnb")
@@ -51,11 +52,11 @@ func TestWriteLoadNodeKeysRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 权限：private/meta 0600，public 0644
+	// 权限：private/meta 0600，public 0644（驱动原生 security/ 布局）
 	for name, want := range map[string]os.FileMode{
-		"node.private": 0o600,
-		"node.public":  0o644,
-		"meta.json":    0o600,
+		"security/n42.private": 0o600,
+		"security/n42.public":  0o644,
+		"meta.json":            0o600,
 	} {
 		st, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
@@ -63,6 +64,22 @@ func TestWriteLoadNodeKeysRoundTrip(t *testing.T) {
 		}
 		if got := st.Mode().Perm(); got != want {
 			t.Fatalf("%s perm=%o want %o", name, got, want)
+		}
+	}
+	// gnb_keys.c:68-73/84-89：hex 无换行
+	for _, name := range []string{"security/n42.private", "security/n42.public"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.ContainsAny(string(b), "\n\r") {
+			t.Fatalf("%s 不许带换行: %q", name, b)
+		}
+	}
+	// 旧 node.{private,public} 形态不再写
+	for _, name := range []string{"node.private", "node.public"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Fatalf("不该再写 %s（D4-E 驱动原生格式）", name)
 		}
 	}
 
@@ -214,9 +231,9 @@ func TestUpdateNodeMetaBackPub(t *testing.T) {
 	if m.BackPubHex != "cc" || m.NodeID != "n1" || m.SignAlgorithm != "hmac-sha256-dh" {
 		t.Fatalf("meta 回填结果不对: %+v", m)
 	}
-	// 私钥面不许被碰
-	if b, _ := os.ReadFile(filepath.Join(dir, "node.private")); string(b) != "aa\n" {
-		t.Fatalf("node.private 被动过: %q", b)
+	// 私钥面不许被碰（D4-E：gnb 私钥在 security/<nodeID>.private，无换行）
+	if b, _ := os.ReadFile(filepath.Join(dir, "security", "n1.private")); string(b) != "aa" {
+		t.Fatalf("security/n1.private 被动过: %q", b)
 	}
 	// meta 不存在：按已知信息重建（node claim 先于 keys 写入的场景）
 	dir2 := filepath.Join(t.TempDir(), "keys")

@@ -2,6 +2,8 @@ package driver
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,22 +78,37 @@ func TestLifecycleDelegatesToPlatformOwner(t *testing.T) {
 	})
 }
 
-// 没有平台 owner（systemd/launchd/Windows/容器）→ 行为不变：gnb 走自建、wg 走 wg-quick。
+// 没有平台 owner（systemd/launchd/Windows/容器）→ 行为不变：gnb 走自建、
+// wg 走 ip+wg setconf 冷启（D4-E：装载换路径即用，wg-quick 只剩未迁移旧位兜底）。
 func TestLifecycleFallsThroughWithoutPlatformOwner(t *testing.T) {
 	old := platformServiceOwnerFn
 	defer func() { platformServiceOwnerFn = old }()
 	platformServiceOwnerFn = func() string { return "" }
 
+	conf := filepath.Join(t.TempDir(), "wg.conf")
+	if err := os.WriteFile(conf, []byte("[Interface]\nPrivateKey = p\n\n[Peer]\nPublicKey = k\nAllowedIPs = 10.9.0.2/32\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var calls []string
 	d := NewWireGuardDriver("wg0", 0)
+	d.ConfPath = conf
 	d.Exec = func(n string, a ...string) ([]byte, error) {
 		calls = append(calls, n+" "+strings.Join(a, " "))
+		if n == "wg" && len(a) > 0 && a[0] == "show" {
+			return nil, errors.New("no such device") // 接口不在 → 冷启建口
+		}
 		return nil, nil
 	}
 	if err := d.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if got := strings.Join(calls, "\n"); !strings.Contains(got, "wg-quick up wg0") {
-		t.Fatalf("无 owner 时应走 wg-quick：\n%s", got)
+	got := strings.Join(calls, "\n")
+	for _, want := range []string{"ip link add wg0 type wireguard", "wg setconf wg0 ", "ip link set wg0 up"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("无 owner 时应走 ip+wg setconf 冷启，缺 %q：\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "wg-quick") {
+		t.Fatalf("新布局不该碰 wg-quick（旧位 /etc/wireguard 未迁移才兜底）：\n%s", got)
 	}
 }

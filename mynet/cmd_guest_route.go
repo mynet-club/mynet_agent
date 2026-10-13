@@ -77,8 +77,9 @@ func guestWriteRoute(args []string) int {
 		fmt.Fprintln(os.Stderr, "无法生成 route.conf")
 		return 1
 	}
-	// gnb conf dir：与 Lua GNB_CONF_DIR 同源（utils）
-	confDir, err := utils.GnbNodeConfDir(fmt.Sprintf("%d", nodeID))
+	// gnb conf dir：节点唯一存放位 conf/<form>/<nodeId>/（D4-E，与 apply 同源）
+	form, _ := utils.ActiveNodeInfo()
+	confDir, err := utils.NodeRuntimeDir(form, fmt.Sprintf("%d", nodeID))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "解析 gnb conf 目录失败: %v\n", err)
 		return 1

@@ -93,8 +93,8 @@ func InstallWith(a Artifact, opts InstallOptions) error {
 	binDir := opts.BinDir
 	if binDir == "" {
 		if a.Component == ComponentGNB {
-			// gnb 套件落 driver/gnb/bin（与投影 conf 同根），不进 agent 的 bin。
-			binDir = utils.GnbBinDir()
+			// D4-E：driver/ 安装层退役，gnb 四件套与 agent 同装 <prefix>/bin。
+			binDir = utils.PrefixBinDir()
 		} else {
 			var err error
 			binDir, err = currentBinDir()

@@ -41,11 +41,11 @@ func wgEnv(ifname string) *domain.BundleEnvelope {
 
 // TestLifecycleDriverWireGuardUsesResolvedDevice wg 的接口名与 ConfPath 同源。
 //
-// wg-quick 只认 /etc/wireguard/<iface>.conf，名字取错就是「起了另一条隧道」。
-// 此前这里读 env.Node.Interface 并给空值兜底 wg0 —— 绕过 TunDevice() 的校验，
-// 而接口名是阻断性配置：兜底出来的名字在多台 zone 共存的机器上往往是别人的接口。
+// ConfPath 是**节点唯一存放位** conf/<form>/<nodeId>/wg.conf（D4-E，与密钥同居）；
+// 此前是 /etc/wireguard/<iface>.conf —— wg-quick 钉死该路径，名字取错就是
+// 「起了另一条隧道」。这里锁：Interface 取 node.interface，ConfPath 跟 node.id 走。
 func TestLifecycleDriverWireGuardUsesResolvedDevice(t *testing.T) {
-	writeBundleAtHome(t, wgEnv("wg_home_2"))
+	home := writeBundleAtHome(t, wgEnv("wg_home_2"))
 
 	d, err := buildLifecycleDriver(domain.DriverTypeWireGuard)
 	if err != nil {
@@ -58,8 +58,9 @@ func TestLifecycleDriverWireGuardUsesResolvedDevice(t *testing.T) {
 	if wg.Interface != "wg_home_2" {
 		t.Fatalf("Interface=%q，应取 node.interface", wg.Interface)
 	}
-	if wg.ConfPath != "/etc/wireguard/wg_home_2.conf" {
-		t.Fatalf("ConfPath=%q，必须与接口名同源", wg.ConfPath)
+	want := filepath.Join(home, "conf", "local", "5063883630803570", "wg.conf")
+	if wg.ConfPath != want {
+		t.Fatalf("ConfPath=%q, want %q（节点唯一存放位，与 node.id 同源）", wg.ConfPath, want)
 	}
 }
 

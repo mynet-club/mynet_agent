@@ -1,15 +1,21 @@
 package keys
 
-// nodekeys —— keys/ 目录身份读写与生成（配置树 v2 的 conf/**/keys/）。
+// nodekeys —— 节点身份读写与生成（D4-E：节点唯一存放位 conf/<form>/<nodeId>/）。
 //
-// 供 mynet setup 与 mynetd/localapi 共用，避免各写一套：
-//   node.private  0600 hex
-//   node.public   0644 hex
-//   meta.json     0600 node_id / algorithm / back_pub_hex / sign_algorithm
+// 密钥按**驱动原生格式**同居节点目录（不再留 hex/base64 双形态副本）：
+//
+//	gnb: security/<nodeID>.private  128 hex，**无换行**（gnb_keys.c:68-73）
+//	     security/<nodeID>.public    64 hex，**无换行**（gnb_keys.c:84-89）
+//	wg:  wg.conf 的 [Interface] PrivateKey = base64 44（wg 原生格式，即密钥存放本身）
+//
+// meta.json（node_id / algorithm / back_pub_hex / sign_algorithm）同居节点目录，
+// 是身份元数据、不是密钥材料。hex↔base64 只在 DB/上报边界转换。
+// 旧布局（{space}/nodes/{id}/keys/node.{private,public}）只作**读**回退（未迁移节点）。
 
 import (
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -47,16 +53,44 @@ func GenerateNodeKeys(vpnType string) (privHex, pubHex, algorithm string, err er
 	}
 }
 
-// WriteNodeKeys 落盘 node.private + node.public + meta.json。
+// WriteNodeKeys 落盘节点身份 —— **驱动原生格式**（D4-E，dir = 节点唯一存放位）：
+//
+//	ed25519/gnb → security/<nodeID>.{private,public}（128/64 hex 无换行）+ meta.json
+//	x25519/wg   → wg.conf 的 PrivateKey（base64 44）+ meta.json
+//
+// 这是**唯一写面**；旧 node.{private,public} 形态不再写。
 func WriteNodeKeys(dir, privHex, pubHex, algorithm, nodeID, backPub string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "node.private"), []byte(privHex+"\n"), 0o600); err != nil {
-		return err
+	if nodeID == "" {
+		if meta, e := LoadNodeMeta(dir); e == nil {
+			nodeID = meta.NodeID
+		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "node.public"), []byte(pubHex+"\n"), 0o644); err != nil {
-		return err
+	switch algorithm {
+	case "x25519", "curve25519", "wireguard", "wg":
+		if err := writeWGPrivateKey(dir, privHex); err != nil {
+			return err
+		}
+	default:
+		// gnb 形态：security/ 布局（gnb 协议内布局不动）
+		if nodeID == "" {
+			return fmt.Errorf("gnb 密钥需要 node_id（security/<nodeID>.private）")
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "security"), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "security", nodeID+".private"),
+			[]byte(strings.TrimSpace(privHex)), 0o600); err != nil {
+			return err
+		}
+		if pubHex != "" {
+			if err := os.WriteFile(filepath.Join(dir, "security", nodeID+".public"),
+				[]byte(strings.TrimSpace(pubHex)), 0o644); err != nil {
+				return err
+			}
+		}
 	}
 	meta := NodeKeyMeta{
 		NodeID:        nodeID,
@@ -71,16 +105,123 @@ func WriteNodeKeys(dir, privHex, pubHex, algorithm, nodeID, backPub string) erro
 	return os.WriteFile(filepath.Join(dir, "meta.json"), append(raw, '\n'), 0o600)
 }
 
-// LoadNodeKeys 读 keys/ 下身份。meta.json 可选（algorithm/nodeID 可空）。
+// HexPrivToWGBase64 hex 私钥 → wg 原生 base64 44（DB/上报边界转换）。
+func HexPrivToWGBase64(privHex string) (string, error) {
+	privHex = strings.TrimSpace(privHex)
+	b, err := hex.DecodeString(privHex)
+	if err != nil {
+		return "", fmt.Errorf("私钥非 hex: %w", err)
+	}
+	if len(b) != 32 {
+		return "", fmt.Errorf("x25519 私钥应为 32 字节，得到 %d", len(b))
+	}
+	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+// Base64WGToHexPriv wg 原生 base64 → hex（DB/上报边界转换）。
+func Base64WGToHexPriv(b64 string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if err != nil {
+		return "", fmt.Errorf("wg 私钥非 base64: %w", err)
+	}
+	if len(b) != 32 {
+		return "", fmt.Errorf("wg 私钥应为 32 字节，得到 %d", len(b))
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// ReadWGPrivateKeyHex 从 wg.conf 的 [Interface] PrivateKey 读私钥（返回 hex）。
+func ReadWGPrivateKeyHex(dir string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "wg.conf"))
+	if err != nil {
+		return "", err
+	}
+	section := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			section = strings.ToLower(t)
+			continue
+		}
+		if section != "[interface]" {
+			continue
+		}
+		if i := strings.IndexByte(t, '='); i >= 0 && strings.EqualFold(strings.TrimSpace(t[:i]), "PrivateKey") {
+			return Base64WGToHexPriv(t[i+1:])
+		}
+	}
+	return "", fmt.Errorf("wg.conf 的 [Interface] 没有 PrivateKey")
+}
+
+// writeWGPrivateKey 把私钥写进 wg.conf 的 [Interface] PrivateKey（base64）。
+// wg.conf 是 wg 原生形态 —— 密钥存放本身；已有文件只改这一行，不动其余内容。
+func writeWGPrivateKey(dir, privHex string) error {
+	b64, err := HexPrivToWGBase64(privHex)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "wg.conf")
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	out := make([]string, 0, len(lines)+2)
+	section := ""
+	done := false
+	hasKey := containsWGPrivateKey(lines)
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			section = strings.ToLower(t)
+			out = append(out, line)
+			if section == "[interface]" && !done && !hasKey {
+				out = append(out, "PrivateKey = "+b64)
+				done = true
+			}
+			continue
+		}
+		if section == "[interface]" {
+			if i := strings.IndexByte(t, '='); i >= 0 && strings.EqualFold(strings.TrimSpace(t[:i]), "PrivateKey") {
+				out = append(out, "PrivateKey = "+b64)
+				done = true
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	if !done {
+		// 文件不存在 / 没有 [Interface] 段：建最小可用形态
+		out = append([]string{"[Interface]", "PrivateKey = " + b64}, out...)
+	}
+	return os.WriteFile(path, []byte(strings.TrimRight(strings.Join(out, "\n"), "\n")+"\n"), 0o600)
+}
+
+func containsWGPrivateKey(lines []string) bool {
+	section := ""
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			section = strings.ToLower(t)
+			continue
+		}
+		if section == "[interface]" {
+			if i := strings.IndexByte(t, '='); i >= 0 && strings.EqualFold(strings.TrimSpace(t[:i]), "PrivateKey") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// LoadNodeKeys 读节点身份。meta.json 可选（algorithm/nodeID 可空）。
 //
-// 文件名兼容两套：
-//   - 标准：node.private / node.public（配置树 v2）
-//   - gnb security：<nodeid>.private / <nodeid>.public（从 C:\gnb-win 迁入时的原名）
-//
-// 183 实测：手迁 gnb 密钥时沿用 `<nodeid>.private`，mynetd 只认 node.private
-// 直接报「读节点密钥失败」。这里自动认，避免再踩。
+// dir = 节点唯一存放位（D4-E）。认三种形态，按序：
+//  1. gnb 原生：security/<nodeID>.{private,public}（无换行 hex）
+//  2. wg 原生：wg.conf 的 PrivateKey（base64 → hex，公钥按 x25519 推导）
+//  3. 旧布局：node.private / node.public（未迁移节点只读兼容）
 func LoadNodeKeys(keysDir string) (privHex, pubHex, algorithm, nodeID string, err error) {
-	privB, pubB, err := readKeyPair(keysDir)
+	privHex, pubHex, err = readKeyPair(keysDir)
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -88,12 +229,20 @@ func LoadNodeKeys(keysDir string) (privHex, pubHex, algorithm, nodeID string, er
 	if meta, e := LoadNodeMeta(keysDir); e == nil {
 		algorithm, nodeID = meta.Algorithm, meta.NodeID
 	}
-	return strings.TrimSpace(string(privB)), strings.TrimSpace(string(pubB)), algorithm, nodeID, nil
+	return privHex, pubHex, algorithm, nodeID, nil
 }
 
-// LoadNodePrivateKey 只读私钥（节点面签名用）。公钥可缺。
-// 兼容 node.private 与 gnb 的 <nodeid>.private。
+// LoadNodePrivateKey 只读私钥（节点面签名用，返回 hex）。公钥可缺。
+// 认 gnb security/、wg.conf 与旧 node.private 三套形态。
 func LoadNodePrivateKey(keysDir string) (privHex string, err error) {
+	if p := findSecurityKeyFile(keysDir, ".private"); p != "" {
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			return strings.TrimSpace(string(b)), nil
+		}
+	}
+	if hexPriv, rerr := ReadWGPrivateKeyHex(keysDir); rerr == nil && hexPriv != "" {
+		return hexPriv, nil
+	}
 	priv, err := os.ReadFile(filepath.Join(keysDir, "node.private"))
 	if err != nil {
 		if alt := findKeyFile(keysDir, ".private"); alt != "" {
@@ -106,21 +255,53 @@ func LoadNodePrivateKey(keysDir string) (privHex string, err error) {
 	return strings.TrimSpace(string(priv)), nil
 }
 
-func readKeyPair(keysDir string) (priv, pub []byte, err error) {
-	privStr, err := LoadNodePrivateKey(keysDir)
+func readKeyPair(keysDir string) (priv, pub string, err error) {
+	privHex, err := LoadNodePrivateKey(keysDir)
 	if err != nil {
-		return nil, nil, err
+		return "", "", err
 	}
-	pub, err = os.ReadFile(filepath.Join(keysDir, "node.public"))
+	// gnb security/ 形态的公钥
+	if p := findSecurityKeyFile(keysDir, ".public"); p != "" {
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			return privHex, strings.TrimSpace(string(b)), nil
+		}
+	}
+	// wg 形态：公钥从私钥推导（hex↔base64 只在边界转；不落盘双形态）
+	if len(strings.TrimSpace(privHex)) == 64 {
+		if pubHex, derr := DerivePublicKeyFromPrivateHex(privHex, "x25519"); derr == nil {
+			return privHex, pubHex, nil
+		}
+	}
+	pubB, err := os.ReadFile(filepath.Join(keysDir, "node.public"))
 	if err != nil {
 		if alt := findKeyFile(keysDir, ".public"); alt != "" {
-			pub, err = os.ReadFile(alt)
+			pubB, err = os.ReadFile(alt)
 		}
 	}
 	if err != nil {
-		return nil, nil, err
+		return "", "", err
 	}
-	return []byte(privStr), pub, nil
+	return privHex, strings.TrimSpace(string(pubB)), nil
+}
+
+// findSecurityKeyFile 找 dir/security/ 下唯一以 suffix 结尾的文件。
+func findSecurityKeyFile(dir, suffix string) string {
+	sec := filepath.Join(dir, "security")
+	entries, err := os.ReadDir(sec)
+	if err != nil {
+		return ""
+	}
+	found := ""
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
+			continue
+		}
+		if found != "" {
+			return "" // 多个候选：不猜
+		}
+		found = filepath.Join(sec, e.Name())
+	}
+	return found
 }
 
 // findKeyFile 找 keys 目录下唯一以 suffix 结尾的文件（跳过 meta）。

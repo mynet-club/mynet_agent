@@ -21,15 +21,53 @@ func setupInTempHome(t *testing.T, args ...string) int {
 
 func readKeysHex(t *testing.T, keysDir string) (priv, pub string) {
 	t.Helper()
+	// D4-E：gnb 身份在 security/<nodeID>.{private,public}；旧 node.{private,public} 只读兼容
 	pb, err := os.ReadFile(filepath.Join(keysDir, "node.private"))
 	if err != nil {
-		t.Fatal(err)
+		if sec := findSecurityPriv(t, keysDir); sec != "" {
+			pb, err = os.ReadFile(sec)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	ub, err := os.ReadFile(filepath.Join(keysDir, "node.public"))
 	if err != nil {
-		t.Fatal(err)
+		if sec := findSecurityPub(t, keysDir); sec != "" {
+			ub, err = os.ReadFile(sec)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	return strings.TrimSpace(string(pb)), strings.TrimSpace(string(ub))
+}
+
+// findSecurityPriv / findSecurityPub 找 security/ 下唯一 <id>.private / <id>.public。
+func findSecurityPriv(t *testing.T, dir string) string {
+	t.Helper()
+	return findSecurityFile(t, dir, ".private")
+}
+func findSecurityPub(t *testing.T, dir string) string {
+	t.Helper()
+	return findSecurityFile(t, dir, ".public")
+}
+func findSecurityFile(t *testing.T, dir, suffix string) string {
+	t.Helper()
+	ents, err := os.ReadDir(filepath.Join(dir, "security"))
+	if err != nil {
+		return ""
+	}
+	found := ""
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			if found != "" {
+				t.Fatalf("security/ 下多个 %s: %s", suffix, e.Name())
+			}
+			found = filepath.Join(dir, "security", e.Name())
+		}
+	}
+	return found
 }
 
 // setup 不生成密钥 —— 这是本文件最重要的不变量。
@@ -38,12 +76,15 @@ func TestSetupDoesNotGenerateKeys(t *testing.T) {
 		t.Fatalf("setup rc=%d", rc)
 	}
 	root := os.Getenv("MYNET_HOME")
-	keysDir := filepath.Join(root, "conf", "local", "nodes", "3001", "keys")
+	keysDir := filepath.Join(root, "conf", "local", "3001")
 	if _, err := os.Stat(filepath.Join(keysDir, "node.private")); err == nil {
 		t.Fatal("setup 不得生成 node.private —— 密钥必须 keys set / keys generate")
 	}
-	if _, err := os.Stat(filepath.Join(keysDir, "node.public")); err == nil {
-		t.Fatal("setup 不得生成 node.public")
+	if _, err := os.Stat(filepath.Join(keysDir, "security")); err == nil {
+		t.Fatal("setup 不得生成 security/（D4-E 密钥面）")
+	}
+	if _, err := os.Stat(filepath.Join(keysDir, "wg.conf")); err == nil {
+		t.Fatal("setup 不得生成 wg.conf")
 	}
 }
 
@@ -57,7 +98,7 @@ func TestSetupLocalThenGenerateKeys(t *testing.T) {
 		t.Fatalf("keys generate rc=%d", rc)
 	}
 	root := os.Getenv("MYNET_HOME")
-	keysDir := filepath.Join(root, "conf", "local", "nodes", "3001", "keys")
+	keysDir := filepath.Join(root, "conf", "local", "3001")
 	priv, pub := readKeysHex(t, keysDir)
 	if len(priv) != 128 {
 		t.Fatalf("gnb 私钥 %d hex，必须 128（CPI-61）", len(priv))
@@ -77,7 +118,12 @@ func TestSetupLocalThenGenerateKeys(t *testing.T) {
 	if _, err := store.LoadLocalIntent(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := os.Stat(filepath.Join(keysDir, "node.private"))
+	// 私钥权限（D4-E：gnb 私钥在 security/<nodeID>.private）
+	privPath := findSecurityPriv(t, keysDir)
+	if privPath == "" {
+		t.Fatal("缺 security/<nodeID>.private")
+	}
+	st, err := os.Stat(privPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +149,7 @@ func TestSetupThenImportKeys(t *testing.T) {
 		t.Fatalf("keys set rc=%d", rc)
 	}
 	root := os.Getenv("MYNET_HOME")
-	gotPriv, gotPub := readKeysHex(t, filepath.Join(root, "conf", "online", "t_9", "nodes", "n2", "keys"))
+	gotPriv, gotPub := readKeysHex(t, filepath.Join(root, "conf", "online", "n2"))
 	// 私钥原样落盘
 	if gotPriv != priv {
 		t.Fatalf("私钥不一致 priv=%s…", gotPriv[:8])
@@ -144,7 +190,7 @@ func TestKeysSetDerivesPublicFromPrivate(t *testing.T) {
 		t.Fatalf("keys set（仅私钥）rc=%d", rc)
 	}
 	root := os.Getenv("MYNET_HOME")
-	keysDir := filepath.Join(root, "conf", "online", "t_9", "nodes", "n2", "keys")
+	keysDir := filepath.Join(root, "conf", "online", "n2")
 	gotPriv, gotPub := readKeysHex(t, keysDir)
 	if gotPriv != priv {
 		t.Fatal("私钥应原样落盘")
@@ -174,9 +220,12 @@ func TestKeysSetRejectsUnparseablePrivate(t *testing.T) {
 	bad := strings.Repeat("z", 128) // 128 字符但非 hex
 	configFaceKeysSet([]string{"--private", bad, "--node-id", "n2"})
 	root := os.Getenv("MYNET_HOME")
-	keysDir := filepath.Join(root, "conf", "online", "t_9", "nodes", "n2", "keys")
+	keysDir := filepath.Join(root, "conf", "online", "n2")
 	if _, err := os.Stat(filepath.Join(keysDir, "node.private")); err == nil {
 		t.Fatal("推导失败的私钥不得落盘")
+	}
+	if _, err := os.Stat(filepath.Join(keysDir, "security")); err == nil {
+		t.Fatal("推导失败的私钥不得落盘（security/）")
 	}
 }
 
@@ -186,9 +235,12 @@ func TestSetupOnlineWritesProfile(t *testing.T) {
 		t.Fatalf("setup --online 退出码 %d", rc)
 	}
 	root := os.Getenv("MYNET_HOME")
-	// setup 不写密钥
-	if _, err := os.Stat(filepath.Join(root, "conf", "online", "t_9", "nodes", "n2", "keys", "node.private")); err == nil {
+	// setup 不写密钥（旧/新形态都不许有）
+	if _, err := os.Stat(filepath.Join(root, "conf", "online", "n2", "security")); err == nil {
 		t.Fatal("setup 不得写私钥")
+	}
+	if _, err := os.Stat(filepath.Join(root, "conf", "online", "n2", "wg.conf")); err == nil {
+		t.Fatal("setup 不得写 wg.conf")
 	}
 	store := &config.Store{Root: root}
 	p, err := store.LoadOnlineProfile("t_9")

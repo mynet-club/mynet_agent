@@ -78,8 +78,17 @@ func saveTunnelState(s tunnelState) error {
 }
 
 // gnbPidFile 当前投影目录的 gnb.pid。
+// D4-E：节点唯一存放位 conf/<form>/<nodeId>/；旧 driver/gnb/conf 只作读回退。
 func gnbPidFile() string {
-	base := filepath.Join(utils.GnbConfDir())
+	form, nodeID := utils.ActiveNodeInfo()
+	if nodeID != "" {
+		if dir, err := utils.NodeRuntimePath(form, nodeID); err == nil {
+			if fileExists(filepath.Join(dir, "gnb.pid")) || fileExists(filepath.Join(dir, "node.conf")) {
+				return filepath.Join(dir, "gnb.pid")
+			}
+		}
+	}
+	base := filepath.Join(utils.GetMyNetHome(), "driver", "gnb", "conf")
 	if ents, err := os.ReadDir(base); err == nil {
 		for _, e := range ents {
 			if e.IsDir() {
@@ -88,6 +97,11 @@ func gnbPidFile() string {
 		}
 	}
 	return filepath.Join(utils.VarDir(), "gnb", "gnb.pid")
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && !fi.IsDir()
 }
 
 func gnbRunning() bool {

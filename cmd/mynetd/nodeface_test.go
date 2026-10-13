@@ -255,6 +255,7 @@ func TestSignatureCoversBody(t *testing.T) {
 }
 
 // keys 目录必须跟 mynet setup v2 的写入方一致，否则永远读不到。
+// D4-E：节点唯一存放位 conf/<form>/<nodeId>/（tenant 维度收进 mode.json，无租户层）。
 func TestNodeKeysDirMatchesSetupWriter(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MYNET_HOME", home)
@@ -266,7 +267,7 @@ func TestNodeKeysDirMatchesSetupWriter(t *testing.T) {
 	if want := filepath.Join(home, "conf", "local", "keys"); got != want {
 		t.Errorf("默认 keys = %q, want %q", got, want)
 	}
-	// mode.json online → online/{tenant}/keys
+	// mode.json online → conf/online/<nodeId>（nodeID 全局唯一，无 tenant 层）
 	if err := os.WriteFile(filepath.Join(home, "mode.json"),
 		[]byte(`{"schema":2,"mode":"online","active":{"tenant_id":"t_9","node_id":"n"}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -275,7 +276,22 @@ func TestNodeKeysDirMatchesSetupWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, "conf", "online", "t_9", "nodes", "n", "keys"); got != want {
+	if want := filepath.Join(home, "conf", "online", "n"); got != want {
 		t.Errorf("online keys = %q, want %q", got, want)
+	}
+	// 新存放位已有身份材料时优先命中
+	sec := filepath.Join(home, "conf", "online", "n", "security")
+	if err := os.MkdirAll(sec, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sec, "n.private"), []byte("aa"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = nodeKeysDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "conf", "online", "n"); got != want {
+		t.Errorf("有身份材料时 keys = %q, want %q", got, want)
 	}
 }

@@ -248,11 +248,16 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 	}
 	// proxy 插件启用时：写出口对端 + 打开 proxy on，并准备写 proxy.conf
 	pp := enrichIntentWithProxy(gi)
-	confDir := filepath.Join(utils.GnbConfDir(), nodeID)
-	// C5：driver/** 是投影，手改会在本次被覆盖 —— 说出来，不静默。
+	// D4-E：节点唯一存放位 conf/<form>/<nodeId>/（密钥与驱动 conf 同居）
+	form, _ := utils.ActiveNodeInfo()
+	confDir, err := utils.NodeRuntimeDir(form, nodeID)
+	if err != nil {
+		return err
+	}
+	// C5：驱动 conf 是 Apply 投影，手改会在本次被覆盖 —— 说出来，不静默。
 	warnHandEdits(confDir)
 	if dry {
-		fmt.Printf("dry-run: 将写入 driver/gnb/conf/%s/（node/route/address/keys）\n", nodeID)
+		fmt.Printf("dry-run: 将写入 %s（node/route/address/keys）\n", confDir)
 		return writeProxyProjection(nodeID, pp, true)
 	}
 	d := &driver.GNBDriver{ConfDir: confDir}
@@ -274,9 +279,11 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 	return nil
 }
 
+
 // writeWgProjection — wireguard 投影（A-5）。
-// conf 落 /etc/wireguard/<iface>.conf（wg-quick 原生位）；
-// 同步一份到 $MYNET_HOME/var/wg.conf 供 init 回退查找。
+// conf 落**节点唯一存放位** conf/<form>/<nodeId>/wg.conf（D4-E；驱动原生格式，
+// PrivateKey=base64 就是密钥存放本身 —— 不再另留 hex 副本）。
+// 同步一份到 $MYNET_HOME/var/wg.conf 供 OpenWrt init 回退查找（未迁移 init 的兼容位）。
 func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	if env.WireGuard == nil {
 		return fmt.Errorf("bundle 无 wireguard intent")
@@ -286,6 +293,16 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	iface, err := env.TunDevice()
 	if err != nil {
 		return err
+	}
+	// 服务端不存 private（与 gnb 同一收口）—— 本机节点目录里的密钥是唯一权威。
+	// wg.conf 的 PrivateKey 是驱动原生存放位，注入后再渲染。
+	if nodeID := wgNodeID(env); nodeID != "" {
+		if privB64, ok := localWGPrivateKey(nodeID); ok {
+			if cur := env.WireGuard.Interface.PrivateKey; cur != "" && cur != privB64 {
+				fmt.Println("⚠ bundle 的 private_key 与本机密钥不一致，以本机为准（密钥不出节点）")
+			}
+			env.WireGuard.Interface.PrivateKey = privB64
+		}
 	}
 	// L5 驱动侧放行（wg 方言）：proxy client 时按「出口 → 目的集」投影 AllowedIPs。
 	// 与 gnb 的 proxy.conf **同源**（默认出口兜底 / 分组 target→出口），只是方言不同：
@@ -300,11 +317,15 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 		}
 	}
 	d := driver.NewWireGuardDriver(iface, 0)
-	// 接口地址（NetworkIntent.Addresses）随 conf 落地：wg-quick 与 OpenWrt init 的 ip+wg
-	// 兜底都从 conf 的 `Address=` 读，而 L6 的 refresh-address 是只打印的桩 ⇒ 不给就没人上地址。
+	// 接口地址（NetworkIntent.Addresses）随 conf 落地：OpenWrt init 的 ip+wg 兜底与
+	// driver 的 bringUp 都从这里读，而 L6 的 refresh-address 是只打印的桩 ⇒ 不给就没人上地址。
 	d.Addresses = env.Network.Addresses
+	// ConfPath 与密钥同居节点目录（wgNodeConfPath，D4-E）；显式置定后 driver 不再推默认。
+	if p := wgNodeConfPath(wgNodeID(env)); p != "" {
+		d.ConfPath = p
+	}
 	if dry {
-		fmt.Printf("dry-run: 将写入 /etc/wireguard/%s.conf\n", iface)
+		fmt.Printf("dry-run: 将写入 %s\n", d.ConfPath)
 		return nil
 	}
 	if err := d.WriteIntent(env.WireGuard); err != nil {
@@ -318,6 +339,61 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 	}
 	fmt.Printf("✓ driver 投影 %s\n", d.ConfPath)
 	return nil
+}
+
+// wgNodeID bundle 里的本节点 id（wg 侧与 gnb 同源 env.Node.ID）。
+func wgNodeID(env *domain.BundleEnvelope) string {
+	if env == nil || env.Node.ID == "" {
+		return ""
+	}
+	return env.Node.ID
+}
+
+// wgNodeConfPath wg 配置 = 节点唯一存放位 conf/<form>/<nodeId>/wg.conf（D4-E）。
+// 与密钥**同居一目录**：nodeID 取 bundle 的 node.id，form 取 mode.json ——
+// 与 localWGPrivateKey 同源，避免「密钥在一个目录、wg.conf 在另一个目录」。
+// nodeID 空时跟 mode.json 的 active.node_id，再空落 default。
+func wgNodeConfPath(nodeID string) string {
+	form, active := utils.ActiveNodeInfo()
+	if nodeID == "" {
+		nodeID = active
+	}
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	dir, err := utils.NodeRuntimeDir(form, nodeID)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "wg.conf")
+}
+
+// localWGPrivateKey 本机节点目录里的 wg 私钥（base64 44，驱动原生格式）。
+// 读不到返回 ok=false —— 用 bundle 里的值（若后端将来改为下发）。
+func localWGPrivateKey(nodeID string) (string, bool) {
+	form, _ := utils.ActiveNodeInfo()
+	dir, err := utils.NodeRuntimePath(form, nodeID)
+	if err != nil {
+		return "", false
+	}
+	if !utils.NodeDirHasIdentity(dir) {
+		// 旧布局未迁移：keys/ 树里的 hex 私钥转 base64（hex↔base64 只留读边界）
+		if hexPriv, err := keys.LoadNodePrivateKey(utils.ResolveKeysDir(filepath.Join(confDir(), string(form)), nodeID)); err == nil && hexPriv != "" {
+			if b64, err := keys.HexPrivToWGBase64(hexPriv); err == nil {
+				return b64, true
+			}
+		}
+		return "", false
+	}
+	privHex, err := keys.LoadNodePrivateKey(dir)
+	if err != nil || privHex == "" {
+		return "", false
+	}
+	b64, err := keys.HexPrivToWGBase64(privHex)
+	if err != nil {
+		return "", false
+	}
+	return b64, true
 }
 
 func copyDirFiles(src, dst string) error {

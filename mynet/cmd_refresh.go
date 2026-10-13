@@ -117,32 +117,36 @@ func bundledProxyListPath(p *domain.ProxyPolicy) string {
 	return f
 }
 
-// gnbConfDir gnb 原生配置目录 —— **投影目录** driver/gnb/conf/{nodeID}。
+// gnbConfDir gnb 原生配置目录 —— **节点唯一存放位** conf/<form>/<nodeId>/（D4-E）。
 //
 // 与 writeGnbProjection / ApplyFromActive 同一路径。此前这里是 var/gnb，
 // 于是「apply 写了投影、service start 起了旧目录」—— 状态乱、启动失败的根因。
+// 旧 driver/gnb/conf 只作读回退（存量未迁移节点）。
 func gnbConfDir() string {
 	nodeID := ""
 	store := &config.Store{}
 	if _, mode, err := store.ActiveSource(); err == nil && mode != nil {
 		nodeID = mode.Active.NodeID
 	}
-	if nodeID == "" {
-		// 兜底：扫投影目录唯一子目录
-		base := utils.GnbConfDir()
-		if ents, err := os.ReadDir(base); err == nil {
-			for _, e := range ents {
-				if e.IsDir() {
-					nodeID = e.Name()
-					break
-				}
+	form, _ := utils.ActiveNodeInfo()
+	if nodeID != "" {
+		if p, err := utils.NodeRuntimeDir(form, nodeID); err == nil {
+			return p
+		}
+	}
+	// 兜底：旧投影目录唯一子目录（未迁移节点）
+	base := filepath.Join(utils.GetMyNetHome(), "driver", "gnb", "conf")
+	if ents, err := os.ReadDir(base); err == nil {
+		for _, e := range ents {
+			if e.IsDir() {
+				return filepath.Join(base, e.Name())
 			}
 		}
 	}
-	if nodeID != "" {
-		return filepath.Join(utils.GnbConfDir(), nodeID)
+	if p, err := utils.NodeRuntimeDir(form, "default"); err == nil {
+		return p
 	}
-	return filepath.Join(utils.GnbConfDir(), "default")
+	return filepath.Join(base, "default")
 }
 
 // readNodeConf 从配置树 v2 的 keys/ 读身份，拼成 KEY=VALUE 形态
@@ -343,8 +347,8 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 	switch env.Driver {
 	case domain.DriverTypeWireGuard:
 		d := driver.NewWireGuardDriver(dev, 0)
-		// 与 WriteIntent / wg-quick 同位（见 wireguard.go）
-		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+		// 与 WriteIntent 同位：节点唯一存放位 conf/<form>/<nodeId>/wg.conf（D4-E）。
+		// 不显式给 ConfPath，由 driver 的 confPathDefault 推。
 		if err := d.WriteIntent(env.WireGuard); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

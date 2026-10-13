@@ -3,12 +3,14 @@ package driver
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // WireGuardDriver 只读 + 生命周期。解析 `wg show`。
@@ -147,6 +149,32 @@ func (d *WireGuardDriver) GetNetworkSummary() (*domain.VPNNetworkSummary, error)
 	}, nil
 }
 
+// confPathDefault wg 配置落**节点唯一存放位** conf/<form>/<nodeId>/wg.conf（D4-E）。
+// 旧位 /etc/wireguard/<iface>.conf 退役 —— 装载换路径即用：`wg setconf/syncconf`
+// 吃任意路径（wireguard.go SyncFromConfFile），OpenWrt init 兜底即 setconf 路线。
+// form 由 mode.json 判；节点未定时落 conf/<form>/default/wg.conf。
+func (d *WireGuardDriver) confPathDefault() string {
+	form, nodeID := utils.ActiveNodeInfo()
+	if d.NodeID > 0 {
+		nodeID = strconv.FormatInt(d.NodeID, 10)
+	}
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	if p, err := utils.NodeRuntimePath(form, nodeID); err == nil {
+		return filepath.Join(p, "wg.conf")
+	}
+	return "/etc/wireguard/" + d.Interface + ".conf"
+}
+
+// WGConfPath 当前（或默认）wg 配置路径 —— 节点唯一存放位 conf/<form>/<nodeId>/wg.conf。
+func (d *WireGuardDriver) WGConfPath() string {
+	if d.ConfPath != "" {
+		return d.ConfPath
+	}
+	return d.confPathDefault()
+}
+
 // WriteConfig 旧契约：VPNBundle → wg-quick 配置（keys.self + peers）。
 // 新链路请用 WriteIntent（BundleEnvelope.WireGuardIntent）。
 func (d *WireGuardDriver) WriteConfig(b *domain.VPNBundle) error {
@@ -155,7 +183,7 @@ func (d *WireGuardDriver) WriteConfig(b *domain.VPNBundle) error {
 	}
 	text := RenderWGConfigFromBundle(b)
 	if d.ConfPath == "" {
-		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+		d.ConfPath = d.confPathDefault()
 	}
 	return writeFile0600(d.ConfPath, []byte(text))
 }
@@ -167,30 +195,127 @@ func (d *WireGuardDriver) WriteIntent(w *domain.WireGuardIntent) error {
 	}
 	text := RenderWGConfig(w, d.Addresses)
 	if d.ConfPath == "" {
-		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+		d.ConfPath = d.confPathDefault()
 	}
 	return writeFile0600(d.ConfPath, []byte(text))
 }
 
 // Start 起隧道。平台服务管理器在（OpenWrt/procd）→ 交给它 —— init 的
-// `start_wg_interface` 有 `ip`+`wg` 兜底，而这里直接 exec 的 `wg-quick` 在 OpenWrt
-// **根本不存在**（wireguard-tools 不装它），自建必失败。
+// `start_wg_interface` 有 `ip`+`wg` 兜底，而 wg-quick 在 OpenWrt **根本不存在**
+// （wireguard-tools 不装它），自建必失败。
+//
+// D4-E：装载换路径即用 —— conf 在节点唯一存放位 conf/<form>/<nodeId>/wg.conf，
+// 而 `wg-quick` 钉死 /etc/wireguard/<iface>.conf，随旧路径退役。冷启走
+// `ip link add <iface> type wireguard` + `wg setconf <iface> <file>`（与 OpenWrt init
+// 兜底同一路线）；macOS wireguard-go 起口后同走 setconf，Windows 走 WireGuard 服务的
+// 复制式安装投影（方案 A），都不经这里建口。
+// 旧位 /etc/wireguard/<iface>.conf 还在的未迁移节点，仍按 wg-quick 旧法兜底。
 func (d *WireGuardDriver) Start() error {
 	if handled, err := delegatePlatformService(d.Exec, "start"); handled {
 		return err
 	}
-	_, err := d.Exec("wg-quick", "up", d.Interface)
-
-	return err
+	if err := d.bringUp(); err != nil {
+		if _, statErr := os.Stat("/etc/wireguard/" + d.Interface + ".conf"); statErr == nil {
+			_, qerr := d.Exec("wg-quick", "up", d.Interface)
+			return qerr
+		}
+		return err
+	}
+	return nil
 }
 
 func (d *WireGuardDriver) Stop() error {
 	if handled, err := delegatePlatformService(d.Exec, "stop"); handled {
 		return err
 	}
-	_, err := d.Exec("wg-quick", "down", d.Interface)
+	if err := d.teardown(); err != nil {
+		if _, statErr := os.Stat("/etc/wireguard/" + d.Interface + ".conf"); statErr == nil {
+			_, qerr := d.Exec("wg-quick", "down", d.Interface)
+			return qerr
+		}
+		return err
+	}
+	return nil
+}
 
-	return err
+// bringUp 冷启：ip link add + wg setconf + addr + up。
+// 接口已在（wireguard-go / 服务已起）时只 setconf + up —— 不重复建口。
+func (d *WireGuardDriver) bringUp() error {
+	if _, err := d.Exec("wg", "show", d.Interface); err != nil {
+		if out, lerr := d.Exec("ip", "link", "add", d.Interface, "type", "wireguard"); lerr != nil {
+			if _, err2 := d.Exec("wg", "show", d.Interface); err2 != nil {
+				return fmt.Errorf("wireguard: 建口 %s 失败（本平台需先起 wireguard-go / WireGuard 服务）: %w (%s)",
+					d.Interface, lerr, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+	if err := d.setconfFromConfFile(); err != nil {
+		return err
+	}
+	for _, a := range d.Addresses {
+		if a == "" {
+			continue
+		}
+		if out, err := d.Exec("ip", "addr", "add", a, "dev", d.Interface); err != nil {
+			// 已存在不算错（幂等重装）
+			if !strings.Contains(string(out), "File exists") && !strings.Contains(string(out), "exists") {
+				return fmt.Errorf("wireguard: ip addr add %s: %w (%s)", a, err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
+	if out, err := d.Exec("ip", "link", "set", d.Interface, "up"); err != nil {
+		return fmt.Errorf("wireguard: ip link set up: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// teardown 拆口（ip link del）。不按名字杀进程 —— wg 无常驻进程。
+func (d *WireGuardDriver) teardown() error {
+	if out, err := d.Exec("ip", "link", "set", d.Interface, "down"); err != nil {
+		return fmt.Errorf("wireguard: ip link set down: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := d.Exec("ip", "link", "del", d.Interface); err != nil {
+		return fmt.Errorf("wireguard: ip link del: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// setconfFromConfFile 冷启装载：盘上配置剥成 wg 形态后 `wg setconf <iface> <file>`
+// （setconf 吃任意路径，正是「装载换路径即用」的判据）。
+// 路径走 WGConfPath()：ConfPath 未显式给时推节点唯一存放位（不读空路径）。
+func (d *WireGuardDriver) setconfFromConfFile() error {
+	path := d.WGConfPath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("wireguard: 读 %s: %w", path, err)
+	}
+	tmp, err := writeStrippedWGTemp(string(raw))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if out, err := d.Exec("wg", "setconf", d.Interface, tmp); err != nil {
+		return fmt.Errorf("wg setconf %s: %w (%s)", d.Interface, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// writeStrippedWGTemp 把 wg-quick 格式剥成 setconf/syncconf 认的形态落临时文件。
+func writeStrippedWGTemp(text string) (string, error) {
+	tmp, err := os.CreateTemp("", "mynet-wg-conf-*.conf")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.WriteString(StripWGQuickKeys(text)); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return "", err
+	}
+	return tmp.Name(), nil
 }
 
 // wgQuickOnlyKeys 只属于 wg-quick、`wg setconf/syncconf` **不认**的键
@@ -235,24 +360,17 @@ func (d *WireGuardDriver) SyncFromConfFile() error {
 	if _, err := d.Exec("wg", "show", d.Interface); err != nil {
 		return fmt.Errorf("wireguard: 接口 %s 不在，不能 syncconf（应先 up）: %w", d.Interface, err)
 	}
-	raw, err := os.ReadFile(d.ConfPath)
+	path := d.WGConfPath()
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("wireguard: 读 %s: %w", d.ConfPath, err)
+		return fmt.Errorf("wireguard: 读 %s: %w", path, err)
 	}
-	tmp, err := os.CreateTemp("", "mynet-wg-sync-*.conf")
+	tmp, err := writeStrippedWGTemp(string(raw))
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(StripWGQuickKeys(string(raw))); err != nil {
-		_ = tmp.Close()
-
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if out, err := d.Exec("wg", "syncconf", d.Interface, tmp.Name()); err != nil {
+	defer os.Remove(tmp)
+	if out, err := d.Exec("wg", "syncconf", d.Interface, tmp); err != nil {
 		return fmt.Errorf("wg syncconf %s: %w (%s)", d.Interface, err, strings.TrimSpace(string(out)))
 	}
 

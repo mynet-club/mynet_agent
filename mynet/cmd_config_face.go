@@ -256,6 +256,9 @@ func configFaceTenants() int {
 }
 
 // configFaceKeys keys 子命令。
+//
+// 写入类（generate/set/ensure/sync）必须显式 MYNET_HOME（C3）——
+// home 未设时按 exe 树推断会把密钥写进幻影路径（见 configFaceKeysShow）。
 func configFaceKeys(args []string) int {
 	sub := "show"
 	if len(args) > 0 && !isFlag(args[0]) {
@@ -266,12 +269,24 @@ func configFaceKeys(args []string) int {
 	case "show", "status":
 		return configFaceKeysShow()
 	case "ensure":
+		if _, code := requireHome(); code != 0 {
+			return code
+		}
 		return configFaceKeysEnsure()
 	case "generate":
+		if _, code := requireHome(); code != 0 {
+			return code
+		}
 		return configFaceKeysGenerate(args)
 	case "set":
+		if _, code := requireHome(); code != 0 {
+			return code
+		}
 		return configFaceKeysSet(args)
 	case "sync":
+		if _, code := requireHome(); code != 0 {
+			return code
+		}
 		for _, arg := range args {
 			if arg == "--connect" {
 				return configFaceKeysSyncConnect(true)
@@ -300,7 +315,7 @@ func configFaceKeysDir() (src string, mode *domain.ModeFile, err error) {
 	return utils.ResolveKeysDir(src, nodeID), mode, nil
 }
 
-// configFaceKeysDirWrite **写入**一律用节点级路径，不回退 legacy。
+// configFaceKeysDirWrite **写入**一律用节点唯一存放位 conf/<form>/<nodeId>/（D4-E），不回退 legacy。
 // nodeIDHint：CLI --node-id 显式给出时用它；否则用 mode.Active.NodeID。
 // 二者皆空才报错 —— 导入/新建密钥不应被「mode 还没写 node」卡死。
 func configFaceKeysDirWrite(nodeIDHint string) (src, dir string, mode *domain.ModeFile, err error) {
@@ -316,7 +331,7 @@ func configFaceKeysDirWrite(nodeIDHint string) (src, dir string, mode *domain.Mo
 	if nodeID == "" {
 		return "", "", mode, fmt.Errorf("无法定位密钥目录：请传 --node-id，或先 setup/claim 激活节点")
 	}
-	dir, err = utils.NodeKeysDir(src, nodeID)
+	dir, err = utils.NodeRuntimeDir(utils.NodeFormOfSpace(src), nodeID)
 	return src, dir, mode, err
 }
 
@@ -341,6 +356,10 @@ func backFacePubFor(mode *domain.ModeFile) (string, string) {
 }
 
 // configFaceKeysShow 只回公钥指纹与是否存在，**绝不回 private**。
+//
+// D4-E：keys_dir = 节点唯一存放位 conf/<form>/<nodeId>/（form 跟 mode.json 实际值）；
+// 同时报 home 与 home_source —— MYNET_HOME 未设时 GetMyNetHome 会按 exe 树推断，
+// 那条路径只作参考（曾报 /opt/mynet/conf/local/keys 幻影路径，真实树在 /var/lib/mynet）。
 func configFaceKeysShow() int {
 	keysDir, mode, err := configFaceKeysDir()
 	if err != nil {
@@ -355,7 +374,7 @@ func configFaceKeysShow() int {
 	if mode != nil && mode.Active.Source != "" {
 		src = mode.Active.Source
 	}
-	return printJSON(map[string]any{
+	out := map[string]any{
 		"has_private":   has,
 		"has_public":    pub != "",
 		"public_hex":    pub,
@@ -365,7 +384,13 @@ func configFaceKeysShow() int {
 		"source":        src,
 		"mode":          modeName,
 		"keys_dir":      keysDir,
-	})
+		"home":          utils.GetMyNetHome(),
+		"home_source":   utils.HomeSource(),
+	}
+	if utils.HomeSource() != "env" {
+		out["warning"] = "MYNET_HOME 未设置：路径按 " + utils.HomeSource() + " 树推断，仅供参考（写入类子命令会拒绝）"
+	}
+	return printJSON(out)
 }
 
 func prefixHex(s string) string {
@@ -790,17 +815,10 @@ func configFaceRuntime() int {
 	if mode != nil {
 		nodeID = mode.Active.NodeID
 	}
-	gnbConf := filepath.Join(utils.GnbConfDir(), nodeID)
+	// D4-E：gnb conf 在节点唯一存放位 conf/<form>/<nodeId>/（gnbConfDir 同源）
+	gnbConf := gnbConfDir()
 	if nodeID == "" {
-		if ents, e := os.ReadDir(utils.GnbConfDir()); e == nil {
-			for _, en := range ents {
-				if en.IsDir() {
-					gnbConf = filepath.Join(utils.GnbConfDir(), en.Name())
-					nodeID = en.Name()
-					break
-				}
-			}
-		}
+		nodeID = filepath.Base(gnbConf)
 	}
 	read := func(name string) string {
 		b, err := os.ReadFile(filepath.Join(gnbConf, name))

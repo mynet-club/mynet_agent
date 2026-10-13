@@ -44,7 +44,7 @@ func TestApplyFromActiveLocalProjectsGnb(t *testing.T) {
 		t.Fatalf("ApplyFromActive: %v", err)
 	}
 
-	confDir := filepath.Join(root, "driver", "gnb", "conf", "3001")
+	confDir := filepath.Join(root, "conf", "local", "3001") // D4-E 节点唯一存放位
 	for _, f := range []string{"node.conf", "route.conf"} {
 		if _, err := os.Stat(filepath.Join(confDir, f)); err != nil {
 			t.Fatalf("缺 %s: %v", f, err)

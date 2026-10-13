@@ -75,13 +75,18 @@ func TestWGDriverReloadUsesSyncconfWhenUp(t *testing.T) {
 }
 
 // 接口不在 → 回落冷启（契约：HotReload 下 Reload 仍须把状态带到位）。
+// D4-E：冷启是 ip+wg setconf（装载换路径即用），不是 wg-quick（旧位兜底）。
 func TestWGDriverReloadFallsBackColdWhenDown(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "wg.conf")
+	if err := os.WriteFile(conf, []byte("[Interface]\nPrivateKey = p\n\n[Peer]\nPublicKey = k\nAllowedIPs = 10.9.0.2/32\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var calls []string
 	d := NewWireGuardDriver("wg0", 0)
-	d.ConfPath = filepath.Join(t.TempDir(), "missing.conf")
+	d.ConfPath = conf
 	d.Exec = func(name string, args ...string) ([]byte, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
-		if name == "wg" {
+		if name == "wg" && len(args) > 0 && args[0] == "show" {
 			return nil, errors.New("Unable to access interface: No such device")
 		}
 		return nil, nil
@@ -90,16 +95,19 @@ func TestWGDriverReloadFallsBackColdWhenDown(t *testing.T) {
 		t.Fatalf("Reload 应回落成功: %v", err)
 	}
 	got := strings.Join(calls, "\n")
-	for _, want := range []string{"wg-quick down wg0", "wg-quick up wg0"} {
+	for _, want := range []string{"ip link add wg0 type wireguard", "wg setconf wg0 ", "ip link set wg0 up"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("接口不在时应回落冷启，缺 %q：\n%s", want, got)
+			t.Fatalf("接口不在时应回落冷启（ip+setconf），缺 %q：\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "wg-quick") {
+		t.Fatalf("回落不该走 wg-quick：\n%s", got)
 	}
 }
 
 // 热同步失败（配置错/剥错）也要回落，而不是把错报出去中断 reload。
 func TestWGDriverReloadFallsBackWhenSyncconfFails(t *testing.T) {
-	conf := filepath.Join(t.TempDir(), "wg0.conf")
+	conf := filepath.Join(t.TempDir(), "wg.conf")
 	if err := os.WriteFile(conf, []byte("[Interface]\nPrivateKey = p\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -117,10 +125,13 @@ func TestWGDriverReloadFallsBackWhenSyncconfFails(t *testing.T) {
 		t.Fatalf("syncconf 失败应回落冷启: %v", err)
 	}
 	got := strings.Join(calls, "\n")
-	for _, want := range []string{"wg syncconf wg0 ", "wg-quick down wg0", "wg-quick up wg0"} {
+	for _, want := range []string{"wg syncconf wg0 ", "ip link del wg0", "wg setconf wg0 ", "ip link set wg0 up"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("缺 %q：\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "wg-quick") {
+		t.Fatalf("回落不该走 wg-quick：\n%s", got)
 	}
 }
 

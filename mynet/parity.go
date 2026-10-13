@@ -80,15 +80,21 @@ func currentParity() []ParityItem {
 func LoadNodeConfKV() (map[string]string, string, error) {
 	home := utils.GetMyNetHome()
 	cands := []string{}
-	// 常见位：driver/gnb/conf/<nodeId>/node.conf —— 从 mode.json 取 node
-	if id := activeNodeID(); id != "" {
-		cands = append(cands, filepath.Join(home, "driver", "gnb", "conf", id, "node.conf"))
+	// D4-E：节点唯一存放位 conf/<form>/<nodeId>/node.conf —— 从 mode.json 取 form+node
+	form, id := utils.ActiveNodeInfo()
+	if id != "" {
+		cands = append(cands, filepath.Join(home, "conf", form, id, "node.conf"))
 	}
-	// 兜底：任意 node.conf
-	if ents, err := os.ReadDir(filepath.Join(home, "driver", "gnb", "conf")); err == nil {
-		for _, e := range ents {
-			if e.IsDir() {
-				cands = append(cands, filepath.Join(home, "driver", "gnb", "conf", e.Name(), "node.conf"))
+	// 旧投影树（未迁移节点）
+	for _, base := range []string{
+		filepath.Join(home, "conf", form),
+		filepath.Join(home, "driver", "gnb", "conf"),
+	} {
+		if ents, err := os.ReadDir(base); err == nil {
+			for _, e := range ents {
+				if e.IsDir() {
+					cands = append(cands, filepath.Join(base, e.Name(), "node.conf"))
+				}
 			}
 		}
 	}

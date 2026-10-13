@@ -1,10 +1,12 @@
 package mynet
 
 import (
-	"github.com/mynet-club/mynet_agent/mynet/keys"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/mynet-club/mynet_agent/mynet/keys"
 )
 
 func TestEnsureNodeKeysPreservesIdentity(t *testing.T) {
@@ -55,20 +57,53 @@ func TestCloudNodeVPN(t *testing.T) {
 }
 
 func TestEnsureNodeKeysRefusesMismatchedPair(t *testing.T) {
+	// gnb：security/<id>.public 被改坏（与私钥不配对）→ 拒绝、私钥不许被转
 	dir := t.TempDir()
-	if err := ensureNodeKeys(dir, "wireguard", "42", ""); err != nil {
+	if err := ensureNodeKeys(dir, "gnb", "42", ""); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := os.ReadFile(filepath.Join(dir, "node.private"))
-	os.WriteFile(filepath.Join(dir, "node.public"), []byte("bad-public"), 0644)
-	if err := ensureNodeKeys(dir, "wireguard", "42", ""); err == nil {
+	before, err := os.ReadFile(filepath.Join(dir, "security", "42.private"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "security", "42.public"), []byte("bad-public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNodeKeys(dir, "gnb", "42", ""); err == nil {
 		t.Fatal("accepted corrupt public key")
 	}
-	after, _ := os.ReadFile(filepath.Join(dir, "node.private"))
+	after, _ := os.ReadFile(filepath.Join(dir, "security", "42.private"))
 	if string(before) != string(after) {
 		t.Fatal("rotated private key")
 	}
-	if err := ensureNodeKeys(dir, "gnb", "42", ""); err == nil {
+
+	// wireguard：wg.conf 私钥行损坏 → 视为部分导入，拒绝自动重建（不覆盖）
+	wdir := t.TempDir()
+	if err := ensureNodeKeys(wdir, "wireguard", "42", ""); err != nil {
+		t.Fatal(err)
+	}
+	wgBefore, err := os.ReadFile(filepath.Join(wdir, "wg.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := strings.Replace(string(wgBefore), "PrivateKey = ", "PrivateKey = !!!", 1)
+	if err := os.WriteFile(filepath.Join(wdir, "wg.conf"), []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNodeKeys(wdir, "wireguard", "42", ""); err == nil {
+		t.Fatal("accepted corrupt wg.conf")
+	}
+	wgAfter, _ := os.ReadFile(filepath.Join(wdir, "wg.conf"))
+	if string(wgBefore) == string(wgAfter) {
+		t.Fatal("损坏的 wg.conf 不该被悄悄重建")
+	}
+
+	// 驱动不匹配：有效 wireguard 身份 + gnb 请求 → 拒绝
+	cdir := t.TempDir()
+	if err := ensureNodeKeys(cdir, "wireguard", "42", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNodeKeys(cdir, "gnb", "42", ""); err == nil {
 		t.Fatal("accepted wrong driver")
 	}
 }

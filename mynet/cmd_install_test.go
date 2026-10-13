@@ -198,7 +198,7 @@ func TestProvisionDriverGnbBin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dstDir := filepath.Join(home, "driver", "gnb", "bin")
+	dstDir := filepath.Join(prefix, "bin") // D4-E：二进制归 <prefix>/bin
 
 	copied, missing := provisionDriverGnbBin(prefix, home, filepath.Join(prefix, "sbin", "gnb"))
 	if len(missing) != 0 {

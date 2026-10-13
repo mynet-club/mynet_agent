@@ -88,8 +88,8 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	fmt.Println("installed", envPath)
 
 	// gnb 二进制归 gnb 安装包（mynet_gnb / MSI），这里只校验并写路径。
-	// 标准位：driver/gnb/bin/gnb.exe（与 conf 投影同树，resolveGNBBinary 第一优先）。
-	gnbDst := filepath.Join(home, "driver", "gnb", "bin", "gnb.exe")
+	// 标准位：<prefix>\bin\gnb.exe（D4-E：driver/ 安装层退役，resolveGNBBinary 第一优先）。
+	gnbDst := filepath.Join(prefix, "bin", "gnb.exe")
 	if gnbBin != "" && fileExists(gnbBin) && gnbBin != gnbDst {
 		fmt.Fprintf(os.Stderr, "⚠️ gnb 在 %s，标准位是 %s\n", gnbBin, gnbDst)
 		fmt.Fprintln(os.Stderr, "  归位由 gnb 安装包负责；请安装后重跑 mynet install")

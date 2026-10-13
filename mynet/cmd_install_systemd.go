@@ -77,7 +77,7 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		fmt.Printf("  写 %s/%s\n", unitDir, unitFileName(u))
 	}
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
-	fmt.Printf("  置备 gnb 四件套到标准位 %s/driver/gnb/bin（源: 包内位 → /usr/local/bin → --gnb-bin 同目录）\n", home)
+	fmt.Printf("  置备 gnb 四件套到标准位 %s/bin（源: 旧 home 树/包内位 → /usr/local/bin → --gnb-bin 同目录）\n", prefix)
 	fmt.Printf("  写 %s/conf/gateways.json（网关列表）+ 把 MYNET_HOME=%s 写进 unit（不再有 env 文件）\n",
 		home, home)
 	fmt.Printf("  建 %s/{conf,var}\n", home)
@@ -219,6 +219,9 @@ func uninstallSystemd(home string, keepBin, dry bool) int {
 // ⚠️ gnb 的路径是写死的绝对路径：systemd 的 ExecStart **第一个 token 必须是绝对路径**，
 // 不能是 ${VAR}。所以装的 gnb 不在默认位置时要替换进单元里 —— 否则单元装得上、
 // 起不来，而错误只在启动那一刻才出现。
+//
+// __GNB_CONF_REL__ 是 gnb -c 的 home 相对目标（D4-E：节点唯一存放位
+// conf/<form>/<nodeId>，form+nodeId 由 install 时的 mode.json 决定）。
 func writeSystemdUnits(unitDir, gnbBin, home string) error {
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return err
@@ -227,6 +230,7 @@ func writeSystemdUnits(unitDir, gnbBin, home string) error {
 		body, _ := systemdUnit(u)
 		if u == "mynet_gnb" {
 			body = strings.ReplaceAll(body, "/usr/local/bin/gnb", gnbBin)
+			body = strings.ReplaceAll(body, "__GNB_CONF_REL__", gnbConfRel(home))
 		}
 		// MYNET_HOME 写进 unit（不再有 EnvironmentFile；见 spec/paths.md §2.1）
 		body = strings.ReplaceAll(body, "__MYNET_HOME__", home)
@@ -238,6 +242,8 @@ func writeSystemdUnits(unitDir, gnbBin, home string) error {
 
 	return nil
 }
+
+// gnbConfRel 在 cmd_helpers.go（无 build-tag，迁移命令与 install 共用）。
 
 // runSystemctl 调 systemd。
 func runSystemctl(args ...string) ([]byte, error) {

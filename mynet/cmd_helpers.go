@@ -1,9 +1,11 @@
 package mynet
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -40,6 +42,36 @@ func collectMetricsBrief() map[string]any {
 
 func goos() string   { return runtime.GOOS }
 func goarch() string { return runtime.GOARCH }
+
+// gnbConfRel gnb `-c` 的 home 相对目标（D4-E：节点唯一存放位 conf/<form>/<nodeId>）。
+// form+nodeId 取 mode.json；节点未定时给 conf/local/default（setup 后重跑 install 归位）。
+// 服务单元生成面（install / migrate-layout）负责让它与实际节点目录一致。
+// 放无 build-tag 的本文件：迁移命令（全平台）与 install（分平台）都要用。
+func gnbConfRel(home string) string {
+	form, nodeID := "local", ""
+	raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json"))
+	if err != nil {
+		raw, err = os.ReadFile(filepath.Join(home, "mode.json"))
+	}
+	if err == nil {
+		var m struct {
+			Mode   string `json:"mode"`
+			Active struct {
+				NodeID string `json:"node_id"`
+			} `json:"active"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			if m.Mode == "online" {
+				form = "online"
+			}
+			nodeID = m.Active.NodeID
+		}
+	}
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	return filepath.Join("conf", form, nodeID)
+}
 
 func cmdExists(name string) bool {
 	_, err := exec.LookPath(name)

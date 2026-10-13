@@ -152,10 +152,9 @@ func cmdApply(args []string) int {
 // 那时 daemon 键被忽略、保持前台（gnb_argv.c:439-440 + gnb_conf_file.c:458），
 // 两种模式共用同一份 node.conf。
 //
-// ⚠️ 已知缺口（wireguard）：refresh-config 把配置写到 var/wg.conf，而
-// WireGuardDriver.Start() 走 `wg-quick up <iface>`，wg-quick 只读
-// /etc/wireguard/<iface>.conf（wireguard.go:146,158,164）—— 路径对不上。
-// gnb 那条链已通；wg 这条要等 install 阶段落地，此处不假装它能用。
+// wg 侧（D4-E 已收口）：conf 落节点唯一存放位 conf/<form>/<nodeId>/wg.conf，
+// Start 走 `ip link add` + `wg setconf <iface> <file>`（setconf 吃任意路径），
+// 与 OpenWrt init 兜底同一路线；热同步 `wg syncconf` 同文件。
 func cmdService(args []string) int {
 	// C3：service 驱动进程生命周期，必须显式 MYNET_HOME
 	if _, code := requireHome(); code != 0 {
@@ -283,8 +282,8 @@ func applyAfterStart() int {
 // buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。
 //
 // 两处必须一致：写配置的目录和起进程的目录若对不上，症状是「配置明明写了，
-// 起的却是另一个目录」—— 而这正是此前 GNBDriver 默认 ConfDir
-// （driver/gnb/conf/<nodeId>）与 refresh-config 覆盖值（var/gnb）不一致的形态。
+// 起的却是另一个目录」。D4-E 起两处都指节点唯一存放位 conf/<form>/<nodeId>/
+// （gnbConfDir / driver 的 confPathDefault 同源）。
 func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, error) {
 	env, err := loadBundleEnvelope()
 	if err != nil {
@@ -313,9 +312,12 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("wireguard 接口名: %w", err)
 		}
 		d := driver.NewWireGuardDriver(dev, 0)
-		// 路径对齐 wg-quick 原生位（见 wireguard.go WriteIntent 默认值）。
-		// 此前写 var/wg.conf 而 wg-quick 只读 /etc/wireguard/，Start 必失败。
-		d.ConfPath = "/etc/wireguard/" + d.Interface + ".conf"
+		// ConfPath 与密钥同居：节点唯一存放位 conf/<form>/<nodeId>/wg.conf（D4-E，
+		// wgNodeConfPath 与 writeWgProjection 同源）。wg-quick 钉死 /etc/wireguard
+		// 的旧位已随装载改 setconf 路线退役。
+		if p := wgNodeConfPath(env.Node.ID); p != "" {
+			d.ConfPath = p
+		}
 
 		return d, nil
 	default:

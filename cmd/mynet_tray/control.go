@@ -16,6 +16,7 @@ package main
 // 「停止异常」多半来自按名字杀失败或误伤 —— 这里只碰**本实例**的 unit 与 pid 文件。
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -68,20 +69,42 @@ func newController(goos, override string) Controller {
 	}
 }
 
-// defaultGnbConf 本实例 gnb 投影目录（node_id 取 mode.json 或扫 conf 下唯一子目录）。
+// defaultGnbConf 本实例 gnb conf 目录（D4-E：节点唯一存放位 conf/<form>/<nodeId>/；
+// 旧 driver/gnb/conf 与 var/gnb 只作回退）。
 func defaultGnbConf(home string) string {
-	// 优先 state/active 记的投影路径；否则 driver/gnb/conf/<id>
-	base := filepath.Join(home, "driver", "gnb", "conf")
-	ents, err := os.ReadDir(base)
-	if err != nil {
-		return filepath.Join(home, "var", "gnb") // 旧布局兜底
-	}
-	for _, e := range ents {
-		if e.IsDir() {
-			return filepath.Join(base, e.Name())
+	// 优先 mode.json 的 form+node
+	form, nodeID := "local", ""
+	if raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json")); err == nil {
+		var m struct {
+			Mode   string `json:"mode"`
+			Active struct {
+				NodeID string `json:"node_id"`
+			} `json:"active"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			if m.Mode == "online" {
+				form = "online"
+			}
+			nodeID = m.Active.NodeID
 		}
 	}
-	return filepath.Join(home, "var", "gnb")
+	if nodeID != "" {
+		p := filepath.Join(home, "conf", form, nodeID)
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			return p
+		}
+	}
+	// 旧投影树
+	base := filepath.Join(home, "driver", "gnb", "conf")
+	ents, err := os.ReadDir(base)
+	if err == nil {
+		for _, e := range ents {
+			if e.IsDir() {
+				return filepath.Join(base, e.Name())
+			}
+		}
+	}
+	return filepath.Join(home, "var", "gnb") // 更旧布局兜底
 }
 
 // ── macOS: launchd ───────────────────────────────────────────

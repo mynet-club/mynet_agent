@@ -2,9 +2,11 @@ package mynet
 
 import (
 	"fmt"
-	"github.com/mynet-club/mynet_agent/mynet/keys"
 	"os"
 	"path/filepath"
+
+	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func ensureNodeKeys(dir, vpn, nodeID, backPub string) error {
@@ -31,9 +33,14 @@ func ensureNodeKeys(dir, vpn, nodeID, backPub string) error {
 	}
 	for _, entry := range entries {
 		// A partial import is recoverable by its owner; never overwrite automatically.
+		// D4-E 新形态同样不许覆盖：security/<id>.private（gnb）、wg.conf（wg 原生私钥）
+		// 与旧 node.{private,public} 一样是「已有身份材料」。
 		if filepath.Ext(entry.Name()) == ".private" || filepath.Ext(entry.Name()) == ".public" {
 			return fmt.Errorf("已有密钥文件不完整，请在专家模式修复；未覆盖密钥")
 		}
+	}
+	if utils.NodeDirHasIdentity(dir) {
+		return fmt.Errorf("已有密钥文件不完整（security/ 或 wg.conf），请在专家模式修复；未覆盖密钥")
 	}
 	priv, pub, algo, err = keys.GenerateNodeKeys(vpn)
 	if err != nil {

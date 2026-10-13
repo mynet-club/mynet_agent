@@ -289,12 +289,17 @@ func discoverTreeRoots(home string) []foundTree {
 		}
 	}
 
-	// home 下 driver/gnb/conf 的兄弟节点目录也算候选
-	conf := filepath.Join(home, "driver", "gnb", "conf")
-	if entries, err := os.ReadDir(conf); err == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				add(filepath.Join(conf, e.Name()), "conf-tree")
+	// 节点唯一存放位 conf/<form>/<nodeId>/ 与旧 driver/gnb/conf 的兄弟节点目录都算候选
+	for _, conf := range []string{
+		filepath.Join(home, "conf", "local"),
+		filepath.Join(home, "conf", "online"),
+		filepath.Join(home, "driver", "gnb", "conf"),
+	} {
+		if entries, err := os.ReadDir(conf); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					add(filepath.Join(conf, e.Name()), "conf-tree")
+				}
 			}
 		}
 	}
@@ -305,13 +310,25 @@ func discoverTreeRoots(home string) []foundTree {
 
 func listNodeDirs(root string) []string {
 	var out []string
-	// driver/gnb/conf/*
-	entries, err := os.ReadDir(filepath.Join(root, "driver", "gnb", "conf"))
-	if err != nil {
-		return nil
-	}
-	for _, e := range entries {
-		if e.IsDir() {
+	// 节点唯一存放位（D4-E）与旧 driver/gnb/conf/*
+	for _, base := range []string{
+		filepath.Join(root, "conf", "local"),
+		filepath.Join(root, "conf", "online"),
+		filepath.Join(root, "driver", "gnb", "conf"),
+	} {
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			// conf 根下的保留名不是节点目录
+			switch e.Name() {
+			case "plugins", "nodes", "keys", "proxy":
+				continue
+			}
 			out = append(out, e.Name())
 		}
 	}

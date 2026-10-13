@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // OpenWrt 装配后端 —— 编译期只进 `-tags openwrt` 的产物（playbook §4.1：
@@ -167,7 +168,8 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	}
 
 	// gnb 就位检查（**OpenWrt 方言**）：gnb 由 ipk 落在 $home/driver/gnb/bin（与 init 的
-	// 路径解析同序），**不在** /usr/local/bin —— 拿别平台的默认位检查会把「装得好好的」
+	// 路径解析同序；D4-E 新装归 <prefix>/bin，但 OpenWrt ipk 的落地位仍以现状为准），
+	// **不在** /usr/local/bin —— 拿别平台的默认位检查会把「装得好好的」
 	// 误报成「服务会起不来」（.182 与 arm64 测试 VM 上每次 install/opkg 升级都误报）。
 	if !gnbPresentOpenWrt(home) {
 		fmt.Fprintf(os.Stderr, "⚠️ 未找到 gnb（%s 与 PATH 都没有）—— mynet 服务会起不来。请装 gnb 的 ipk。\n",
@@ -181,9 +183,13 @@ func installOpenWrt(prefix, home, gateways, gnbBin string, enable, dry bool) int
 	return 0
 }
 
-// gnbPresentOpenWrt gnb 是否就位：与 init 的解析同序 —— $home/driver/gnb/bin/gnb → PATH。
+// gnbPresentOpenWrt gnb 是否就位：与 init 的解析同序 —— $home/driver/gnb/bin/gnb
+// （ipk 现状位）→ <prefix>/bin（D4-E 新位）→ PATH。
 func gnbPresentOpenWrt(home string) bool {
 	if fileExists(filepath.Join(home, "driver", "gnb", "bin", "gnb")) {
+		return true
+	}
+	if fileExists(filepath.Join(utils.PrefixBinDir(), "gnb")) {
 		return true
 	}
 	_, err := exec.LookPath("gnb")

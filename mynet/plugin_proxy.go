@@ -310,7 +310,12 @@ func writeProxyProjection(nodeID string, pp *domain.PluginProxyConfig, dry bool)
 	if pp == nil {
 		return nil
 	}
-	dir := filepath.Join(utils.GnbConfDir(), nodeID)
+	// D4-E：节点唯一存放位 conf/<form>/<nodeId>/（与 writeGnbProjection 同源）
+	form, _ := utils.ActiveNodeInfo()
+	dir, err := utils.NodeRuntimePath(form, nodeID)
+	if err != nil {
+		return err
+	}
 	written, warn, err := ApplyProxyToGnb(dir, pp, dry)
 	if err != nil {
 		return err

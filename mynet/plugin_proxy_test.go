@@ -140,7 +140,7 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	proxyConf := filepath.Join(root, "driver", "gnb", "conf", "3001", "proxy.conf")
+	proxyConf := filepath.Join(root, "conf", "local", "3001", "proxy.conf") // D4-E 节点唯一存放位
 	b, err := os.ReadFile(proxyConf)
 	if err != nil {
 		t.Fatalf("缺 proxy.conf: %v", err)
@@ -149,7 +149,7 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 		t.Fatalf("proxy.conf 应含出口 3002:\n%s", b)
 	}
 	// address.conf **不得**把出口标成 f（出口=数据目标，非 mesh 转发）
-	acPath := filepath.Join(root, "driver", "gnb", "conf", "3001", "address.conf")
+	acPath := filepath.Join(root, "conf", "local", "3001", "address.conf")
 	if ac, err := os.ReadFile(acPath); err == nil {
 		for _, line := range strings.Split(string(ac), "\n") {
 			if strings.HasPrefix(line, "f|") {
@@ -158,7 +158,7 @@ func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 		}
 	}
 	// node.conf **不得**出现 proxy on：gnb proxy 开关归独立 proxy.conf
-	nc, _ := os.ReadFile(filepath.Join(root, "driver", "gnb", "conf", "3001", "node.conf"))
+	nc, _ := os.ReadFile(filepath.Join(root, "conf", "local", "3001", "node.conf"))
 	if strings.Contains(string(nc), "proxy on") {
 		t.Fatalf("node.conf 不该有 proxy on（应只在 proxy.conf）:\n%s", nc)
 	}

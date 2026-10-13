@@ -184,9 +184,9 @@ func usageInstall(msg string) int {
 //
 //	mynet uninstall [--home DIR] [--keep-bin] [--dry-run]
 //
-// ⚠️ 不动 $home 下的**节点身份与数据**（conf/mynet.conf 含节点私钥、
-// var/gnb/security/ 含密钥、var/bundle.json 是配置态）。那些是业务数据，
-// 卸载程序不该替人决定丢掉；要清得显式删目录。
+// ⚠️ 不动 $home 下的**节点身份与数据**（conf/ 含节点密钥与驱动 conf ——
+// D4-E 起密钥在 conf/<form>/<nodeId>/security|wg.conf，var/bundle.json 是配置态）。
+// 那些是业务数据，卸载程序不该替人决定丢掉；要清得显式删目录。
 func cmdUninstall(args []string) int {
 	home := ""
 	keepBin := false
@@ -303,18 +303,20 @@ func copyFile(src, dst string, perm os.FileMode) error {
 // gnbSuite 出厂四件套（与 mynet_gnb BASELINE 的 PROGRAMS 一致）。
 var gnbSuite = []string{"gnb", "gnb_ctl", "gnb_es", "gnb_crypto"}
 
-// provisionDriverGnbBin 把 gnb 四件套落进 $MYNET_HOME/driver/gnb/bin「标准位」。
+// provisionDriverGnbBin 把 gnb 四件套落进 <prefix>/bin「标准位」（D4-E：driver/ 安装层
+// 退役，gnb 与 agent 同装 prefix 指定目录；旧 $MYNET_HOME/driver/gnb/bin 只作查找回退）。
 //
 // 源优先级（同一次 install 只认第一个找到的位，保证四件套同树 —— R2）：
-//  1. $prefix/driver/gnb/bin     —— pkg 落地位（darwin pkg / dist 布局）
+//  1. $prefix/driver/gnb/bin     —— 旧 pkg 落地位（darwin pkg / dist 布局，迁移期）
 //  2. /usr/local/bin             —— deb/rpm 常规位
 //  3. dirname(--gnb-bin)         —— 自定义位
 //
 // 内容 sha256 一致就跳过（幂等；包升级后重跑 install 会跟着刷新），
 // 不一致才覆盖。返回 copied（已写标准位）与 missing（哪都没找到/写失败）。
 func provisionDriverGnbBin(prefix, home, gnbBin string) (copied, missing []string) {
-	dstDir := filepath.Join(home, "driver", "gnb", "bin")
+	dstDir := filepath.Join(prefix, "bin")
 	srcDirs := []string{
+		filepath.Join(home, "driver", "gnb", "bin"),
 		filepath.Join(prefix, "driver", "gnb", "bin"),
 		"/usr/local/bin",
 		filepath.Dir(gnbBin),

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // 本机节点状态机（P1）—— 判据全部来自**磁盘产物 + 进程 + 内核**，
@@ -294,7 +295,7 @@ func lookGnb() string {
 	// 平台可执行名见 gnb_bin_{unix,windows}.go
 	name := gnbExeName()
 	// 与 driver.resolveGNBBinary / plugin findGnbBin 同一优先级：
-	// 标准位是 MYNET_HOME/driver/gnb/bin，不是 bin/。
+	// 标准位是 <prefix>/bin（D4-E：driver/ 安装层退役），旧 home 树只作回退。
 	if v := os.Getenv("MYNET_GNB_BIN"); v != "" {
 		if st, err := os.Stat(v); err == nil && !st.IsDir() {
 			return v
@@ -305,7 +306,8 @@ func lookGnb() string {
 		home = "."
 	}
 	dirs := append([]string{
-		filepath.Join(home, "driver", "gnb", "bin"),
+		utils.PrefixBinDir(),
+		filepath.Join(home, "driver", "gnb", "bin"), // 旧标准位（未迁移）
 		filepath.Join(home, "bin"),
 	}, gnbExtraDirs()...)
 	for _, dir := range dirs {
@@ -381,20 +383,42 @@ func readModeFile(home string) ([]byte, error) {
 	return nil, os.ErrNotExist
 }
 
-// gnbProjectionDir 与 mynet 的 gnbConfDir 同一口径：
-// driver/gnb/conf/{nodeID}（apply 投影），旧 var/gnb 仅作回退。
+// nodeDirHasKeys 节点唯一存放位里有没有身份材料（D4-E）：
+// gnb=security/<id>.private、wg=wg.conf（PrivateKey 在内）。
+func nodeDirHasKeys(home, form, nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+	dir := filepath.Join(home, "conf", form, nodeID)
+	return fileNonEmpty(filepath.Join(dir, "security", nodeID+".private")) ||
+		fileNonEmpty(filepath.Join(dir, "wg.conf"))
+}
+
+// gnbProjectionDir 与 mynet 的 gnbConfDir 同一口径（D4-E）：
+// 节点唯一存放位 conf/<form>/<nodeId>/；旧 driver/gnb/conf 与 var/gnb 只作回退。
 func gnbProjectionDir(home string) string {
-	nodeID := ""
+	nodeID, form := "", "local"
 	if raw, err := readModeFile(home); err == nil {
 		var m struct {
+			Mode   string `json:"mode"`
 			Active struct {
 				NodeID string `json:"node_id"`
 			} `json:"active"`
 		}
 		if json.Unmarshal(raw, &m) == nil {
 			nodeID = m.Active.NodeID
+			if m.Mode == "online" {
+				form = "online"
+			}
 		}
 	}
+	if nodeID != "" {
+		p := filepath.Join(home, "conf", form, nodeID)
+		if _, err := os.Stat(filepath.Join(p, "node.conf")); err == nil {
+			return p
+		}
+	}
+	// 旧投影树（未迁移节点）
 	base := filepath.Join(home, "driver", "gnb", "conf")
 	if nodeID != "" {
 		p := filepath.Join(base, nodeID)
@@ -409,7 +433,7 @@ func gnbProjectionDir(home string) string {
 			}
 		}
 	}
-	// 旧布局
+	// 更旧布局
 	return filepath.Join(home, "var", "gnb")
 }
 
@@ -458,13 +482,21 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 
 	// ── ② 配没配 ─────────────────────────────────────────
 	nodeConf := filepath.Join(gnbConf, "node.conf")
-	// 配置树 v2：keys 存在即算已配；旧 mynet.conf 仅作兼容
+	// 配置树 v2+：节点唯一存放位 conf/<form>/<nodeId>/ 有身份材料即算已配（D4-E）；
+	// 旧 keys/ 树与 mynet.conf 仅作兼容
 	myConf := filepath.Join(conf, "mynet.conf")
-	keysOK := fileNonEmpty(filepath.Join(conf, "local", "nodes", st.NodeID, "keys", "node.private")) ||
+	keysOK := nodeDirHasKeys(home, "local", st.NodeID) ||
+		fileNonEmpty(filepath.Join(conf, "local", "nodes", st.NodeID, "keys", "node.private")) ||
 		fileNonEmpty(filepath.Join(conf, "local", "keys", "node.private"))
 	if !keysOK {
 		// online：按 mode.json 的 node_id 找
 		if id := ActiveNodeID(home); id != "" {
+			if nodeDirHasKeys(home, "online", id) {
+				keysOK = true
+				if st.NodeID == "" {
+					st.NodeID = id
+				}
+			}
 			for _, p := range []string{
 				filepath.Join(conf, "online", activeTenantID(home), "nodes", id, "keys", "node.private"),
 				filepath.Join(conf, "online", activeTenantID(home), "keys", "node.private"),

@@ -30,7 +30,11 @@
 # mynetd 负责「拉 bundle → 渲染配置 → 装路由 → 心跳」，本单元负责「让隧道一直活着」。
 # ⚠️ 两者都会碰 gnb，**顺序有依赖**：本单元 After= 了 mynetd 是不必要的
 # （gnb 只需要配置目录存在），但首次部署时要先让 mynetd 跑出
-# $MYNET_HOME/var/gnb/ 再启本单元，否则 gnb 因缺 node.conf 直接退出。
+# 节点唯一存放位 $MYNET_HOME/conf/<form>/<nodeId>/ 再启本单元，
+# 否则 gnb 因缺 node.conf 直接退出。
+#
+# ⚠️ -c 的目标是**节点唯一存放位**（D4-E）：install/服务单元生成面按 mode.json
+# 解析 form+nodeId 后替换 __GNB_CONF_REL__（home 相对路径，随 MYNET_HOME 展开）。
 
 [Unit]
 Description=MyNet gnb tunnel (data plane)
@@ -43,7 +47,7 @@ Type=simple
 # （systemd 支持 Environment 里的变量展开，但**第一个 token 必须是绝对路径**，
 #  所以 gnb 的位置不能写成变量）
 Environment=MYNET_HOME=__MYNET_HOME__
-ExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/var/gnb
+ExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/__GNB_CONF_REL__
 
 # 数据面不能有单点：gnb 挂了必须自动拉起，否则节点「进程都在、网络没了」
 Restart=always

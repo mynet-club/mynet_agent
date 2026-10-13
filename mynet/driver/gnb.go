@@ -13,10 +13,13 @@ import (
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // GNBDriver — A-3。只读 + 生命周期。
-// 配置只进 driver/gnb/conf/<nodeId>/；密钥布局 clamp(SHA512(seed))（见 mynet/keys）。
+// 配置只进**节点唯一存放位** conf/<form>/<nodeId>/（D4-E，协议内布局不变：
+// node.conf/route.conf/address.conf/security/<id>.{private,public}/ed25519/*.public/gnb.map）；
+// 密钥布局 clamp(SHA512(seed))（见 mynet/keys）。
 type GNBDriver struct {
 	NodeID  int64
 	ConfDir string
@@ -51,13 +54,28 @@ const (
 func NewGNBDriver(nodeID int64) *GNBDriver {
 	return &GNBDriver{
 		NodeID:          nodeID,
-		ConfDir:         fmt.Sprintf("driver/gnb/conf/%d", nodeID),
+		ConfDir:         defaultGnbConfDir(nodeID),
 		Exec:            execCombined,
 		Spawn:           spawnDetached,
 		StartProbes:     defaultStartProbes,
 		StartProbeDelay: defaultStartProbeDelay,
 		ServiceUnit:     DefaultGNBServiceUnit,
 	}
+}
+
+// defaultGnbConfDir 默认 conf 目录 = **节点唯一存放位** conf/<form>/<nodeID>/
+// （D4-E；form 由 mode.json 判，读不到按 local）。纯取值不建目录。
+func defaultGnbConfDir(nodeID int64) string {
+	form, _ := utils.ActiveNodeInfo()
+	if nodeID > 0 {
+		if p, err := utils.NodeRuntimePath(form, strconv.FormatInt(nodeID, 10)); err == nil {
+			return p
+		}
+	}
+	if p, err := utils.NodeRuntimePath(form, "default"); err == nil {
+		return p
+	}
+	return ""
 }
 
 func (d *GNBDriver) GetDriverType() domain.VPNDriverType { return domain.DriverTypeGNB }
@@ -421,11 +439,11 @@ func (d *GNBDriver) gnbBinary() string {
 	return resolveGNBBinary()
 }
 
-// resolveGNBBinary 见 gnbBinary。与 plugin_proxy.findGnbBin 同一优先级：
+// resolveGNBBinary 见 gnbBinary。与 plugin_proxy.findGnbBin / node_status.lookGnb 同一优先级：
 //  1. $MYNET_GNB_BIN（显式覆盖）
-//  2. $MYNET_HOME/driver/gnb/bin/gnb[.exe]  ← 标准位（与 conf 投影同树）
+//  2. <prefix>/bin/gnb[.exe]            ← 标准位（D4-E：driver/ 安装层退役）
 //  3. PATH
-//  4. 发行版常见安装位（含历史 C:\gnb-win，便于迁移）
+//  4. 发行版常见安装位（含旧 $MYNET_HOME/driver/gnb/bin 等迁移期脚印）
 //
 // ⚠️ 不要一上来就 LookPath —— 系统 PATH 里可能是旧 gnb。
 func resolveGNBBinary() string {
@@ -438,11 +456,12 @@ func resolveGNBBinary() string {
 		home = "."
 	}
 	cands := []string{
+		filepath.Join(utils.PrefixBinDir(), name),
+		filepath.Join(utils.PrefixBinDir(), "gnb"),
+		// 旧标准位（存量节点未迁移，只作查找回退，不再往这装）
 		filepath.Join(home, "driver", "gnb", "bin", name),
 		filepath.Join(home, "driver", "gnb", "bin", "gnb"),
 		"/usr/local/opt/mynet/driver/gnb/bin/gnb",
-		// pkg 落地位（build_pkg.sh 的 /opt/mynet/driver/gnb/bin）——
-		// 不列进来，launchd 之外的场景就只能靠 PATH 捡 /usr/local/bin
 		"/opt/mynet/driver/gnb/bin/gnb",
 		"/usr/sbin/gnb",
 		"/usr/local/opt/mynet/bin/gnb",
