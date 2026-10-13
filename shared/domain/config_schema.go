@@ -271,7 +271,7 @@ func (p *PluginConfig) Validate() error {
 // PluginProxyConfig proxy 插件意图（只在 PluginConfig.Config 里）。
 //
 // 这是 proxy 的**唯一配置入口**：用户是否启用、从哪些 peer 出去、权重/顺序。
-// apply 时投影到驱动侧（gnb → driver/gnb/conf/<id>/proxy.conf；address.conf 不写 f）。
+// apply 时投影到驱动侧（gnb → 节点目录 conf/<form>/<nodeId>/proxy.conf；address.conf 不写 f）。
 // gnb 的 proxy 开关（proxy on）就在这份 proxy.conf 里，**不进 node.conf**。
 type PluginProxyConfig struct {
 	// Role 明确节点角色：client、server 或 both。

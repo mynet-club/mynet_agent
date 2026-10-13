@@ -37,20 +37,7 @@ type NodeStatus struct {
 	PID       int       `json:"pid,omitempty"`
 }
 
-// ConfigPaths 应用路径配置
-type ConfigPaths struct {
-	Root      string
-	Bin       string
-	Conf      string
-	Var       string
-	VPN       string
-	GNB       string
-	WireGuard string
-	Logs      string
-	Token     string
-	PID       string
-	Cache     string
-}
+// ConfigPaths 已删（D4-E）：driver/ 安装目录层退役，路径真相走 paths.go 的函数 API。
 
 // BuildInfo 构建信息
 type BuildInfo struct {

@@ -18,24 +18,6 @@ const (
 	NodeTypeWireGuard = string(domain.DriverTypeWireGuard)
 )
 
-// GetDefaultPaths 返回默认应用路径布局
-func GetDefaultPaths() *ConfigPaths {
-	root := GetProjectRoot()
-	return &ConfigPaths{
-		Root:      root,
-		Bin:       filepath.Join(root, DirBin),
-		Conf:      filepath.Join(root, DirConf),
-		Var:       filepath.Join(root, DirVar),
-		VPN:       filepath.Join(root, DirVPN),
-		GNB:       filepath.Join(root, DirGNB),
-		WireGuard: filepath.Join(root, DirWireGuard),
-		Logs:      filepath.Join(root, DirLogs),
-		Token:     filepath.Join(root, DirToken),
-		PID:       filepath.Join(root, DirPID),
-		Cache:     filepath.Join(root, DirCache),
-	}
-}
-
 // GetProjectRoot 向上找 go.mod；找不到则返回当前目录
 func GetProjectRoot() string {
 	dir, err := os.Getwd()
@@ -141,17 +123,5 @@ func IsValidLogLevel(level string) bool {
 	}
 }
 
-// EnsureDirectories 创建应用目录树
-func EnsureDirectories(paths *ConfigPaths) error {
-	dirs := []string{
-		paths.Root, paths.Bin, paths.Conf, paths.Var,
-		paths.VPN, paths.GNB, paths.WireGuard,
-		paths.Logs, paths.Token, paths.PID, paths.Cache,
-	}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", dir, err)
-		}
-	}
-	return nil
-}
+// EnsureDirectories 已删（D4-E）：目录创建由各写入方的 SafeCreateDir 按需做，
+// 不再维护一份「应用目录树」清单（含已退役的 driver/ 安装层）。

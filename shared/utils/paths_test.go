@@ -41,15 +41,26 @@ func TestConfigTreeLayout(t *testing.T) {
 	if pv != filepath.Join(dir, "var", "plugins", "proxy") {
 		t.Fatalf("PluginVarDir=%s", pv)
 	}
-	if GnbConfDir() != filepath.Join(dir, "driver", "gnb", "conf") {
-		t.Fatalf("GnbConfDir=%s", GnbConfDir())
-	}
-	gn, err := GnbNodeConfDir("8107")
+	// D4-E：driver/ 安装层退役，节点唯一存放位 conf/<form>/<nodeId>
+	p, err := NodeRuntimePath(NodeFormLocal, "8107")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gn != filepath.Join(dir, "driver", "gnb", "conf", "8107") {
-		t.Fatalf("GnbNodeConfDir=%s", gn)
+	if p != filepath.Join(dir, "conf", "local", "8107") {
+		t.Fatalf("NodeRuntimePath=%s", p)
+	}
+	po, err := NodeRuntimePath(NodeFormOnline, "8107")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if po != filepath.Join(dir, "conf", "online", "8107") {
+		t.Fatalf("NodeRuntimePath(online)=%s", po)
+	}
+	if _, err := NodeRuntimePath("bogus", "8107"); err == nil {
+		t.Fatal("非法 form 应报错")
+	}
+	if _, err := NodeRuntimePath(NodeFormLocal, "../evil"); err == nil {
+		t.Fatal("非法 nodeID 应报错")
 	}
 	if ModeFilePath() != filepath.Join(dir, "conf", "mode.json") {
 		t.Fatalf("ModeFilePath=%s（mode.json 在 conf/ 下）", ModeFilePath())

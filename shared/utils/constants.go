@@ -46,19 +46,8 @@ const (
 	NodeStatusUnknownStr = "unknown"
 )
 
-// Directory structure constants（相对 MYNET_HOME）
-const (
-	DirBin       = "bin"
-	DirConf      = "conf"
-	DirVar       = "var"
-	DirVPN       = "driver"
-	DirGNB       = "driver/gnb"
-	DirWireGuard = "driver/wireguard"
-	DirLogs      = "var/logs"
-	DirToken     = "var/token"
-	DirPID       = "var/pid"
-	DirCache     = "pkg/cache"
-)
+// 目录常量已删（D4-E）：目录真相在 paths.go 的函数 API（conf/<form>/<nodeId>、
+// <prefix>/bin 等）；driver/ 安装目录层随裁定退役，不再以常量形式引用。
 
 // Log constants
 const (

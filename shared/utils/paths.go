@@ -1,12 +1,14 @@
 package utils
 
-// 跨平台路径 —— 配置树 v2（conf / plugins / driver / var / state 三分）。
+// 跨平台路径 —— 配置树 v2+（conf / plugins / var / state；D4-E 起 driver/ 安装层退役）。
 //
 //	env 覆盖 > MYNET_HOME > 平台默认
 //
 // 开发期不留 legacy ~/.mynet。旧扁平 conf/mynet.conf 不在本布局内。
+// 节点唯一存放位：<conf>/<form>/<nodeId>/（见下方 D4-E 段）。
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,30 +129,35 @@ func OnlineTenantDir(tenantID string) (string, error) {
 	return d, nil
 }
 
-// NodeKeysDir 节点级密钥目录：{space}/nodes/{nodeID}/keys
-// space 为 LocalConfDir() 或 OnlineTenantDir(t) —— 密钥**挂节点**，不挂租户。
-func NodeKeysDir(space, nodeID string) (string, error) {
-	if err := ValidateDirName(nodeID); err != nil {
-		return "", err
-	}
-	d := filepath.Join(space, "nodes", nodeID, "keys")
-	_ = SafeCreateDir(d, 0o700)
-	return d, nil
-}
-
-// NodeSpaceDir 节点空间根：{space}/nodes/{nodeID}
-func NodeSpaceDir(space, nodeID string) (string, error) {
-	if err := ValidateDirName(nodeID); err != nil {
-		return "", err
-	}
-	d := filepath.Join(space, "nodes", nodeID)
-	_ = SafeCreateDir(d, 0o700)
-	return d, nil
-}
-
 // LegacyKeysDir 兼容：旧布局 {space}/keys（迁移读回用，不再写入）。
 func LegacyKeysDir(space string) string {
 	return filepath.Join(space, "keys")
+}
+
+// LegacyNodeKeysDir 兼容：旧布局 {space}/nodes/{nodeID}/keys（读回用，不再写入）。
+func LegacyNodeKeysDir(space, nodeID string) string {
+	return filepath.Join(space, "nodes", nodeID, "keys")
+}
+
+// NodeDirHasIdentity 节点目录里有没有身份材料（任一形态）：
+// gnb 的 security/*.private、旧 node.private、wg 的 wg.conf（PrivateKey 在内）。
+func NodeDirHasIdentity(dir string) bool {
+	if fileExists(filepath.Join(dir, "node.private")) {
+		return true
+	}
+	if fileExists(filepath.Join(dir, "wg.conf")) {
+		return true
+	}
+	ents, err := os.ReadDir(filepath.Join(dir, "security"))
+	if err != nil {
+		return false
+	}
+	for _, e := range ents {
+		if !e.IsDir() && len(e.Name()) > 8 && e.Name()[len(e.Name())-8:] == ".private" {
+			return true
+		}
+	}
+	return false
 }
 
 // siblingLocal 由某配置来源目录推出同级的 `conf/local`：
@@ -175,21 +182,33 @@ func siblingLocal(space string) string {
 	}
 }
 
-// ResolveKeysDir 解析节点密钥目录。
+// ResolveKeysDir 解析节点身份的**读取**位置。
 //
-// 顺序：**当前来源 space** → **同级 conf/local**（历史/跨档落点）→ 新建 space 下新路径。
+// D4-E 起密钥与驱动 conf 同居节点目录 <conf>/<form>/<nodeId>/（唯一存放位，
+// gnb=security/ 布局、wg=wg.conf base64）。旧布局只作**读**回退 ——
+// 写入一律 NodeRuntimeDir，存量由 `mynet config migrate-layout` 收口。
 //
-// 为什么跨档回退：密钥是**节点身份**，不该随 local/online 切档而"换目录" ——
-// 切档后若只在当前档找，会误判「缺密钥/缺后端公钥」（实测 `keys sync` 因此
-// 触发多余回填并因空 URL 失败）。宁可认同一台机只有一份密钥。
+// 顺序：
+//  1. <conf>/<form>/<nodeId>/（form 由 space 推）—— 新唯一存放位
+//  2. {space}/nodes/{nodeID}/keys、{space}/keys 与同级 conf/local 的同构位
+//     （跨档回退的理由不变：密钥是节点身份，不该随 local/online 切档"换目录"）
+//  3. <home>/driver/gnb/conf/<id>/security/ —— 旧 gnb 投影（未迁移节点）
+//
+// 旧落点都没有时返回新存放位（作为默认目标）。
 func ResolveKeysDir(space, nodeID string) string {
+	form := NodeFormOfSpace(space)
+	if nodeID != "" {
+		if p, err := NodeRuntimePath(form, nodeID); err == nil && NodeDirHasIdentity(p) {
+			return p
+		}
+	}
 	candidates := []string{space}
 	if local := siblingLocal(space); local != "" && filepath.Clean(local) != filepath.Clean(space) {
 		candidates = append(candidates, local)
 	}
 	for _, sp := range candidates {
 		if nodeID != "" {
-			p := filepath.Join(sp, "nodes", nodeID, "keys")
+			p := LegacyNodeKeysDir(sp, nodeID)
 			if fileExists(filepath.Join(p, "node.private")) {
 				return p
 			}
@@ -198,8 +217,15 @@ func ResolveKeysDir(space, nodeID string) string {
 			return LegacyKeysDir(sp)
 		}
 	}
+	// 旧 gnb 投影 security/（nodekeys 认 <id>.private 文件名）
 	if nodeID != "" {
-		if p, err := NodeKeysDir(space, nodeID); err == nil {
+		sec := filepath.Join(GetMyNetHome(), "driver", "gnb", "conf", nodeID, "security")
+		if fileExists(filepath.Join(sec, nodeID+".private")) {
+			return sec
+		}
+	}
+	if nodeID != "" {
+		if p, err := NodeRuntimePath(form, nodeID); err == nil {
 			return p
 		}
 	}
@@ -229,44 +255,108 @@ func PluginPackageDir(name string) (string, error) {
 	return d, nil
 }
 
-// DriverDir 驱动投影根（driver/gnb、driver/wireguard）。
-func DriverDir() string {
-	d := filepath.Join(GetMyNetHome(), "driver")
-	_ = SafeCreateDir(d, 0o755)
-	return d
+// ── D4-E 节点唯一存放位（2026-10-13 裁定）────────────────────────
+//
+// <home>/conf/<form>/<nodeId>/ 为每节点**唯一存放位**：密钥 + 驱动 conf 同居一目录。
+//
+//	form = local | online —— 是**获取 key 的形式**（本地自产生 / 在线下发），
+//	不是平行密钥面；nodeID 全局唯一（tenant 维度收进 mode.json / 节点 meta）。
+//
+// gnb 协议内布局**不动**，照旧写在该目录内：
+// node.conf / route.conf / address.conf / security/<id>.{private,public}（128hex 无换行）/
+// ed25519/*.public / gnb.map（gnb 自产、只读）。
+// wg：wg.conf（驱动原生，PrivateKey=base64 44）同居该目录。
+// 磁盘只存驱动原生密钥格式（gnb=128hex、wg=base64 44），hex↔base64 只留 DB/上报边界。
+
+const (
+	NodeFormLocal  = "local"
+	NodeFormOnline = "online"
+)
+
+// ValidateNodeForm form 只认 local / online。
+func ValidateNodeForm(form string) error {
+	if form != NodeFormLocal && form != NodeFormOnline {
+		return fmt.Errorf("非法 form %q（只认 local|online）", form)
+	}
+	return nil
 }
 
-// GnbConfDir gnb 投影：driver/gnb/conf。
-func GnbConfDir() string {
-	d := filepath.Join(DriverDir(), "gnb", "conf")
-	_ = SafeCreateDir(d, 0o755)
-	return d
+// NodeRuntimeDir 节点唯一存放位：<conf>/<form>/<nodeID>（密钥 + 驱动 conf 同居）。
+// 取路径**会建目录**（写入方用）；纯取值场景用 NodeRuntimePath。
+func NodeRuntimeDir(form, nodeID string) (string, error) {
+	p, err := NodeRuntimePath(form, nodeID)
+	if err != nil {
+		return "", err
+	}
+	_ = SafeCreateDir(p, 0o700)
+	return p, nil
 }
 
-// GnbBinDir gnb 套件目录：driver/gnb/bin（四件套同目录配套，paths.md R2）。
-// 纯路径不建目录 —— 谁装谁建（upgrade 的 InstallWith 会 MkdirAll）。
-func GnbBinDir() string {
-	return filepath.Join(GetMyNetHome(), "driver", "gnb", "bin")
-}
-
-// GnbNodeConfDir driver/gnb/conf/{nodeID}（AGENTS.md §1.1 布局不变）。
-func GnbNodeConfDir(nodeID string) (string, error) {
+// NodeRuntimePath 同 NodeRuntimeDir 但**不建目录**（dry-run / 探测用）。
+func NodeRuntimePath(form, nodeID string) (string, error) {
+	if err := ValidateNodeForm(form); err != nil {
+		return "", err
+	}
 	if err := ValidateDirName(nodeID); err != nil {
 		return "", err
 	}
-	d := filepath.Join(GnbConfDir(), nodeID)
-	_ = SafeCreateDir(d, 0o700)
-	return d, nil
+	return filepath.Join(confDir(), form, nodeID), nil
 }
 
-// WireGuardNodeDir driver/wireguard/{nodeID}。
-func WireGuardNodeDir(nodeID string) (string, error) {
-	if err := ValidateDirName(nodeID); err != nil {
-		return "", err
+// ActiveNodeInfo 从 mode.json 读当前 form 与 nodeID（不依赖 shared/config，
+// utils 不能反向依赖 config）。未初始化时 form=local、nodeID=""。
+// 旧位置（HOME 根）只读兼容；搬迁由 shared/config.MigrateLegacyModeFile 做。
+func ActiveNodeInfo() (form, nodeID string) {
+	form = NodeFormLocal
+	for _, p := range []string{ModeFilePath(), filepath.Join(GetMyNetHome(), "mode.json")} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var m struct {
+			Mode   string `json:"mode"`
+			Active struct {
+				NodeID string `json:"node_id"`
+			} `json:"active"`
+		}
+		if json.Unmarshal(b, &m) != nil {
+			continue
+		}
+		if m.Mode == NodeFormOnline {
+			form = NodeFormOnline
+		}
+		return form, m.Active.NodeID
 	}
-	d := filepath.Join(DriverDir(), "wireguard", nodeID)
-	_ = SafeCreateDir(d, 0o700)
-	return d, nil
+	return form, ""
+}
+
+// ActiveNodeRuntimeDir 当前激活节点的唯一存放位（form 由 mode.json 判）。
+// 节点未定时落 conf/local/default（与旧 gnbConfDir 的 default 兜底同语义）。
+func ActiveNodeRuntimeDir() (string, error) {
+	form, nodeID := ActiveNodeInfo()
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	return NodeRuntimeDir(form, nodeID)
+}
+
+// NodeFormOfSpace 由旧 space 路径（conf/local 或 conf/online/<tenant>）推 form。
+// 认不出时返回 local（未初始化约定）。
+func NodeFormOfSpace(space string) string {
+	for p := filepath.Clean(space); ; {
+		base := filepath.Base(p)
+		if base == NodeFormOnline {
+			return NodeFormOnline
+		}
+		if base == NodeFormLocal {
+			return NodeFormLocal
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return NodeFormLocal
+		}
+		p = parent
+	}
 }
 
 // StateDir 激活态 / last-good。
@@ -400,7 +490,7 @@ func SafeCreateDir(path string, perm os.FileMode) error {
 // PlatformDefaultHome 平台默认 **home（Store Root）** —— 只作文档/诊断，
 // 不是 install 的回退值：install 必须显式给 --home 或 MYNET_HOME（见 lifecycle-contract §2.1）。
 //
-// 注意与 defaultPrefix（二进制安装前缀 /opt/mynet、C:\Program Files\MyNet）**不是一回事**：
+// 注意与 PlatformDefaultPrefix（二进制安装前缀 /opt/mynet、C:\Program Files\MyNet）**不是一回事**：
 // home 存的是节点身份/密钥/配置，prefix 放程序文件。历史上把两者混用导致 CLI 与安装器各写一棵树。
 func PlatformDefaultHome() string {
 	switch runtime.GOOS {
@@ -412,4 +502,59 @@ func PlatformDefaultHome() string {
 		// OpenWrt 的 home 是 /etc/mynet，由 ipk/安装器显式指定；通用 Linux 用 /var/lib/mynet。
 		return "/var/lib/mynet"
 	}
+}
+
+// ── 安装前缀（D4-E：driver/ 安装目录层拿掉，二进制统一 <prefix>/bin）──
+
+// PlatformDefaultPrefix 程序安装前缀的平台默认。装机显式 --prefix / MYNET_PREFIX 为权威，
+// 这里只是默认值（与 mynet/prefix_*.go 的 defaultPrefix 同一判据）。
+func PlatformDefaultPrefix() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "/usr/local/opt/mynet"
+	case "windows":
+		return `C:\Program Files\MyNet`
+	default:
+		if isOpenWrtSystem() {
+			return "/usr" // OpenWrt：二进制由 ipk 装 /usr/sbin，系统里没有 /opt/mynet
+		}
+		return "/opt/mynet"
+	}
+}
+
+// isOpenWrtSystem 运行期判定 OpenWrt（与 mynet.isOpenWrt 同判据）。
+func isOpenWrtSystem() bool {
+	if _, err := os.Stat("/etc/openwrt_release"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/sbin/procd"); err == nil {
+		if _, err := os.Stat("/etc/systemd/system"); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// PrefixDir 本机程序前缀：MYNET_PREFIX > exe 反推（<prefix>/bin/exe → <prefix>）> 平台默认。
+func PrefixDir() string {
+	if v := os.Getenv("MYNET_PREFIX"); v != "" {
+		return v
+	}
+	if exePath, err := os.Executable(); err == nil {
+		if realPath, err := filepath.EvalSymlinks(exePath); err == nil {
+			exePath = realPath
+		}
+		exeDir := filepath.Dir(exePath)
+		if filepath.Base(exeDir) == "bin" {
+			return filepath.Dir(exeDir)
+		}
+	}
+	return PlatformDefaultPrefix()
+}
+
+// PrefixBinDir 二进制统一安装位 <prefix>/bin（gnb 四件套与 mynet/mynetd 同居）。
+// 纯路径不建目录 —— 谁装谁建（upgrade 的 InstallWith 会 MkdirAll）。
+// 旧位 <home>/driver/gnb/bin 只作**查找**回退（存量节点），不再往那装。
+func PrefixBinDir() string {
+	return filepath.Join(PrefixDir(), "bin")
 }

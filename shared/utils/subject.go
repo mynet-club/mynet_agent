@@ -444,9 +444,14 @@ func listenPort(nodeConf string) string {
 }
 
 // discoverConfTrees 扫常见 home 下的 conf/<nodeid> 残留树（R3）。
+//
+// D4-E 起新唯一存放位是 conf/<form>/<nodeid>/；旧 driver/gnb/conf 等只作
+// **残留探测**（未迁移节点 / 迁移前排障），所以两边都扫。
 func discoverConfTrees(home string) []string {
 	var out []string
 	roots := []string{
+		filepath.Join(home, "conf", "local"),
+		filepath.Join(home, "conf", "online"),
 		filepath.Join(home, "driver", "gnb", "conf"),
 		"/var/lib/mynet/driver/gnb/conf",
 		"/opt/mynet/driver/gnb/conf",
@@ -467,6 +472,7 @@ func discoverConfTrees(home string) []string {
 			if !e.IsDir() {
 				continue
 			}
+			// conf/<form> 下的节点目录；conf/online 下还有一层 <nodeid>（无租户层）
 			p := filepath.Join(r, e.Name())
 			if fileExists(filepath.Join(p, "node.conf")) || fileExists(filepath.Join(p, "gnb.map")) {
 				out = append(out, p)
