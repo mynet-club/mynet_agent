@@ -64,7 +64,7 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	s.dispatch(w, body.Argv)
 }
 
-// handleCommandResult E-4：Lua/mynet 执行结果回 mynetd（不再直连 back）。
+// handleCommandResult E-4：Lua/mynet 执行结果回 mynetd（不再直连后端）。
 func (s *Server) handleCommandResult(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
@@ -125,7 +125,7 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 		// `exit status 1` 说明不了任何事 —— 真正的原因在子进程的 stderr 里，
 		// 而 defaultExecMynet 已经把它放进 out 了，扔掉等于让每次失败都
 		// 变成「exit status 1」，只能靠人再手动跑一遍命令去猜。
-		payload := map[string]any{"success": false, "message": err.Error()}
+		payload := map[string]any{"success": false, "message": sanitizeValue(err.Error())}
 		if m, ok := out.(map[string]any); ok {
 			if v, ok := m["stdout"]; ok {
 				payload["stdout"] = sanitizeValue(v)
@@ -134,7 +134,9 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 				payload["stderr"] = sanitizeValue(v)
 			}
 			if v, ok := m["argv"]; ok {
-				payload["argv"] = v
+				// 失败路径同样遮蔽 argv 的 secret 值（C1-S1）：
+				// 此前这里原样回显，`--private` 的私钥从失败响应直达浏览器。
+				payload["argv"] = redactArgvAny(v)
 			}
 		}
 		writeJSON(w, 500, payload)

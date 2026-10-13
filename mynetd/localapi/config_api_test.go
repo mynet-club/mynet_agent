@@ -142,25 +142,42 @@ func TestConfigKeysShell(t *testing.T) {
 		t.Fatalf("POST generate 未走执行器: %v", got)
 	}
 
-	// 仅私钥 → keys set 不带 --public（推导归执行器，B2 薄壳不算密钥）
+	// 仅私钥 → keys set 走 **stdin**（--private-stdin，C1-S1：私钥不进 argv），
+	// 且不带 --public（推导归执行器，B2 薄壳不算密钥）
 	got = nil
+	secret := strings.Repeat("ab", 64)
+	var stdinArgv []string
+	var stdinGot string
+	s.ExecStdin = func(argv []string, stdin string) (map[string]any, error) {
+		stdinArgv = append([]string(nil), argv...)
+		stdinGot = stdin
+		return opsOut(`{"ok":true}`), nil
+	}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/config/keys",
-		strings.NewReader(`{"private_hex":"`+strings.Repeat("ab", 64)+`"}`))
+		strings.NewReader(`{"private_hex":"`+secret+`"}`))
 	req.Host = "127.0.0.1:8096"
 	rec = httptest.NewRecorder()
 	s.mux.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("POST keys private-only: %d %s", rec.Code, rec.Body.String())
 	}
-	setArgv := ""
-	for _, a := range got {
-		if strings.Contains(strings.Join(a, " "), "keys set") {
-			setArgv = strings.Join(a, " ")
-		}
+	if len(got) != 0 {
+		t.Fatalf("keys set 应走 ExecStdin 而非 Ops: %v", got)
 	}
-	if !strings.Contains(setArgv, "--private") || strings.Contains(setArgv, "--public") {
-		t.Fatalf("private-only 应只带 --private: %q", setArgv)
+	setArgv := strings.Join(stdinArgv, " ")
+	if !strings.Contains(setArgv, "--private-stdin") {
+		t.Fatalf("keys set 应带 --private-stdin: %q", setArgv)
 	}
+	if strings.Contains(setArgv, secret) {
+		t.Fatalf("私钥不得进 argv: %q", setArgv)
+	}
+	if strings.Contains(setArgv, "--public") {
+		t.Fatalf("private-only 不应带 --public: %q", setArgv)
+	}
+	if strings.TrimSpace(stdinGot) != secret {
+		t.Fatalf("私钥应经 stdin 传递: %q", stdinGot)
+	}
+	s.ExecStdin = nil
 
 	// 既无私钥也不 generate → 400，不打执行器
 	got = nil

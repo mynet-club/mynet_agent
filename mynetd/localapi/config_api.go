@@ -76,6 +76,18 @@ func (s *Server) opsJSON(argv []string) (map[string]any, error) {
 		s.Ops = defaultExecMynet
 	}
 	out, err := s.Ops(argv)
+	return decodeOpsObject(out, err)
+}
+
+// opsJSONStdin 同 opsJSON，但能喂 stdin —— 私钥/口令类输入走这里，**不进 argv**
+// （argv 会进 `ps` 与 argv 回显面，见 redactArgv / C1-S1）。
+func (s *Server) opsJSONStdin(argv []string, stdin string) (map[string]any, error) {
+	out, err := s.execWithStdin(argv, stdin)
+	return decodeOpsObject(out, err)
+}
+
+// decodeOpsObject 解开执行器输出的 JSON 对象（opsJSON / opsJSONStdin 共用尾巴）。
+func decodeOpsObject(out any, err error) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -171,6 +183,7 @@ func (s *Server) handleConfigKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var argv []string
+	stdinText := ""
 	switch {
 	case body.Generate:
 		argv = []string{"config", "keys", "generate", "--json"}
@@ -181,22 +194,31 @@ func (s *Server) handleConfigKeys(w http.ResponseWriter, r *http.Request) {
 			argv = append(argv, "--node-id", body.NodeID)
 		}
 	case body.PrivateHex != "":
-		// 公钥可省略 —— 执行器从私钥推导并做配对校验（私钥是身份源）
-		argv = []string{"config", "keys", "set", "--json", "--private", body.PrivateHex}
+		// 公钥可省略 —— 执行器从私钥推导并做配对校验（私钥是身份源）。
+		// ⚠️ 私钥走 **stdin**（--private-stdin）不进 argv：argv 会进 `ps`
+		// 与 argv 回显面（C1-S1 私钥泄露）。对齐 auth login --password-stdin。
+		argv = []string{"config", "keys", "set", "--json", "--private-stdin"}
 		if body.PublicHex != "" {
 			argv = append(argv, "--public", body.PublicHex)
 		}
 		if body.NodeID != "" {
 			argv = append(argv, "--node-id", body.NodeID)
 		}
+		stdinText = body.PrivateHex + "\n"
 	default:
 		writeJSON(w, 400, map[string]any{"success": false, "message": "需要 generate=true 或 private_hex（公钥由私钥自动推导）"})
 		return
 	}
 
-	data, err := s.opsJSON(argv)
+	var data map[string]any
+	var err error
+	if stdinText != "" {
+		data, err = s.opsJSONStdin(argv, stdinText)
+	} else {
+		data, err = s.opsJSON(argv)
+	}
 	if err != nil {
-		writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
+		writeJSON(w, 500, map[string]any{"success": false, "message": sanitizeValue(err.Error())})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"success": true, "data": data})

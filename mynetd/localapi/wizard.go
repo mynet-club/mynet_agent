@@ -18,11 +18,11 @@ import (
 	"github.com/mynet-club/mynet_agent/mynet"
 )
 
-// relayToBack 经 gateway /v1/relay 打 back 路径（本机 WebUI 的唯一出网方式）。
+// relayToBack 经 gateway /v1/relay 打后端路径（本机 WebUI 的唯一出网方式）。
 func relayToBack(ctx context.Context, method, backPath string, body []byte) ([]byte, int, error) {
 	gw := firstGateway()
 	if gw == "" {
-		return nil, 0, fmt.Errorf("网关未配置（$MYNET_GATEWAYS / conf/gateways.json / conf/agent.json.gateway 均无），无法中继到 back")
+		return nil, 0, fmt.Errorf("网关未配置（$MYNET_GATEWAYS / conf/gateways.json / conf/agent.json.gateway 均无），无法中继到后端")
 	}
 	target := strings.TrimRight(gw, "/") + "/v1/relay?path=" + url.QueryEscape(backPath)
 	var rd io.Reader
@@ -110,9 +110,9 @@ func (s *Server) registerWizardRoutes() {
 
 // handleWizardLogin —— 本机 WebUI 登录。
 //
-// 链路：浏览器 → mynetd(127.0.0.1) → gateway /v1/relay → back `/api/v1/auth/login`
+// 链路：浏览器 → mynetd(127.0.0.1) → gateway /v1/relay → 后端 `/api/v1/auth/login`
 // **不**让浏览器/表单填云端 API；api_base 概念对本机页不存在。
-// 口令只进请求体（发给 back），**不进 argv、不落日志、不回显**。
+// 口令只进请求体（发给后端），**不进 argv、不落日志、不回显**。
 // 成功后把会话写进本机 credential.json（0600），供节点面/CLI 复用。
 //
 //	POST {"email":"…","password":"…"}
@@ -329,8 +329,10 @@ func sanitizeWizardOut(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
 		if k == "argv" {
-			// argv 里不带口令（走 stdin），但 email 会带 —— 保留，用户要看
-			out[k] = v
+			// argv 会原样进浏览器（webui 的 cmd-out <pre>）—— **必须遮蔽**
+			// secret 类参数的值（--private/--password/…，C1-S1）：
+			// 私钥曾从这里回显。email 等非秘密参数保留可见，用户要看。
+			out[k] = redactArgvAny(v)
 			continue
 		}
 		if s, ok := v.(string); ok {
@@ -345,7 +347,7 @@ func sanitizeWizardOut(m map[string]any) map[string]any {
 
 // redactSecrets 把**真的像秘密**的片段遮掉，同时放过公钥。
 //
-// ⚠️ 第一版规则是「32+ 的 hex 一律遮」，实测把 back 的**节点面公钥**也遮成了
+// ⚠️ 第一版规则是「32+ 的 hex 一律遮」，实测把后端的**节点面公钥**也遮成了
 // `*******[hex]` —— 而那正是 CLI 特意打印出来给人核对的值（它不是秘密，
 // 性质同 JWKS）。过度脱敏让信息变得不可用，还制造「这里有个秘密」的错觉。
 //
@@ -369,6 +371,74 @@ func redactSecrets(s string) string {
 }
 
 var secretKeywords = []string{"token", "refresh", "priv", "private", "password", "secret"}
+
+// secretArgKeywords —— argv 里**值是秘密**的参数名关键词（小写，包含匹配）。
+// 与 secretKeywords 同源，但不含 "refresh"（`--refresh` 类开关不带值，遮了会吞参数）。
+var secretArgKeywords = []string{"priv", "private", "password", "secret", "token"}
+
+// redactArgv 遮蔽 argv 里的秘密值：`--private`/`--password`/`--token`/`--secret`
+// 类参数的**值**（`--flag value` 与 `--flag=value` 两种形态）。成功与失败路径都要走 ——
+// argv 会进 HTTP 响应回显面（浏览器可见）。`*-stdin` 开关本身不带值，不吞下一个参数。
+//
+// 私钥/口令进 `ps` 的问题靠 `--private-stdin` 根治（config_api / parseKeysSetArgs），
+// 这里兜的是「旧调用方仍把秘密摆进 argv」的残余形态。
+func redactArgv(argv []string) []string {
+	const mask = "********"
+	out := append([]string(nil), argv...)
+	for i := 0; i < len(out); i++ {
+		a := out[i]
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, _, hasEq := strings.Cut(a, "=")
+		low := strings.ToLower(name)
+		if strings.HasSuffix(low, "-stdin") {
+			continue
+		}
+		if !argvFlagHasSecretKeyword(low) {
+			continue
+		}
+		if hasEq {
+			out[i] = name + "=" + mask
+		} else if i+1 < len(out) && !strings.HasPrefix(out[i+1], "-") {
+			out[i+1] = mask
+			i++
+		}
+	}
+
+	return out
+}
+
+func argvFlagHasSecretKeyword(flag string) bool {
+	for _, k := range secretArgKeywords {
+		if strings.Contains(flag, k) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// redactArgvAny 把 any 形态的 argv（[]string 或 JSON 反序列化来的 []any）遮蔽后返回。
+func redactArgvAny(v any) any {
+	switch t := v.(type) {
+	case []string:
+		return redactArgv(t)
+	case []any:
+		strs := make([]string, len(t))
+		for i, e := range t {
+			strs[i], _ = e.(string)
+		}
+		masked := redactArgv(strs)
+		out := make([]any, len(masked))
+		for i, s := range masked {
+			out[i] = s
+		}
+		return out
+	}
+
+	return v
+}
 
 func lineHasSecretKeyword(ln string) bool {
 	low := strings.ToLower(ln)

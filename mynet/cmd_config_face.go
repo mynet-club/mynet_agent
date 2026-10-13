@@ -10,12 +10,14 @@ package mynet
 //	mynet config tenants --json
 //	mynet config keys --json
 //	mynet config keys generate --vpn gnb|wireguard --json
-//	mynet config keys set --private HEX [--public HEX] [--node-id N] [--algorithm A] [--json]
+//	mynet config keys set (--private-stdin | --private HEX) [--public HEX] [--node-id N] [--algorithm A] [--json]
 //	mynet config plugins --json
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -64,7 +66,7 @@ type remoteTenant struct {
 	Name string
 }
 
-// fetchRemoteTenants 不再直连 back（架构：请求走 WS relay）。
+// fetchRemoteTenants 不再直连后端（架构：请求走 WS relay）。
 // executor 是独立进程，无法走 WS —— 远程租户列表由 localapi 经 relay 补，
 // 这里只出本地缓存（profile 里的名字）。直连云端 API 会拖死首屏 30s。
 func fetchRemoteTenants(cred *Credential) []remoteTenant {
@@ -318,22 +320,22 @@ func configFaceKeysDirWrite(nodeIDHint string) (src, dir string, mode *domain.Mo
 	return src, dir, mode, err
 }
 
-// backFacePubFor 在线模式尽力拉 back 节点面公钥（写进 meta.json 的 back_pub_hex）。
+// backFacePubFor 在线模式尽力拉后端节点面公钥（写进 meta.json 的 back_pub_hex）。
 //
 // 历史断链：keys set/generate 曾把它硬写成空串，mynetd 节点面因此装配不了
 // （transport 报「NodeID 必填」，WS/自动起隧道全废）。拉不到（未登录/网络不通）
-// 返回警告不阻断密钥写入 —— 密钥缺失是硬错误，back 公钥缺失可事后 keys sync 回填。
+// 返回警告不阻断密钥写入 —— 密钥缺失是硬错误，后端公钥缺失可事后 keys sync 回填。
 func backFacePubFor(mode *domain.ModeFile) (string, string) {
 	if mode == nil || mode.Mode != domain.ModeOnline {
 		return "", "" // local 模式没有节点面，空是正确值
 	}
 	cred := LoadCredential()
 	if cred == nil || cred.Token == "" {
-		return "", "未登录：back 节点面公钥未取到 —— 登录后 mynet config keys sync 会回填"
+		return "", "未登录：后端节点面公钥未取到 —— 登录后 mynet config keys sync 会回填"
 	}
 	pub, err := fetchBackFacePub()
 	if err != nil {
-		return "", "取 back 节点面公钥失败（" + err.Error() + "）—— 可稍后 mynet config keys sync 回填"
+		return "", "取后端节点面公钥失败（" + err.Error() + "）—— 可稍后 mynet config keys sync 回填"
 	}
 	return pub, ""
 }
@@ -416,7 +418,7 @@ func configFaceKeysGenerate(args []string) int {
 		"algorithm":  algo,
 		"node_id":    nodeID,
 		"path":       keysDir,
-		"note":       "private 仅本机；联网模式请把 public_hex 上传到 back",
+		"note":       "private 仅本机；联网模式请把 public_hex 上传到后端",
 	}
 	if backWarn != "" {
 		out["warning"] = backWarn
@@ -424,8 +426,14 @@ func configFaceKeysGenerate(args []string) int {
 	return printJSON(out)
 }
 
-func configFaceKeysSet(args []string) int {
-	priv, pub, nodeID, algo := "", "", "", ""
+// parseKeysSetArgs 解析 `config keys set` 参数。
+//
+// ⚠️ 私钥优先走 **stdin**（`--private-stdin`，对齐 `auth login --password-stdin`）：
+// argv 会进 `ps`（同机任何进程可见）与本机 API 的 argv 回显面，**私钥不许走 argv**
+// （C1-S1：`POST /api/v1/config/keys` 曾把 private_hex 摆进 argv）。
+// `--private HEX` 仅保留给人工终端/安装文档的一次性导入（文档命令行不进 ps 快照常态）。
+func parseKeysSetArgs(args []string, r io.Reader) (priv, pub, nodeID, algo string, err error) {
+	fromStdin := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--private":
@@ -433,6 +441,8 @@ func configFaceKeysSet(args []string) int {
 				i++
 				priv = args[i]
 			}
+		case "--private-stdin":
+			fromStdin = true
 		case "--public":
 			if i+1 < len(args) {
 				i++
@@ -450,8 +460,25 @@ func configFaceKeysSet(args []string) int {
 			}
 		}
 	}
+	if fromStdin && priv == "" {
+		sc := bufio.NewScanner(r)
+		if sc.Scan() {
+			priv = strings.TrimSpace(sc.Text())
+		}
+		if serr := sc.Err(); serr != nil {
+			return "", "", "", "", fmt.Errorf("读 stdin 失败: %w", serr)
+		}
+	}
 	if priv == "" {
-		return printJSON(map[string]any{"error": "需要 --private（--public 可省略，服务端从私钥推导）"})
+		return "", "", "", "", fmt.Errorf("需要 --private HEX 或 --private-stdin（--public 可省略，服务端从私钥推导）")
+	}
+	return priv, pub, nodeID, algo, nil
+}
+
+func configFaceKeysSet(args []string) int {
+	priv, pub, nodeID, algo, perr := parseKeysSetArgs(args, os.Stdin)
+	if perr != nil {
+		return printJSON(map[string]any{"error": perr.Error()})
 	}
 
 	// ── 配对验证（spec：私钥是身份源）──
@@ -532,7 +559,7 @@ func configFaceKeysSet(args []string) int {
 		"pair_match":  pairMatch,
 		"algorithm":   algo,
 		"cloud_state": cloudState,
-		"note":        "private 仅本机；联网模式请把 public_hex 上传到 back",
+		"note":        "private 仅本机；联网模式请把 public_hex 上传到后端",
 	}
 	if len(warnings) > 0 {
 		out["warnings"] = warnings
@@ -545,7 +572,7 @@ func notifyPeersKeyChanged(nodeID string) error {
 	// 复用 BundleInvalidator：密钥变更影响本节点 + 所有对端的地址/密钥投影
 	defer func() {
 		if r := recover(); r != nil {
-			// BundleInvalidator 需要 back 环境；失败不阻断密钥写入
+			// BundleInvalidator 需要后端环境；失败不阻断密钥写入
 			_ = r
 		}
 	}()
@@ -553,7 +580,7 @@ func notifyPeersKeyChanged(nodeID string) error {
 	if cred := LoadCredential(); cred == nil || cred.Token == "" {
 		return fmt.Errorf("未登录，无法通知对端")
 	}
-	// 通过 back 的 bundle publish 触发对端刷新（与 keys sync 同路径）
+	// 通过后端的 bundle publish 触发对端刷新（与 keys sync 同路径）
 	// 这里轻量调用：POST /nodes/{id}/bundle/publish
 	c := newBackClientFor(LoadCredential())
 	if _, _, err := c.doJSON("POST", "/api/v1/nodes/"+nodeID+"/bundle/publish", map[string]any{}); err != nil {
@@ -652,7 +679,7 @@ func configFaceIdentity() int {
 		"logged_in": false,
 	}
 	cfg := utils.LoadAgentCfg()
-	// 架构口径：客户端/浏览器只打本机 localapi，请求经 gateway 中继到 back。
+	// 架构口径：客户端/浏览器只打本机 localapi，请求经 gateway 中继到后端。
 	// api_base 键放的是**本机 localapi 基址** —— 云端地址不下发、不出现在任何用户面。
 	out["api_base"] = localAPIBase()
 	out["gateway"] = cfg.Gateway
