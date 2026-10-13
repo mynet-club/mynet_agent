@@ -263,7 +263,7 @@ func (d *GNBDriver) WriteIntent(g *domain.GnbIntent) error {
 // 之后所有按名字找接口的操作全都对不上。宁可在这里报错。
 //
 // 空值在这里是允许的，因为本函数也服务**本地意图**（apply --active 的 local 模式，
-// 没有 back 参与，只能由 gnb 自己决定默认名）。从 bundle 来的路径不会走到「空」：
+// 没有后端参与，只能由 gnb 自己决定默认名）。从 bundle 来的路径不会走到「空」：
 // project_active / refresh-config 用 node.interface 覆盖过 Options.Ifname，
 // 解析不出来时直接报错退出（见 domain.BundleEnvelope.TunDevice）。
 func checkGnbIfname(g *domain.GnbIntent) error {

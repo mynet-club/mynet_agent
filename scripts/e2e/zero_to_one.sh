@@ -85,7 +85,7 @@ expect() {
   fi
 }
 
-# expect2xx <说明> —— 创建类端点返 201 是正确语义（back 的密钥生成就是 201），
+# expect2xx <说明> —— 创建类端点返 201 是正确语义（后端的密钥生成就是 201），
 # 只认 200 会把成功判成失败。第一版就这么误判过一次。
 expect2xx() {
   case "$CODE" in
@@ -106,16 +106,16 @@ PW="${Z2O_PASSWORD:-Z2o!${SUF}xY}"
 # ════════════════════════════════════════════════════════════
 phase "Phase 0 · 环境自检（这一步不过，后面都不用跑）"
 # ════════════════════════════════════════════════════════════
-# 0.1 back 活着
+# 0.1 后端活着
 req GET "$API/up"
-[ "$CODE" = 200 ] && ok "back /up 可达（HTTP 200）" || bad "back /up 返回 $CODE —— 服务没起或 nginx 没配"
+[ "$CODE" = 200 ] && ok "后端 /up 可达（HTTP 200）" || bad "后端 /up 返回 $CODE —— 服务没起或 nginx 没配"
 
 # 0.2 **业务面在不在**：这是 CPI-41 的判据。生产上曾只有框架 auth 面，
 #     VPN/Monitor/Social 路由全 404，而 /up 照样 200 —— 只看 /up 会误判成「部署好了」
 req GET "$API/api/v1/nodes"
 case "$CODE" in
   401) ok "业务面已部署（/api/v1/nodes 返 401 未鉴权，说明路由存在）" ;;
-  404) bad "/api/v1/nodes 404 —— 部署的 back **没有 VPN 业务面**（CPI-41 的形态）"
+  404) bad "/api/v1/nodes 404 —— 部署的后端 **没有 VPN 业务面**（CPI-41 的形态）"
        printf '      判据：只有框架 auth 面时，/up 仍 200，所以不能只看 /up\n'
        die "业务面缺失" ;;
   *)   bad "/api/v1/nodes 返回 ${CODE}（期望 401）"; die "业务面异常" ;;
@@ -129,8 +129,8 @@ case "$CODE" in
   *)   bad "/api/v1/node/bundle 返回 ${CODE}（期望 401/422）"; die "节点面端点异常" ;;
 esac
 
-# 0.4 gateway 是**真的 gateway**，不是泛解析打到了 back。
-#     这条必须查响应体形状：实测 gw.mynet.club 曾返回 back 的
+# 0.4 gateway 是**真的 gateway**，不是泛解析打到了后端。
+#     这条必须查响应体形状：实测 gw.mynet.club 曾返回后端的
 #     {"name":"MyNetBackNew",...} 而 /healthz 是 404 —— 只看域名解析会误判
 if [ -n "$GW" ]; then
   req GET "$GW/healthz"

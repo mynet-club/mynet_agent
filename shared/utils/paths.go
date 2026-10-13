@@ -174,7 +174,7 @@ func siblingLocal(space string) string {
 // 顺序：**当前来源 space** → **同级 conf/local**（历史/跨档落点）→ 新建 space 下新路径。
 //
 // 为什么跨档回退：密钥是**节点身份**，不该随 local/online 切档而"换目录" ——
-// 切档后若只在当前档找，会误判「缺密钥/缺 back 公钥」（实测 `keys sync` 因此
+// 切档后若只在当前档找，会误判「缺密钥/缺后端公钥」（实测 `keys sync` 因此
 // 触发多余回填并因空 URL 失败）。宁可认同一台机只有一份密钥。
 func ResolveKeysDir(space, nodeID string) string {
 	candidates := []string{space}

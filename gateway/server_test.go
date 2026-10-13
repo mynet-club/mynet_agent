@@ -62,7 +62,7 @@ func TestC3_ConnectHasNoAuth(t *testing.T) {
 		t.Fatal("握手成功后连接应已登记")
 	}
 	if s.Registry().IsVerified("n1") {
-		t.Fatal("必须起始为未鉴权（C-4：只有 back 置位后才 verified）")
+		t.Fatal("必须起始为未鉴权（C-4：只有后端置位后才 verified）")
 	}
 }
 
@@ -240,7 +240,7 @@ func TestC4_MarkVerifiedViaHeader(t *testing.T) {
 	s := NewServer("", "")
 	s.Registry().Register("n1")
 
-	// 模拟 back 响应头置位
+	// 模拟后端响应头置位
 	rec := &verifiedRecorder{ResponseWriter: httptest.NewRecorder()}
 	rec.Header().Set(VerifiedHeader, "n1")
 	rec.WriteHeader(200)

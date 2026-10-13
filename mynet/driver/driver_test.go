@@ -274,9 +274,9 @@ func TestRenderGNBNodeConf(t *testing.T) {
 //	                                  4 → 只设 IPv4，IPv6 留在出厂默认 9001
 //	                                  6 → 只设 IPv6
 //
-// back 一度下发 `0.0.0.0:9016`，网关 182 的实测后果就是 v4 在 9016、v6 在 9001
+// 后端一度下发 `0.0.0.0:9016`，网关 182 的实测后果就是 v4 在 9016、v6 在 9001
 // （map 因此叫 /tmp/gnb.9001.map），而全网对它的 index/对端宣告都写 9016 ——
-// IPv6 侧的发现与打洞全打在没人听的端口上。2026-10-01 起 back 只发裸端口，
+// IPv6 侧的发现与打洞全打在没人听的端口上。2026-10-01 起后端只发裸端口，
 // 这条把「裸端口 → listen 9016（没有 host 前缀）」钉在 agent 侧。
 func TestRenderGNBNodeConfListenFormBarePortDualStack(t *testing.T) {
 	g := &domain.GnbIntent{

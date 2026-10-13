@@ -129,9 +129,9 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 			env.Gnb.Identity.PublicKey = pub
 		}
 	}
-	// 接口名唯一权威是 node.interface（back 侧同源：node_configs.config.ifname）。
+	// 接口名唯一权威是 node.interface（后端侧同源：node_configs.config.ifname）。
 	// 落到驱动投影前必须用权威值覆盖 gnb.options.ifname —— 那份是**过渡期别名**：
-	// back 一旦停发它（见 mynet_ctl 计划 B 的第二步），只读 Options.Ifname 的
+	// 后端一旦停发它（见 mynet_ctl 计划 B 的第二步），只读 Options.Ifname 的
 	// 渲染路径就会让 gnb 用它自己的默认名静默建口，而默认名在一台多 zone 的机器上
 	// 往往是**别人正在用的接口**。名字解析不出来就是配置错误，直接失败。
 	dev, err := env.TunDevice()
@@ -174,7 +174,7 @@ func LocalToGnbIntent(li *domain.LocalIntent, privHex, pubHex, algorithm string)
 			// （gnb_conf.c:71-81 check_listen_string + gnb_conf_file.c:300-333）——
 			// 纯数字同时设 [:::port] 和 0.0.0.0:port，含 ':' 只设 IPv4（IPv6 留在出厂
 			// 默认 9001），'[' 开头只设 IPv6。写死 v4 前缀等于单方面放弃 IPv6 侧的
-			// 发现与打洞，而 back 下发的 index/对端地址都是同一个端口号。
+			// 发现与打洞，而后端下发的 index/对端地址都是同一个端口号。
 			g.Listeners = []string{strconv.Itoa(li.Listen.UDPPort)}
 		}
 		g.Forwarding = &domain.GnbForwarding{
@@ -282,7 +282,7 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 		return fmt.Errorf("bundle 无 wireguard intent")
 	}
 	// 不回落 "wg0"：接口名是阻断性配置，猜出来的名字会建到另一个口上且不报错
-	// （见 domain.BundleEnvelope.TunDevice）。back 对 wg 节点同样发 node.interface。
+	// （见 domain.BundleEnvelope.TunDevice）。后端对 wg 节点同样发 node.interface。
 	iface, err := env.TunDevice()
 	if err != nil {
 		return err

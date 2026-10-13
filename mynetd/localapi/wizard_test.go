@@ -49,7 +49,7 @@ func TestWizardLoginNeverPutsPasswordInArgv(t *testing.T) {
 	if gotPath != "POST /api/v1/auth/login" {
 		t.Fatalf("relay path 不对：%s", gotPath)
 	}
-	// ① 口令只在请求体里（发给 back），不进 argv
+	// ① 口令只在请求体里（发给后端），不进 argv
 	if !strings.Contains(string(gotBody), secret) {
 		t.Fatalf("relay body 里没有口令，登录不可能成功")
 	}
@@ -162,7 +162,7 @@ func TestWizardStateReflectsDiskNotMemory(t *testing.T) {
 
 // TestRedactSecretsSparesPublicKeyMasksTokens —— 脱敏的边界。
 //
-// ⚠️ 第一版规则「32+ hex 一律遮」把 back 的**节点面公钥**也遮了，而那是
+// ⚠️ 第一版规则「32+ hex 一律遮」把后端的**节点面公钥**也遮了，而那是
 // CLI 特意打印出来给人核对的（它不是秘密，性质同 JWKS）。过度脱敏让信息
 // 不可用，还制造「这里有个秘密」的错觉。所以规则按**真实威胁**收紧：
 // PAT 形状无条件遮；长 hex 只在该行提到 secret 关键字时遮。
@@ -178,7 +178,7 @@ func TestRedactSecretsSparesPublicKeyMasksTokens(t *testing.T) {
 		t.Fatalf("token 行的长 hex 没被遮：%s", out)
 	}
 	// ③ **公钥要可见** —— 这是脱敏边界的关键一侧
-	pubLine := "back 节点面公钥: " + strings.Repeat("ab", 32)
+	pubLine := "后端节点面公钥: " + strings.Repeat("ab", 32)
 	if out := redactLine(pubLine); out != pubLine {
 		t.Fatalf("公钥不该被遮（它是给人核对的）：%s", out)
 	}

@@ -24,7 +24,7 @@ log() { logger -t mynet "$*"; echo "[MyNet] $*"; }
 
 # bundle 的接口名权威：$MYNET_HOME/var/bundle.json 的 node.interface。
 # 与 agent 侧 domain.BundleEnvelope.TunDevice() 同一口径：权威缺失时暂认过渡别名
-# gnb.options.ifname（旧 back 只发那一份）；两者都有值且不等 → 不猜，报错。
+# gnb.options.ifname（旧后端只发那一份）；两者都有值且不等 → 不猜，报错。
 bundle_tun_device() {
 	local b="$MYNET_HOME/var/bundle.json"
 	[ -f "$b" ] || return 0

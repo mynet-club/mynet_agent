@@ -13,7 +13,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// resultSink 假 back：记录节点面转发过来的请求，供断言逐字透传。
+// resultSink 假后端：记录节点面转发过来的请求，供断言逐字透传。
 type resultSink struct {
 	*httptest.Server
 	hit      chan struct{}
@@ -115,8 +115,8 @@ func TestAllowedNodeUpstream(t *testing.T) {
 	}
 }
 
-// 正常路径：签名头与 body 必须**逐字**到达 back——gateway 不做任何密码学，
-// 也不能改写 body，否则 back 验签必失败（签名覆盖 sha256(body)）。
+// 正常路径：签名头与 body 必须**逐字**到达后端——gateway 不做任何密码学，
+// 也不能改写 body，否则后端验签必失败（签名覆盖 sha256(body)）。
 func TestResultFrameForwardedVerbatim(t *testing.T) {
 	sink := newResultSink(t, 200)
 	s := NewServer(sink.URL, "")
@@ -188,7 +188,7 @@ func TestResultFrameNonWhitelistedPathDropped(t *testing.T) {
 	sink.waitNoHit(t)
 }
 
-// 缺签名头 → 丢弃。转发过去也只会被 back 拒，不如就地拦掉并留日志。
+// 缺签名头 → 丢弃。转发过去也只会被后端拒，不如就地拦掉并留日志。
 func TestResultFrameMissingSignatureDropped(t *testing.T) {
 	sink := newResultSink(t, 200)
 	s := NewServer(sink.URL, "")
@@ -222,7 +222,7 @@ func TestResultFrameWithoutUpstreamIsDropped(t *testing.T) {
 
 // 上游返 4xx/5xx（例如验签失败）不得让 WS 连接崩掉——节点应能继续收命令。
 func TestResultFrameUpstreamErrorKeepsConnAlive(t *testing.T) {
-	sink := newResultSink(t, 401) // back 验签失败
+	sink := newResultSink(t, 401) // 后端验签失败
 	s := NewServer(sink.URL, "")
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()

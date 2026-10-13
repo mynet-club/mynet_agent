@@ -299,7 +299,7 @@ for f in $FILES; do
 done
 [ "$b2" -eq 0 ] && ok "B2 mynetd 未依赖系统能力/配置面"
 
-# B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归 back）—— 只扫 relaypolicy/
+# B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归后端）—— 只扫 relaypolicy/
 B3PAT='Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature' # GUARD-OK 自检正则
 b3=0
 for f in $FILES; do

@@ -16,8 +16,8 @@ import (
 // 原接口两者的通道元素是 `struct{}`（Publish 还把 payload 硬编码成
 // `{"event":"queued"}`、Subscribe 收到消息后 `_ = msg` 直接丢）——
 // 也就是说跨实例只能传「有事」，传不了「什么事」。那样节点连 A 时，
-// back 通知 B，B 最多能喊一声，A 收到信号却拿不到 event/data，
-// 除非再回头问 back 一次（back 是发起方，没这接口）。
+// 后端通知 B，B 最多能喊一声，A 收到信号却拿不到 event/data，
+// 除非再回头问后端一次（后端是发起方，没这接口）。
 // 帧格式与 WS 下发帧一致（`{event, data}`），即 handleNotify 要推的原文。
 type PresenceStore interface {
 	SetOnline(ctx context.Context, nodeID string, verified bool) error
@@ -87,7 +87,7 @@ func (p *MemoryPresence) Publish(_ context.Context, nodeID string, frame []byte)
 		select {
 		case ch <- frame:
 		default:
-			// 缓冲满即丢：back 的 notify 是幂等重试语义，丢了会重发。
+			// 缓冲满即丢：后端的 notify 是幂等重试语义，丢了会重发。
 			// 阻塞才是不可接受的 —— 会让 Publish 卡住整个 notify 路径。
 		}
 	}

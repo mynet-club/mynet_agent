@@ -2,7 +2,7 @@
 # phase6_tunnel.sh — 0→1 的最后一环：**两节点真互通**，且证明流量真走隧道。
 #
 # 为什么不用现成的 g3_tunnel.sh / u1_mesh.sh：那两个只 ping，而且拓扑写死在
-# 旧的 U1 手工配置上（/tmp/t1-gnb/…，绕过 back 下发）。ping 通只能说明
+# 旧的 U1 手工配置上（/tmp/t1-gnb/…，绕过后端下发）。ping 通只能说明
 # 「两个 overlay IP 之间可达」，说明不了「是平台下发的配置让它可达的」，
 # 更说明不了「包真的进了隧道而不是从物理口绕过去」。
 # 按 AGENTS.md §7.1 D2/D4，这里每一步都断言，且互通要附三重独立证据。
@@ -16,7 +16,7 @@
 #        b. 在 gnb_tun 上 tcpdump 抓到 ICMP（抓的是隧道接口本身 —— 绕过隧道就不会有）
 #        c. gnb 自己的 in/out 计数器增长（ping 前后对比）
 #      另附 gnb_ctl -s 的 `Direct Point to Point`（gnb 自己的在线判据，PONG 位置位才打）
-#   4. 断言心跳有数据（back 侧 node_monitor_snapshots + Redis presence=online）
+#   4. 断言心跳有数据（后端侧 node_monitor_snapshots + Redis presence=online）
 #
 # 用法：
 #   P6_NODE_A=192.168.0.32 P6_NODE_B=192.168.0.16 \
@@ -24,7 +24,7 @@
 #   P6_IP_A=10.0.0.10 P6_IP_B=10.0.0.16 \
 #     sh scripts/e2e/phase6_tunnel.sh
 #
-# 前置（本脚本不做，因为要在 back 侧做）：两个节点已建、已上传公钥、
+# 前置（本脚本不做，因为要在后端侧做）：两个节点已建、已上传公钥、
 # 已是好友、连接申请已 send + accept、已设 endpoint。见 README 或
 # docs/knowledge-base/production-gates-handoff.md。
 #
@@ -278,8 +278,8 @@ phase "心跳与监控数据（0→1 的最后一项）"
 for spec in "A:$A_ID" "B:$B_ID"; do
   _l=${spec%%:*}; _id=${spec#*:}
   _r=$(curl -sS -m 20 "$API/api/v1/node/bundle" -H "X-Node-Id: $_id" 2>/dev/null | head -c 200)
-  # 节点面端点要签名，这里只看它不是 404/500 —— 真正的判据在 back 侧的库与 Redis，
-  # 那需要服务器权限，本脚本不假设能登 back，所以只给出提示而不假装验过。
+  # 节点面端点要签名，这里只看它不是 404/500 —— 真正的判据在后端侧的库与 Redis，
+  # 那需要服务器权限，本脚本不假设能登后端，所以只给出提示而不假装验过。
   case "$_r" in *'"success"'*) ok "$_l: /node/bundle 有响应" ;;
     *) printf '  ⚠ %s: /node/bundle 需要节点面签名，本脚本未验（%s）\n' "$_l" "$(printf '%s' "$_r" | head -c 80)" ;;
   esac

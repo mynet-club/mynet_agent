@@ -186,7 +186,7 @@ func TestWriteNodeKeysOverwrite(t *testing.T) {
 		t.Fatalf("meta.json 非法: %v\n%s", err, raw)
 	}
 	if m.BackPubHex != "b2" {
-		t.Fatalf("back=%q", m.BackPubHex)
+		t.Fatalf("后端=%q", m.BackPubHex)
 	}
 	if strings.Contains(string(raw), "b1") {
 		t.Fatalf("旧值残留: %s", raw)

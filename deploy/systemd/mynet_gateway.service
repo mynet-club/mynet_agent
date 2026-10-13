@@ -11,10 +11,10 @@
 #
 # ── presence（V4-5 已接 Redis）─────────────────────────────────
 # 配了 MYNET_GATEWAY_REDIS_ADDR 就用 Redis：跨实例同步 online/verified 状态，
-# 并把事件帧广播给连在别的实例上的节点（节点连 A、back 打到 B，靠它才推得过去）。
+# 并把事件帧广播给连在别的实例上的节点（节点连 A、后端打到 B，靠它才推得过去）。
 #
 # 不配（或配了但连不上）→ 退回**内存 presence**：单实例完全可用；
-# 双实例下 back 打到没连着该节点的那台会 404，日志里大量 "node not online"。
+# 双实例下后端打到没连着该节点的那台会 404，日志里大量 "node not online"。
 # 配置走 EnvironmentFile，见 deploy/gateway.env.example 的 presence 段。
 #
 # ⚠️ 当前 H4b 尚未裁定 gw1/gw2，单实例部署可以**不配**。但双实例时
@@ -30,7 +30,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 配置（back 内网地址等）走环境文件，不进 unit —— 部署值随环境变，unit 保持通用。
+# 配置（后端内网地址等）走环境文件，不进 unit —— 部署值随环境变，unit 保持通用。
 # `-` 前缀：文件不存在也不报错（gateway 在 upstream 为空时仍能起，只是 relay 无处可转）
 EnvironmentFile=-/etc/mynet/gateway.env
 ExecStart=/opt/mynet/bin/mynet_gateway -listen 127.0.0.1:8710

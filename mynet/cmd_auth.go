@@ -104,7 +104,7 @@ func authLogin(args []string) int {
 	raw, code, err := c.doJSON("POST", "/api/v1/auth/login", map[string]string{
 		"email":    email,
 		"password": password,
-		// Token Binding：登录时声明设备指纹，back 与 token 绑定（integration-plan §14.4）
+		// Token Binding：登录时声明设备指纹，后端与 token 绑定（integration-plan §14.4）
 		"device_fingerprint": DeviceFingerprint(),
 	})
 	if err != nil {
@@ -123,7 +123,7 @@ func authLogin(args []string) int {
 			} `json:"user"`
 			TenantID  interface{} `json:"tenant_id"`
 			AuthToken string      `json:"auth_token"`
-			// back 侧建成真会话后才有这三项（mynet_back f60cf1c）
+			// 后端侧建成真会话后才有这三项（mynet_api f60cf1c）
 			RefreshToken       string `json:"refresh_token"`
 			AuthTokenExpiresIn int    `json:"auth_token_expires_in"`
 			RefreshExpiresIn   int    `json:"refresh_token_expires_in"`
@@ -171,14 +171,14 @@ func authLogin(args []string) int {
 	fmt.Printf("已登录 %s（user_id=%s tenant_id=%s）\n", cred.UserEmail, cred.UserID, cred.TenantID)
 	fmt.Printf("凭证: %s (0600)\n", credentialPath())
 
-	// 顺手取一次 back 公钥并告诉用户 —— 向导下一步要往 mynet.conf 里写它。
+	// 顺手取一次后端公钥并告诉用户 —— 向导下一步要往 mynet.conf 里写它。
 	// 取不到不致命（可由运维手工给），但要明说。
 	pub, err := fetchBackFacePub()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "⚠️ 取 back 节点面公钥失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "⚠️ 取后端节点面公钥失败: %v\n", err)
 		fmt.Fprintf(os.Stderr, "   后续 mynet node claim 需要它；或用 --back-pub 显式给\n")
 	} else {
-		fmt.Printf("back 节点面公钥: %s\n", pub)
+		fmt.Printf("后端节点面公钥: %s\n", pub)
 	}
 
 	return 0
@@ -201,11 +201,11 @@ func authStatus() int {
 	fmt.Printf("  token    %s…（%d 字符）\n", truncate(c.Token, 12), len(c.Token))
 	fmt.Printf("  文件     %s\n", credentialPath())
 
-	// 顺手探一次 back 公钥，让「向导前置是否就绪」一眼可见
+	// 顺手探一次后端公钥，让「向导前置是否就绪」一眼可见
 	if pub, err := fetchBackFacePub(); err != nil {
-		fmt.Printf("  back 公钥  ⚠️ 取不到: %v\n", err)
+		fmt.Printf("  后端公钥  ⚠️ 取不到: %v\n", err)
 	} else {
-		fmt.Printf("  back 公钥  %s\n", pub)
+		fmt.Printf("  后端公钥  %s\n", pub)
 	}
 
 	return 0
@@ -251,7 +251,7 @@ func authUsage(msg string) int {
 	return 2
 }
 
-// fetchBackFacePub 取 back 的**节点面公钥**（公开端点，见 mynet_back 的
+// fetchBackFacePub 取后端的**节点面公钥**（公开端点，见 mynet_api 的
 // GET /api/v1/system/back-face-key）。没有它就没法往 mynet.conf 写 BACK_PUB_HEX。
 func fetchBackFacePub() (string, error) {
 	c := newBackClient("")

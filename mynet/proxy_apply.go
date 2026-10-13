@@ -2,7 +2,7 @@ package mynet
 
 // L6 代理分流落地（主线⑦）。
 //
-// 输入是 bundle.network.proxy（domain.ProxyPolicy，back 已解算好 Region×Policy），
+// 输入是 bundle.network.proxy（domain.ProxyPolicy，后端已解算好 Region×Policy），
 // 输出是系统命令计划。驱动无关：gnb0 / wg0 一视同仁。
 //
 // 旧线（spec/proxy.md）的完整语义保留在此，但**不再往 route.conf 灌海量 /8**——

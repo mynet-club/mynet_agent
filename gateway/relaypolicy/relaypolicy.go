@@ -6,14 +6,14 @@ package relaypolicy
 
 import "strings"
 
-// AllowedPathPrefixes 允许中继的 back 路径前缀（含节点自身通道 + mynet_gui 面）。
+// AllowedPathPrefixes 允许中继的后端路径前缀（含节点自身通道 + mynet_gui 面）。
 //
 // ⚠️ 改白名单必须**同时**看 deniedFragments（IsAllowedWith 先 deny 后 allow）。
 //
 // 起初只有 C-8 会话 5 条；mynet_gui 收进本机 webui 后，控制台要调
 // nodes/routes/services/social/ippools/tenants/user 等一大片 —— 不放开
 // 就是一串 403「path 不在中继白名单内」（实测）。这里按**业务前缀**放开，
-// 不是按单条路径枚举：back 自己还有鉴权与租户隔离，gateway 只挡路径。
+// 不是按单条路径枚举：后端自己还有鉴权与租户隔离，gateway 只挡路径。
 var AllowedPathPrefixes = []string{
 	// 会话与账号（C-8 原 5 条 + gui 的注册/改密/找回）
 	"/api/v1/auth/",

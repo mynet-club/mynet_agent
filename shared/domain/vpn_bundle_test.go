@@ -18,7 +18,7 @@ func (stubLifecycleDriver) Status() (*DriverStatus, error) { return nil, nil }
 
 var _ VPNLifecycleDriver = stubLifecycleDriver{}
 
-// 锁定抽象 bundle 的线上字段名。back 与各 driver 依赖这些 key 通信，
+// 锁定抽象 bundle 的线上字段名。后端与各 driver 依赖这些 key 通信，
 // 改名即为破坏性变更（见 spec/driver-abstraction.md §3.1）。
 func TestVPNBundleJSONShape(t *testing.T) {
 	b := VPNBundle{

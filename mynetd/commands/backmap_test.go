@@ -13,18 +13,18 @@ import (
 // 为什么改成 Go 测试：节点/客户端**没有 PHP 环境**，PHP 脚本无法在 agent 仓里跑；
 // 而命令名的唯一真值来源在 agent（Plan 的 switch）。守护必须长在真值旁边。
 //
-// 历史教训（CPI-4）：back 单方面声明了一整套 agent 不认的命令
+// 历史教训（CPI-4）：后端单方面声明了一整套 agent 不认的命令
 // （mynet.boot / shutdown / regenConfig / reloadConfigs / plugin.proxy.reload），
 // 其中 mynet.reboot 让「重启节点」整整失效，且**只在节点本地日志留一行**，
-// back 侧完全看不出来。所以本组测试的核心不是「能映射」，而是
+// 后端侧完全看不出来。所以本组测试的核心不是「能映射」，而是
 // 「**映射不了时必须显式失败**」。
 
-// backCommandsSnapshot 是 back 侧实际会下发的 command 全集快照。
+// backCommandsSnapshot 是后端侧实际会下发的 command 全集快照。
 //
-// 来源：mynet_back 全仓 grep `'mynet\.[a-z.]*'`（2026-09-24，13 条）。
-// ⚠️ 这是**快照**，不是自动同步：back 新增命令时本测试不会自动发现。
+// 来源：mynet_api 全仓 grep `'mynet\.[a-z.]*'`（2026-09-24，13 条）。
+// ⚠️ 这是**快照**，不是自动同步：后端新增命令时本测试不会自动发现。
 // 真正的兜底是运行期——OpFromBackCommand 返回 ok=false 时调用方必须显式上报，
-// 于是 back 会收到「unknown command」而不是静默无事发生。
+// 于是后端会收到「unknown command」而不是静默无事发生。
 var backCommandsSnapshot = []string{
 	"mynet.gnb.refresh.address",
 	"mynet.gnb.refresh.route",
@@ -41,12 +41,12 @@ var backCommandsSnapshot = []string{
 	"mynet.wg.refresh.route",
 }
 
-// back 下发的每一条命令都必须能映射到 agent 认识的 Op。
+// 后端下发的每一条命令都必须能映射到 agent 认识的 Op。
 func TestEveryBackCommandMapsToKnownOp(t *testing.T) {
 	for _, cmd := range backCommandsSnapshot {
 		op, ok := OpFromBackCommand(cmd)
 		if !ok {
-			t.Errorf("%s 无法映射到任何 Op —— back 下发它时节点会静默失效（CPI-4 的复发形态）", cmd)
+			t.Errorf("%s 无法映射到任何 Op ——后端下发它时节点会静默失效（CPI-4 的复发形态）", cmd)
 			continue
 		}
 		if !IsKnownOp(op) {
@@ -334,7 +334,7 @@ func TestBackCommandsIsCompleteAndSorted(t *testing.T) {
 	// 快照里的每一条都必须在 BackCommands() 里
 	for _, cmd := range backCommandsSnapshot {
 		if !seen[cmd] {
-			t.Errorf("back 会下发 %q，但 BackCommands() 没列它", cmd)
+			t.Errorf("后端会下发 %q，但 BackCommands() 没列它", cmd)
 		}
 	}
 }

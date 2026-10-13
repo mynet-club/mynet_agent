@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// gnbEnv 造一份「back 两处同源」的最小 envelope：node.interface 与
+// gnbEnv 造一份「后端两处同源」的最小 envelope：node.interface 与
 // gnb.options.ifname 是同一个值（2026-10-01 起的下发口径，第一步过渡期）。
 func gnbEnv(authority, legacy string) *BundleEnvelope {
 	env := &BundleEnvelope{
@@ -22,7 +22,7 @@ func gnbEnv(authority, legacy string) *BundleEnvelope {
 // TestTunDeviceAuthority 权威是 node.interface。
 //
 // 现网事实：网关 182 的 `gnb_tun` 被另一个 zone 占用，本节点的隧道口必须是
-// `gnb_tun_16`。back 两处同源发同一个值，agent 任何一处读到另一个字段就是漂移。
+// `gnb_tun_16`。后端两处同源发同一个值，agent 任何一处读到另一个字段就是漂移。
 func TestTunDeviceAuthority(t *testing.T) {
 	got, err := gnbEnv("gnb_tun_16", "gnb_tun_16").TunDevice()
 	if err != nil {
@@ -33,10 +33,10 @@ func TestTunDeviceAuthority(t *testing.T) {
 	}
 }
 
-// TestTunDeviceLegacyOnly 旧 back 的 bundle（只有 gnb.options.ifname）过渡期仍可用。
+// TestTunDeviceLegacyOnly 旧后端的 bundle（只有 gnb.options.ifname）过渡期仍可用。
 //
-// 这条是**发布顺序**的保险：agent 先升级、back 后停发别名，中间态不能让节点
-// 突然解析不出接口名而停摆。back 停发之后（B 计划第二步）该分支才会成为死路。
+// 这条是**发布顺序**的保险：agent 先升级、后端后停发别名，中间态不能让节点
+// 突然解析不出接口名而停摆。后端停发之后（B 计划第二步）该分支才会成为死路。
 func TestTunDeviceLegacyOnly(t *testing.T) {
 	got, err := gnbEnv("", "gnb_tun_16").TunDevice()
 	if err != nil {
@@ -99,7 +99,7 @@ func TestTunDeviceIllegalName(t *testing.T) {
 		}
 	}
 
-	// 对照：合法形态（含 back 声明允许的字符）
+	// 对照：合法形态（含后端声明允许的字符）
 	for _, ok := range []string{"gnb_tun_16", "wg0", "utun3", "mynet0"} {
 		if _, err := gnbEnv(ok, "").TunDevice(); err != nil {
 			t.Errorf("合法接口名 %q 被拒: %v", ok, err)
@@ -123,7 +123,7 @@ func TestValidateTunDeviceLength(t *testing.T) {
 //
 // 这是 182 失联的直接形态：bundle 把 dev 写成 `gnb_tun`（另一个 zone 的接口），
 // 命令执行成功、路由"装上了"，对端 /32 却进了别人的隧道 —— 症状是 ping 不通、
-// 而 back 侧日志一切正常。dev 为空不在此列（那是走网关/别的表的路由）。
+// 而后端侧日志一切正常。dev 为空不在此列（那是走网关/别的表的路由）。
 func TestDeviceForRoute(t *testing.T) {
 	env := gnbEnv("gnb_tun_16", "gnb_tun_16")
 

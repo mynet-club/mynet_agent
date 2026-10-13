@@ -155,7 +155,7 @@ func LoadNodeMeta(keysDir string) (*NodeKeyMeta, error) {
 	return &m, nil
 }
 
-// UpdateNodeMetaBackPub 回填 meta.json 的 back 节点面公钥（服务器侧公开参数，非秘密）。
+// UpdateNodeMetaBackPub 回填 meta.json 的后端节点面公钥（服务器侧公开参数，非秘密）。
 //
 // 背景：早期 keys set/generate 把 back_pub_hex 硬写成空串，节点面因此永远装配
 // 不了（mynetd transport 报「NodeID 必填」，隧道只能靠手工 start 活着）。

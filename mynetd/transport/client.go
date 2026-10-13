@@ -2,7 +2,7 @@
 //
 // 设计（C-3/C-4）：gateway **不鉴权**，只做透传 + 连接状态表。
 // 连接时带 X-Node-Id 仅作**寻址与 presence**（门牌号），不是授权。
-// 真正的节点面鉴权是节点↔back 的 DH+HMAC（C-2），发生在 relay 到 back 之后。
+// 真正的节点面鉴权是节点↔后端的 DH+HMAC（C-2），发生在 relay 到后端之后。
 package transport
 
 import (
@@ -47,7 +47,7 @@ type Handlers struct {
 	OnEvent   func(name string, data map[string]string)
 	// OnConnect 每次 WS 连接**建立**后被调用（首连和每次重连都算）。
 	//
-	// 为什么需要它：网关下发是 fire-and-forget 的事件帧，连接断开期间 back
+	// 为什么需要它：网关下发是 fire-and-forget 的事件帧，连接断开期间后端
 	// 推过的 bundle_changed **不会补发**，通知丢了就永远丢。让「连上」这个动作
 	// 自己补一次拉取（ETag 条件请求，无变化就是 304），断线窗口才不至于变成
 	// 「配置永久滞后」。这是 WS 链路的自愈，不是心跳轮询。
@@ -58,7 +58,7 @@ type Handlers struct {
 	// 返回 nil 表示不上报。
 	//
 	// 为什么是「编码成字节」而不是「直接签名」：transport 是**零密码学**的纯搬运层
-	// （C-3），签名属节点面（C-2，node ↔ back），必须由组合根注入。
+	// （C-3），签名属节点面（C-2，node ↔ 后端），必须由组合根注入。
 	// 此前 HandleFrame 拿到结果后 `_ = res` 直接丢弃，命令执行结果从不上报。
 	OnResult func(ctx context.Context, res commands.Result) ([]byte, error)
 }
@@ -235,9 +235,9 @@ func (c *Client) SetDialer(d Dialer) {
 // 返回需要回写给网关的帧（命令执行结果）；返回 nil 表示该帧无需回应。
 // 本层不做任何签名——编码由 Handlers.OnResult 注入（见其注释）。
 //
-// ⚠️ 网关下发的是**事件信封** `{event, data}`，不是命令本身。back 的
+// ⚠️ 网关下发的是**事件信封** `{event, data}`，不是命令本身。后端的
 // GatewayNotifier 只发三类事件（command_queued / bundle_changed / route_changed），
-// 且 `data` 仅带定位信息（如 command_id）；真正的命令要节点自己回 back 拉
+// 且 `data` 仅带定位信息（如 command_id）；真正的命令要节点自己回后端拉
 // （`GET /api/v1/node/commands`）。
 //
 // 此前这里把**每一帧**都当 commands.Request 解析，于是 id/op 全空、

@@ -13,7 +13,7 @@ shared/     共享：domain(BundleEnvelope) · config · logger · utils
 
 **硬约束**（违反即架构瓦解，`make guard` 会拦）：
 - `mynetd/` **不得**依赖系统能力（`detector`/`tools/`/`infrastructure`/`coordinator`/`node/`/`service/`/gopsutil）
-- `gateway` **不做鉴权**——只做透传 + 连接状态表，鉴权归 back
+- `gateway` **不做鉴权**——只做透传 + 连接状态表，鉴权归后端
 - `relaypolicy` **只做路径白名单**，不含鉴权逻辑
 
 ## 开发

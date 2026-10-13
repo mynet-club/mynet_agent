@@ -12,7 +12,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// fakeBack 起一个假 back，记录收到的请求以便断言透传是否正确。
+// fakeBack 起一个假后端，记录收到的请求以便断言透传是否正确。
 type fakeBack struct {
 	*httptest.Server
 	mu       chan struct{}
@@ -50,7 +50,7 @@ func newFakeBack(t *testing.T, status int, body string, extraHeaders http.Header
 	return fb
 }
 
-// waitHit 等假 back 真被打到，避免用 sleep 猜。
+// waitHit 等假后端真被打到，避免用 sleep 猜。
 func (fb *fakeBack) waitHit(t *testing.T) bool {
 	t.Helper()
 	select {
@@ -130,7 +130,7 @@ func TestRelayPassesThroughMethodBodyAndHeaders(t *testing.T) {
 }
 
 // 上游的 4xx 必须原样透传，不能被 gateway 改写成 502——否则客户端分不清
-// 「back 拒绝了我」和「gateway 连不上 back」。
+// 「后端拒绝了我」和「gateway 连不上后端」。
 func TestRelayPropagatesUpstreamErrorStatus(t *testing.T) {
 	fb := newFakeBack(t, 401, `{"success":false,"message":"Unauthenticated."}`, nil)
 	s := NewServer(fb.URL, "")
@@ -234,7 +234,7 @@ func TestRelayUpstreamUnreachableIs502(t *testing.T) {
 	}
 }
 
-// C-4 闭环：back 在响应头写 X-Node-Verified，gateway 解析后把该连接标为已鉴权。
+// C-4 闭环：后端在响应头写 X-Node-Verified，gateway 解析后把该连接标为已鉴权。
 // 这条串起了 relay + withVerifiedHook + Registry，是「伪造 node_id 不被置位」的正面对照。
 func TestRelayUpstreamVerifiedHeaderMarksConn(t *testing.T) {
 	fb := newFakeBack(t, 200, `{"success":true}`, http.Header{

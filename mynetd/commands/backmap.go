@@ -2,21 +2,21 @@ package commands
 
 import "strings"
 
-// back 下发的 command 名 → agent 的 Op。
+// 后端下发的 command 名 → agent 的 Op。
 //
 // ── 为什么需要这层翻译 ──────────────────────────────────────────────
-// back 的 `monitor_rt_cmds.command` 用的是 `mynet.<op>` 形式，agent 的 Plan()
+// 后端的 `monitor_rt_cmds.command` 用的是 `mynet.<op>` 形式，agent 的 Plan()
 // 认的是去掉前缀的 `<op>`。实测 13 条里 9 条严格吻合（见 TestBackCommandVocabulary），
 // 剩下 4 条是 CPI-4 时代漂掉的残留（mynet.start / stop / restart / service.restart）。
 //
-// ⚠️ 不认识的命令**必须显式报错**，不能静默忽略：历史上 back 单方面声明的
+// ⚠️ 不认识的命令**必须显式报错**，不能静默忽略：历史上后端单方面声明的
 // `mynet.reboot` 就是因为节点侧静默不认，让「重启节点」整整失效了一段时间，
-// 而且**只在节点本地日志里留一行**，从 back 侧完全看不出来。
+// 而且**只在节点本地日志里留一行**，从后端侧完全看不出来。
 const backCommandPrefix = "mynet."
 
 // legacyCommandAliases 4 条历史漂移命令的显式映射。
 //
-// 放在 agent 侧（命令名的唯一真值来源）而不是改 back，是为了让 back 已入库、
+// 放在 agent 侧（命令名的唯一真值来源）而不是改后端，是为了让后端已入库、
 // 已排队的旧命令仍能执行——否则升级 agent 后那些命令会集体变成「不识别」。
 var legacyCommandAliases = map[string]string{
 	"start":           OpServiceStart,
@@ -25,13 +25,13 @@ var legacyCommandAliases = map[string]string{
 	"service.restart": OpServiceReload,
 }
 
-// OpFromBackCommand 把 back 的 command 名翻译成 agent 的 Op。
+// OpFromBackCommand 把后端的 command 名翻译成 agent 的 Op。
 //
-// **严格要求 `mynet.` 前缀**：back 实测下发的 13 条命令全部带前缀，
+// **严格要求 `mynet.` 前缀**：后端实测下发的 13 条命令全部带前缀，
 // 裸 op（如 `node.update`）一律拒。这是系统边界，宁可严格——
-// 若哪天 back 的命名约定变了，这里会立刻显式失败，而不是半通不通地静默工作。
+// 若哪天后端的命名约定变了，这里会立刻显式失败，而不是半通不通地静默工作。
 //
-// ok=false 表示 back 下发了 agent 不认识的命令。调用方必须把它当成**错误**上报，
+// ok=false 表示后端下发了 agent 不认识的命令。调用方必须把它当成**错误**上报，
 // 而不是当作「无事发生」。
 func OpFromBackCommand(command string) (op string, ok bool) {
 	c := strings.TrimSpace(command)
@@ -96,7 +96,7 @@ func KnownOps() []string {
 	return out
 }
 
-// BackCommands 返回 agent 能接受的、back 侧完整 command 名集合。
+// BackCommands 返回 agent 能接受的、后端侧完整 command 名集合。
 // 供词汇守护测试与文档生成使用。
 func BackCommands() []string {
 	out := make([]string, 0, len(knownOps)+len(legacyCommandAliases))

@@ -2,9 +2,9 @@
 //
 // **gateway 不鉴权**（C-3）——纯透传 + 连接状态表（像 TCP 握手）。
 // 连接层的节点标识只做**寻址与 presence**（门牌号），不是授权。
-// 鉴权一律归 back：用户面 cookie/会话，节点面 DH+HMAC。
+// 鉴权一律归后端：用户面 cookie/会话，节点面 DH+HMAC。
 //
-// C-4：back 验证通过任意一次节点通道请求后，在响应头写
+// C-4：后端验证通过任意一次节点通道请求后，在响应头写
 //
 //	X-Node-Verified: <node_id>
 //
@@ -23,14 +23,14 @@ import (
 	"time"
 )
 
-// VerifiedHeader back → gateway 的置位信号（C-4）
+// VerifiedHeader 后端 → gateway 的置位信号（C-4）
 const VerifiedHeader = "X-Node-Verified"
 
 // Conn 是一条已接受的节点 WS 连接的状态。
 type Conn struct {
 	NodeID    string
 	Connected time.Time
-	// Verified 是否已被 back 验证过至少一次（C-4）
+	// Verified 是否已被后端验证过至少一次（C-4）
 	Verified bool
 	// send 是下行帧队列，由 ws.go 的 writeLoop 排空。
 	// 没有 writeLoop 时它只是个 16 格的缓冲区，填满后 Notify 一律 errSendFull。
@@ -109,12 +109,12 @@ func (r *Registry) RegisterCtx(nodeID string, cancel context.CancelFunc) (evicte
 		old.Close()
 	}
 	if ps != nil {
-		// 连上就上报 online（verified 尚未置位，等 back 的 C-4）。
+		// 连上就上报 online（verified 尚未置位，等后端的 C-4）。
 		// 原实现只在 MarkVerified 里 SetOnline —— 断开时也没人 SetOffline，
 		// 于是 Redis 里会残留「这个节点还在线」的状态，直到被同 ID 节点重连覆盖。
 		_ = ps.SetOnline(context.Background(), nodeID, false)
 	}
-	// 订阅跨实例事件：节点连在**本实例**，而 back 可能通知到**别的**实例
+	// 订阅跨实例事件：节点连在**本实例**，而后端可能通知到**别的**实例
 	// —— 那个实例发现本地无连接，经 Redis PUBLISH 把帧丢过来，由这里收货。
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	c.watchCancel = watchCancel
@@ -209,7 +209,7 @@ func (r *Registry) IsOnline(nodeID string) bool {
 	return ok
 }
 
-// MarkVerified C-4：back 置位「已鉴权」
+// MarkVerified C-4：后端置位「已鉴权」
 func (r *Registry) MarkVerified(nodeID string) bool {
 	r.mu.Lock()
 	c, ok := r.conns[nodeID]
@@ -238,7 +238,7 @@ func (r *Registry) Count() int {
 	return len(r.conns)
 }
 
-// Notify 推事件给节点（back → gateway → 节点，C-5 只推已置位的连接）。
+// Notify 推事件给节点（后端 → gateway → 节点，C-5 只推已置位的连接）。
 //
 // 多实例（V4-5）：
 //  1. 节点连在**本实例** → 直接投递，结束（也避免了自己 Publish 自己收的重复）
@@ -246,7 +246,7 @@ func (r *Registry) Count() int {
 //     → 经 presence.Publish 把**帧原文**广播过去，对方的 watchNode 收货并投递
 //  3. 确实离线 → errNotOnline（这是唯一该回 404 的情形）
 //
-// 原实现只查本地 conns，所以节点连 A 时 back 通知 B 一律 404 ——
+// 原实现只查本地 conns，所以节点连 A 时后端通知 B 一律 404 ——
 // 判据里那句「现在必 404」就是这么来的。
 func (r *Registry) Notify(ctx context.Context, nodeID, event string, data map[string]string) error {
 	payload, _ := json.Marshal(map[string]any{"event": event, "data": data})
@@ -291,9 +291,9 @@ const (
 // Server HTTP 入口
 type Server struct {
 	reg *Registry
-	// Upstream back 的内网地址（部署配置，不下发）
+	// Upstream 后端的内网地址（部署配置，不下发）
 	Upstream string
-	// InternalToken back ↔ gateway 的运维鉴权（**不是**节点鉴权）
+	// InternalToken 后端 ↔ gateway 的运维鉴权（**不是**节点鉴权）
 	InternalToken string
 	// logf 日志出口，默认丢弃；由 cmd/mynet_gateway 注入 stderr。
 	logf func(format string, args ...any)
@@ -327,7 +327,7 @@ func (s *Server) Handler() http.Handler {
 	return s.withVerifiedHook(mux)
 }
 
-// withVerifiedHook 解析 back 响应头 X-Node-Verified 并置位（C-4）
+// withVerifiedHook 解析后端响应头 X-Node-Verified 并置位（C-4）
 func (s *Server) withVerifiedHook(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rw := &verifiedRecorder{ResponseWriter: w}
@@ -387,7 +387,7 @@ func (s *Server) handlePresence(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// notifyRequest back → gateway 推送指令
+// notifyRequest 后端 → gateway 推送指令
 type notifyRequest struct {
 	NodeID string            `json:"node_id"`
 	Event  string            `json:"event"`

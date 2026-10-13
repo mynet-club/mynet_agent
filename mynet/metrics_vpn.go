@@ -30,7 +30,7 @@ func probeWireGuard() []VPNDriverMetrics {
 		// 接口在、但读不到 peer（非 root 时 `wg show <iface> dump` 会
 		// Permission denied，本机实测就是这样）。
 		//
-		// ⚠️ 这种情况下**仍然要报「接口存在」**，不能返回 nil：back 的
+		// ⚠️ 这种情况下**仍然要报「接口存在」**，不能返回 nil：后端的
 		// `isVpnInterfaceDown()` 把「心跳里没有 vpn_interfaces 段」直接判成
 		// 「网络不可用」（NodeHeartbeatController.php:421-432），于是走
 		// markNodeOffline 分支、连 node_monitor 都不处理。
@@ -61,17 +61,17 @@ func detectWGInterface() string {
 // probeGNB 探测 gnb。
 //
 // ⚠️ 与 probeWireGuard 同一条红线：**只要接口在就必须报出来**，不能返回 nil。
-// back 的 isVpnInterfaceDown() 把「心跳里没有 vpn_interfaces 段」直接判成
+// 后端的 isVpnInterfaceDown() 把「心跳里没有 vpn_interfaces 段」直接判成
 // 「网络不可用」→ markNodeOffline → 连 node_monitor 都不处理
 // （NodeHeartbeatController.php:88-108）。少报 peer 数只是数据不全，
 // 误报离线是**状态错误**。
 //
 // 此前这里把这条红线踩了两遍（wg 侧的注释早就写下了这个坑，gnb 侧没跟上）：
 //  1. 接口名硬编码成 ""（`projectPeers("gnb", "", peers)`）。而 ifname 是
-//     back 的 required_with:vpn_interfaces，空值会让整条心跳 422 ——
-//     于是 heartbeat.go 干脆整段不发，还写着「back 的 isVpnInterfaceDown(null)
+//     后端的 required_with:vpn_interfaces，空值会让整条心跳 422 ——
+//     于是 heartbeat.go 干脆整段不发，还写着「后端的 isVpnInterfaceDown(null)
 //     不会因此判节点下线」，**那句是错的**：源码第一行就是 empty() → return true。
-//     实测后果：隧道 Direct Point to Point、ping 0% 丢包，而 back 侧
+//     实测后果：隧道 Direct Point to Point、ping 0% 丢包，而后端侧
 //     Redis status=offline、node_monitor_snapshots 0 行、nodes.last_seen NULL。
 //  2. 用 d.IsAvailable() 当闸门，而它当时是 `gnb_ctl -s`（不带 -b）——
 //     gnb_ctl 缺 -b 时只打印 usage 就 exit 0，于是「可用」恒为真，
@@ -103,7 +103,7 @@ func probeGNB() []VPNDriverMetrics {
 //
 // 为什么从 bundle 取而不是问 gnb_ctl：`gnb_ctl -b … -c -s` 的输出里
 // **没有接口名**（只有 conf_dir / node_num / wan*_port 与每个 node 的 tun_ipv4），
-// 而读 ctl block 又要 root。bundle 的 node.interface 是 back 侧唯一权威
+// 而读 ctl block 又要 root。bundle 的 node.interface 是后端侧唯一权威
 // （= node_configs.config.ifname，见 domain.BundleEnvelope.TunDevice），
 // 也正是我们渲染进 node.conf 的那个值，读它不需要任何特权。
 //
@@ -121,7 +121,7 @@ func detectGNBInterface() (string, []string) {
 	var addrs []string
 	if as, err := iface.Addrs(); err == nil {
 		for _, a := range as {
-			// 只要 IPv4：back 的 vpn_interfaces.*.ip 是单个字符串，
+			// 只要 IPv4：后端的 vpn_interfaces.*.ip 是单个字符串，
 			// 而 gnb 的 tun 会同时挂 64:ff9b:: 前缀的 v6 与 fe80:: 链路本地
 			if s := a.String(); !strings.Contains(s, ":") {
 				addrs = append(addrs, s)
@@ -135,7 +135,7 @@ func detectGNBInterface() (string, []string) {
 // gnbIfnameFromBundle 从 $MYNET_HOME/var/bundle.json 取 gnb 的接口名。
 //
 // 与投影/路由同一解析（env.TunDevice，权威=node.interface），**不再优先读
-// gnb.options.ifname**：三处读两个字段的话，back 一旦只发权威字段，这里就会报
+// gnb.options.ifname**：三处读两个字段的话，后端一旦只发权威字段，这里就会报
 // 「没有接口」而 apply 那边照着新名字装 —— 展示与事实分叉比展示缺失更坏。
 // 解析失败时返回空（宁可这一项不报，也不报一个猜出来的名字）。
 func gnbIfnameFromBundle() string {

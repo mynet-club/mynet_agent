@@ -1,5 +1,5 @@
 #!/bin/sh
-# T2-7/T2-1..3：产品闭环冒烟（本地 back）
+# T2-7/T2-1..3：产品闭环冒烟（本地后端）
 # 前置：php artisan serve --port=8080 + sqlite schema
 set -e
 API="${API:-http://127.0.0.1:8080}"

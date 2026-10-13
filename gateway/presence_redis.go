@@ -145,7 +145,7 @@ func (p *redisPresence) Publish(ctx context.Context, nodeID string, frame []byte
 }
 
 // sendByte 非阻塞投递：缓冲满即丢。
-// back 的 notify 有幂等重试语义，丢了会重发；阻塞则会卡住整条 notify 路径。
+// 后端的 notify 有幂等重试语义，丢了会重发；阻塞则会卡住整条 notify 路径。
 func sendByte(ch chan []byte, b []byte) {
 	select {
 	case ch <- b:

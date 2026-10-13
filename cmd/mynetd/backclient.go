@@ -12,17 +12,17 @@ import (
 	"time"
 )
 
-// backClient 节点面 HTTP 客户端：**签名请求经 gateway 的 /v1/relay 到 back**。
+// backClient 节点面 HTTP 客户端：**签名请求经 gateway 的 /v1/relay 到后端**。
 //
-// ── 为什么走 relay 而不是直连 back ────────────────────────────────
-// 「back 对节点不可达，gateway 是节点面唯一入口」（mynet-overview.md §15）。
+// ── 为什么走 relay 而不是直连后端 ────────────────────────────────
+// 「后端对节点不可达，gateway 是节点面唯一入口」（mynet-overview.md §15）。
 // 而 relay 白名单包含 `/api/v1/node` 与 `/api/v1/heartbeat`
 // （gateway/relaypolicy/relaypolicy.go:19-20，注释即「含节点自身通道」），
 // 且 ReverseProxy 会逐字转发请求头——所以节点面签名请求可以直接复用这条通路，
 // 不需要给 gateway 增加新的面。
 //
 // ── 签名口径 ────────────────────────────────────────────────────
-// back 的 NodeHeartbeatAuthMiddleware::signedPath() 返回 `'/'.$request->path()`，
+// 后端的 NodeHeartbeatAuthMiddleware::signedPath() 返回 `'/'.$request->path()`，
 // 即带前导斜杠的完整路径（如 `/api/v1/node/commands`）。
 // 消息是 `METHOD\npath\nts\nsha256(body)`（两端算法一致：
 // mynet/keys/node_face.go:66 ↔ NodeFaceAuthService.php:62）。
@@ -68,14 +68,14 @@ func newBackClient(gatewayWS string, id *nodeIdentity) (*backClient, error) {
 	}, nil
 }
 
-// do 发一个签名请求到 back（经 gateway relay）。返回状态码与响应体。
+// do 发一个签名请求到后端（经 gateway relay）。返回状态码与响应体。
 func (c *backClient) do(ctx context.Context, method, backPath string, body []byte) (int, []byte, error) {
 	return c.doSigned(ctx, method, backPath, body, body)
 }
 
 // doSigned 与 do 相同，但**签名体与发送体可以不同**。
 //
-// 只有心跳需要这个：back 的 `NodeHeartbeatAuthMiddleware` 在验签前会把
+// 只有心跳需要这个：后端的 `NodeHeartbeatAuthMiddleware` 在验签前会把
 // `node_monitor` 置 nil 再用 PHP 重编码（`spec/node-keying.md` §4.3 —— 它体量大
 // 且不参与签名）。所以签的是不含它的那份、发的是完整的那份。
 // 拿完整体去签，两端 sha256(body) 永远不等，症状是清一色 401。
@@ -133,7 +133,7 @@ func (c *backClient) reportHeartbeat(ctx context.Context, sendBody, signBody []b
 	if err != nil {
 		return err
 	}
-	// 201 也接受：back 现在返 200，但「创建一条心跳记录」语义上是 201，
+	// 201 也接受：后端现在返 200，但「创建一条心跳记录」语义上是 201，
 	// 哪天改了不该让节点侧集体报错。
 	if code != http.StatusOK && code != http.StatusCreated {
 		return fmt.Errorf("心跳上报返回 %d: %s", code, truncateBytes(raw, 300))
@@ -141,14 +141,14 @@ func (c *backClient) reportHeartbeat(ctx context.Context, sendBody, signBody []b
 	return nil
 }
 
-// pendingCommand 是 back `GET /api/v1/monitor/commands` 返回的单条命令。
+// pendingCommand 是后端 `GET /api/v1/monitor/commands` 返回的单条命令。
 //
 // 字段对齐 NodeHeartbeatController::selectPendingCommands（:216-222）。
-// 注意 back 还会返回一个 `action` 字段（COMMAND_ACTION_MAP 的产物），
+// 注意后端还会返回一个 `action` 字段（COMMAND_ACTION_MAP 的产物），
 // 但那套词表 agent 侧一个都不认识，已裁定删除；这里刻意**不解析**它，
 // 只认 `command`。
 //
-// ID 用 json.Number：back 的 `rt_cmd_id` 是 unsignedBigInteger，JSON 里是数字；
+// ID 用 json.Number：后端的 `rt_cmd_id` 是 unsignedBigInteger，JSON 里是数字；
 // 但结果回报路径要把它拼进 URL，用 json.Number 可同时容忍数字与字符串两种形态。
 type pendingCommand struct {
 	ID      json.Number    `json:"id"`
@@ -165,7 +165,7 @@ type pendingCommandsResponse struct {
 
 // pullPendingCommands 拉取待执行命令。
 //
-// back 每次只返回 1 条并立即标记为「执行中」（selectPendingCommands:209-215），
+// 后端每次只返回 1 条并立即标记为「执行中」（selectPendingCommands:209-215），
 // 所以调用方应在执行完后再次拉取，直到返回空。
 func (c *backClient) pullPendingCommands(ctx context.Context) (*pendingCommandsResponse, error) {
 	code, raw, err := c.do(ctx, http.MethodGet, "/api/v1/node/commands", nil)
@@ -181,24 +181,24 @@ func (c *backClient) pullPendingCommands(ctx context.Context) (*pendingCommandsR
 		return nil, fmt.Errorf("解析待执行命令响应: %w（原文 %s）", err, truncateBytes(raw, 200))
 	}
 	if !out.Success {
-		return nil, fmt.Errorf("back 报告失败: %s", out.Error)
+		return nil, fmt.Errorf("后端报告失败: %s", out.Error)
 	}
 	return &out, nil
 }
 
-// bundlePath 是 back 下发 BundleEnvelope 的端点（R8 线格式，schema v2）。
+// bundlePath 是后端下发 BundleEnvelope 的端点（R8 线格式，schema v2）。
 //
-// ⚠️ 路径必须带前导斜杠，且要与 back 的 signedPath() 完全一致 ——
+// ⚠️ 路径必须带前导斜杠，且要与后端的 signedPath() 完全一致 ——
 // 差一个斜杠就全 401，而症状是「鉴权失败」不是「路径写错」（见本文件顶部注释）。
 const bundlePath = "/api/v1/node/bundle"
 
 // fetchBundle 拉取本节点的配置包。
 //
-// 契约对齐 mynet_back 的 NodeMonitorController::getNodeBundle：
+// 契约对齐 mynet_api 的 NodeMonitorController::getNodeBundle：
 //   - 头 X-Node-Id / X-Node-Signature，与其它节点面端点同一套签名
 //   - 可选 If-None-Match: "<etag>"，命中则 **304 且无响应体**
 //   - 200 时响应头带 ETag，体是 Envelope JSON
-//   - back 在无已发布修订时会自动发布一版，所以首拉不会落空
+//   - 后端在无已发布修订时会自动发布一版，所以首拉不会落空
 //
 // 返回的 code 交给调用方分支（200 / 304 / 其它），这里不擅自把 304 当错误 ——
 // 「没变化」是正常结果，不是失败。

@@ -62,7 +62,7 @@ func cmdConfig(args []string) int {
 		fmt.Fprintln(os.Stderr, "用法: mynet config export | import | use | status | tenants | keys | plugins | pull | sync | parity")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "配置同步语义（U2）:")
-		fmt.Fprintln(os.Stderr, "  pull   从 back 下载 bundle + 投影 driver/**（不装 OS 路由）")
+		fmt.Fprintln(os.Stderr, "  pull   从后端下载 bundle + 投影 driver/**（不装 OS 路由）")
 		fmt.Fprintln(os.Stderr, "  sync   pull + apply --active --auto（下载+投影+OS 路由，推荐）")
 		fmt.Fprintln(os.Stderr, "  refresh-*  只渲染**本地** bundle，不访问网络（要拉新先 pull）")
 		return 2

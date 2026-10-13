@@ -1,10 +1,10 @@
 #!/bin/sh
-# relay_smoke.sh — 透过 mynetd relay 对 mynet_back 云端做全量冒烟（L1+L2）
+# relay_smoke.sh — 透过 mynetd relay 对 mynet_api 云端做全量冒烟（L1+L2）
 #
 # 路径（硬约束：浏览器/脚本只打本机，不出门）：
 #   脚本 → 127.0.0.1:8096/api/v1/relay?path=/api/v1/...
 #        → gw.mynet.club/v1/relay?path=...
-#        → <back>/api/v1/...（back 部署地址不落仓库）
+#        → <后端>/api/v1/...（后端部署地址不落仓库）
 #
 # 场景（用户指定）：
 #   1. 注册 yjf@nwu.edu.cn（跳过邮件激活 —— 框架 login 不检查 email_verified_at）
@@ -102,10 +102,10 @@ expect2xx() {
 phase "Phase 0 · 预检（mynetd relay 链路本身）"
 # ════════════════════════════════════════════════════════════
 req GET /api/v1/auth/login
-# 未带 body 的 login 应 422（校验失败），说明 relay → gateway → back 全通
+# 未带 body 的 login 应 422（校验失败），说明 relay → gateway → 后端全通
 case "$CODE" in
   422|401|405|400)
-    ok "mynetd relay → gateway → back 通（login 探针 HTTP ${CODE}）" ;;
+    ok "mynetd relay → gateway → 后端通（login 探针 HTTP ${CODE}）" ;;
   000) bad "relay 不可达：$BODY"; die "mynetd 未起或端口不对" ;;
   404) bad "relay 404 —— 二进制可能未含 relay 路由或 URL 拼接未修"; die "relay 404" ;;
   502) bad "relay 502 —— MYNET_GATEWAYS 未配或 gateway 不可达：$BODY"; die "relay 502" ;;

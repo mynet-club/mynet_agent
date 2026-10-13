@@ -121,7 +121,7 @@ func TestEventBundleChangedRunsRefreshNodes(t *testing.T) {
 	ex := &recordingExec{}
 	d, _ := newTestDispatcher(ex.run)
 	// bundle_changed 现在是**先拉后刷**（V1-10①）：refresh-config 读的
-	// var/bundle.json 由 mynetd 从 back 拉下来，不先拉就只能读到旧配置或根本没有。
+	// var/bundle.json 由 mynetd 从后端拉下来，不先拉就只能读到旧配置或根本没有。
 	// 未装配拉取链时的行为由 TestBundleChangedWithoutSyncerLogsWhatIsMissing 单独钉住。
 	d.setBundleSyncer(func(context.Context) (string, error) { return "updated", nil })
 
@@ -135,9 +135,9 @@ func TestEventBundleChangedRunsRefreshNodes(t *testing.T) {
 	}
 }
 
-// command_queued 需要回 back 拉命令（V1-9 未实现）。
+// command_queued 需要回后端拉命令（V1-9 未实现）。
 // 关键判据是**不得静默忽略**——必须留下明确日志，否则症状是
-// 「back 下了命令但节点毫无反应」，比直接报错难查得多。
+// 「后端下了命令但节点毫无反应」，比直接报错难查得多。
 func TestEventCommandQueuedIsNotSilentlyIgnored(t *testing.T) {
 	ex := &recordingExec{}
 	d, logs := newTestDispatcher(ex.run)
@@ -146,7 +146,7 @@ func TestEventCommandQueuedIsNotSilentlyIgnored(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 	if len(ex.snapshot()) != 0 {
-		t.Errorf("command_queued 不应触发本地执行（命令要回 back 拉），实际调了 %v", ex.snapshot())
+		t.Errorf("command_queued 不应触发本地执行（命令要回后端拉），实际调了 %v", ex.snapshot())
 	}
 	if !logs.waitLog(t, "command_queued") {
 		t.Errorf("必须记录 command_queued 未实现，实际日志: %q", logs.joined())
@@ -176,7 +176,7 @@ func TestEventUnknownIsLogged(t *testing.T) {
 //
 // ⚠️ 「合并」不等于「丢弃」：在跑期间到达的事件按名字合并成一份，
 // 守卫释放后**补跑一次**。丢弃的代价是「错过的那次推送永远不会再来了」
-// （网关不补发），实测形态就是「back 改了配置，节点毫无反应」。
+// （网关不补发），实测形态就是「后端改了配置，节点毫无反应」。
 func TestEventDispatcherMergesConcurrentEvents(t *testing.T) {
 	block := make(chan struct{})
 	ex := &recordingExec{block: block}
@@ -298,7 +298,7 @@ func TestEventExecFailureIsLogged(t *testing.T) {
 
 // ── command_queued 的 pull 链路 ────────────────────────────────────
 
-// scriptedPull 按脚本依次返回批次，用尽后返回空（模拟 back「每次只给 1 条」）。
+// scriptedPull 按脚本依次返回批次，用尽后返回空（模拟后端「每次只给 1 条」）。
 type scriptedPull struct {
 	mu      sync.Mutex
 	batches [][]pendingCommand
@@ -353,7 +353,7 @@ func TestCommandQueuedPullsMapsExecutesReports(t *testing.T) {
 	if !ex.waitCalls(t, 1) {
 		t.Fatalf("command_queued 未触发执行；日志: %q", logs.joined())
 	}
-	// back 的 mynet.route.refresh 必须映射到 agent 的 route.refresh → refresh-routes --auto
+	// 后端的 mynet.route.refresh 必须映射到 agent 的 route.refresh → refresh-routes --auto
 	got := ex.snapshot()[0]
 	if !strings.Contains(got, "refresh-routes") || !strings.Contains(got, "--auto") {
 		t.Errorf("argv = %q, 应为 refresh-routes --auto", got)
@@ -376,7 +376,7 @@ func TestCommandQueuedPullsMapsExecutesReports(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(reported) == 0 {
-		t.Fatal("结果未回报 —— back 侧那条命令会永远卡在「执行中」")
+		t.Fatal("结果未回报 ——后端侧那条命令会永远卡在「执行中」")
 	}
 	if reported[0].res.ID != "9001" {
 		t.Errorf("回报的命令 ID = %q, want 9001", reported[0].res.ID)
@@ -386,8 +386,8 @@ func TestCommandQueuedPullsMapsExecutesReports(t *testing.T) {
 	}
 }
 
-// back 下发 agent 不认识的命令时，**必须按失败回报**，不能静默丢弃。
-// 这是 CPI-4 的核心教训：静默失效从 back 侧完全看不出来。
+// 后端下发 agent 不认识的命令时，**必须按失败回报**，不能静默丢弃。
+// 这是 CPI-4 的核心教训：静默失效从后端侧完全看不出来。
 func TestCommandQueuedUnknownCommandReportsFailure(t *testing.T) {
 	ex := &recordingExec{}
 	pull := &scriptedPull{batches: [][]pendingCommand{
@@ -426,7 +426,7 @@ func TestCommandQueuedUnknownCommandReportsFailure(t *testing.T) {
 	}
 }
 
-// back 每次只返 1 条，所以要循环拉到空为止。
+// 后端每次只返 1 条，所以要循环拉到空为止。
 func TestCommandQueuedDrainsUntilEmpty(t *testing.T) {
 	ex := &recordingExec{}
 	pull := &scriptedPull{batches: [][]pendingCommand{
@@ -467,7 +467,7 @@ func TestCommandQueuedPullErrorIsLogged(t *testing.T) {
 	}
 }
 
-// 回报失败必须吵出来：命令执行了但 back 不知道，会一直显示「执行中」。
+// 回报失败必须吵出来：命令执行了但后端不知道，会一直显示「执行中」。
 func TestCommandQueuedReportErrorIsLogged(t *testing.T) {
 	ex := &recordingExec{}
 	pull := &scriptedPull{batches: [][]pendingCommand{{{ID: "5", Command: "mynet.metrics"}}}}

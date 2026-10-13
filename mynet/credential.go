@@ -21,7 +21,7 @@ import (
 
 // Credential 用户凭证 = **会话存储**（账号态，不是节点身份）。
 //
-// ⚠️ 它从「临时文件」变成会话存储，前提是 back 侧的 refresh 是**真的**。
+// ⚠️ 它从「临时文件」变成会话存储，前提是后端侧的 refresh 是**真的**。
 // 2026-09-25 之前登录响应里有三个装饰品（vendor
 // BuildsUserTokenResponse.php:44 / UserAuthController.php:139）：
 //
@@ -29,7 +29,7 @@ import (
 //	auth_token 不传 expiresAt → 永不过期；两个 expires_in 是硬编码元数据。
 //
 // 那时落盘一个「凭证」是把假的东西存下来，更糟。
-// 现在 back 侧已建成真会话（mynet_back f60cf1c：轮转 + 重用检测），
+// 现在后端侧已建成真会话（mynet_api f60cf1c：轮转 + 重用检测），
 // 本结构才有了对应物：
 //
 //	auth_token    30 分钟，可续；过期由 doJSON 自动用 refresh_token 换新的
@@ -48,8 +48,8 @@ type Credential struct {
 	// 而那个信号会把整个会话吊销。
 	RefreshToken string `json:"refresh_token"`
 	MachineID    string `json:"machine_id,omitempty"`
-	// DeviceFingerprint Token Binding（integration-plan §14.4）：与 back 上该 token
-	// 绑定的稳定设备指纹。换机复制 credential 后指纹对不上，back 应 401 并吊销。
+	// DeviceFingerprint Token Binding（integration-plan §14.4）：与后端上该 token
+	// 绑定的稳定设备指纹。换机复制 credential 后指纹对不上，后端应 401 并吊销。
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
 	TenantID          string `json:"tenant_id,omitempty"`
 	CreatedAt         string `json:"created_at,omitempty"`
@@ -117,14 +117,14 @@ func RemoveCredential() error {
 	return nil
 }
 
-// ── back HTTP 客户端 ──────────────────────────────────────────
+// ── 后端 HTTP 客户端 ──────────────────────────────────────────
 //
 // 只做向导/装机需要的少数调用，不做成通用 SDK。
 // ⚠️ 时间戳/签名那些是**节点面**的事（cmd/mynetd/nodeface.go），这里走的是
 // **用户面**：Bearer token（Sanctum），与浏览器里的 GUI 同一套。
 
 // cloudHTTPBase CLI 与云端通信的**唯一出口**：本机 mynetd 的中继
-// （CLI → localapi /api/v1/relay → gateway → back）。
+// （CLI → localapi /api/v1/relay → gateway → 后端）。
 //
 // 铁律：**终端不直连 api_base** —— 节点侧一切云通信必须经 gateway。
 // `base + <back-path>` 正好拼成 `…/api/v1/relay?path=/api/v1/…`，
@@ -250,7 +250,7 @@ func (c *backClient) raw(method, path string, body any) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
-	// Token Binding：指纹随请求带上；与登录时绑定值不一致则 back 应拒绝
+	// Token Binding：指纹随请求带上；与登录时绑定值不一致则后端应拒绝
 	req.Header.Set("X-Device-Fingerprint", DeviceFingerprint())
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -275,7 +275,7 @@ func (c *backClient) raw(method, path string, body any) ([]byte, int, error) {
 	return raw, resp.StatusCode, nil
 }
 
-// envelope back 统一响应信封（BaseApiController::successResponse）。
+// envelope 后端统一响应信封（BaseApiController::successResponse）。
 type envelope struct {
 	Success bool            `json:"success"`
 	Code    int             `json:"code"`
@@ -293,7 +293,7 @@ func (c *backClient) getEnveloped(path string, out any) error {
 		return fmt.Errorf("解析响应失败（HTTP %d）: %w", code, err)
 	}
 	if !env.Success {
-		return fmt.Errorf("back 返回失败（HTTP %d）: %s", code, env.Message)
+		return fmt.Errorf("后端返回失败（HTTP %d）: %s", code, env.Message)
 	}
 	if out != nil {
 		if err := json.Unmarshal(env.Data, out); err != nil {
@@ -313,7 +313,7 @@ func truncate(s string, n int) string {
 }
 
 // anyToStr 把 JSON 解出来的值转成字符串。
-// back 的 user_id / tenant_id 是 16 位雪花 ID，Go 的 encoding/json 会把它
+// 后端的 user_id / tenant_id 是 16 位雪花 ID，Go 的 encoding/json 会把它
 // 解成 float64（超过 2^53 就丢精度），所以凡是数字一律走 FormatInt。
 func anyToStr(v any) string {
 	switch t := v.(type) {
@@ -349,7 +349,7 @@ func machineID() string {
 //
 // ⚠️ 稳定性靠 machine-id，不靠 hostname：
 //   - hostname 会变（MacBook-Pro-3.local → Mac.lan 实测踩过），
-//     一旦变了 back 侧 Token Binding 判 mismatch 并**吊销 token**，
+//     一旦变了后端侧 Token Binding 判 mismatch 并**吊销 token**，
 //     而 refresh 还沿用旧指纹 → 死循环只能重登。
 //   - /etc/machine-id 是 Linux 事实标准；macOS/自装路径用
 //     $MYNET_HOME/var/machine-id（首次生成后落盘，之后只读）。

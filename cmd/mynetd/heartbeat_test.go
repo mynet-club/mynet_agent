@@ -45,7 +45,7 @@ func asMap(t *testing.T, b []byte) map[string]any {
 	return m
 }
 
-// back 的六个必填字段一个都不能少（HeartbeatRequest.php:62-67）。
+// 后端的六个必填字段一个都不能少（HeartbeatRequest.php:62-67）。
 // 少任何一个都是 422，而症状在节点侧只表现为「上报失败」。
 func TestHeartbeatHasAllRequiredFields(t *testing.T) {
 	send, _ := mustBodies(t, "1245816621804034", metricsFixture)
@@ -54,7 +54,7 @@ func TestHeartbeatHasAllRequiredFields(t *testing.T) {
 		"node_id", "timestamp", "cpu_usage", "memory_usage", "disk_usage", "connection_count",
 	} {
 		if _, ok := p[k]; !ok {
-			t.Errorf("缺必填字段 %q —— back 会返 422", k)
+			t.Errorf("缺必填字段 %q ——后端会返 422", k)
 		}
 	}
 	if p["node_id"].(float64) != 1245816621804034 {
@@ -65,7 +65,7 @@ func TestHeartbeatHasAllRequiredFields(t *testing.T) {
 	}
 }
 
-// ⚠️ 最关键的一条：单位。back 要的是**百分比**（numeric|min:0|max:100），
+// ⚠️ 最关键的一条：单位。后端要的是**百分比**（numeric|min:0|max:100），
 // 而 metrics 给的内存是 MB。忘了转换的话 memory_usage 会是 11606，
 // 被 max:100 挡下 → 整条心跳 422，而且每条都 422。
 func TestHeartbeatConvertsUnitsToPercent(t *testing.T) {
@@ -78,7 +78,7 @@ func TestHeartbeatConvertsUnitsToPercent(t *testing.T) {
 		t.Errorf("memory_usage = %v，期望 ≈70.84（11606/16384×100）；若得到 11606 说明根本没做单位转换", mem)
 	}
 	if mem > 100 {
-		t.Errorf("memory_usage = %v 超过 100，会被 back 的 max:100 拒掉", mem)
+		t.Errorf("memory_usage = %v 超过 100，会被后端的 max:100 拒掉", mem)
 	}
 	if p["cpu_usage"].(float64) != 26.23 {
 		t.Errorf("cpu_usage = %v，期望 26.23（本来就是百分比，不该再换算）", p["cpu_usage"])
@@ -92,7 +92,7 @@ func TestHeartbeatConvertsUnitsToPercent(t *testing.T) {
 }
 
 // 签名体必须**不含** node_monitor，发送体必须含。
-// back 验签前会把 node_monitor 置 nil 再用 PHP 重编码（spec/node-keying.md §4.3），
+// 后端验签前会把 node_monitor 置 nil 再用 PHP 重编码（spec/node-keying.md §4.3），
 // 所以拿完整体去签，两端 sha256(body) 永远不等 → 清一色 401。
 func TestSignBodyExcludesNodeMonitor(t *testing.T) {
 	send, sign := mustBodies(t, "1", metricsFixture)
@@ -101,7 +101,7 @@ func TestSignBodyExcludesNodeMonitor(t *testing.T) {
 		t.Error("发送体应含 node_monitor")
 	}
 	if strings.Contains(string(sign), `"node_monitor"`) {
-		t.Error("签名体不得含 node_monitor —— 否则与 back 的重编码结果不一致，全 401")
+		t.Error("签名体不得含 node_monitor —— 否则与后端的重编码结果不一致，全 401")
 	}
 	// 除了 node_monitor，两份必须一样（否则签的不是发出去的东西）
 	var s, g map[string]any
@@ -148,7 +148,7 @@ func TestNodeSelfAllSevenFields(t *testing.T) {
 	if ns["uptime_seconds"].(float64) != 173865 {
 		t.Errorf("uptime_seconds = %v", ns["uptime_seconds"])
 	}
-	// last_active_at 必须与顶层 timestamp 同源，否则 back 侧看到的
+	// last_active_at 必须与顶层 timestamp 同源，否则后端侧看到的
 	// 「最后活跃」会比心跳本身还早/还晚，排查时会对不上
 	if ns["last_active_at"].(float64) != p["timestamp"].(float64) {
 		t.Errorf("last_active_at = %v 与 timestamp = %v 不一致", ns["last_active_at"], p["timestamp"])
@@ -187,7 +187,7 @@ func TestUnknownDriverIsSkippedNotSent(t *testing.T) {
 	m := strings.Replace(metricsFixture, `"driver":"wireguard"`, `"driver":"openvpn"`, 1)
 	send, _ := mustBodies(t, "1", m)
 	if strings.Contains(string(send), `"vpn_interfaces"`) {
-		t.Errorf("认不出的驱动不该出现在 vpn_interfaces 里（back 只接受 gnb|wireguard）: %s", send)
+		t.Errorf("认不出的驱动不该出现在 vpn_interfaces 里（后端只接受 gnb|wireguard）: %s", send)
 	}
 	// 但心跳本身仍要能发（六个必填字段还在）
 	p := asMap(t, send)
@@ -206,8 +206,8 @@ func TestEmptyIfnameSkipsWholeSection(t *testing.T) {
 	}
 }
 
-// node_id 必须是 integer ≥1（back 的 required|integer|min:1）。
-// 与其让 back 返 422，不如在节点侧就拒 —— 那样错误信息才看得懂。
+// node_id 必须是 integer ≥1（后端的 required|integer|min:1）。
+// 与其让后端返 422，不如在节点侧就拒 —— 那样错误信息才看得懂。
 func TestBadNodeIDRejected(t *testing.T) {
 	for _, bad := range []string{"", "abc", "0", "-1", "  "} {
 		if _, _, err := heartbeatBodies(bad, metricsFixture); err == nil {
@@ -217,7 +217,7 @@ func TestBadNodeIDRejected(t *testing.T) {
 }
 
 // metrics 输出坏掉时要报错，不能拿零值凑一条心跳发出去 ——
-// 那会让 back 记下一条「cpu 0%、内存 0%」的假数据，比没有数据更糟。
+// 那会让后端记下一条「cpu 0%、内存 0%」的假数据，比没有数据更糟。
 func TestBrokenMetricsRejected(t *testing.T) {
 	for _, bad := range []string{"", "not json", `{"system":{}}`} {
 		if bad == `{"system":{}}` {
@@ -233,7 +233,7 @@ func TestBrokenMetricsRejected(t *testing.T) {
 	}
 }
 
-// Go 的 json 默认把 < > & 转义成 \u003c，而 back 用 PHP 的
+// Go 的 json 默认把 < > & 转义成 \u003c，而后端用 PHP 的
 // json_encode(UNESCAPED_SLASHES|UNESCAPED_UNICODE) 重编码，**不转义**。
 // 两端字节不一致 → sha256(body) 不一致 → 401。
 func TestEncodeDoesNotEscapeHTML(t *testing.T) {
@@ -257,7 +257,7 @@ func TestEncodeDoesNotEscapeHTML(t *testing.T) {
 	}
 }
 
-// 采集侧的异常值不该让整条心跳非法（back 有 max:100）。
+// 采集侧的异常值不该让整条心跳非法（后端有 max:100）。
 func TestClampPercent(t *testing.T) {
 	cases := []struct{ in, want float64 }{
 		{-5, 0}, {0, 0}, {42.567, 42.57}, {100, 100}, {11606, 100},

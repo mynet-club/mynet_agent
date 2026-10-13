@@ -207,7 +207,7 @@ func constantTimeEqual(a, b []byte) bool {
 	return result == 0
 }
 
-// ParseGNBFormat parses GNB hex-encoded keys back to binary
+// ParseGNBFormat parses GNB hex-encoded keys 后端 to binary
 func ParseGNBFormat(privateHex, publicHex string) ([]byte, []byte, error) {
 	privateKey, err := hex.DecodeString(privateHex)
 	if err != nil {

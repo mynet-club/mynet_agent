@@ -383,22 +383,22 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
   套件里那批「先补 `tenant_users` active 记录才敢发头」的用例测的是生产根本不跑的护栏。
   **2026-10-04 这批洞对应的七条（F-22 ~ F-28）已逐项裁定完毕**，裁定表在
   `mynet_ctl/docs/knowledge-base/dev-plan.md`「2026-10-04 逐项裁定」。取向四句话：
-  **属主判定层建在 back**（Laravel Gate/Policy，写成可被框架同名方法替换的接线点，同时把「框架出属主/归属判定方法、
+  **属主判定层建在后端**（Laravel Gate/Policy，写成可被框架同名方法替换的接线点，同时把「框架出属主/归属判定方法、
   下层调用、业务继承+扩容」列为对框架的第 13 条诉求）；**当前区只认服务端指针 `users.tenant_id`**
-  （实测「当前区」在 back 是三条并存互不相识的路，切区即数据错位）；**用户面 `/users/{id}` 整组下架**并同批改 OpenAPI；
+  （实测「当前区」在后端是三条并存互不相识的路，切区即数据错位）；**用户面 `/users/{id}` 整组下架**并同批改 OpenAPI；
   **权益只做租户级 `subscription_plan`**，用户级 `level`/`score`/`right` 不进 v1 合同（库里根本没有那三列）。
 - **端别判定（同日追加，回答「用户面可操作没鉴权是哪一端的问题」）** → 矩阵 §4-10 + 决策包 **F-28**：
   要分清两种鉴权 —— **租户归属**（我是不是这个区的成员）vs **资源属主**（这条路由/节点/池是不是我的）。
   框架**只给前者、且刻意不给后者**：`IdentifyTenant::resolveWithOwnershipCheck()` 查的是 `tenant_users`/`operator_tenants`
   成员关系（输入里没有资源），`RbacService::check()` 对非 Operator 主体直接 `return false`，
   框架铁律 `identity-model.md` §4 还明写「User 不得持角色，要区分 User 侧能力走套餐/功能开关」。
-  ⇒ **「框架层的问题」只对一半**：框架不是漏了，是把它划给下游 —— **缺陷端在 back**（全仓 `Gate::`/`Policies`/`->authorize(` **0 命中**，
+  ⇒ **「框架层的问题」只对一半**：框架不是漏了，是把它划给下游 —— **缺陷端在后端**（全仓 `Gate::`/`Policies`/`->authorize(` **0 命中**，
   归属靠 15 处零散 `where('user_id')`，且 7 处归属列 nullable）。**GUI 不是缺陷端**（恒 `true` 的 `hasNodeEditPermission` 桩按 R1 本就不算防线），
   但它现在也没有可依据的数据源：点名的五个字段里只有 `credits` 真有列（在 `tenant_users` pivot，不在 `users`），
-  `level`/`score`/`right` **库里根本不存在**，而框架指定的替代（`feature_flags`）在 back **链是断的**
+  `level`/`score`/`right` **库里根本不存在**，而框架指定的替代（`feature_flags`）在后端 **链是断的**
   （依赖的 `FeatureFlagService` 属未安装的 module-platform ⇒ 恒 fail-closed 404，且 `feature.flag` 别名都没注册）。
 - **稳定错误码** → `mynet_ctl/docs/knowledge-base/spec/v1-error-codes.md`：登记 **7 套并存信封**（E1–E7）
-  与现有码注册表，证实 `code` 这一个键在 back / OpenWrt / 文档里是**三种不同语义**（HTTP 整数 / shell 退出码 / 0–6 业务码），
+  与现有码注册表，证实 `code` 这一个键在后端 / OpenWrt / 文档里是**三种不同语义**（HTTP 整数 / shell 退出码 / 0–6 业务码），
   所以 §11「代理不得静默改变错误码语义」当前**无从判定**。冻结口径 C1–C6；待裁定进 **F-25 / F-26**
   ⇒ **同日已裁**：F-26 = 认 C1（E1 `BaseApiController` 为唯一 HTTP 信封，`code` 只放 HTTP 整数、业务码一律
   `error_code`，**只对新代码硬约束**，存量 7 套按清单登记不动）；F-25 = **改文档承认现状**
@@ -528,7 +528,7 @@ API 生成协议无关的网络意图和版本化 bundle。agent 校验 bundle�
 
 ### P6：Gateway 和部署闭环
 
-**目标：** 就近接入、WS/relay 透传、back 鉴权链路、部署和多实例边界。
+**目标：** 就近接入、WS/relay 透传、后端鉴权链路、部署和多实例边界。
 
 **负责模块：** `mynet_agent/gateway`、`cmd/mynet_gateway`、API nginx/deploy、安装文档。
 
@@ -576,7 +576,7 @@ P0
 ### 身份与授权
 
 - 用户面使用会话/API auth；节点面使用节点密钥和 DH/HMAC；数据面由 GNB/WireGuard 自己保护。
-- gateway 只转发；back 做用户授权、租户隔离和节点身份验证。
+- gateway 只转发；后端做用户授权、租户隔离和节点身份验证。
 - 授权优先级：租户隔离 → 成员角色 → 节点/服务策略 → 数据面能力。
 
 ### 数据可见性
@@ -584,7 +584,7 @@ P0
 - metadata-only：在线状态、版本、能力、路由数量。
 - inspect-body：仅 bundle 校验和诊断，限制大小、脱敏并不长期保留私钥。
 - transform-body：配置生成和驱动适配，使用内存缓冲，错误只返回 reason code。
-- external raw-body：gateway relay 原样转发，路径白名单，鉴权由 back，记录最少必要审计字段。
+- external raw-body：gateway relay 原样转发，路径白名单，鉴权由后端，记录最少必要审计字段。
 
 ### 失败策略
 

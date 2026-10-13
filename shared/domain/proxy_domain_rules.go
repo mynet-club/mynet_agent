@@ -21,7 +21,7 @@ const (
 )
 
 // PlatformDNSDefault 平台智能 DNS —— 外部/非大陆（D1，2026-09-30 用户定案）。
-// 与 back 的 DnsUpstreamResolver 同源：
+// 与后端的 DnsUpstreamResolver 同源：
 //
 //	dns.mynet.club  外部 DNS（支持 DoH）
 //	dns.dsplat.com  大陆 DNS（支持 DoH）

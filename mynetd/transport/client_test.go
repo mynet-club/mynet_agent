@@ -48,7 +48,7 @@ func TestHandleFrameDispatchesCommand(t *testing.T) {
 }
 
 // 未注入 OnResult 时不回传（保持向后兼容），但**注入了就必须回传**——
-// 此前 HandleFrame 拿到结果后 `_ = res` 直接丢弃，back 侧命令永远停在「已下发」。
+// 此前 HandleFrame 拿到结果后 `_ = res` 直接丢弃，后端侧命令永远停在「已下发」。
 func TestHandleFrameReturnsResultFrameWhenOnResultSet(t *testing.T) {
 	c, err := New(Config{Gateways: []string{"ws://x"}, NodeID: "n1"}, Handlers{
 		OnCommand: func(_ context.Context, req commands.Request) commands.Result {
@@ -174,7 +174,7 @@ func TestFireOnConnectWithoutHandlerIsNoop(t *testing.T) {
 }
 
 // OnConnect 里 panic 不能带走守护进程，而且必须留下可见证据 ——
-// 补拉静默失败的症状和「back 没变更」一模一样，没日志就等于查不出来。
+// 补拉静默失败的症状和「后端没变更」一模一样，没日志就等于查不出来。
 func TestFireOnConnectRecoversPanicAndLogs(t *testing.T) {
 	var mu sync.Mutex
 	got := ""

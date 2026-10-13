@@ -13,7 +13,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
-// bundleStore 把 back 下发的 BundleEnvelope 落到 $MYNET_HOME/var/bundle.json。
+// bundleStore 把后端下发的 BundleEnvelope 落到 $MYNET_HOME/var/bundle.json。
 //
 // ── 为什么这件事归 mynetd ─────────────────────────────────────
 // 拉 bundle 是**节点面通信**（签名 + 经 gateway 的 /v1/relay），属 mynetd 的职责
@@ -56,7 +56,7 @@ func (s *bundleStore) ETag() string {
 // Sync 拉一次配置包并落盘。返回人类可读的结果，供日志使用：
 //
 //	"updated"  —— 拿到新版本并已写盘
-//	"unchanged"—— back 返 304，本地已是最新，**不动文件**
+//	"unchanged"——后端返 304，本地已是最新，**不动文件**
 //
 // 304 不是失败。把它当失败会让「配置没变」这件事在日志里看起来像故障。
 func (s *bundleStore) Sync(ctx context.Context, fetch bundleFetcher) (string, error) {
@@ -80,7 +80,7 @@ func (s *bundleStore) Sync(ctx context.Context, fetch bundleFetcher) (string, er
 
 // Save 校验后原子落盘。
 //
-// ⚠️ **先校验再写**：back 出错时返回的是 JSON 错误体（`{"success":false,…}`）
+// ⚠️ **先校验再写**：后端出错时返回的是 JSON 错误体（`{"success":false,…}`）
 // 或经 relay 时的 HTML 错误页。不校验就写，会把一份好配置换成垃圾，
 // 而且下一次条件请求还会带着旧 etag 拿到 304 —— 于是节点永久卡在坏配置上。
 //
@@ -105,7 +105,7 @@ func (s *bundleStore) Save(body []byte, etag string) error {
 // validateEnvelope 按 schema 的 required 逐字段核。
 //
 // ⚠️ 光调 domain.DecodeBundleEnvelope **不够**：它只要求「非空 + 合法 JSON」，
-// 于是 back 出错时返的 `{"success":false,"error":"…"}` 会被当成合法 envelope
+// 于是后端出错时返的 `{"success":false,"error":"…"}` 会被当成合法 envelope
 // 写进 var/bundle.json（实测就是这样漏过去的）。必须按 SSOT 校字段 ——
 // spec/schemas/bundle-envelope-v2.schema.json 的 required 是
 // schema_version / generation / checksum / generated_at / node / driver / network，
@@ -122,7 +122,7 @@ func validateEnvelope(raw []byte) error {
 		return err
 	}
 	if env.SchemaVersion < 1 {
-		return fmt.Errorf("schema_version 缺失或非法（%d）—— 这不是 BundleEnvelope，像是 back 的错误体", env.SchemaVersion)
+		return fmt.Errorf("schema_version 缺失或非法（%d）—— 这不是 BundleEnvelope，像是后端的错误体", env.SchemaVersion)
 	}
 	if strings.TrimSpace(env.Generation) == "" {
 		return fmt.Errorf("generation 为空（schema required）")

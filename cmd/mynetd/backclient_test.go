@@ -45,7 +45,7 @@ func TestNewBackClientRejectsBadGatewayURL(t *testing.T) {
 }
 
 // 请求必须：打到 relay、path 作为 query 传递、三个签名头齐全、
-// 且签名的 path 与 back 将看到的一致（带前导斜杠）。
+// 且签名的 path 与后端将看到的一致（带前导斜杠）。
 func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	var (
 		gotPath   string
@@ -109,13 +109,13 @@ func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	}
 
 	// 签名必须能被 C-2 向量密钥验过，且 path 用的是**带前导斜杠**的完整路径
-	// （back 的 signedPath() 返回 '/'.$request->path()，差一个斜杠就全 401）
+	// （后端的 signedPath() 返回 '/'.$request->path()，差一个斜杠就全 401）
 	verifier, err := keys.NewNodeFaceSigner(vecNodePriv, vecBackPub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !verifier.Verify(http.MethodPost, "/api/v1/node/heartbeat", gotTS, gotBody, gotSig) {
-		t.Error("签名验不过 —— back 会 401")
+		t.Error("签名验不过 ——后端会 401")
 	}
 	// 反面：用不带前导斜杠的 path 验签必须失败，证明斜杠真的进了签名
 	if verifier.Verify(http.MethodPost, "api/v1/monitor/heartbeat", gotTS, gotBody, gotSig) {
@@ -123,7 +123,7 @@ func TestBackClientDoSignsAndUsesRelay(t *testing.T) {
 	}
 }
 
-// back 的 rt_cmd_id 是 unsignedBigInteger，JSON 里是数字；
+// 后端的 rt_cmd_id 是 unsignedBigInteger，JSON 里是数字；
 // 解析必须容忍数字形态，否则命令拉取会整体失败。
 func TestPullPendingCommandsParsesNumericIDs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +168,7 @@ func TestPullPendingCommandsParsesNumericIDs(t *testing.T) {
 	}
 }
 
-// back 返回非 2xx 时必须报错并带上状态码，不能当成「没有命令」。
+// 后端返回非 2xx 时必须报错并带上状态码，不能当成「没有命令」。
 func TestPullPendingCommandsSurfacesHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)
@@ -188,7 +188,7 @@ func TestPullPendingCommandsSurfacesHTTPError(t *testing.T) {
 	}
 }
 
-// back 报 success=false 时也必须报错。
+// 后端报 success=false 时也必须报错。
 func TestPullPendingCommandsSurfacesBusinessFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"success":false,"error":"missing X-Node-Id"}`))
@@ -203,7 +203,7 @@ func TestPullPendingCommandsSurfacesBusinessFailure(t *testing.T) {
 		t.Fatal("success=false 应报错")
 	}
 	if !strings.Contains(err.Error(), "missing X-Node-Id") {
-		t.Errorf("错误应保留 back 的原文，实际: %v", err)
+		t.Errorf("错误应保留后端的原文，实际: %v", err)
 	}
 }
 
@@ -226,12 +226,12 @@ func TestPullPendingCommandsRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-// 心跳的**签名体与发送体不同**：back 的 NodeHeartbeatAuthMiddleware 验签前会把
+// 心跳的**签名体与发送体不同**：后端的 NodeHeartbeatAuthMiddleware 验签前会把
 // node_monitor 置 nil 再用 PHP 重编码（spec/node-keying.md §4.3），所以节点侧
 // 必须签「不含 node_monitor」的那份、发完整的那份。
 //
 // 这条测试把这件事钉死：用签名体验签**必须通过**，用发送体验签**必须失败**。
-// 如果哪天有人「顺手统一」成一份，back 侧会清一色 401，而节点侧看不出任何异常
+// 如果哪天有人「顺手统一」成一份，后端侧会清一色 401，而节点侧看不出任何异常
 // —— 症状是「鉴权失败」而不是「你签错了体」，极难定位。
 func TestReportHeartbeatSignsBodyWithoutNodeMonitor(t *testing.T) {
 	var gotPath, gotMethod, gotTS, gotSig, gotBody, gotNode string
@@ -275,7 +275,7 @@ func TestReportHeartbeatSignsBodyWithoutNodeMonitor(t *testing.T) {
 		t.Errorf("X-Node-Id = %q，期望 %q", gotNode, ident.nodeID)
 	}
 
-	// 发出去的必须是**完整体**（back 要拿 node_monitor 落库）
+	// 发出去的必须是**完整体**（后端要拿 node_monitor 落库）
 	if gotBody != string(send) {
 		t.Error("发送体与组装结果不一致")
 	}
@@ -288,11 +288,11 @@ func TestReportHeartbeatSignsBodyWithoutNodeMonitor(t *testing.T) {
 		t.Error("用签名体验签失败 —— 签名口径不对")
 	}
 	if ident.signer.Verify(gotMethod, gotPath, gotTS, gotBody, gotSig) {
-		t.Error("用发送体也能验签通过 —— 说明签的是完整体，back 侧会 401")
+		t.Error("用发送体也能验签通过 —— 说明签的是完整体，后端侧会 401")
 	}
 }
 
-// 上报失败必须**报错**，不能静默吞掉 —— 否则「节点在线但 back 没数据」
+// 上报失败必须**报错**，不能静默吞掉 —— 否则「节点在线但后端没数据」
 // 这种状态会一直查不出来。
 func TestReportHeartbeatSurfacesFailure(t *testing.T) {
 	cases := []struct {

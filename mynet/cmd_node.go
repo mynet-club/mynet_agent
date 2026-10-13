@@ -36,9 +36,9 @@ const termZone = "网络区"
 // claim 做的是「选节点 → 生成本机密钥 → 上传公钥 → 下载配置」一条龙，
 // 对应向导第三步。它的关键约束：
 //
-//	· 私钥**只在本机生成**，绝不向 back 索取（back 侧 P0-4 收口，
+//	· 私钥**只在本机生成**，绝不向后端索取（后端侧 P0-4 收口，
 //	  bundle 里 private_key 恒为空）
-//	· 上传的只有公钥（back 的 validateCustomGnbKey 允许只给 public）
+//	· 上传的只有公钥（后端的 validateCustomGnbKey 允许只给 public）
 //	· 下载配置走**用户凭证**的 GET /nodes/{id}/bundle
 //	  （NodeConfigController::getBundle，api.php:108 注释明说
 //	   「供 ctl 安装包等用户凭证场景」）—— 这一步解鸡生蛋：
@@ -136,7 +136,7 @@ func nodeList() int {
 		rows, _ = raw["data"].([]any)
 	}
 	if len(rows) == 0 {
-		fmt.Println("(没有节点 —— 先到 back 上创建)")
+		fmt.Println("(没有节点 —— 先到后端上创建)")
 		return 0
 	}
 
@@ -222,21 +222,21 @@ func nodeClaim(args []string) int {
 	}
 	vpnType = actualVPN
 
-	// 1) back 的节点面公钥（写 mynet.conf 的 BACK_PUB_HEX）。
+	// 1) 后端的节点面公钥（写 mynet.conf 的 BACK_PUB_HEX）。
 	//    公开端点，向导/装机都靠它；取不到时才允许 --back-pub 显式给。
 	if backPub == "" {
 		pub, err := fetchBackFacePub()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "取 back 节点面公钥失败: %v\n", err)
+			fmt.Fprintf(os.Stderr, "取后端节点面公钥失败: %v\n", err)
 			fmt.Fprintln(os.Stderr, "  用 --back-pub <hex> 显式指定（运维可从服务器上的 back_face_pub 读）")
 			return 1
 		}
 		backPub = pub
-		fmt.Println("back 节点面公钥:", backPub)
+		fmt.Println("后端节点面公钥:", backPub)
 	}
 
 	// 2) 本机生成密钥 + 写 conf/online/{tenant}/keys（配置树 v2）
-	//    私钥只在本机产生，绝不向 back 索取
+	//    私钥只在本机产生，绝不向后端索取
 	if rc := cmdSetupV2([]string{
 		"--online",
 		"--tenant", tenantOr(cred),
@@ -259,7 +259,7 @@ func nodeClaim(args []string) int {
 		return 1
 	}
 
-	// 3) 上传**公钥**（私钥不上传 —— back 的 validateCustomGnbKey 允许只给 public）
+	// 3) 上传**公钥**（私钥不上传 ——后端的 validateCustomGnbKey 允许只给 public）
 	pub, err := readNodePublicKey(cred, nodeID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "读 node.public 失败:", err)
@@ -274,14 +274,14 @@ func nodeClaim(args []string) int {
 		fmt.Fprintf(os.Stderr, "上传公钥失败（HTTP %d）: %v\n", code, err)
 		return 1
 	}
-	fmt.Printf("公钥已上传到 back（key_type=%s）\n", keyType)
+	fmt.Printf("公钥已上传到后端（key_type=%s）\n", keyType)
 
 	// ⚠️ 必须强制重新发布 bundle，再往下下载。
 	// GET /nodes/{id}/bundle 返回的是 config_revisions 里的**旧修订**
 	// （只在没有修订时才现算）。刚换了公钥，旧修订里还是上一次的公钥 ——
 	// 于是 refresh-config 的密钥对校验会正确地拒掉：
 	//   「本机 NODE_PRIV_HEX 与 bundle 里的 public_key 不是一对」
-	// 实测第一次跑 claim 就撞上了。根因在 back：节点密钥变更时该让 bundle
+	// 实测第一次跑 claim 就撞上了。根因在后端：节点密钥变更时该让 bundle
 	// 失效（记 CPI）；这里在客户端强制 publish 一次，先把链路走通。
 	if _, code, err := c.doJSON("POST", "/api/v1/nodes/"+nodeID+"/bundle/publish", map[string]any{}); err != nil {
 		fmt.Fprintf(os.Stderr, "重新发布 bundle 失败（HTTP %d）: %v\n", code, err)
@@ -415,7 +415,7 @@ func readNodePublicKey(cred *Credential, nodeID string) (string, error) {
 	return pub, nil
 }
 
-// joinIfSlice vpn_type 在 back 侧是 string[]（A-7），打印时合起来。
+// joinIfSlice vpn_type 在后端侧是 string[]（A-7），打印时合起来。
 func joinIfSlice(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -434,7 +434,7 @@ func joinIfSlice(v any) string {
 	}
 }
 
-// firstStr 取 map 里第一个非空的字段值（back 的同一概念在不同端点叫法不一：
+// firstStr 取 map 里第一个非空的字段值（后端的同一概念在不同端点叫法不一：
 // name/tenant_name、status/node_status）。注意 **Go 没有 PHP 的 ??** ——
 // 我第一版就写成了 `m["name"] ?? m["tenant_name"]`，编译不过。
 func firstStr(m map[string]any, keys ...string) string {
@@ -449,7 +449,7 @@ func firstStr(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// long2ip back 的 node_ip 是 ip2long 的整数，人要看点分。
+// long2ip 后端的 node_ip 是 ip2long 的整数，人要看点分。
 func long2ip(v any) string {
 	n := int64(0)
 	switch t := v.(type) {

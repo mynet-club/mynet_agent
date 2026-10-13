@@ -20,7 +20,7 @@ const resultWriteTimeout = 15 * time.Second
 //
 // ⚠️ 「无签名」指的是**这条 WS 连接本身**不做密码学握手（gateway 不鉴权，
 // 连接层标识只作寻址与 presence）。命令结果帧里携带的节点面签名是
-// node ↔ back 的 C-2 凭证，由上层注入、gateway 逐字透传，与本层无关。
+// node ↔ 后端的 C-2 凭证，由上层注入、gateway 逐字透传，与本层无关。
 func WebSocketDialer(ctx context.Context, c *Client) error {
 	base := c.cfg.Gateways[0]
 	h := c.ConnectHeaders()
@@ -55,7 +55,7 @@ func WebSocketDialer(ctx context.Context, c *Client) error {
 	c.setSender(write)
 	defer c.setSender(nil)
 
-	// 连上就补一次（见 Handlers.OnConnect）：断线窗口里 back 推的事件不会补发，
+	// 连上就补一次（见 Handlers.OnConnect）：断线窗口里后端推的事件不会补发，
 	// 靠这次补拉把配置追平。
 	c.fireOnConnect(readCtx)
 
@@ -88,7 +88,7 @@ func WebSocketDialer(ctx context.Context, c *Client) error {
 			if len(reply) == 0 {
 				continue
 			}
-			// 结果必须回传：此前 HandleFrame 把结果丢弃，back 侧命令永远停在「已下发」，
+			// 结果必须回传：此前 HandleFrame 把结果丢弃，后端侧命令永远停在「已下发」，
 			// 表现为「命令发了没反应」而不是「执行失败」，极难定位。
 			if err := write(reply); err != nil {
 				c.logf("transport: 回传命令结果失败: %v", err)

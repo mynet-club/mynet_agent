@@ -13,11 +13,11 @@ import (
 // relayTimeout 单次中继的超时。用户面是 JSON API 调用，不需要长连接。
 const relayTimeout = 30 * time.Second
 
-// handleRelay C-7：用户面 HTTPS 入口。**无身份、不鉴权**——鉴权一律归 back
+// handleRelay C-7：用户面 HTTPS 入口。**无身份、不鉴权**——鉴权一律归后端
 // （用户面 cookie/会话，节点面 DH+HMAC）。gateway 只做两件事：
 //
 //  1. 路径白名单（relaypolicy，B3：纯路径，不含任何鉴权语义）
-//  2. 内网转发到 back
+//  2. 内网转发到后端
 //
 // 契约（spec/control-plane.md:281）：`ANY /v1/relay?path=<back-api-path>`，
 // method / body / 头部原样透传，响应原样回写。
@@ -49,7 +49,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 		s.logf("gateway: relay 拒绝（白名单外）path=%s from=%s", rawPath, r.RemoteAddr)
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"success": false,
-			"message": "path 不在中继白名单内；鉴权归 back",
+			"message": "path 不在中继白名单内；鉴权归后端",
 		})
 		return
 	}
@@ -114,7 +114,7 @@ func (s *Server) relayProxy(target *url.URL) *httputil.ReverseProxy {
 			s.logf("gateway: relay 上游不可达 path=%s: %v", req.URL.Path, e)
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"success": false,
-				"message": "relay 上游不可达；鉴权归 back",
+				"message": "relay 上游不可达；鉴权归后端",
 			})
 		},
 	}

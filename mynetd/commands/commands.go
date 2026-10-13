@@ -12,7 +12,7 @@ type Request struct {
 	Args map[string]string `json:"args,omitempty"` // node_id / vpn_type / generation …
 }
 
-// Result 执行结果，经 WS 上报 back。
+// Result 执行结果，经 WS 上报后端。
 type Result struct {
 	ID      string `json:"id"`
 	OK      bool   `json:"ok"`

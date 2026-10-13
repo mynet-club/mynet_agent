@@ -1,9 +1,9 @@
 // mynet_gateway — 边缘网关常驻进程（节点面 WS + 用户面 /v1/relay）。
 //
 // **gateway 不鉴权**（C-3）：纯透传 + 连接状态表。连接层的节点标识只做寻址与
-// presence（门牌号），不是授权；鉴权一律归 back（用户面 cookie/会话，节点面 DH+HMAC）。
+// presence（门牌号），不是授权；鉴权一律归后端（用户面 cookie/会话，节点面 DH+HMAC）。
 //
-// 但「不鉴权节点」不等于「谁都能操作网关」。/v1/notify 是 back → gateway 的推送入口，
+// 但「不鉴权节点」不等于「谁都能操作网关」。/v1/notify 是后端 → gateway 的推送入口，
 // 由 X-Internal-Token 保护（**运维口令，不是节点鉴权**）。handleNotify 的判断是
 // `if s.InternalToken != "" && …`——空口令即完全不校验，任何人都能向节点推事件。
 // 因此这里按监听地址 fail fast：非回环监听必须配口令。
@@ -37,8 +37,8 @@ const shutdownTimeout = 15 * time.Second
 func main() {
 	var (
 		listen        = flag.String("listen", envOr("MYNET_GATEWAY_LISTEN", DefaultListen), "监听地址")
-		upstream      = flag.String("upstream", envOr("MYNET_GATEWAY_UPSTREAM", ""), "back 内网地址（部署配置，不下发）")
-		internalToken = flag.String("internal-token", envOr("MYNET_GATEWAY_INTERNAL_TOKEN", ""), "back ↔ gateway 运维口令（非节点鉴权）")
+		upstream      = flag.String("upstream", envOr("MYNET_GATEWAY_UPSTREAM", ""), "后端内网地址（部署配置，不下发）")
+		internalToken = flag.String("internal-token", envOr("MYNET_GATEWAY_INTERNAL_TOKEN", ""), "后端 ↔ gateway 运维口令（非节点鉴权）")
 		version       = flag.Bool("version", false, "打印版本并退出")
 	)
 	flag.Parse()

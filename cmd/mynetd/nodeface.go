@@ -13,13 +13,13 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
-// 节点面（node ↔ back）签名与命令结果上行帧。
+// 节点面（node ↔ 后端）签名与命令结果上行帧。
 //
 // 为什么放在 cmd/ 而不是 mynetd/：transport 是**零密码学**的纯搬运层（C-3），
 // 而 mynetd/ 目前对 mynet/ 零依赖（guard B2 的分层意图）。cmd/ 是组合根，
 // 同时依赖两棵树本就是它的职责所在。
 
-// resultMethod / resultPathFmt 对应 back 的
+// resultMethod / resultPathFmt 对应后端的
 // `PATCH /api/v1/node/commands/{id}/result`（NodeHeartbeatController::reportResult）。
 const (
 	resultMethod  = "PATCH"
@@ -34,8 +34,8 @@ type nodeIdentity struct {
 
 // resultFrame 命令结果的上行帧。
 //
-// gateway 收到后**逐字重放** method/path/body 与三个签名头到 back，自身不做任何
-// 密码学运算（C-3：gateway 不鉴权）。签名覆盖的是 back 将看到的那个 HTTP 请求
+// gateway 收到后**逐字重放** method/path/body 与三个签名头到后端，自身不做任何
+// 密码学运算（C-3：gateway 不鉴权）。签名覆盖的是后端将看到的那个 HTTP 请求
 // （`METHOD\npath\nts\nsha256(body)`，见 mynet/keys/node_face.go:66），
 // 所以 path 与 body 必须与实际转发的一致，不能在中途改写。
 type resultFrame struct {
@@ -79,7 +79,7 @@ func nodeKeysDir() (string, error) {
 // loadNodeIdentity 读 keys/ 并构造签名器。
 //
 // 缺文件或缺字段一律**明确报错**，不静默降级：静默降级会导致「结果发出去了但
-// back 验签失败」，症状是命令永远停在「已下发」，极难定位。
+// 后端验签失败」，症状是命令永远停在「已下发」，极难定位。
 func loadNodeIdentity(_ string) (*nodeIdentity, error) {
 	dir, err := nodeKeysDir()
 	if err != nil {
@@ -140,7 +140,7 @@ func loadNodeIdentity(_ string) (*nodeIdentity, error) {
 	return &nodeIdentity{nodeID: nodeID, signer: signer}, nil
 }
 
-// resultBody 是 back `reportResult` 校验的载荷：
+// resultBody 是后端 `reportResult` 校验的载荷：
 // `{success: bool, message: ?string(≤10240), result: ?array}`。
 type resultBody struct {
 	Success bool           `json:"success"`
@@ -153,7 +153,7 @@ func (id *nodeIdentity) encodeResult(res commands.Result) ([]byte, error) {
 	path := fmt.Sprintf(resultPathFmt, res.ID)
 
 	// message 给人类看的摘要；完整 stdout/stderr 放 result，
-	// 由 back 侧的 10240 字符上限自行截断（NodeHeartbeatController:295）。
+	// 由后端侧的 10240 字符上限自行截断（NodeHeartbeatController:295）。
 	msg := "命令执行成功"
 	if !res.OK {
 		msg = "命令执行失败"

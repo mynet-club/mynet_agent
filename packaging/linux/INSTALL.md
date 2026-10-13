@@ -74,7 +74,7 @@ export MYNET_HOME=/var/lib/mynet
 /opt/mynet/bin/mynet config keys sync
 ```
 
-> `keys set/generate/sync` 会顺带装配 **back 节点面公钥**（back_pub_hex）：
+> `keys set/generate/sync` 会顺带装配 **后端节点面公钥**（back_pub_hex）：
 > 它是 mynetd 节点面签名的前提，缺了 transport 会报「NodeID 必填」而不连网关。
 > 老节点/迁移机补一次 `keys sync` 即可回填。
 

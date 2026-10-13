@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// gnbKeyType back 的 putKeys 白名单是 gnbkey,ed25519,wireguard,x25519,curve25519
+// gnbKeyType 后端的 putKeys 白名单是 gnbkey,ed25519,wireguard,x25519,curve25519
 // （NodeController.php:974）。gnb 节点要填 **gnbkey** 而不是 ed25519 ——
-// 两套词表的翻译在 back 侧 NodeKeyDomainService::algorithmForKeyType()（CPI-37）。
+// 两套词表的翻译在后端侧 NodeKeyDomainService::algorithmForKeyType()（CPI-37）。
 func gnbKeyType(vpnType string) string {
 	if vpnType == "gnb" {
 		return "gnbkey"

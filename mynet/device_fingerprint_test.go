@@ -19,7 +19,7 @@ func TestDeviceFingerprintStable(t *testing.T) {
 }
 
 // 指纹不得掺 hostname：hostname 变了（MacBook-Pro-3.local → Mac.lan）
-// 会让 back 侧 Token Binding 判 mismatch 并吊销 token。
+// 会让后端侧 Token Binding 判 mismatch 并吊销 token。
 func TestDeviceFingerprintIgnoresHostname(t *testing.T) {
 	// 同一 machine-id 下两次调用必须一致；实现已不读 hostname，
 	// 这里用「连续两次一致 + 非空」兜底，并核对公式不含主机名分量。

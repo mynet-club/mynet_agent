@@ -7,7 +7,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// planEnv 造一份「back 两处同源」的最小 gnb envelope，只带一条对端 /32 路由。
+// planEnv 造一份「后端两处同源」的最小 gnb envelope，只带一条对端 /32 路由。
 func planEnv(authority, routeDev string) *domain.BundleEnvelope {
 	return &domain.BundleEnvelope{
 		Node:   domain.NodeRef{ID: "8283289760467957", Interface: authority},
@@ -29,7 +29,7 @@ func planEnv(authority, routeDev string) *domain.BundleEnvelope {
 //
 // 现网形态（网关 182 失联）：bundle 把 dev 写成 `gnb_tun`，而本机隧道口是
 // `gnb_tun_16`（`gnb_tun` 属于另一个 zone）。`ip route replace … dev gnb_tun`
-// **执行成功**，路由于是挂到别人的接口上，back 侧日志一切正常。
+// **执行成功**，路由于是挂到别人的接口上，后端侧日志一切正常。
 // 拒掉整份计划（返回错误、一条都不装）而不是跳过那一条：半装的状态更难排查。
 func TestPlanFromBundleRejectsForeignDeviceRoute(t *testing.T) {
 	_, err := planFromBundle(planEnv("gnb_tun_16", "gnb_tun"))

@@ -1,7 +1,7 @@
 // Package localapi — 本机 API / WebUI 入口（D-1 本地 token · D-2 Origin/Host 校验）。
 //
 // 浏览器只谈本机（127.0.0.1:8096）；平台态经 gateway 的 /v1/relay。
-// GUI 零持有 back 凭据。
+// GUI 零持有后端凭据。
 package localapi
 
 import (
@@ -44,14 +44,14 @@ type Server struct {
 	srv            *http.Server
 	// Ops 执行器命令分派（mynet <子命令>），由 mynetd 装配注入。
 	Ops func(argv []string) (any, error)
-	// Relay 向导登录等平台调用：经 gateway 打 back。可注入便于测试。
+	// Relay 向导登录等平台调用：经 gateway 打后端。可注入便于测试。
 	Relay func(ctx context.Context, method, backPath string, body []byte) ([]byte, int, error)
 
 	// ExecStdin 向导登录专用：能喂 stdin 的执行器。口令不走 argv ——
 	// argv 会进 `ps`，任何本机进程都看得见。与 Ops 同为可注入，
 	// 为的是让「口令不进 argv」这条安全性质**可测**，而不是靠肉眼看代码确认。
 	ExecStdin func(argv []string, stdin string) (map[string]any, error)
-	// ProxyWriteback 本地改 proxy 后回写云端（node-face → gateway → back）。
+	// ProxyWriteback 本地改 proxy 后回写云端（node-face → gateway → 后端）。
 	ProxyWriteback ProxyWritebackFunc
 	// Proxy 意图读写 / 插件投影（组合根注入，localapi 不 import shared/config / mynet —— B2）
 	ProxyLoad       ProxyIntentLoader
@@ -82,7 +82,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/command-result", s.handleCommandResult)                   // E-4
 	s.mux.HandleFunc("/api/v1/nodes/switch", s.withConfigMutation(s.handleNodesSwitch)) // D-10 / R5-1 焦点切换
 	s.mux.HandleFunc("/api/v1/nodes", s.handleNodesList)                                // R5-1 并行会话
-	s.mux.HandleFunc("/api/v1/relay", s.handleRelay)                                    // GUI→mynetd→gateway→back 平台面
+	s.mux.HandleFunc("/api/v1/relay", s.handleRelay)                                    // GUI→mynetd→gateway→后端平台面
 	s.mux.HandleFunc("/gui/", s.handleGUI)                                              // mynet_gui 控制台（API 走 relay）
 	// 向导端点是 **API 不是 UI**，不随 embed 构建标签开合：
 	// 没有内嵌 webui 的构建（D-11 的 OpenWrt 形态）照样要能被 LuCI/脚本调用。

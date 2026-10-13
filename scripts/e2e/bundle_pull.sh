@@ -1,5 +1,5 @@
 #!/bin/sh
-# bundle_pull.sh — V1-10① 的端到端验证：节点真能从 back 拉到 BundleEnvelope 并落盘
+# bundle_pull.sh — V1-10① 的端到端验证：节点真能从后端拉到 BundleEnvelope 并落盘
 #
 # 为什么要有这个脚本：此前的断点是「全仓没有任何代码**写** var/bundle.json」，
 # 于是 `mynet refresh-config/--nodes --auto` 一律报
@@ -8,7 +8,7 @@
 # 单元测试能证明 store/client 各自对，但证明不了**三个真二进制串起来通** ——
 # 按 AGENTS.md §7.1 D2/D4，勾选必须附实测输出，且测试要打真的。
 #
-# 拓扑：假 back（会下发 envelope）→ 真 mynet_gateway（/v1/relay）→ 真 mynetd
+# 拓扑：假后端（会下发 envelope）→ 真 mynet_gateway（/v1/relay）→ 真 mynetd
 #       → 落盘 $MYNET_HOME/var/bundle.json → 真 mynet refresh-config 能读到它
 #
 # 用法：sh scripts/e2e/bundle_pull.sh
@@ -57,7 +57,7 @@ BACK_PUB_HEX=db48257e1237976a74ad8cfedca00213408fe89ac6251f1b930245f242b5c31a
 CONF
 chmod 600 "$HOME_DIR/conf/mynet.conf"
 
-# ── 假 back：只实现节点面会用到的两个端点 ────────────────────
+# ── 假后端：只实现节点面会用到的两个端点 ────────────────────
 # envelope 的字段按 spec/schemas/bundle-envelope-v2.schema.json 的 required 给全，
 # 少一个就会被 mynetd 的 validateEnvelope 拒掉（那正是要验的行为）。
 cat > "$WORK/fakeback.py" <<'PY'
@@ -131,11 +131,11 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 
-echo "▸ 起假 back（:$(printf '%s' "$BACK_PORT")）"
+echo "▸ 起假后端（:$(printf '%s' "$BACK_PORT")）"
 python3 "$WORK/fakeback.py" "$BACK_PORT" > "$WORK/back.log" 2>&1 &
 echo $! > "$WORK/back.pid"
 
-echo "▸ 起真 mynet_gateway（:$(printf '%s' "$GW_PORT") → upstream 假 back）"
+echo "▸ 起真 mynet_gateway（:$(printf '%s' "$GW_PORT") → upstream 假后端）"
 "$BIN/mynet_gateway" -listen "127.0.0.1:$GW_PORT" \
   -upstream "http://127.0.0.1:$BACK_PORT" > "$WORK/gw.log" 2>&1 &
 echo $! > "$WORK/gw.pid"
@@ -169,16 +169,16 @@ until [ -f "$HOME_DIR/var/bundle.json" ]; do
   if [ "$i" -gt 60 ]; then
     bad "启动后 12s 内没有落盘 var/bundle.json"
     echo "    ── mynetd 日志 ──"; sed 's/^/    /' "$WORK/mynetd.log" | tail -8
-    echo "    ── 假 back 日志 ──"; sed 's/^/    /' "$WORK/back.log" | tail -8
+    echo "    ── 假后端日志 ──"; sed 's/^/    /' "$WORK/back.log" | tail -8
     exit 1
   fi
   sleep 0.2
 done
 ok "启动即拉取：var/bundle.json 已落盘"
 
-# ── 内容核对：必须是 back 下发的那一份，且执行器能解码 ──
+# ── 内容核对：必须是后端下发的那一份，且执行器能解码 ──
 if grep -q 'gen-e2e-1' "$HOME_DIR/var/bundle.json"; then
-  ok "内容是 back 下发的 envelope（generation=gen-e2e-1）"
+  ok "内容是后端下发的 envelope（generation=gen-e2e-1）"
 else
   bad "落盘内容不含期望的 generation：$(head -c 120 "$HOME_DIR/var/bundle.json")"
 fi
@@ -188,9 +188,9 @@ else
   bad "etag 未持久化"
 fi
 if grep -q 'sig=有' "$WORK/back.log"; then
-  ok "假 back 收到了**带签名**的请求（X-Node-Signature 在）"
+  ok "假后端收到了**带签名**的请求（X-Node-Signature 在）"
 else
-  bad "请求没带签名 —— 真 back 会 401"
+  bad "请求没带签名 —— 真后端会 401"
 fi
 
 # ── 执行器侧：refresh-config 不再报「读 bundle 失败」──

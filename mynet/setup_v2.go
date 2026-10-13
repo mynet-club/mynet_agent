@@ -197,13 +197,13 @@ func cmdSetupV2(args []string) int {
 		fmt.Println("下一步：mynet config pull     # 或 login 后由 mynetd 拉 bundle")
 	}
 	_ = printKeys
-	// back 节点面公钥是服务器侧公开参数（非秘密），不违反「setup 不生成密钥」：
+	// 后端节点面公钥是服务器侧公开参数（非秘密），不违反「setup 不生成密钥」：
 	// node claim 取到后经此回填 meta.json，mynetd 节点面才装配得了。
 	if backPub != "" {
 		if err := keys.UpdateNodeMetaBackPub(keysDir, nodeID, backPub); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ back_pub_hex 回填失败（不影响 setup 结果）: %v\n", err)
 		} else {
-			fmt.Println("  back 节点面公钥已回填: keys/meta.json")
+			fmt.Println("  后端节点面公钥已回填: keys/meta.json")
 		}
 	}
 	return 0

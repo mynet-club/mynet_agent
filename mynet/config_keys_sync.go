@@ -9,7 +9,7 @@ import (
 
 // Sync the existing public key without regenerating the device identity.
 //
-// 顺带回填 back 节点面公钥（meta.json 的 back_pub_hex）：早期 keys set/generate
+// 顺带回填后端节点面公钥（meta.json 的 back_pub_hex）：早期 keys set/generate
 // 写死空串，mynetd 节点面因此永远装配不了 —— sync 是在线的，正好补。
 func configFaceKeysSync() int { return configFaceKeysSyncConnect(false) }
 func configFaceKeysSyncConnect(connect bool) int {
@@ -36,9 +36,9 @@ func configFaceKeysSyncConnect(connect bool) int {
 	out := map[string]any{"synced": true}
 	if meta, mErr := keys.LoadNodeMeta(keysDir); mErr == nil && meta.BackPubHex == "" && mode.Mode == domain.ModeOnline {
 		if bp, fErr := fetchBackFacePub(); fErr != nil {
-			out["back_pub_warning"] = "回填 back 节点面公钥失败: " + fErr.Error()
+			out["back_pub_warning"] = "回填后端节点面公钥失败: " + fErr.Error()
 		} else if uErr := keys.UpdateNodeMetaBackPub(keysDir, mode.Active.NodeID, bp); uErr != nil {
-			out["back_pub_warning"] = "回填 back 节点面公钥写盘失败: " + uErr.Error()
+			out["back_pub_warning"] = "回填后端节点面公钥写盘失败: " + uErr.Error()
 		} else {
 			out["back_pub_backfilled"] = true
 		}

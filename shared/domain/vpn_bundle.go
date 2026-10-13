@@ -7,11 +7,11 @@ package domain
 //
 // VPNBundle 是「驱动无关」的节点配置抽象。
 //
-// 它由 mynet_back 生成，交给具体 driver 翻译成原生配置：
+// 它由 mynet_api 生成，交给具体 driver 翻译成原生配置：
 //   - gnb       → node.conf / address.conf / route.conf / ed25519/ / security/
 //   - wireguard → wg 接口与 peer 配置
 //
-// 关键约束：back 只产出本结构，**不产出任何厂商原生语法**。
+// 关键约束：后端只产出本结构，**不产出任何厂商原生语法**。
 // 否则「业务上移」只是把厂商耦合从客户端搬到了后端。
 //
 // 设计依据：mynet_ctl/docs/knowledge-base/spec/driver-abstraction.md §3.1

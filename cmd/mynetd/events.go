@@ -18,11 +18,11 @@ const commandPullTimeout = 2 * time.Minute
 
 // 网关事件 → 执行器动作的映射。
 //
-// back 的 GatewayNotifier 发三类事件，且 data 仅带定位信息（command_id / generation）：
+// 后端的 GatewayNotifier 发三类事件，且 data 仅带定位信息（command_id / generation）：
 //
 //	route_changed  → mynet refresh-routes --auto（拓扑/路由变化，就地可完成）
 //	bundle_changed → mynet refresh-config --auto（配置包 generation 变更，就地可完成）
-//	command_queued → **pull 模型**：回 back 拉 GET /api/v1/node/commands，
+//	command_queued → **pull 模型**：回后端拉 GET /api/v1/node/commands，
 //	                 逐条执行并回报（见 runCommandPull）
 //
 // 前两类映射到既有的 commands.Plan argv，避免重抄一份命令表。
@@ -34,7 +34,7 @@ var eventToOp = map[string]string{
 // eventDispatcher 串行执行事件触发的动作。
 //
 // 为什么要有 inFlight 守卫：事件处理跑在独立 goroutine 上（不能阻塞 WS 读循环，
-// 否则 ping 与结果回传都卡住），但若 back 连续广播，多个 `mynet apply` /
+// 否则 ping 与结果回传都卡住），但若后端连续广播，多个 `mynet apply` /
 // `refresh-*` 会并发写 OS 路由与驱动配置——这正是本项目踩过的坑
 // （跨驱动路由互相污染）。同一时刻只允许一个在跑，后来的直接丢弃并记日志：
 // 事件语义是「有变化，去刷新」，不是「刷新 N 次」，合并是安全的。
@@ -46,7 +46,7 @@ type eventDispatcher struct {
 
 	// pull / report 构成 command_queued 的完整链路。
 	// 二者可为 nil（未配 gateway 或无节点身份），此时 command_queued 明确记日志说明缺什么，
-	// 而不是静默忽略——静默忽略的症状是「back 下了命令但节点毫无反应」。
+	// 而不是静默忽略——静默忽略的症状是「后端下了命令但节点毫无反应」。
 	pull   func(ctx context.Context) ([]pendingCommand, error)
 	report func(ctx context.Context, res commands.Result) error
 
@@ -61,7 +61,7 @@ type eventDispatcher struct {
 }
 
 // bundleStatusUpdated 是 bundleStore.Sync 在拿到新版时返回的标记
-// （另一种是 "unchanged"，即 back 返 304）。
+// （另一种是 "unchanged"，即后端返 304）。
 const bundleStatusUpdated = "updated"
 
 // bundleSyncTimeout 一次 bundle 拉取的超时。
@@ -102,7 +102,7 @@ func (d *eventDispatcher) pullBundle(name string) (string, bool) {
 // catchUpBundle 连接建立时补一次拉取（由 transport.OnConnect 触发）。
 //
 // 这是 WS 下发的自愈路径：网关推送是 fire-and-forget，节点断开（网络抖动、网关
-// 重启、背压判死）期间 back 广播的 bundle_changed **不会补发**。以前说「心跳会
+// 重启、背压判死）期间后端广播的 bundle_changed **不会补发**。以前说「心跳会
 // 兜住」，但心跳只做采集上报、根本不拉 bundle —— 于是「错过一次推送」实际等于
 // 「配置永久滞后，直到进程重启」。现在每次连上都对一次 ETag：
 //   - 304（unchanged）→ 什么都不做，不重载驱动（避免无谓的隧道抖动）
@@ -119,8 +119,8 @@ func (d *eventDispatcher) catchUpBundle() {
 
 // maxCommandsPerEvent 单次 command_queued 最多处理多少条命令。
 //
-// back 每次只返 1 条并标记为执行中，正常情况拉几轮就空了。设上限是防止
-// back 侧状态机异常（命令永远回到 pending）时把节点拖进死循环。
+// 后端每次只返 1 条并标记为执行中，正常情况拉几轮就空了。设上限是防止
+// 后端侧状态机异常（命令永远回到 pending）时把节点拖进死循环。
 const maxCommandsPerEvent = 32
 
 func (d *eventDispatcher) Handle(name string, data map[string]string) {
@@ -136,7 +136,7 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 	}
 	d.runExclusive(name, func() {
 		// bundle_changed 先拉后刷（见 pullBundle）。route_changed 不需要 ——
-		// 它刷的是拓扑/路由，就地可完成，不依赖 back 下发的配置包。
+		// 它刷的是拓扑/路由，就地可完成，不依赖后端下发的配置包。
 		if name == "bundle_changed" {
 			if _, ok := d.pullBundle(name); !ok {
 				return
@@ -199,10 +199,10 @@ func (d *eventDispatcher) runBundleLifecycle() {
 	}
 }
 
-// runCommandPull 收到 command_queued 后回 back 拉命令、执行、回报结果。
+// runCommandPull 收到 command_queued 后回后端拉命令、执行、回报结果。
 //
-// 这是 pull 模型：back 的 GatewayNotifier 只发「有新命令待执行」的通知，
-// 命令内容要节点自己取（`GET /api/v1/node/commands`，back 侧 docblock 明写
+// 这是 pull 模型：后端的 GatewayNotifier 只发「有新命令待执行」的通知，
+// 命令内容要节点自己取（`GET /api/v1/node/commands`，后端侧 docblock 明写
 // 「供控制面长连接在收到 command_queued 事件后调用」）。
 func (d *eventDispatcher) runCommandPull(commandID string) {
 	if d.pull == nil || d.report == nil {
@@ -223,7 +223,7 @@ func (d *eventDispatcher) runCommandPull(commandID string) {
 			}
 			if len(batch) == 0 {
 				if i == 0 {
-					d.logf("event: command_queued（command_id=%s）但 back 无待执行命令"+
+					d.logf("event: command_queued（command_id=%s）但后端无待执行命令"+
 						"（可能已被别的连接取走或已过期）", commandID)
 				}
 				return
@@ -233,21 +233,21 @@ func (d *eventDispatcher) runCommandPull(commandID string) {
 				d.executeOne(ctx, cmd)
 			}
 		}
-		d.logf("event: 单次 command_queued 处理已达上限 %d 条，剩余仍在 back 队列里，"+
+		d.logf("event: 单次 command_queued 处理已达上限 %d 条，剩余仍在后端队列里，"+
 			"下次 command_queued 事件或重连补拉会接着取", maxCommandsPerEvent)
 	})
 }
 
 // executeOne 执行一条命令并回报结果。
 //
-// 映射不了 op 时**照样回报失败**，不能静默丢弃：back 侧那条命令已被标记为
+// 映射不了 op 时**照样回报失败**，不能静默丢弃：后端侧那条命令已被标记为
 // 「执行中」，不回报就会永远卡在那个状态（CPI-4 的教训：静默失效最难查）。
 func (d *eventDispatcher) executeOne(ctx context.Context, cmd pendingCommand) {
 	id := cmd.ID.String()
 
 	op, ok := commands.OpFromBackCommand(cmd.Command)
 	if !ok {
-		d.logf("command: back 下发了 agent 不认识的命令 %q（id=%s）—— 按失败回报，不静默忽略",
+		d.logf("command: 后端下发了 agent 不认识的命令 %q（id=%s）—— 按失败回报，不静默忽略",
 			cmd.Command, id)
 		d.reportResult(ctx, commands.Result{
 			ID:    id,
@@ -268,7 +268,7 @@ func (d *eventDispatcher) executeOne(ctx context.Context, cmd pendingCommand) {
 
 func (d *eventDispatcher) reportResult(ctx context.Context, res commands.Result) {
 	if err := d.report(ctx, res); err != nil {
-		// 回报失败必须吵出来：命令执行了但 back 不知道，会一直显示「执行中」。
+		// 回报失败必须吵出来：命令执行了但后端不知道，会一直显示「执行中」。
 		d.logf("command: 结果回报失败（id=%s）: %v", res.ID, err)
 	}
 }
@@ -347,7 +347,7 @@ func (d *eventDispatcher) hasPending() bool {
 	return len(d.pending) > 0
 }
 
-// stringifyParams 把 back 的 params（任意 JSON 值）压成 commands.Request 要的
+// stringifyParams 把后端的 params（任意 JSON 值）压成 commands.Request 要的
 // map[string]string。非字符串值用 JSON 表示，避免丢信息。
 func stringifyParams(params map[string]any) map[string]string {
 	if len(params) == 0 {

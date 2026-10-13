@@ -27,7 +27,7 @@ type ProxyIntentSaver func(dir string, st *domain.ProxyIntentState) error
 
 var errProxyStoreNotReady = errors.New("proxy 状态读写未装配（组合根未注入）")
 
-// ProxyWritebackFunc 把本地意图推到云端（node-face 签名 → gateway → back）。
+// ProxyWritebackFunc 把本地意图推到云端（node-face 签名 → gateway → 后端）。
 // 返回云端新的 revision（>0）；失败返回 error，状态保持 Dirty。
 type ProxyWritebackFunc func(policy domain.ProxyPolicy, revision int64) (cloudRevision int64, err error)
 

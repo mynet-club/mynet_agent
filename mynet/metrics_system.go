@@ -218,7 +218,7 @@ func darwinCPUPercent() float64 {
 }
 
 // round2 保留两位小数。不 round 的话浮点加法会留下
-// `27.840000000000003` 这种尾巴，而它会原样进 JSON、进心跳、进 back 的 Redis。
+// `27.840000000000003` 这种尾巴，而它会原样进 JSON、进心跳、进后端的 Redis。
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 // uintAfterColon 取冒号后的第一段数字（"Pages active:   257583." → 257583）。

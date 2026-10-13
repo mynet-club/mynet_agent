@@ -11,14 +11,14 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
-// /api/v1/relay —— GUI → mynetd → gateway → back 的**两跳**中继。
+// /api/v1/relay —— GUI → mynetd → gateway → 后端的**两跳**中继。
 //
 // 与 gateway 自己的 /v1/relay 不同（那个是 console/移动端直连）：
 // 本机 webui 的信任边界止于 127.0.0.1，浏览器**不直接**出门。
 // mynetd 持有 gateway 地址（MYNET_GATEWAYS），浏览器只跟本机说话。
 //
 // 契约：`ANY /api/v1/relay?path=<back-api-path>`，method/body/头原样透传，
-// 响应原样回写。鉴权头（Authorization）一并转给 back —— gateway 只做
+// 响应原样回写。鉴权头（Authorization）一并转给后端—— gateway 只做
 // 路径白名单与内网转发，不碰鉴权（relaypolicy B3：纯路径，无鉴权语义）。
 //
 // ⚠️ 路径白名单在**这一跳也要查**：不能假设上游一定挡得住。
@@ -30,7 +30,7 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !relaypolicy.IsAllowed(rawPath) {
-		writeJSON(w, 403, map[string]any{"success": false, "message": "path 不在中继白名单内；鉴权归 back"})
+		writeJSON(w, 403, map[string]any{"success": false, "message": "path 不在中继白名单内；鉴权归后端"})
 		return
 	}
 

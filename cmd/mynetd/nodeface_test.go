@@ -13,7 +13,7 @@ import (
 
 // 这组密钥取自 mynet/keys/testdata/node_face_vectors.json —— 即 C-2 的
 // Go↔PHP 双端互认向量（PHP 侧 NodeFaceInteropTest 读同一文件）。
-// 用它验签，证明结果帧的签名就是 back 会接受的那一个，而不是自证自话。
+// 用它验签，证明结果帧的签名就是后端会接受的那一个，而不是自证自话。
 const (
 	vecNodePriv = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
 	vecBackPub  = "db48257e1237976a74ad8cfedca00213408fe89ac6251f1b930245f242b5c31a"
@@ -81,7 +81,7 @@ func TestLoadNodeIdentity(t *testing.T) {
 func TestLoadNodeIdentityToleratesCommentsAndSpaces(t *testing.T) {
 	conf := "# mynet setup 产出\n\n  NODE_ID = " + vecNodeID + "  \n" +
 		"NODE_PRIV_HEX=" + vecNodePriv + "\n" +
-		"# 下面是 back 公钥\nBACK_PUB_HEX=" + vecBackPub + "\n"
+		"# 下面是后端公钥\nBACK_PUB_HEX=" + vecBackPub + "\n"
 	id, err := loadNodeIdentity(writeConf(t, conf))
 	if err != nil {
 		t.Fatalf("loadNodeIdentity: %v", err)
@@ -122,7 +122,7 @@ func TestLoadNodeIdentityRejectsBadKey(t *testing.T) {
 	}
 }
 
-// 结果帧必须：路径符合 back 契约、body 符合 reportResult 的校验规则、
+// 结果帧必须：路径符合后端契约、body 符合 reportResult 的校验规则、
 // 且签名能被 C-2 向量密钥验过。
 func TestEncodeResultFrameIsSignedAndShaped(t *testing.T) {
 	id, err := loadNodeIdentity(writeConf(t, validConf()))
@@ -150,7 +150,7 @@ func TestEncodeResultFrameIsSignedAndShaped(t *testing.T) {
 		t.Errorf("node_id = %q, want %q", f.NodeID, vecNodeID)
 	}
 	if f.Method != "PATCH" {
-		t.Errorf("method = %q, want PATCH（back 的路由是 PATCH）", f.Method)
+		t.Errorf("method = %q, want PATCH（后端的路由是 PATCH）", f.Method)
 	}
 	wantPath := "/api/v1/node/commands/cmd-777/result"
 	if f.Path != wantPath {
@@ -177,13 +177,13 @@ func TestEncodeResultFrameIsSignedAndShaped(t *testing.T) {
 		t.Errorf("elapsed_ms = %v, want 42", body.Result["elapsed_ms"])
 	}
 
-	// 用 C-2 向量密钥验签：证明这就是 back 会接受的签名
+	// 用 C-2 向量密钥验签：证明这就是后端会接受的签名
 	verifier, err := keys.NewNodeFaceSigner(vecNodePriv, vecBackPub)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !verifier.Verify(f.Method, f.Path, f.TS, f.Body, f.Sig) {
-		t.Errorf("签名验不过（method=%s path=%s ts=%s）—— back 会拒收", f.Method, f.Path, f.TS)
+		t.Errorf("签名验不过（method=%s path=%s ts=%s）——后端会拒收", f.Method, f.Path, f.TS)
 	}
 	if f.TS == "" || f.Sig == "" {
 		t.Error("ts / sig 不得为空")

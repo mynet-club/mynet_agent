@@ -30,8 +30,8 @@ const (
 // handleNodeConnect 是 /v1/node/connect 的真 WS 握手。
 //
 // C-3：gateway **不鉴权**。这里不验签名、不查授权——连接即登记，Verified=false
-// 直到 back 经 X-Node-Verified 响应头置位（C-4，见 withVerifiedHook）。
-// 节点面真鉴权是节点↔back 的 DH+HMAC（C-2），发生在 relay 到 back 之后。
+// 直到后端经 X-Node-Verified 响应头置位（C-4，见 withVerifiedHook）。
+// 节点面真鉴权是节点↔后端的 DH+HMAC（C-2），发生在 relay 到后端之后。
 func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.Header.Get(NodeIDHeader)
 	if nodeID == "" {
@@ -111,7 +111,7 @@ func (s *Server) writeLoop(ctx context.Context, conn *websocket.Conn, c *Conn) {
 
 // handleNodeFrame 处理节点上行帧。
 //
-// 两类：ping（保活）与 result（命令执行结果，转发给 back）。
+// 两类：ping（保活）与 result（命令执行结果，转发给后端）。
 func (s *Server) handleNodeFrame(ctx context.Context, conn *websocket.Conn, nodeID string, raw []byte) {
 	var probe struct {
 		T string `json:"t"`
@@ -175,10 +175,10 @@ func allowedNodeUpstream(method, path string) bool {
 	return false
 }
 
-// forwardNodeResult 把节点签好名的结果**逐字重放**给 back。
+// forwardNodeResult 把节点签好名的结果**逐字重放**给后端。
 //
 // gateway 不做任何密码学（C-3）：X-Node-Id / X-Timestamp / X-Node-Signature 三个头
-// 原样带上，验签由 back 的 node.heartbeat.auth 中间件完成。签名覆盖的是
+// 原样带上，验签由后端的 node.heartbeat.auth 中间件完成。签名覆盖的是
 // `METHOD\npath\nts\nsha256(body)`，所以 method/path/body 一个字都不能改。
 func (s *Server) forwardNodeResult(ctx context.Context, connNodeID string, raw []byte) {
 	var f nodeResultFrame
@@ -188,7 +188,7 @@ func (s *Server) forwardNodeResult(ctx context.Context, connNodeID string, raw [
 	}
 
 	// 帧里的 node_id 必须与连接身份一致，否则一个节点能替别的节点报结果。
-	// （back 还会验签，这里是第一道闸，也便于就地定位问题。）
+	// （后端还会验签，这里是第一道闸，也便于就地定位问题。）
 	if f.NodeID != connNodeID {
 		s.logf("gateway: result 帧 node_id 不符（帧=%s 连接=%s），丢弃", f.NodeID, connNodeID)
 		return

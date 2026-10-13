@@ -42,17 +42,17 @@ type metricsSnapshot struct {
 	} `json:"vpn"`
 }
 
-// ── back 的心跳请求体 ──────────────────────────────────────────
+// ── 后端的心跳请求体 ──────────────────────────────────────────
 //
 // 契约来源：`mynet_api/app/Modules/VPN/Requests/HeartbeatRequest.php:58-103`。
 // 六个必填字段 + 可选的 vpn_interfaces / node_monitor。
 //
 // ⚠️ **单位**：`cpu_usage` / `memory_usage` / `disk_usage` 都是 0-100 的百分比
 // （验证规则是 `numeric|min:0|max:100`），而 metrics 给的内存是 **MB**。
-// 转换在这里做，别让 back 去猜单位 —— 猜错的症状是「内存使用率 11606%」
+// 转换在这里做，别让后端去猜单位 —— 猜错的症状是「内存使用率 11606%」
 // 然后被 max:100 挡下，整条心跳 422。
 //
-// ⚠️ **字段顺序有意义**：back 验签时会把收到的 JSON 解析成关联数组、
+// ⚠️ **字段顺序有意义**：后端验签时会把收到的 JSON 解析成关联数组、
 // 去掉 node_monitor、再用 PHP 重编码（数组保持插入顺序）。所以这里的结构体
 // 字段顺序就是签名体的顺序，改顺序会让两端签名不一致 → 全 401。
 type heartbeatPayload struct {
@@ -96,7 +96,7 @@ type nodeSelf struct {
 
 // heartbeatBodies 组装心跳，返回**两份** JSON：发送体与签名体。
 //
-// 为什么不同：back 的 `NodeHeartbeatAuthMiddleware` 在验签前会把 `node_monitor`
+// 为什么不同：后端的 `NodeHeartbeatAuthMiddleware` 在验签前会把 `node_monitor`
 // 置 nil 再重编码（`spec/node-keying.md` §4.3 —— 它体量大且不参与签名）。
 // 所以签的必须是「不含 node_monitor」的那份；拿完整体去签，两端算出的
 // 签名永远不等，症状是清一色 401 而不是「某个字段错了」。
@@ -105,7 +105,7 @@ type nodeSelf struct {
 func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err error) {
 	id, convErr := strconv.ParseInt(strings.TrimSpace(nodeID), 10, 64)
 	if convErr != nil || id <= 0 {
-		return nil, nil, fmt.Errorf("node_id 非法（back 要求 integer 且 ≥1）: %q", nodeID)
+		return nil, nil, fmt.Errorf("node_id 非法（后端要求 integer 且 ≥1）: %q", nodeID)
 	}
 
 	var snap metricsSnapshot
@@ -120,7 +120,7 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		MemoryUsage: memPercent(snap.System.MemUsedMB, snap.System.MemTotalMB),
 		DiskUsage:   clampPercent(snap.System.DiskUsedPercent),
 		// connection_count 用 VPN peer 总数：节点没有别的「连接」概念，
-		// 而 back 要的是 integer ≥0。
+		// 而后端要的是 integer ≥0。
 		ConnectionCount: totalPeers(snap),
 	}
 
@@ -130,15 +130,15 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		}
 		typ := normalizeDriver(v.Driver)
 		if typ == "" {
-			// back 的验证是 in:gnb,wireguard —— 送别的值整条心跳 422。
+			// 后端的验证是 in:gnb,wireguard —— 送别的值整条心跳 422。
 			// 认不出来的驱动就不报，别把一条能过的心跳弄成过不了。
 			continue
 		}
 		if v.Interface == "" {
-			// ifname 是 back 的 required_with:vpn_interfaces，空值会让整条心跳 422，
+			// ifname 是后端的 required_with:vpn_interfaces，空值会让整条心跳 422，
 			// 所以拿不到接口名时只能不发这一段。
 			//
-			// ⚠️ 但别以为「不发」是安全的降级：back 的 isVpnInterfaceDown()
+			// ⚠️ 但别以为「不发」是安全的降级：后端的 isVpnInterfaceDown()
 			// 第一行就是 `if (empty($vpnInterface)) return true;`
 			// （NodeHeartbeatController.php，注释写着「如果没有 VPN 接口信息，
 			// 视为网络不可用」）→ 走 markNodeOffline 并**提前 return**，
@@ -188,7 +188,7 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 // encodeHeartbeat 用 SetEscapeHTML(false) 编码。
 //
 // ⚠️ 这不是风格问题：Go 的 json.Marshal 默认把 `<` `>` `&` 转义成 `\u003c` 等，
-// 而 back 侧用 PHP 的 `json_encode(JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`
+// 而后端侧用 PHP 的 `json_encode(JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`
 // 重编码，**不转义**。两端字节不一致 → sha256(body) 不一致 → 签名不匹配 → 401。
 // 同样的坑在命令回报那条链上已经踩过（见 spec/node-keying.md §4.5 第 2 点）。
 //
@@ -203,7 +203,7 @@ func encodeHeartbeat(v any) ([]byte, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
-// normalizeDriver 把执行器报的 driver 名收敛到 back 接受的枚举。
+// normalizeDriver 把执行器报的 driver 名收敛到后端接受的枚举。
 // 认不出来返回空串（调用方据此跳过，而不是送一个会 422 的值）。
 func normalizeDriver(d string) string {
 	switch strings.ToLower(strings.TrimSpace(d)) {
@@ -257,7 +257,7 @@ func totalTx(snap metricsSnapshot) uint64 {
 	return n
 }
 
-// clampPercent 收敛到 back 接受的 0-100，并保留两位小数。
+// clampPercent 收敛到后端接受的 0-100，并保留两位小数。
 // 不 clamp 的话，采集侧一个异常值就会让整条心跳被 max:100 挡下。
 func clampPercent(v float64) float64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) {

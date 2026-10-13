@@ -20,7 +20,7 @@ import (
 // 跨驱动互通（A gnb → C 双驱动 → B wg）就是这里的几条 Route，驱动层互不知晓对方。
 //
 // SSOT（route-apply-unification.md）：OS 路由的数据源是 bundle.network.routes
-// （back 从 node_ips 投影），**不是** gnb 的 route.conf —— 后者是 L5 地址宣告，
+// （后端从 node_ips 投影），**不是** gnb 的 route.conf —— 后者是 L5 地址宣告，
 // 不进内核。平台只分叉 routeCmds 的命令方言，策略全在 executeApply。
 type ApplyPlan struct {
 	// 保留本节点隧道名，即使撤销后无 Proxy/Routes，也能精确清理出口规则。

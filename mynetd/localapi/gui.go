@@ -8,15 +8,15 @@ import (
 	"strings"
 )
 
-// /gui/ —— mynet_gui（back 的前端控制台）收进本机 webui。
+// /gui/ —— mynet_gui（后端的前端控制台）收进本机 webui。
 //
 // 构建时把 API 基址设成 `/gui`，于是 axios 的 baseURL 是 `/gui/api/v1`，
 // 资源前缀是 `/gui/assets`。本面做两件事：
 //
-//	/gui/api/v1/*  → 剥掉 /gui 前缀，走 relay（mynetd → gateway → back）
+//	/gui/api/v1/*  → 剥掉 /gui 前缀，走 relay（mynetd → gateway → 后端）
 //	/gui/*         → 静态文件（Quasar SPA）
 //
-// 为什么不 iframe 生产站：那套界面的数据要经 back 的鉴权与租户，
+// 为什么不 iframe 生产站：那套界面的数据要经后端的鉴权与租户，
 // 嵌进本机后浏览器仍只谈 127.0.0.1，出网一律走 relay —— 与
 // 「信任边界止于本机」是同一条原则。
 func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {

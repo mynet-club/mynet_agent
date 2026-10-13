@@ -28,7 +28,7 @@ import (
 //
 // ⚠️ 语义（U2）：refresh-* **只把本地 bundle 渲染成驱动配置**，不访问网络。
 // 要拉新配置请 `mynet config pull`（下载 + 投影）或 `mynet config sync`（拉新 + 投影 + OS 路由）。
-// 「改了 back 但本地还是旧的」九成是忘了 pull，不是 refresh 坏了。
+// 「改了后端但本地还是旧的」九成是忘了 pull，不是 refresh 坏了。
 func cmdRefresh(args []string) int {
 	what := strings.TrimPrefix(args0(args), "refresh-")
 	rest := args
@@ -323,8 +323,8 @@ func refreshAddress(env *domain.BundleEnvelope) int {
 }
 
 func refreshConfig(env *domain.BundleEnvelope) int {
-	// 接口名的唯一权威是 node.interface（back 侧 = node_configs.config.ifname）。
-	// gnb 的渲染只读 Options.Ifname，所以投影前用权威值覆盖它：back 一旦停发那份
+	// 接口名的唯一权威是 node.interface（后端侧 = node_configs.config.ifname）。
+	// gnb 的渲染只读 Options.Ifname，所以投影前用权威值覆盖它：后端一旦停发那份
 	// 过渡期别名，这条路径也不会退回 gnb 自己的默认名（在多 zone 主机上那是别人
 	// 正在用的接口）。解析不出来就是配置错误 —— 报错退出，不猜。
 	dev, err := env.TunDevice()
@@ -365,7 +365,7 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 		d := driver.NewGNBDriver(nodeID)
 		d.ConfDir = gnbConfDir()
 
-		// back **不下发**节点私钥（P0-4 收口，bundle 里 private_key 恒为空），
+		// 后端 **不下发**节点私钥（P0-4 收口，bundle 里 private_key 恒为空），
 		// 而 gnb 必须有 security/<uuid>.private 才能起（gnb_keys.c:62-67 读不到就 exit）。
 		// 私钥只从本机 conf/mynet.conf 来 —— 这正是「控制面集中、密钥不出节点」。
 		if env.Gnb.Identity.PrivateKey == "" {
@@ -379,7 +379,7 @@ func refreshConfig(env *domain.BundleEnvelope) int {
 				fmt.Fprintln(os.Stderr, "refresh-config: conf/mynet.conf 缺 NODE_PRIV_HEX，gnb 起不来")
 				return 1
 			}
-			// 校验本机私钥与 back 下发的公钥是否一对。不校验的话，
+			// 校验本机私钥与后端下发的公钥是否一对。不校验的话，
 			// 「mynet.conf 是另一个节点的」这种错配会一路走到隧道握手才炸，
 			// 症状是「对端 PONG 不上」，极难定位。
 			if pub := env.Gnb.Identity.PublicKey; pub != "" {

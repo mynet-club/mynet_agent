@@ -130,4 +130,4 @@ if [ "$GATEWAY" = "1" ]; then
 fi
 
 log "e2e smoke PASS (nodes=$NODES)"
-log "next: R1-2 业务链上真实 back（Feature/DualDriver 已覆盖领域层）"
+log "next: R1-2 业务链上真实后端（Feature/DualDriver 已覆盖领域层）"

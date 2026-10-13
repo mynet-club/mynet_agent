@@ -25,7 +25,7 @@ type SystemMetrics struct {
 	UptimeSec   int64   `json:"uptime_sec,omitempty"`
 	InterfaceUp int     `json:"interface_up,omitempty"`
 	// DiskUsedPercent 根文件系统已用百分比（0-100）。
-	// back 的心跳契约把 disk_usage 列为**必填**（HeartbeatRequest.php:66），
+	// 后端的心跳契约把 disk_usage 列为**必填**（HeartbeatRequest.php:66），
 	// 而此前 metrics 根本没采磁盘 —— 少一个字段整条心跳就过不了验证。
 	DiskUsedPercent float64 `json:"disk_used_percent,omitempty"`
 }
@@ -40,7 +40,7 @@ type VPNDriverMetrics struct {
 	PeersUp   int      `json:"peers_up,omitempty"`
 	Addrs     []string `json:"addrs,omitempty"`
 	// RxBytes / TxBytes 是该驱动下**所有 peer 的累计流量**。
-	// back 的心跳契约把 node_self.rx_bytes / tx_bytes 列为必填
+	// 后端的心跳契约把 node_self.rx_bytes / tx_bytes 列为必填
 	// （HeartbeatRequest.php:104-105），而 driver 层本来就解析了每个 peer 的
 	// 收发字节 —— 早先投影成统一视图时把它们丢了，等于白解析。
 	RxBytes uint64 `json:"rx_bytes,omitempty"`

@@ -10,24 +10,24 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// realIntent 取自 staging 上 back 真实下发的 envelope（节点 2132596500330640，
+// realIntent 取自 staging 上后端真实下发的 envelope（节点 2132596500330640，
 // `deploy/diag-bundle.php --full` 的输出），不是编的夹具 —— 渲染器的测试只有
 // 打在真数据形状上才有意义。
 //
-// 唯一改动：ifname 用 gnb_tun 而不是 back 当时发的 gnb_tun_<nodeid>。
+// 唯一改动：ifname 用 gnb_tun 而不是后端当时发的 gnb_tun_<nodeid>。
 // 后者 24 字符，超过 gnb 的 15 字符上限（gnb_conf_file.c:275-277 硬截断）与
 // Linux IFNAMSIZ-1，会被静默截成 gnb_tun_2132596 —— 见
-// TestGnbRejectsOverlongIfname，那条钉的是 back 侧的缺陷。
+// TestGnbRejectsOverlongIfname，那条钉的是后端侧的缺陷。
 func realIntent() *domain.GnbIntent {
 	return &domain.GnbIntent{
 		Identity: domain.GnbIdentity{
 			NodeID:         "2132596500330640",
 			KeyAlgorithm:   "ed25519",
-			PrivateKey:     "", // back 不持有节点私钥，由 cmd_refresh 从 conf/mynet.conf 注入
+			PrivateKey:     "", // 后端不持有节点私钥，由 cmd_refresh 从 conf/mynet.conf 注入
 			PublicKey:      "a97298cb67045eafdfc6edbfd2666e703472056ec826720cd03713924b107f25",
 			PeerPublicKeys: map[string]string{"1005272783125838": "d34082e6f120fa28d4263394438475816bd796cb045380fc12924b4d452afa7f"},
 		},
-		// back 现在发的是**裸端口**（2026-10-01 起）。留这条而不是换成裸端口：
+		// 后端现在发的是**裸端口**（2026-10-01 起）。留这条而不是换成裸端口：
 		// 现网存量节点（网关 182 在内）的 node.conf 就是这个旧形态，渲染器必须
 		// 继续原样透传 —— 见 TestRenderGNBNodeConfListenFormBarePortDualStack，
 		// 新形态那条钉的是「纯数字才双栈」这个 gnb 解析器事实。
@@ -357,7 +357,7 @@ func TestGnbWriteIntentOmitsPrivateKeyWhenBundleHasNone(t *testing.T) {
 	if err := d.WriteIntent(realIntent()); err != nil { // PrivateKey == ""
 		t.Fatal(err)
 	}
-	// back 不下发私钥，此时不该写出一个空的 .private（gnb 读到 0 字节会 exit）
+	// 后端不下发私钥，此时不该写出一个空的 .private（gnb 读到 0 字节会 exit）
 	if _, err := os.Stat(filepath.Join(dir, "security/2132596500330640.private")); !os.IsNotExist(err) {
 		t.Fatalf("bundle 无私钥时不该落 .private 文件，err=%v", err)
 	}
@@ -373,7 +373,7 @@ func TestGnbRejectsOverlongIfname(t *testing.T) {
 	d.ConfDir = dir
 
 	g := realIntent()
-	// 这正是 back 当时真实下发的值：'gnb_tun_'.$nodeId = 8 + 16 = 24 字符
+	// 这正是后端当时真实下发的值：'gnb_tun_'.$nodeId = 8 + 16 = 24 字符
 	g.Options.Ifname = "gnb_tun_2132596500330640"
 
 	err := d.WriteIntent(g)

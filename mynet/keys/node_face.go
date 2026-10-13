@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// NodeFaceSigner — C-2 节点侧签名，与 back 的 NodeFaceAuthService 对称。
+// NodeFaceSigner — C-2 节点侧签名，与后端的 NodeFaceAuthService 对称。
 //
 //	shared    = X25519(node_priv, back_pub)
 //	message   = METHOD \n path \n ts \n sha256(body)
@@ -25,7 +25,7 @@ type NodeFaceSigner struct {
 
 // NewNodeFaceSigner nodePrivHex / backPubHex 为 64 hex（B-3）。
 // algorithm: x25519|curve25519 直接 DH；ed25519 时 backPub 需已是 montgomery u
-// （由调用方完成 edwards→montgomery，或用 back 的转换结果）。
+// （由调用方完成 edwards→montgomery，或用后端的转换结果）。
 func NewNodeFaceSigner(nodePrivHex, backPubHex string) (*NodeFaceSigner, error) {
 	priv, err := decodeNodeFacePrivate(nodePrivHex)
 	if err != nil {
@@ -33,7 +33,7 @@ func NewNodeFaceSigner(nodePrivHex, backPubHex string) (*NodeFaceSigner, error) 
 	}
 	pub, err := hex.DecodeString(strings.TrimSpace(backPubHex))
 	if err != nil || len(pub) != 32 {
-		return nil, fmt.Errorf("back pub must be 32B hex")
+		return nil, fmt.Errorf("后端 pub must be 32B hex")
 	}
 	shared, err := DH(priv, pub)
 	if err != nil {
@@ -49,7 +49,7 @@ func NewNodeFaceSigner(nodePrivHex, backPubHex string) (*NodeFaceSigner, error) 
 //
 // 为什么 GNB 的能直接拿来用：GNB 落盘的 64 字节里，**前 32 字节就是 clamp 过的标量 s**
 // （见 libs/ed25519/keypair.c：sha512(seed) 后 clamp，再取前 32 字节做 ge_scalarmult_base）。
-// 而 ed25519 公钥 A = s·G_edwards，back 侧对 algorithm=ed25519 会先做
+// 而 ed25519 公钥 A = s·G_edwards，后端侧对 algorithm=ed25519 会先做
 // edwards→montgomery 得到 s·G_mont，再 scalarmult(back_priv, s·G_mont) = back_priv·s·G；
 // 本侧 X25519(s, back_pub) = s·back_priv·G —— 两者相等。这就是 §1.4 说的
 // 「gnb 走 edwards→montgomery、wg 直接 DH，只差一个公钥格式转换」。

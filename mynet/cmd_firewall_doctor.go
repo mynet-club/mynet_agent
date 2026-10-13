@@ -24,7 +24,7 @@ func runCapture(name string, args ...string) (string, error) {
 //
 // 机内层可机测：UDP listen 端口是否有 accept 规则（nft 优先，iptables 兜底）。
 // 云侧层只能出清单（安全组/Lightsail 在云 API，本机看不到）——
-// 只开一侧都不通，见 packaging/*/INSTALL.md「云主机必须两层」。
+// 只开一侧都不通，见 packaging/linux/INSTALL.md「云主机必须两层」。
 //
 // 归属见 route-firewall-split.md：UDP listen 放行是 L6 + 云，不是驱动。
 func cmdFirewallDoctor(args []string) int {

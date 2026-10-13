@@ -3,7 +3,7 @@ package domain
 // ProxyPolicy 代理分流意图（主线⑦「通过部分节点访问到不了的地方」）。
 //
 // 这是**节点级**业务意图，不是 Connection 级路径选择（那在 ConnectionPlan.TransportPolicy）。
-// back 按 Region×Policy 矩阵解算好 ListSource/MatchMode 后随 envelope 下发；
+// 后端按 Region×Policy 矩阵解算好 ListSource/MatchMode 后随 envelope 下发；
 // 节点只落地，不在现算「谁走谁」（control-plane.md §7.2）。
 //
 // gnb 侧：`proxy on` + 出口对端（数据目标，等同 route.conf 下一跳；不写 address.conf）；
@@ -20,7 +20,7 @@ type ProxyPolicy struct {
 	Region string `json:"region,omitempty"`
 	// Policy whitelist | blacklist（业务输入，用户语义）。
 	Policy string `json:"policy,omitempty"`
-	// Split 由 back 解算后的分流参数（ListSource + MatchMode + IP 列表引用）。
+	// Split 由后端解算后的分流参数（ListSource + MatchMode + IP 列表引用）。
 	Split *ProxySplit `json:"split,omitempty"`
 	// Exits 出站节点（有序；gnb 标 f）。
 	Exits []ProxyExit `json:"exits,omitempty"`

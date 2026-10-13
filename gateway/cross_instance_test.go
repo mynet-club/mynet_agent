@@ -10,9 +10,9 @@ import (
 
 // TestCrossInstanceNotifyDelivers 是 V4-4/V4-5 判据的核心：
 //
-//	节点连 A、back 通知 B → B 能推达
+//	节点连 A、后端通知 B → B 能推达
 //
-// 改之前 `Registry.Notify` 只查本地 `conns`，所以节点连在 A 时 back 打到 B
+// 改之前 `Registry.Notify` 只查本地 `conns`，所以节点连在 A 时后端打到 B
 // **必定 404**（errNotOnline）。现在 B 会查 presence、经 Redis 把帧原文广播过去，
 // 由 A 的 watchNode 收货并投递给本地连接。
 //
@@ -20,7 +20,7 @@ import (
 // 测试必须打真端点；用 MemoryPresence 共享变量的话，测的是「Go 变量赋值」而不是
 // 「跨实例 pub/sub」，那个连通性问题它一个也发现不了。
 func TestCrossInstanceNotifyDelivers(t *testing.T) {
-	// 用独立 DB（2），避免碰 back 心跳验证用的 DB 1，也避免污染 0
+	// 用独立 DB（2），避免碰后端心跳验证用的 DB 1，也避免污染 0
 	ps, err := NewRedisPresence("127.0.0.1:6379", "", 2)
 	if err != nil {
 		t.Fatalf("NewRedisPresence: %v", err)
@@ -43,7 +43,7 @@ func TestCrossInstanceNotifyDelivers(t *testing.T) {
 	// 清一下上一次测试的残留
 	_ = ps.SetOffline(ctx, "node-cross-instance")
 
-	// 节点连 A，并被 back 置位 verified（C-5 只推已置位的连接）
+	// 节点连 A，并被后端置位 verified（C-5 只推已置位的连接）
 	regA.RegisterCtx("node-cross-instance", nil)
 	defer func() { regA.Unregister("node-cross-instance") }()
 	if !regA.MarkVerified("node-cross-instance") {

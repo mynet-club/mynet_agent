@@ -209,7 +209,7 @@ func runAgent(ctx context.Context) {
 		logger.Info("网关已解析", "source", gwSrc, "gateways", gateways)
 		nodeID := os.Getenv("MYNET_NODE_ID")
 
-		// 节点面身份（C-2）：命令结果要签名后才能上报 back，
+		// 节点面身份（C-2）：命令结果要签名后才能上报后端，
 		// 拉取待执行命令也要签名。读不到 keys/ 时**明确告警**而不是静默降级——
 		// 否则症状是「命令下发了但节点毫无反应」，比直接报错难查得多。
 		var (
@@ -227,7 +227,7 @@ func runAgent(ctx context.Context) {
 			onResult = func(_ context.Context, res commands.Result) ([]byte, error) {
 				return id.encodeResult(res)
 			}
-			// 节点面 HTTP 走 gateway 的 /v1/relay（back 对节点不可达）
+			// 节点面 HTTP 走 gateway 的 /v1/relay（后端对节点不可达）
 			if c, err := newBackClient(gateways[0], id); err != nil {
 				logger.Warn("节点面 HTTP 客户端不可用", "err", err)
 			} else {
@@ -279,7 +279,7 @@ func runAgent(ctx context.Context) {
 		dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
 
 		// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
-		// 才能经 WS 上报 back。此前这里没接，结果进了 mynetd 就被丢掉。
+		// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
 		api.OnResult = localResultReporter(report)
 
 		// bundle 拉取（V1-10①）：mynetd 负责**拉并落盘**，执行器 mynet 只负责读。
@@ -290,9 +290,9 @@ func runAgent(ctx context.Context) {
 			dispatcher.setBundleSyncer(func(ctx context.Context) (string, error) {
 				return store.Sync(ctx, client.fetchBundle)
 			})
-			// 启动即拉一次。否则新装节点要等 back 广播 bundle_changed 才有配置，
+			// 启动即拉一次。否则新装节点要等后端广播 bundle_changed 才有配置，
 			// 在那之前跑任何 refresh-* 都是「读 bundle 失败: no such file」。
-			// 放 goroutine：拉取失败不该拖住 daemon 启动（back 暂时不可达是常态）。
+			// 放 goroutine：拉取失败不该拖住 daemon 启动（后端暂时不可达是常态）。
 			bundlePullDone = make(chan struct{})
 			go func() {
 				defer close(bundlePullDone)
@@ -328,7 +328,7 @@ func runAgent(ctx context.Context) {
 			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
 				return commands.Run(execStd, req, nodeID)
 			},
-			// 每次连上（含重连）补拉一次 bundle：断线窗口里 back 推的事件不会补发，
+			// 每次连上（含重连）补拉一次 bundle：断线窗口里后端推的事件不会补发，
 			// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
 			OnConnect: func(context.Context) { dispatcher.catchUpBundle() },
 			OnEvent:   dispatcher.Handle,
@@ -440,7 +440,7 @@ func mynetBin() string {
 	return name
 }
 
-// heartbeatLoop 组装心跳（`mynet metrics --json`）并上报 back。
+// heartbeatLoop 组装心跳（`mynet metrics --json`）并上报后端。
 //
 // ⚠️ 采集在**执行器**里（mynet 二进制），这里只 exec + 组装 + 发送 ——
 // AGENTS.md §1.2：mynetd 是纯通信层，不含探测解析。
@@ -501,7 +501,7 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 	}
 
 	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在
-	// mynetd 里只对应 WS 上一个 `{"t":"ping"}`，back 的 monitor/heartbeat
+	// mynetd 里只对应 WS 上一个 `{"t":"ping"}`，后端的 monitor/heartbeat
 	// 从来没收到过真指标。
 	nodeID, report := h.getReporter()
 	if report == nil {

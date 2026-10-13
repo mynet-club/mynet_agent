@@ -51,7 +51,7 @@ ERROR transport 启动失败 err="transport: NodeID 必填（寻址用）"
 
 根因链：
 - `mynet/cmd_config_face.go` 的 keys set / keys generate 调 `WriteNodeKeys(..., "")` 硬写空串；
-- `mynet/setup_v2.go` 收了 `--back-pub` 却 `_ = backPub` 丢弃（node claim 取了 back 公钥传进来也白传）；
+- `mynet/setup_v2.go` 收了 `--back-pub` 却 `_ = backPub` 丢弃（node claim 取了后端公钥传进来也白传）；
 - `cmd/mynetd/nodeface.go` loadNodeIdentity 把 back_pub_hex 当硬依赖 → 节点面永不装配 → WS transport 不连 → darwin 上「mynetd 生命周期拉起 gnb」整条自动化死掉（此前隧道 RUNNING 是 CLI/手工 start 维持的假象）。
 
 修复（契约式：判定成立才带内容）：

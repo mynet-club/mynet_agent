@@ -10,7 +10,7 @@ import (
 	"filippo.io/edwards25519"
 )
 
-// 节点面 DH 的**跨端等价性**：back（PHP）对 algorithm=ed25519 会先做
+// 节点面 DH 的**跨端等价性**：后端（PHP）对 algorithm=ed25519 会先做
 // edwards→montgomery 再 scalarmult，而 agent（Go）直接拿 GNB 私钥的前 32 字节做 X25519。
 // 两条路必须算出同一个 shared，否则症状是「节点面全 401」而不是「密钥不对」。
 //
@@ -39,7 +39,7 @@ func TestGNBPrivateKeyScalarMatchesEdwardsToMontgomeryOfPublicKey(t *testing.T) 
 		t.Fatalf("VerifyGNBKeyPair = %v, %v", ok, err)
 	}
 
-	// 左：edwards→montgomery（back 侧 edwardsToMontgomeryBin 做的事）
+	// 左：edwards→montgomery（后端侧 edwardsToMontgomeryBin 做的事）
 	pubBytes, err := hex.DecodeString(pubHex)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestNewNodeFaceSignerAcceptsGNBLayout(t *testing.T) {
 		t.Fatalf("128-hex 的 GNB 私钥被拒了: %v", err)
 	}
 
-	// back 侧会算的那一份：scalarmult(back_priv, edwards→montgomery(node_pub))
+	// 后端侧会算的那一份：scalarmult(back_priv, edwards→montgomery(node_pub))
 	_, nodePubHex := kp.ToHex()
 	nodePub, _ := hex.DecodeString(nodePubHex)
 	edPt, err := (&edwards25519.Point{}).SetBytes(nodePub)
@@ -105,7 +105,7 @@ func TestNewNodeFaceSignerAcceptsGNBLayout(t *testing.T) {
 	}
 
 	if !bytes.Equal(s.Shared(), want) {
-		t.Errorf("两端 shared 不一致 —— 节点面必然 401\n  agent: %x\n  back : %x", s.Shared(), want)
+		t.Errorf("两端 shared 不一致 —— 节点面必然 401\n  agent: %x\n  后端 : %x", s.Shared(), want)
 	}
 
 	// 签名/验签也要能用同一份 shared 走通

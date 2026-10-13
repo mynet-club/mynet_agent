@@ -126,7 +126,7 @@ func TestBundleSaveRefusesGarbageAndKeepsGoodCopy(t *testing.T) {
 		name string
 		body []byte
 	}{
-		{"back 的业务错误体", []byte(`{"success":false,"error":"bundle 获取失败"}`)},
+		{"后端的业务错误体", []byte(`{"success":false,"error":"bundle 获取失败"}`)},
 		{"relay/nginx 的 HTML 错误页", []byte(`<html><head><title>502 Bad Gateway</title></head></html>`)},
 		{"空体", []byte(``)},
 		{"截断的 JSON", validEnvelope(t, "gen-x")[:40]},
@@ -280,7 +280,7 @@ func TestFetchBundleSignsPathAndForwardsConditional(t *testing.T) {
 	}
 	// GET 无体，签的必须是空体的 sha256
 	if !ident.signer.Verify(gotMethod, gotPath, gotTS, "", gotSig) {
-		t.Error("用空体验签失败 —— 签名口径不对，back 侧会 401")
+		t.Error("用空体验签失败 —— 签名口径不对，后端侧会 401")
 	}
 	if _, err := domain.DecodeBundleEnvelope(body); err != nil {
 		t.Errorf("响应体解不开: %v", err)
@@ -398,7 +398,7 @@ func TestBundleChangedSkipsRefreshWhenSyncFails(t *testing.T) {
 }
 
 // 未装配（没配 gateway / 无节点身份）时必须**说清缺什么**，
-// 而不是静默忽略 —— 静默的症状是「back 改了配置但节点毫无反应」。
+// 而不是静默忽略 —— 静默的症状是「后端改了配置但节点毫无反应」。
 func TestBundleChangedWithoutSyncerLogsWhatIsMissing(t *testing.T) {
 	ex := &recordingExec{}
 	sink := &logSink{}
@@ -414,7 +414,7 @@ func TestBundleChangedWithoutSyncerLogsWhatIsMissing(t *testing.T) {
 	}
 }
 
-// route_changed 不依赖 back 下发的配置包，**不该**触发拉取。
+// route_changed 不依赖后端下发的配置包，**不该**触发拉取。
 func TestRouteChangedDoesNotPullBundle(t *testing.T) {
 	ex := &recordingExec{}
 	sink := &logSink{}
