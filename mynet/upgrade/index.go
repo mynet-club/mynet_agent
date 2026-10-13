@@ -222,12 +222,21 @@ func (c *indexClient) fetchManifest(comp Component, manifestURL string) ([]Artif
 			if arch != "" {
 				platform = a.OS + "/" + arch
 			}
+			kind := ""
+			switch strings.ToLower(a.Ext) {
+			case "exe", "dmg", "pkg", "ipk":
+				kind = "installer"
+			case "zip", "tgz", "tar.gz":
+				kind = "archive"
+			}
 			out = append(out, Artifact{
 				Component: comp,
 				Version:   version,
 				URL:       a.URL,
 				Checksum:  normalizeChecksum(a.SHA256),
 				Platform:  platform,
+				Ext:       strings.ToLower(a.Ext),
+				Kind:      kind,
 			})
 		}
 	}

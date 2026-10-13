@@ -84,21 +84,26 @@ func cmdUpdate(args []string) int {
 // 版本比较必须按语义而非字典序：字典序下 "0.10.0" < "0.9.0"，
 // 会把更旧的版本当成「最新」——症状是升级后版本号变小，且不报错。
 func pickLatestMynet(all []upgrade.Artifact) *upgrade.Artifact {
-	return pickLatestMynetForPlatform(all, runtime.GOOS, runtime.GOARCH)
+	// G4-C / CPI-76：必须用 HostPlatform（OpenWrt=linux+/etc/openwrt_release），
+	// 不能只看 runtime.GOOS —— 否则 OpenWrt 上恒选 linux 裸包路径。
+	return pickLatestMynetForPlatform(all, upgrade.HostPlatform())
 }
 
-func pickLatestMynetForPlatform(all []upgrade.Artifact, goos, goarch string) *upgrade.Artifact {
-	if goarch == "mipsle" {
-		goarch = "mipsel"
-	}
-	platform := goos + "/" + goarch
+// pickLatestMynetForPlatform 自更新只取 **archive**（zip/tgz），
+// 不取 installer（exe/dmg/pkg/ipk 是装机件，不能拿来原地替换）。
+// platform 形如 "windows/amd64"、"openwrt/mipsel"。
+func pickLatestMynetForPlatform(all []upgrade.Artifact, platform string) *upgrade.Artifact {
 	var best *upgrade.Artifact
 	for i := range all {
-		if all[i].Component != upgrade.ComponentMynet || all[i].Platform != platform {
+		a := &all[i]
+		if a.Component != upgrade.ComponentMynet || a.Platform != platform {
 			continue
 		}
-		if best == nil || upgrade.CompareVersions(all[i].Version, best.Version) > 0 {
-			best = &all[i]
+		// 显式 kind 优先；无 kind 时按扩展名判断；Ext/Kind 皆空 = 旧索引，视为可自更新
+		if a.Kind == "archive" || (a.Kind == "" && (a.IsArchive() || (a.Ext == "" && !a.IsInstaller()))) {
+			if best == nil || upgrade.CompareVersions(a.Version, best.Version) > 0 {
+				best = a
+			}
 		}
 	}
 	return best

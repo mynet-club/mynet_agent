@@ -32,6 +32,21 @@ type Artifact struct {
 	URL       string    `json:"url"`
 	Checksum  string    `json:"checksum,omitempty"`
 	Platform  string    `json:"platform"`
+	// Ext 文件扩展（zip/tgz/exe/ipk…）；Kind = installer|archive（G4-D4-B）
+	Ext  string `json:"ext,omitempty"`
+	Kind string `json:"kind,omitempty"`
+}
+
+// IsArchive 自更新归档（zip/tgz/tar.gz），不是装机安装包。
+func (a Artifact) IsArchive() bool {
+	e := strings.ToLower(a.Ext)
+	return e == "zip" || e == "tgz" || e == "tar.gz"
+}
+
+// IsInstaller 装机包（exe/dmg/pkg/ipk）。
+func (a Artifact) IsInstaller() bool {
+	e := strings.ToLower(a.Ext)
+	return e == "exe" || e == "dmg" || e == "pkg" || e == "ipk"
 }
 
 // Service 驱动域服务（与 CLI 共用）
