@@ -119,18 +119,6 @@ func (c *launchdController) runElevatedShell(shell string) error {
 	return nil
 }
 
-func shellJoin(args []string) string {
-	parts := make([]string, len(args))
-	for i, a := range args {
-		if strings.ContainsAny(a, " \t\"'") {
-			parts[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
-		} else {
-			parts[i] = a
-		}
-	}
-	return strings.Join(parts, " ")
-}
-
 func isNotLoaded(err error) bool {
 	if err == nil {
 		return true

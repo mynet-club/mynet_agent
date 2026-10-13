@@ -398,12 +398,6 @@ func runAgent(ctx context.Context) {
 	_ = api.Close()
 }
 
-func waitSignal() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	<-ch
-}
-
 // execMynet 命令分派：桌面 exec mynet <子命令>；OpenWrt 构建可换 lua -e。
 func execMynet(argv []string) (any, error) {
 	bin := mynetBin()

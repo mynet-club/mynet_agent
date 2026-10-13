@@ -359,13 +359,6 @@ func NodesDir() string {
 	return d
 }
 
-func dirExists(p string) bool {
-	if fi, err := os.Stat(p); err == nil {
-		return fi.IsDir()
-	}
-	return false
-}
-
 func fileExists(p string) bool {
 	if fi, err := os.Stat(p); err == nil {
 		return !fi.IsDir()

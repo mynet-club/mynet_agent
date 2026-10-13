@@ -210,7 +210,3 @@ func sanitizeValue(v any) any {
 
 	return v
 }
-
-func systemJSONPath() string {
-	return filepath.Join(os.Getenv("MYNET_HOME"), "var", "system.json")
-}
