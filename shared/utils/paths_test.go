@@ -3,6 +3,7 @@ package utils
 // 配置树 v2 路径：三分布局、租户/插件目录名防穿越。
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,5 +130,36 @@ func TestResolveKeysDirCrossModeFallback(t *testing.T) {
 	// local 档直接命中
 	if g := ResolveKeysDir(local, "8283289760467957"); g != want {
 		t.Fatalf("local 档应命中 conf/local/keys，得 %q", g)
+	}
+}
+
+// HomeSource 三态判据（C1-S3：原判据两分支同返回 "exe"，"cwd" 永远打不出）。
+// 与 GetMyNetHome 解析链一一对应：env > exe > cwd（"."）。
+func TestHomeSourceThreeStates(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		exePath string
+		exeErr  error
+		want    string
+	}{
+		{"env 优先", "/var/lib/mynet", "/x/bin/mynet", nil, "env"},
+		{"exe 可取（bin 上推布局）", "", "/x/bin/mynet", nil, "exe"},
+		{"exe 可取（exeDir 直用）", "", "/x/mynet", nil, "exe"},
+		{"exe 取不到回退 cwd", "", "", errors.New("no executable"), "cwd"},
+	}
+	for _, c := range cases {
+		if got := homeSourceFrom(c.env, c.exePath, c.exeErr); got != c.want {
+			t.Errorf("%s: homeSourceFrom()=%q，want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// HomeSource 集成：设了 MYNET_HOME 必报 env（无 env 的分支依赖进程环境，
+// 只锁 env 路径这一确定态）。
+func TestHomeSourceEnv(t *testing.T) {
+	t.Setenv(envHome, "/tmp/x")
+	if got := HomeSource(); got != "env" {
+		t.Fatalf("HomeSource()=%q，want env", got)
 	}
 }

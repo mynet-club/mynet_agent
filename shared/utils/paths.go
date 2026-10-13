@@ -60,17 +60,23 @@ func RequireMyNetHome() (string, error) {
 }
 
 // HomeSource 返回 home 的来源：env | exe | cwd（诊断用）。
+//
+// 判据与 GetMyNetHome 的解析链一一对应（C1-S3 修）：
+// env 非空 → "env"；能取到可执行路径 → "exe"（无论 bin 上推还是 exeDir，
+// 两者都由 exe 位置推出）；取不到 → "cwd"（GetMyNetHome 回退 "."）。
+// 此前是 `if base=="bin" { return "exe" }; return "exe"` —— 两分支同值的
+// 退化判据，且 "cwd" 永远打不出来。
 func HomeSource() string {
-	if os.Getenv(envHome) != "" {
+	exePath, exeErr := os.Executable()
+	return homeSourceFrom(os.Getenv(envHome), exePath, exeErr)
+}
+
+// homeSourceFrom 纯判据（可注入 exe 结果，便于测全三态）。
+func homeSourceFrom(envVal string, exePath string, exeErr error) string {
+	if envVal != "" {
 		return "env"
 	}
-	if exePath, err := os.Executable(); err == nil {
-		if realPath, err := filepath.EvalSymlinks(exePath); err == nil {
-			exePath = realPath
-		}
-		if filepath.Base(filepath.Dir(exePath)) == "bin" {
-			return "exe"
-		}
+	if exeErr == nil && exePath != "" {
 		return "exe"
 	}
 	return "cwd"
