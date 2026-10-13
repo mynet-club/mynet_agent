@@ -105,6 +105,9 @@ func Run(args []string) int {
 		return cmdNode(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "guest":
+		// G5.b：guest 路由写面归执行器（唯一 writer）
+		return cmdGuest(rest)
 	case "nodeface":
 		// G5：OpenWrt Lua 无 X25519，C-2 签名委托执行器
 		return cmdNodeFace(rest)
