@@ -13,7 +13,7 @@ func TestNodeFaceVectorLocked(t *testing.T) {
 	path := filepath.Join("testdata", "node_face_vectors.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Skip("vector file not found: " + path)
+		t.Fatalf("vector fixture missing (hard fail, do not skip): %s", path)
 	}
 	var v struct {
 		Cases []struct {
