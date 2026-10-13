@@ -9,7 +9,7 @@ import (
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
-	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/config" // GUARD-OK 组合根：MigrateLegacyModeFile
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 

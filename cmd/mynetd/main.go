@@ -21,13 +21,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mynet-club/mynet_agent/mynet"
+	creds "github.com/mynet-club/mynet_agent/shared/creds"
+	"github.com/mynet-club/mynet_agent/shared/proxysync"
 	"github.com/mynet-club/mynet_agent/mynetd"
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
 	"github.com/mynet-club/mynet_agent/mynetd/localapi"
 	"github.com/mynet-club/mynet_agent/mynetd/transport"
 	"github.com/mynet-club/mynet_agent/shared"
-	"github.com/mynet-club/mynet_agent/shared/config"
+	"github.com/mynet-club/mynet_agent/shared/config" // GUARD-OK 组合根：ProxyLoad/Save 注入源
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
 	"github.com/mynet-club/mynet_agent/shared/utils"
@@ -142,12 +143,12 @@ func runAgent(ctx context.Context) {
 	api.ProxyLoad = config.LoadProxyIntent
 	api.ProxySave = config.SaveProxyIntent
 	api.ProxySyncPlugin = func(p *domain.ProxyPolicy) error {
-		return mynet.SyncPluginProxyFromPolicy(p)
+		return proxysync.SyncPluginProxyFromPolicy(p)
 	}
 	// B2：会话落盘 / 设备指纹经注入，localapi 不 import mynet
-	api.DeviceFingerprint = mynet.DeviceFingerprint
+	api.DeviceFingerprint = creds.DeviceFingerprint
 	api.SaveLoginSession = func(sess localapi.LoginSession) error {
-		return mynet.SaveCredential(&mynet.Credential{
+		return creds.SaveCredential(&creds.Credential{
 			UserID:            sess.UserID,
 			UserEmail:         sess.UserEmail,
 			Token:             sess.Token,

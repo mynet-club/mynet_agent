@@ -283,21 +283,24 @@ case "$REPO_ID" in
     ;;
 esac
 
-# B2 mynetd 不得依赖系统能力或配置面（执行器架构：mynetd 纯通信）
-#    详见 AGENTS.md §1.2 —— 只扫 mynetd/ 的 **import 字符串**（注释里提到 detector 是允许的）
-#    系统能力 + 配置文件格式都在执行器；localapi 只做 HTTP 壳走 Ops。
-#    要求 import 引号，避免误伤注释里的包名。
-B2PAT='"[^"]*mynet/(detector|tools|apply|metrics|service|keys)|"[^"]*shared/config|gopsutil|shirou/gopsutil'
+# B2 mynetd/cmd/mynetd 不得依赖系统能力或配置面（执行器架构：mynetd 纯通信）
+#    详见 AGENTS.md §1.2 / spec/mynetd-ops-contract.md。
+#    范围：mynetd/** + cmd/mynetd/** 的 **import 字符串**（注释里提到包名允许）。
+#    禁：根 mynet 包、mynet/{detector,tools,apply,metrics,service,driver,upgrade}、
+#        shared/config、gopsutil。允许：mynet/keys、shared/creds（密钥/会话原语）。
+#    组合根 wiring 的残留 import 写 GUARD-OK <原因>（行级豁免，进审计日志）。
+#    ⚠️ 有意分叉：模板 B2 更窄；覆盖前先 diff，勿 cp 模板削掉本段。
+B2PAT='"[^"]*mynet_agent/mynet"|"[^"]*mynet/(detector|tools|apply|metrics|service|driver|upgrade)|"[^"]*shared/config|gopsutil|shirou/gopsutil'
 b2=0
 for f in $FILES; do
   case "$f" in
-    mynetd/*)
-      if added_in_file "$f" | grep -qE "$B2PAT"; then
+    mynetd/*|cmd/mynetd/*)
+      if added_in_file "$f" | grep -v 'GUARD-OK' | grep -qE "$B2PAT"; then
         bad "B2 mynetd 不得依赖系统能力/配置面（执行器架构）: $f"; b2=1
       fi ;;
   esac
 done
-[ "$b2" -eq 0 ] && ok "B2 mynetd 未依赖系统能力/配置面"
+[ "$b2" -eq 0 ] && ok "B2 mynetd/cmd/mynetd 未依赖系统能力/配置面"
 
 # B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归后端）—— 只扫 relaypolicy/
 B3PAT='Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature' # GUARD-OK 自检正则

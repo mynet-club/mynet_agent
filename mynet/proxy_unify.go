@@ -19,6 +19,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/config"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/proxysync"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
@@ -52,43 +53,9 @@ func EffectiveProxyPolicy() *domain.ProxyPolicy {
 }
 
 // SyncPluginProxyFromPolicy 把生效策略投影到 plugins/proxy.json（插件壳）。
-// 保持旧链（enrichIntentWithProxy / plugin apply）能读到同一开关与出口。
+// 实现在 shared/proxysync（G3：组合根可不经根 mynet 包注入）。
 func SyncPluginProxyFromPolicy(p *domain.ProxyPolicy) error {
-	if p == nil {
-		return nil
-	}
-	base, store, err := activePluginBase()
-	if err != nil {
-		return err
-	}
-	pc, err := loadPluginAt(base, domain.PluginNameProxy)
-	if err != nil {
-		def := domain.NewPluginProxy()
-		pc = &def
-	}
-	pc.Enabled = p.Enabled
-	raw, err := domain.DecodePluginProxy(pc)
-	if err != nil {
-		raw = &domain.PluginProxyConfig{}
-	}
-	// 出口列表：intent 有则以 intent 为准；intent 空则保留插件已有（避免 enable 清掉 exits）
-	if len(p.Exits) > 0 {
-		var exits []domain.ProxyExit
-		for _, e := range p.Exits {
-			if e.NodeID == "" {
-				continue
-			}
-			exits = append(exits, e)
-		}
-		raw.Exits = exits
-		raw.MaxExits = len(exits)
-	}
-	body, err := domain.EncodePluginProxyBody(raw)
-	if err != nil {
-		return err
-	}
-	pc.Config = body
-	return store.SavePlugin(base, pc)
+	return proxysync.SyncPluginProxyFromPolicy(p)
 }
 
 // SetProxyEnabled 合并写入：intent + 插件投影。
