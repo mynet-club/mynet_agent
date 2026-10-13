@@ -71,9 +71,12 @@ GO_LDFLAGS := -s -w \
 
 # 平台矩阵：platform:goos:goarch:ctlarch:tags
 #   platform = 产物名与 packaging/<platform>/INSTALL.md 的平台段（对齐 ctl PLATFORMS）；
+#     darwin 例外：安装文档归 mynet_desktop（H2），取 $(DESKTOP_INSTALL)；
 #   goos/goarch = 交叉编译目标；
 #   ctlarch  = ctl 侧 arch 名（Go mipsle → ctl mipsel）；
 #   tags     = 追加的 -tags（openwrt = 选 procd/UCI 后端），空表示无。
+#     ⚠️ tags 非空 = **瘦构建腿**（openwrt）：mynetd 只带 "$$tags"、**不带 embed** ——
+#     WebUI 不进包，UI 由 LuCI 托管（SSOT §1.9 / build_openwrt.yml 同口径）。
 #
 # ⚠️ Go 的 mipsle 在 ctl 侧叫 mipsel —— 产物名必须用 ctl 的叫法，
 #    否则 ctl 的 validateArch() 拒收、下载 404。
@@ -92,7 +95,12 @@ DIST_MATRIX := \
 
 # 打包器：darwin/windows 用 zip，其余 tgz（对齐 ctl PLATFORMS 的 ext）
 PACK = sh scripts/pack.sh
+# ⚠️ webui.html 不进产物（G1-c 删除）：WebUI 由 embed 烘进 mynetd（webui_fs_embed.go），
+#    拷贝零消费者（mynet/upgrade/install.go:34 不替换、desktop 侧 if -f / /nonfatal 容缺），
+#    与安装文档「WebUI 已 embed，无 webui.html」口径一致（C1-S3）。
 GUI_DIST ?= ../mynet_gui/dist/spa
+# darwin 安装文档来源（旧 packaging/darwin 打包目录已随 H2 退役，文档归 mynet_desktop）
+DESKTOP_INSTALL ?= ../mynet_desktop/docs/INSTALL.md
 
 # ── R4-1 / V2-3 / V2-4 产物 ─────────────────────────────────
 #
@@ -128,7 +136,7 @@ dist:
 		ext=""; if [ "$$goos" = windows ]; then ext=".exe"; fi; \
 		if [ -n "$$tags" ]; then \
 		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags "$$tags" -o $$out/mynet$$ext ./cmd/mynet; \
-		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags "$$tags embed" -o $$out/mynetd$$ext ./cmd/mynetd; \
+		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags "$$tags" -o $$out/mynetd$$ext ./cmd/mynetd; \
 		else \
 		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet$$ext ./cmd/mynet; \
 		  GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -tags embed -o $$out/mynetd$$ext ./cmd/mynetd; \
@@ -145,11 +153,12 @@ dist:
 		    GOOS=$$goos GOARCH=$$goarch CGO_ENABLED=0 go build -ldflags "$(GO_LDFLAGS)" -o $$out/mynet_tray$$ext ./cmd/mynet_tray; \
 		    ;; \
 		esac; \
-		if [ "$$platform" != openwrt ]; then cp mynetd/localapi/webui/index.html $$out/webui.html; fi; \
-		if [ -f packaging/$$platform/INSTALL.md ]; then \
-		  cp packaging/$$platform/INSTALL.md $$out/INSTALL.md; \
+		doc=packaging/$$platform/INSTALL.md; \
+		if [ "$$platform" = darwin ]; then doc=$(DESKTOP_INSTALL); fi; \
+		if [ -f "$$doc" ]; then \
+		  cp "$$doc" $$out/INSTALL.md; \
 		else \
-		  echo "  ✗ 缺 packaging/$$platform/INSTALL.md —— 分平台安装文档是产物一部分"; exit 1; \
+		  echo "  ✗ 缺 $$doc —— 分平台安装文档是产物一部分（darwin 归 mynet_desktop/docs/INSTALL.md）"; exit 1; \
 		fi; \
 		$(PACK) $$out; \
 		echo "  $$name"; \

@@ -67,6 +67,12 @@ jobs:
             ctlarch: amd64
     steps:
       - uses: actions/checkout@v4
+      # darwin 的安装文档归 mynet_desktop（旧 packaging/darwin 已退役）—— Pack 步取其 docs/INSTALL.md
+      - uses: actions/checkout@v4
+        if: matrix.goos == 'darwin'
+        with:
+          repository: mynet-club/mynet_desktop
+          path: mynet_desktop
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -142,11 +148,14 @@ jobs:
           set -euo pipefail
           NAME="mynet_agent_${{ matrix.goos }}_${{ matrix.ctlarch }}_${VER}"
           OUT="dist/${NAME}"
-          # 分平台 INSTALL.md 是产物一部分（pack.sh 强制校验）
-          if [ -f "packaging/${GOOS}/INSTALL.md" ]; then
-            cp "packaging/${GOOS}/INSTALL.md" "$OUT/INSTALL.md"
+          # 分平台 INSTALL.md 是产物一部分（pack.sh 强制校验）。
+          # darwin 的安装文档归 mynet_desktop（旧打包目录已退役）——上一步已 checkout。
+          DOC="packaging/${GOOS}/INSTALL.md"
+          if [ "$GOOS" = "darwin" ]; then DOC="mynet_desktop/docs/INSTALL.md"; fi
+          if [ -f "$DOC" ]; then
+            cp "$DOC" "$OUT/INSTALL.md"
           else
-            echo "ERROR: 缺 packaging/${GOOS}/INSTALL.md" >&2
+            echo "ERROR: 缺 $DOC" >&2
             exit 1
           fi
           if [ "${{ matrix.goos }}" = "darwin" ] || [ "${{ matrix.goos }}" = "windows" ]; then

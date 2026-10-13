@@ -90,7 +90,7 @@ mkdir -p "$STAGE/$PKG"
 cp "$AGENT_DIST"/mynet "$AGENT_DIST"/mynetd "$STAGE/$PKG/" 2>/dev/null || {
     cp "$AGENT_DIST"/mynet.exe "$AGENT_DIST"/mynetd.exe "$STAGE/$PKG/" 2>/dev/null || true
 }
-cp "$AGENT_DIST"/webui.html "$AGENT_DIST"/INSTALL.md "$STAGE/$PKG/" 2>/dev/null || true
+cp "$AGENT_DIST"/INSTALL.md "$STAGE/$PKG/" 2>/dev/null || true
 for prog in gnb gnb_ctl gnb_es gnb_crypto; do
     cp "$GNB_DIST/$prog" "$GNB_DIST/$prog.exe" "$STAGE/$PKG/" 2>/dev/null || true
 done
