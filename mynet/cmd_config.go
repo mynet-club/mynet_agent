@@ -59,7 +59,7 @@ var backupSkip = []string{
 
 func cmdConfig(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet config export | import | use | status | tenants | keys | plugins | pull | sync | parity")
+		fmt.Fprintln(os.Stderr, "用法: mynet config export | import | use | status | tenants | keys | plugins | pull | sync | parity | migrate-layout")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "配置同步语义（U2）:")
 		fmt.Fprintln(os.Stderr, "  pull   从后端下载 bundle + 投影 driver/**（不装 OS 路由）")
@@ -95,6 +95,9 @@ func cmdConfig(args []string) int {
 			}
 		}
 		return configAdopt(dry)
+	case "migrate-layout":
+		// D4-E：旧多树 → 节点唯一存放位 conf/<form>/<nodeId>/（一次性，幂等）
+		return cmdConfigMigrateLayout(args[1:])
 	case "tenants":
 		return configFaceTenants()
 	case "keys":
