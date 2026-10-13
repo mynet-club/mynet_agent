@@ -95,3 +95,32 @@ func TestApplyFromActiveDryWritesNothing(t *testing.T) {
 		t.Fatal("dry-run 不应落盘")
 	}
 }
+
+// last-good 快照自清（附带小修）：只留最近 keep 份，更旧的连同密钥副本一起删。
+// 无界增长实测 12 天 55 份 —— 每份都是一整套私钥。
+func TestPruneLastGoodKeepsRecentOnly(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("MYNET_HOME", root)
+	lg := filepath.Join(root, "state", "last-good")
+	for _, ts := range []string{"20260101T000000Z", "20260102T000000Z", "20260103T000000Z", "20260104T000000Z", "20260105T000000Z"} {
+		if err := os.MkdirAll(filepath.Join(lg, ts), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(lg, ts, "node.conf"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pruneLastGood(3)
+	ents, err := os.ReadDir(lg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	want := []string{"20260103T000000Z", "20260104T000000Z", "20260105T000000Z"}
+	if len(names) != 3 || names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Fatalf("只应留最近 3 份: %v", names)
+	}
+}

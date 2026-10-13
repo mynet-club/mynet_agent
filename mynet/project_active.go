@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -270,15 +271,43 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 	if err := writeProxyProjection(nodeID, pp, false); err != nil {
 		return err
 	}
-	// last-good 快照
+	// last-good 快照（只留最近 N 份 —— 无界增长会把私钥复制出几十份，实测 12 天 55 份）
 	snap := filepath.Join(utils.LastGoodDir(), time.Now().UTC().Format("20060102T150405Z"))
 	if err := utils.SafeCreateDir(snap, 0o700); err == nil {
 		_ = copyDirFiles(d.ConfDir, snap)
 	}
+	pruneLastGood(lastGoodKeep)
 	fmt.Printf("✓ driver 投影 %s\n", d.ConfDir)
 	return nil
 }
 
+// lastGoodKeep state/last-good 快照保留份数（含密钥，宁少勿多；够回滚一次就行）。
+const lastGoodKeep = 3
+
+// pruneLastGood 只留最近 keep 份快照，更旧的整个删掉（含其中的密钥副本）。
+// 快照目录名是 UTC 时间戳（20060102T150405Z），字典序即时间序。
+func pruneLastGood(keep int) {
+	if keep < 1 {
+		return
+	}
+	ents, err := os.ReadDir(utils.LastGoodDir())
+	if err != nil {
+		return
+	}
+	var names []string
+	for _, e := range ents {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) <= keep {
+		return
+	}
+	sort.Strings(names)
+	for _, n := range names[:len(names)-keep] {
+		_ = os.RemoveAll(filepath.Join(utils.LastGoodDir(), n))
+	}
+}
 
 // writeWgProjection — wireguard 投影（A-5）。
 // conf 落**节点唯一存放位** conf/<form>/<nodeId>/wg.conf（D4-E；驱动原生格式，
