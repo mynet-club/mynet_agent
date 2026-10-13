@@ -9,12 +9,14 @@ package mynet
 
 import (
 	"encoding/hex"
+	"path/filepath"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func cmdNodeFace(args []string) int {
@@ -58,9 +60,19 @@ func nodeFaceSign(args []string) int {
 		return 1
 	}
 
+	// 优先 Active(mode) 的 keys；无 mode/无 node-id 时扫 nodes/*/keys（Mac/首次 setup 实测）
+	nodeIDHint := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--node-id" && i+1 < len(args) {
+			nodeIDHint, i = args[i+1], i+1
+		}
+	}
 	keysDir, _, err := configFaceKeysDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "定位 keys 目录失败:", err)
+	if err != nil || keysDir == "" || !fileExists(filepath.Join(keysDir, "node.private")) {
+		keysDir = findKeysDirWithPrivate(nodeIDHint)
+	}
+	if keysDir == "" {
+		fmt.Fprintln(os.Stderr, "定位 keys 目录失败（无 node.private）")
 		return 1
 	}
 	privHex, err := keys.LoadNodePrivateKey(keysDir)
@@ -88,4 +100,34 @@ func nodeFaceSign(args []string) int {
 	sig := s.Sign(method, path, ts, string(body))
 	fmt.Println(sig)
 	return 0
+}
+
+// findKeysDirWithPrivate 扫 space/nodes/*/keys/node.private（单节点时直接可用）。
+func findKeysDirWithPrivate(nodeIDHint string) string {
+	spaces := []string{
+		filepath.Join(utils.GetMyNetHome(), "conf", "local"),
+		filepath.Join(utils.GetMyNetHome(), "conf", "online"),
+	}
+	for _, sp := range spaces {
+		if nodeIDHint != "" {
+			p := filepath.Join(sp, "nodes", nodeIDHint, "keys")
+			if fileExists(filepath.Join(p, "node.private")) {
+				return p
+			}
+		}
+		ents, err := os.ReadDir(filepath.Join(sp, "nodes"))
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if !e.IsDir() {
+				continue
+			}
+			p := filepath.Join(sp, "nodes", e.Name(), "keys")
+			if fileExists(filepath.Join(p, "node.private")) {
+				return p
+			}
+		}
+	}
+	return ""
 }
