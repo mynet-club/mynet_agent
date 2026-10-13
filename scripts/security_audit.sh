@@ -3,7 +3,7 @@
 set -e
 AGENT=$(cd "$(dirname "$0")/.." && pwd)
 CLUB=$(cd "$AGENT/.." && pwd)
-BACK="$CLUB/mynet_back"
+BACK="$CLUB/mynet_api"
 fail=0
 ok()  { echo "  ✓ $1"; }
 bad() { echo "  ✗ $1"; fail=1; }
@@ -43,7 +43,7 @@ grep -q 'X-Node-Verified' "$GW" && ok "C-4 置位信号" || bad "缺 X-Node-Veri
 
 echo "== F guard =="
 (cd "$AGENT" && sh .githooks/guard.sh >/dev/null) && ok "agent guard" || bad "agent guard"
-(cd "$BACK" && sh .githooks/guard.sh >/dev/null) && ok "back guard" || bad "back guard"
+(cd "$BACK" && sh .githooks/guard.sh >/dev/null) && ok "后端 guard" || bad "后端 guard"
 
 echo "== G 业务模型无驱动术语 =="
 if grep -RInE 'AllowedIPs|node\.conf' "$BACK/app/Modules/VPN/Models" 2>/dev/null | grep -q .; then
