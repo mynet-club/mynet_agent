@@ -2,10 +2,15 @@ package main
 
 // 启停 —— 进程生命周期归**平台服务管理器**，不按名字杀进程。
 //
-//	//	mynetd → launchd club.mynet.mynetd（macOS）
+//	//	mynetd → launchd com.mynet.mynetd（macOS）
 //	//	         systemctl mynetd（Linux）
-//	//	         schtasks MyNetd（Windows）
+//	//	         SCM 服务 mynetd（Windows）
 //	//	gnb    → 有 unit 用 unit；无 unit 用 <conf>/gnb.pid 发 SIGTERM
+//
+// ⚠️ 启停目标 = install 的**注册名**（lifecycle-contract §3 服务名矩阵），
+// 标识收敛在 shared/utils/service_names.go。此前两侧各写各的字面量，
+// 托盘打的是 install 从不注册的标识（club.mynet.mynetd / schtasks MyNetd），
+// 启停等于摆设（C1-S3）。
 //
 // AGENTS.md §3：多实例可同名并存，**禁 pkill / killall / taskkill /im**。
 // 「停止异常」多半来自按名字杀失败或误伤 —— 这里只碰**本实例**的 unit 与 pid 文件。
@@ -32,20 +37,30 @@ type Controller interface {
 
 // NewController 按平台选实现。gnbConf 为本实例 gnb 的 conf 目录（读 gnb.pid）。
 func NewController(override string) Controller {
+	return newController(runtime.GOOS, override)
+}
+
+// newController 平台入口与实现分离，测试可对每个 GOOS 断言
+// 「托盘启停目标 == install 注册名」（见 control_test.go）。
+func newController(goos, override string) Controller {
 	home := utils.GetMyNetHome()
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		return &launchdController{
-			label:   "club.mynet.mynetd",
+			label:   utils.LaunchdLabelMynetd,
 			home:    home,
 			gnbConf: defaultGnbConf(home),
 		}
 	case "windows":
-		return &taskController{task: "MyNetd", home: home, gnbConf: defaultGnbConf(home)}
+		return &scmController{
+			service: utils.ServiceNameMynetd,
+			home:    home,
+			gnbConf: defaultGnbConf(home),
+		}
 	default:
 		return &systemdController{
-			unit:     "mynetd",
-			gnbUnit:  "mynet_gnb",
+			unit:     utils.ServiceNameMynetd,
+			gnbUnit:  utils.ServiceNameGNB,
 			home:     home,
 			gnbConf:  defaultGnbConf(home),
 			fallback: override,
@@ -158,25 +173,32 @@ func (c *systemdController) Stop() error {
 	return stopGnbByPidFile(c.gnbConf)
 }
 
-// ── Windows: 计划任务 ────────────────────────────────────────
+// ── Windows: SCM（install 注册的唯一常驻机制，lifecycle-contract §3）──
+//
+// 旧实现打 `schtasks /run MyNetd` —— install 早已改 SCM 注册 mynetd 并把
+// schtasks mynetd/mynet-gnb 当旧物删除（cmd_install_win.go），托盘启停
+// 打在一个从不注册的计划任务上，按钮是摆设（C1-S3 / CPI-73·74）。
 
-type taskController struct {
-	task    string
+type scmController struct {
+	service string
 	home    string
 	gnbConf string
 }
 
-func (c *taskController) Describe() string { return "schtasks/" + c.task }
+func (c *scmController) Describe() string { return "scm/" + c.service }
 
-func (c *taskController) Start() error {
-	if err := runOK("schtasks", "/run", "/tn", c.task); err != nil {
-		return fmt.Errorf("schtasks /run %s: %w（任务未注册？先跑安装器）", c.task, err)
+func (c *scmController) Start() error {
+	if err := runOK("sc.exe", "start", c.service); err != nil {
+		return fmt.Errorf("sc start %s: %w（服务未注册？先跑 mynet install）", c.service, err)
 	}
 	return nil
 }
 
-func (c *taskController) Stop() error {
-	// 只停**隧道**（VPNDriver.Stop），不停 MyNetd 计划任务 —— 与 mac 对齐
+func (c *scmController) Stop() error {
+	// 与 mac/linux 一致：停托管服务 + 按 pid 文件停 gnb
+	if err := runOK("sc.exe", "stop", c.service); err != nil && !isNotLoaded(err) {
+		return fmt.Errorf("sc stop %s: %w（需管理员）", c.service, err)
+	}
 	return stopGnbByPidFile(c.gnbConf)
 }
 

@@ -32,7 +32,8 @@ func tryRunAsWindowsService() bool {
 		return false
 	}
 	loadServiceEnv()
-	svc.Run("mynetd", &winService{})
+	// 服务名 = install 注册名（shared SSOT，C1-S3 两侧一致）
+	svc.Run(utils.ServiceNameMynetd, &winService{})
 
 	return true
 }

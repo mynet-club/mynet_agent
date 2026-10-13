@@ -13,9 +13,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
-const trayLabel = "club.mynet.tray"
+// trayLabel 与 install 写入的 LaunchAgent label 同名（shared SSOT）——
+// 同一 gui 域同名 Label 只会有一份生效，不会双托盘。
+const trayLabel = utils.LaunchdLabelTray
 
 // NewAutoStarter 按平台返回。
 func NewAutoStarter() AutoStarter {

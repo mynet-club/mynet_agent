@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // macOS 用 launchd 装系统服务（P3）。
@@ -37,10 +39,14 @@ import (
 // LaunchdLabel LaunchDaemon 的 Label。gnb 的那条只在卸载时清理
 // （旧版装过），不再写入。LabelTray 与托盘自带 autostart 同名 ——
 // 同一 gui 域里同名 Label 只会有一份生效，不会双托盘。
+//
+// ⚠️ 标识收敛在 shared/utils/service_names.go（与托盘共用 SSOT）：
+// install 注册什么，托盘就启停什么（C1-S3：两侧各写各的字面量时，
+// 托盘打的是 install 从不注册的 club.mynet.mynetd）。
 const (
-	LabelMynetd = "com.mynet.mynetd"
-	LabelGNB    = "com.mynet.gnb"
-	LabelTray   = "club.mynet.tray"
+	LabelMynetd = utils.LaunchdLabelMynetd
+	LabelGNB    = utils.LaunchdLabelGNB
+	LabelTray   = utils.LaunchdLabelTray
 )
 
 // launchdPlistDir root 专属目录；launchAgentsDir 是全体登录用户的

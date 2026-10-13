@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // installWindows — Windows **服务安装**（V5-2 / T5-1）。
@@ -62,7 +64,7 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 
 	// 1) 停掉可能在跑的 mynetd（服务安装要改 env/注册服务）
 	// taskkill 失败可忽略（可能本来就没在跑）
-	_ = execCommand("sc", "stop", "mynetd")
+	_ = execCommand("sc", "stop", utils.ServiceNameMynetd)
 
 	// 2) MYNET_HOME 目录
 	for _, sub := range []string{"conf", "var"} {
@@ -175,8 +177,8 @@ func openWebUIBestEffort() {
 // 环境变量由服务进程自己读 mynetd.env（cmd/mynetd/service_windows.go）。
 func registerWindowsService(home, exe string) int {
 	// 先清旧服务/计划任务，避免重名
-	_ = execCommand("sc.exe", "stop", "mynetd")
-	_ = execCommand("sc.exe", "delete", "mynetd")
+	_ = execCommand("sc.exe", "stop", utils.ServiceNameMynetd)
+	_ = execCommand("sc.exe", "delete", utils.ServiceNameMynetd)
 	_ = execCommand("schtasks", "/Delete", "/F", "/TN", "mynetd")
 	_ = execCommand("schtasks", "/Delete", "/F", "/TN", "mynet-gnb")
 
@@ -184,7 +186,7 @@ func registerWindowsService(home, exe string) int {
 	if strings.ContainsAny(exe, " \t") {
 		binPath = `"` + exe + `"`
 	}
-	out, err := exec.Command("sc.exe", "create", "mynetd",
+	out, err := exec.Command("sc.exe", "create", utils.ServiceNameMynetd,
 		"start=", "auto",
 		"binPath=", binPath,
 		"DisplayName=", "MyNet Daemon",
@@ -194,12 +196,12 @@ func registerWindowsService(home, exe string) int {
 		return 1
 	}
 	// 失败自动重启（1s/5s/30s），与 systemd Restart=always 同等
-	_ = exec.Command("sc.exe", "failure", "mynetd",
+	_ = exec.Command("sc.exe", "failure", utils.ServiceNameMynetd,
 		"reset=", "86400",
 		"actions=", "restart/1000/restart/5000/restart/30000",
 	).Run()
 
-	if out, err := exec.Command("sc.exe", "start", "mynetd").CombinedOutput(); err != nil {
+	if out, err := exec.Command("sc.exe", "start", utils.ServiceNameMynetd).CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "sc start mynetd: %v\n%s\n", err, out)
 		fmt.Println("  服务已注册但启动失败 —— 查事件查看器或 `sc query mynetd`")
 		return 1
@@ -213,9 +215,9 @@ func registerWindowsService(home, exe string) int {
 // uninstallWindowsService 停删 mynetd 服务、清托盘自启与 env 文件。
 // home 下的 conf/var 是业务数据，与其它平台口径一致：**不动**。
 func uninstallWindowsService(home string) error {
-	_ = execCommand("sc.exe", "stop", "mynetd")
+	_ = execCommand("sc.exe", "stop", utils.ServiceNameMynetd)
 	var firstErr error
-	if out, err := exec.Command("sc.exe", "delete", "mynetd").CombinedOutput(); err != nil {
+	if out, err := exec.Command("sc.exe", "delete", utils.ServiceNameMynetd).CombinedOutput(); err != nil {
 		// 服务本就不存在（从没 enable 过）不算错；其余报错留给上层打警告
 		if !strings.Contains(string(out), "1060") { // ERROR_SERVICE_DOES_NOT_EXIST
 			firstErr = fmt.Errorf("sc delete mynetd: %v %s", err, strings.TrimSpace(string(out)))
