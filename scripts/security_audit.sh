@@ -8,6 +8,16 @@ fail=0
 ok()  { echo "  ✓ $1"; }
 bad() { echo "  ✗ $1"; fail=1; }
 
+# C1-09：缺仓/缺关键文件必须**硬失败**，不能 grep 空当通过（假绿）。
+for req in "$BACK" "$CLUB/mynet_web" "$BACK/app/Modules/VPN/Models/NodeKey.php" \
+           "$AGENT/mynetd/localapi/server.go" "$AGENT/gateway/server.go"; do
+  if [ ! -e "$req" ]; then
+    echo "  ✗ 缺必需路径（审计不得假绿）: $req"
+    echo "SECURITY AUDIT FAIL"
+    exit 1
+  fi
+done
+
 echo "== A 凭据 =="
 if grep -rn 'Lyt@' "$AGENT" "$BACK" "$CLUB/mynet_web" 2>/dev/null | grep -v vendor | grep -v node_modules | grep -v .git | grep -q .; then
   bad "明文密码残留"
