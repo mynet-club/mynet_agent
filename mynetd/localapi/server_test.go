@@ -11,7 +11,11 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	return NewServer(Config{Listen: "127.0.0.1:0", AllowedHosts: nil})
+	s := NewServer(Config{Listen: "127.0.0.1:0", AllowedHosts: nil})
+	// G3：凭证/指纹经注入（组合根在 cmd/mynetd）；测试给假实现
+	s.SaveLoginSession = func(sess LoginSession) error { return nil }
+	s.DeviceFingerprint = func() string { return "test-fp" }
+	return s
 }
 
 func TestD1_CookieIsHttpOnlyAndSameSiteStrict(t *testing.T) {

@@ -112,10 +112,14 @@ func Run(args []string) int {
 		return cmdSubject(rest)
 	case "route":
 		// route doctor —— 连通性机测子集（N4）
+		// route exists —— G3：OS 路由存在性（mynetd 经 Ops，不自己 exec ip/route）
 		if len(rest) > 0 && rest[0] == "doctor" {
 			return cmdRouteDoctor(rest[1:])
 		}
-		fmt.Fprintln(os.Stderr, "用法: mynet route doctor [--json] [--peer VIP]...")
+		if len(rest) > 0 && rest[0] == "exists" {
+			return cmdRouteExists(rest[1:])
+		}
+		fmt.Fprintln(os.Stderr, "用法: mynet route doctor [--json] [--peer VIP]... | mynet route exists --dest CIDR | --host IP")
 		return 2
 	case "firewall":
 		// firewall doctor —— 两层检查：云侧清单 + 机内 nft/iptables（N5）

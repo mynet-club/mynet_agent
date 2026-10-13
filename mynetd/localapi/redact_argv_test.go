@@ -72,17 +72,14 @@ func TestSanitizeWizardOutMasksArgvSecrets(t *testing.T) {
 	}
 }
 
-// 失败路径（dispatch 的 500 响应）不得回显 argv 私密值 —— C1-S1 明列的洞。
-func TestDispatchFailureMasksArgvSecrets(t *testing.T) {
+// 秘密直传 --private 被拒绝（400），响应不得回显值 —— S1：
+// 进 ps 靠**不接受直传**；事后遮蔽是第二道。
+func TestDispatchRejectsSecretArgvAndDoesNotLeak(t *testing.T) {
 	secret := strings.Repeat("de", 8) // 非凭据，纯测试值（避免 A1 误报）
 	s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
 	s.Ops = func(argv []string) (any, error) {
-		return map[string]any{
-			"argv":   argv,
-			"stdout": "",
-			"stderr": "boom",
-			"error":  "exit status 1",
-		}, errors.New("exit status 1")
+		t.Fatal("秘密直传不应到达 Ops")
+		return nil, nil
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/command",
@@ -90,22 +87,48 @@ func TestDispatchFailureMasksArgvSecrets(t *testing.T) {
 	req.Host = "127.0.0.1:8096"
 	rec := httptest.NewRecorder()
 	s.mux.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("秘密直传应 400: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("拒绝响应回显了 argv 私密值: %s", rec.Body.String())
+	}
+}
+
+// Ops 失败（500）时响应走 sanitize —— 第二道防线（PAT 形状等）。
+func TestDispatchFailureMasksArgvSecrets(t *testing.T) {
+	// GUARD-OK 测试哨兵：PAT 形状，验证失败响应也遮，不是真凭据
+	secret := "ghp_" + strings.Repeat("de", 8)
+	s := NewServer(Config{Listen: "127.0.0.1:0", Token: "t"})
+	s.Ops = func(argv []string) (any, error) {
+		// 失败信封里的 argv 带秘密 flag —— redactArgvAny 必须遮
+		return map[string]any{
+			"argv":   []string{"probe", "--token", secret},
+			"stdout": "",
+			"stderr": "boom",
+			"error":  "exit status 1",
+		}, errors.New("exit status 1")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/command",
+		strings.NewReader(`{"argv":["node-status","--json"]}`))
+	req.Host = "127.0.0.1:8096"
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, req)
 	if rec.Code != 500 {
 		t.Fatalf("失败应 500: %d %s", rec.Code, rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), secret) {
-		t.Fatalf("失败响应回显了 argv 私密值: %s", rec.Body.String())
+		t.Fatalf("失败响应回显了私密值: %s", rec.Body.String())
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	argv, _ := body["argv"].([]any)
-	if len(argv) == 0 {
-		t.Fatalf("应回 argv（遮蔽后）: %v", body)
-	}
-	last, _ := argv[len(argv)-1].(string)
-	if last != "********" {
-		t.Fatalf("argv 末值应被遮蔽: %q", argv)
+	if argv, ok := body["argv"].([]any); ok && len(argv) > 0 {
+		last, _ := argv[len(argv)-1].(string)
+		if last == secret {
+			t.Fatalf("失败 argv 末值未遮蔽: %v", argv)
+		}
 	}
 }

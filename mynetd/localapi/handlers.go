@@ -48,6 +48,17 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]any{"success": false, "message": "subcommand not allowed"})
 		return
 	}
+	// S1 残余收口：秘密**不走 argv**（会进 ps 与响应回显面）。
+	// `--private`/`--password`/`--token`/`--secret` 类直传一律拒绝，
+	// 走 stdin 形态（--private-stdin / --password-stdin）或专用端点。
+	// 回显遮蔽（redactArgv）只是事后遮，进 ps 这条要靠不产生。
+	if bad := secretArgInArgv(body.Argv); bad != "" {
+		writeJSON(w, 400, map[string]any{
+			"success": false,
+			"message": "秘密不走 argv（会进 ps）：" + bad + " 直传被拒绝；改用 " + bad + "-stdin 或专用端点（config keys set 走 POST /api/v1/config/keys）",
+		})
+		return
+	}
 	// 启停意图：供 mynetd 开机恢复隧道（agent.json 开关）
 	if len(body.Argv) >= 2 && body.Argv[0] == "service" {
 		driver := "gnb"
@@ -97,7 +108,7 @@ func allowedSubcommand(cmd string) bool {
 	case "detector", "metrics", "apply", "service", "driver",
 		"setup", "install", "uninstall", "update", "config",
 		"refresh-config", "refresh-routes", "refresh-address",
-		"status", "monitor", "check", "nodes", "platform", "plugin",
+		"status", "node-status", "route", "monitor", "check", "nodes", "platform", "plugin",
 		// 向导用到的账号态/节点归属原语
 		"auth", "tenants", "node":
 		return true

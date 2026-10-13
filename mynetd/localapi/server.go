@@ -57,6 +57,9 @@ type Server struct {
 	ProxyLoad       ProxyIntentLoader
 	ProxySave       ProxyIntentSaver
 	ProxySyncPlugin func(p *domain.ProxyPolicy) error
+	// 会话落盘 / 设备指纹（组合根注入，避免 localapi import mynet —— B2）
+	SaveLoginSession  func(sess LoginSession) error
+	DeviceFingerprint func() string
 	// sessions R5-1 多节点并行会话
 	sessions *SessionTable
 	// OnResult E-4：执行结果回调（经 WS 上报）

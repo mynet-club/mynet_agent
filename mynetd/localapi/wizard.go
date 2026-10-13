@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mynet-club/mynet_agent/mynet"
 )
 
 // relayToBack 经 gateway /v1/relay 打后端路径（本机 WebUI 的唯一出网方式）。
@@ -139,7 +138,7 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 		"email":              body.Email,
 		"password":           body.Password,
 		"device_name":        machineName(),
-		"device_fingerprint": mynet.DeviceFingerprint(),
+		"device_fingerprint": s.fingerprint(),
 	})
 	relayFn := s.Relay
 	if relayFn == nil {
@@ -181,7 +180,7 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 会话落盘（0600）：token 不回浏览器
-	cred := &mynet.Credential{
+	sess := LoginSession{
 		UserID:            anyToStrSafe(env.Data.User.UserID),
 		UserEmail:         env.Data.User.Email,
 		Token:             env.Data.AuthToken,
@@ -190,10 +189,15 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 		RefreshExpiresAt:  expiryFromSecs(env.Data.RefreshExpiresIn),
 		TenantID:          anyToStrSafe(env.Data.TenantID),
 		MachineID:         machineName(),
-		DeviceFingerprint: mynet.DeviceFingerprint(),
+		DeviceFingerprint: s.fingerprint(),
 		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := mynet.SaveCredential(cred); err != nil {
+	save := s.SaveLoginSession
+	if save == nil {
+		writeJSON(w, 500, map[string]any{"success": false, "message": "SaveLoginSession 未注入"})
+		return
+	}
+	if err := save(sess); err != nil {
 		writeJSON(w, 500, map[string]any{"success": false, "message": "会话保存失败: " + err.Error()})
 		return
 	}
@@ -202,9 +206,9 @@ func (s *Server) handleWizardLogin(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"data": map[string]any{
 			"logged_in":  true,
-			"user_email": cred.UserEmail,
-			"user_id":    cred.UserID,
-			"tenant_id":  cred.TenantID,
+			"user_email": sess.UserEmail,
+			"user_id":    sess.UserID,
+			"tenant_id":  sess.TenantID,
 		},
 	})
 }
@@ -419,6 +423,31 @@ func argvFlagHasSecretKeyword(flag string) bool {
 	return false
 }
 
+// secretArgInArgv 检查 argv 是否带**秘密直传**参数（`--private <值>` /
+// `--private=值` / `--password` / `--token` / `--secret` 类），返回首个违规
+// 参数名（不含值，报错也不回显值）。`*-stdin` 开关不算 —— 那是收口后的
+// 正道（G1-c：秘密只经 stdin）。判据与 redactArgv 同源（secretArgKeywords）。
+//
+// S1 残余：回显遮蔽只解决「响应里看得见」，进 ps 这条要靠**拒绝直传**——
+// 值摆上 argv 的那一刻就已经泄露给同机用户了。
+func secretArgInArgv(argv []string) string {
+	for _, a := range argv {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(a, "=")
+		low := strings.ToLower(name)
+		if strings.HasSuffix(low, "-stdin") {
+			continue
+		}
+		if argvFlagHasSecretKeyword(low) {
+			return name
+		}
+	}
+
+	return ""
+}
+
 // redactArgvAny 把 any 形态的 argv（[]string 或 JSON 反序列化来的 []any）遮蔽后返回。
 func redactArgvAny(v any) any {
 	switch t := v.(type) {
@@ -544,4 +573,12 @@ func readKV(p string) map[string]string {
 	}
 
 	return kv
+}
+
+// fingerprint 取设备指纹；未注入时返回空（组合根应注入 mynet.DeviceFingerprint）。
+func (s *Server) fingerprint() string {
+	if s.DeviceFingerprint != nil {
+		return s.DeviceFingerprint()
+	}
+	return ""
 }

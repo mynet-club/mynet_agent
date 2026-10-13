@@ -144,6 +144,22 @@ func runAgent(ctx context.Context) {
 	api.ProxySyncPlugin = func(p *domain.ProxyPolicy) error {
 		return mynet.SyncPluginProxyFromPolicy(p)
 	}
+	// B2：会话落盘 / 设备指纹经注入，localapi 不 import mynet
+	api.DeviceFingerprint = mynet.DeviceFingerprint
+	api.SaveLoginSession = func(sess localapi.LoginSession) error {
+		return mynet.SaveCredential(&mynet.Credential{
+			UserID:            sess.UserID,
+			UserEmail:         sess.UserEmail,
+			Token:             sess.Token,
+			RefreshToken:      sess.RefreshToken,
+			MachineID:         sess.MachineID,
+			DeviceFingerprint: sess.DeviceFingerprint,
+			TenantID:          sess.TenantID,
+			CreatedAt:         sess.CreatedAt,
+			AuthExpiresAt:     sess.AuthExpiresAt,
+			RefreshExpiresAt:  sess.RefreshExpiresAt,
+		})
+	}
 
 	if err := api.Start(); err != nil {
 		logger.Error("localapi 启动失败", "err", err)
