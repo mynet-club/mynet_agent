@@ -105,6 +105,9 @@ func Run(args []string) int {
 		return cmdNode(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "nodeface":
+		// G5：OpenWrt Lua 无 X25519，C-2 签名委托执行器
+		return cmdNodeFace(rest)
 	case "node-status":
 		// G3：完整节点状态 JSON（localapi / mynetd 经 Ops 调用）
 		return cmdNodeStatusJSON(rest)
