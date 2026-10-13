@@ -105,6 +105,9 @@ func Run(args []string) int {
 		return cmdNode(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "node-status":
+		// G3：完整节点状态 JSON（localapi / mynetd 经 Ops 调用）
+		return cmdNodeStatusJSON(rest)
 	case "subject":
 		return cmdSubject(rest)
 	case "route":

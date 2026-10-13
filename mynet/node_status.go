@@ -1,9 +1,9 @@
-package localapi
+package mynet
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -439,7 +439,7 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	}
 	// 激活配置的 node_id 是当前投影的权威身份。bundle 可能仍保留旧节点，
 	// 不能用 bundle 的 self 行覆盖刚切换后的运行节点。
-	if id := activeNodeID(home); id != "" {
+	if id := ActiveNodeID(home); id != "" {
 		st.NodeID = id
 	}
 
@@ -464,7 +464,7 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 		fileNonEmpty(filepath.Join(conf, "local", "keys", "node.private"))
 	if !keysOK {
 		// online：按 mode.json 的 node_id 找
-		if id := activeNodeID(home); id != "" {
+		if id := ActiveNodeID(home); id != "" {
 			for _, p := range []string{
 				filepath.Join(conf, "online", activeTenantID(home), "nodes", id, "keys", "node.private"),
 				filepath.Join(conf, "online", activeTenantID(home), "keys", "node.private"),
@@ -671,7 +671,7 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 }
 
 // peerRoute 一对「本机 IP + 对端 IP」，用于路由存在性检查与对端表。
-type peerRoute struct {
+type statusPeerRoute struct {
 	NodeID string
 	SelfIP string
 	PeerIP string
@@ -679,7 +679,7 @@ type peerRoute struct {
 
 // loadPeerRoutes 从 bundle.json 读本机地址与对端 /32 列表。
 // 对端的 node_id 来自 gnb.nodes（tun_address 与 routes.prefix 对得上时）。
-func loadPeerRoutes(bundlePath string) []peerRoute {
+func loadPeerRoutes(bundlePath string) []statusPeerRoute {
 	b, err := os.ReadFile(bundlePath)
 	if err != nil {
 		return nil
@@ -714,17 +714,17 @@ func loadPeerRoutes(bundlePath string) []peerRoute {
 			idOf[ip] = n.NodeID
 		}
 	}
-	var out []peerRoute
+	var out []statusPeerRoute
 	for _, r := range env.Network.Routes {
 		ip := strings.Split(r.Prefix, "/")[0]
 		if ip == "" || ip == self {
 			continue
 		}
-		out = append(out, peerRoute{NodeID: idOf[ip], SelfIP: self, PeerIP: ip})
+		out = append(out, statusPeerRoute{NodeID: idOf[ip], SelfIP: self, PeerIP: ip})
 	}
 	// 至少把本机地址带回去，供 OverlayIP 用
 	if len(out) == 0 && self != "" {
-		out = append(out, peerRoute{SelfIP: self})
+		out = append(out, statusPeerRoute{SelfIP: self})
 	}
 	return out
 }
@@ -749,25 +749,6 @@ func orDash(s string) string {
 }
 
 // handleNodeStatus GET /api/v1/node-status —— 状态机出口。
-func (s *Server) handleNodeStatus(w http.ResponseWriter, r *http.Request) {
-	st := ComputeNodeStatus()
-	// 运行态与 mode.json 是两个事实源：激活配置切换后，旧进程可能仍在运行。
-	// 必须显式告诉前端，不能把旧节点伪装成当前激活节点。
-	if home := os.Getenv("MYNET_HOME"); home != "" {
-		st.ActiveNodeID = activeNodeID(home)
-	} else {
-		st.ActiveNodeID = activeNodeID(st.Home)
-	}
-	if st.ProcessUp && st.ActiveNodeID != "" && st.NodeID != "" && st.ActiveNodeID != st.NodeID {
-		st.ConfigMismatch = true
-		st.State = StateDegraded
-		st.OneLine = "运行节点与激活配置不一致"
-		st.Detail = "当前进程是 " + st.NodeID + "，激活配置是 " + st.ActiveNodeID + "；请切换并重新应用"
-		st.PrimaryAction = ActRestart
-		st.Actions[ActRestart] = true
-	}
-	writeJSON(w, 200, map[string]any{"success": true, "data": st})
-}
 
 // overlayFromRouteConf route.conf 本机行（nodeid|ip|mask）取 overlay。
 func overlayFromRouteConf(path string) string {
@@ -785,7 +766,7 @@ func overlayFromRouteConf(path string) string {
 	return ""
 }
 
-func activeNodeID(home string) string {
+func ActiveNodeID(home string) string {
 	raw, err := readModeFile(home)
 	if err != nil {
 		return ""
@@ -825,4 +806,30 @@ func readIntentOverlay(home string) string {
 	}
 	_ = json.Unmarshal(b, &li)
 	return strings.TrimSuffix(li.Node.Overlay, "/32")
+}
+
+// cmdNodeStatusJSON — G3 执行器入口：mynet node-status --json
+// 输出 ComputeNodeStatus 的 JSON，供 mynetd localapi 经 Ops 读取。
+func cmdNodeStatusJSON(args []string) int {
+	st := ComputeNodeStatus()
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = st.Home
+	}
+	st.ActiveNodeID = ActiveNodeID(home)
+	if st.ProcessUp && st.ActiveNodeID != "" && st.NodeID != "" && st.ActiveNodeID != st.NodeID {
+		st.ConfigMismatch = true
+		st.State = StateDegraded
+		st.OneLine = "运行节点与激活配置不一致"
+		st.Detail = "当前进程是 " + st.NodeID + "，激活配置是 " + st.ActiveNodeID + "；请切换并重新应用"
+		st.PrimaryAction = ActRestart
+		st.Actions[ActRestart] = true
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(st); err != nil {
+		fmt.Fprintf(os.Stderr, "encode node-status: %v\n", err)
+		return 1
+	}
+	return 0
 }

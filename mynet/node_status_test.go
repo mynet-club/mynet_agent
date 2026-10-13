@@ -1,4 +1,4 @@
-package localapi
+package mynet
 
 import (
 	"os"
