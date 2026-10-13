@@ -1,5 +1,12 @@
 # 安装链路对账 — 进展与交接（2026-10-02 02:2x）
 
+> **⚠️ 历史快照（2026-10-02 过程记录，非在世文档，勿按它施工）**：
+> 文中指向的 `packaging/darwin/scripts/postinstall` 等路径**已退役** ——
+> H2「薄壳委托」后安装器归 `mynet_desktop`，postinstall 委托链迁
+> `mynet_desktop/macos/scripts/postinstall`，`make pkg-darwin` 已移除。
+> 现行口径见 `MYNET_V1_PLAYBOOK.md` §5 与 `mynet_ctl/docs/knowledge-base/spec/lifecycle-contract.md`。
+> 本文仅作追溯留档。
+
 背景：用户睡前指令 —— 「测试时还在到处找工具二进制，说明安装器有问题」，点名
 mac 装完无托盘、不自动开网页引导；macOS 通过后横向对齐 windows/linux/openwrt；
 route.conf 注入已废弃。平台裁定：linux/openwrt=CLI；macos/windows=安装器+托盘+自动开 WebUI。

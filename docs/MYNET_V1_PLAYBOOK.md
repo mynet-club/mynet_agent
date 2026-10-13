@@ -80,7 +80,7 @@ P0（领域合同 + fixtures）**已经做完**，不要再当新建工作排期
 `mynet_api/config/mynet.php` 的 `terms.zone`（调用 `term_zone()`）、本仓节点 WebUI
 `mynetd/localapi/webui/index.html` 内联的 `TERM`、本仓 CLI `mynet/cmd_node.go` 的 `termZone`
 （`mynet/commands.go` 的 `usage` 帮助文案同样拼 `termZone`，别漏 —— 首轮就漏了这行，`9223eeb` 补）。
-节点侧改动要 `make dist` + `make pkg-darwin` 重出包才现网可见，本轮产物是 `v0.0.7-pkg`。
+节点侧改动要 `make dist` 重出包、经 `mynet_desktop` 安装器交付才现网可见（`make pkg-darwin` 已随 `packaging/darwin` 退役）；本轮产物是 `v0.0.7-pkg`。
 三条必须先知道的事实：
 
 1. **Zone 在代码里已经不是业务对象，只剩一层名字。** 服务端早就 tenant-native
@@ -99,23 +99,18 @@ P0（领域合同 + fixtures）**已经做完**，不要再当新建工作排期
    （✅ 这条已于第 2 步消解：三个注入点 `api.ts:61/115/140`、`boot/websocket.ts:16`、
    `TokenDebugPage.vue:212` 现在**全部只读 `authStore.user?.tenant_id`**，
    写者只有 `stores/auth.ts` 一个；缺值也不再静默 return，改成带字段的 `debug.warn`。
-   但它仍是全站最脆的一条 —— GUI 仓没有类型检查，字段名写错不会编译失败。）
+   但它仍是全站最脆的一条 —— GUI 仓只有类型棘轮（`npm run check:types`，基线 194 错/38 文件、只降不升），字段名写错不保证被编译器拦住。）
 
 （以上取证写于裁决前，文件当时还叫 `pages/zone/ZoneListPage.vue` 等；第 1 步改名后的
 现名见 `spec/zone-removal.md` 的「旧名对照」。）
 
-原先待裁决的议题已全部裁定（2026-10-04）：`ZoneListPage`/`ZoneSharingPage`/`/zones`/
-`ZoneSelector` **改名保留**（不砍 §7 P7 的租户管理界面）；`DEFAULT_GLOBAL_ZONE` 硬编码的
-假租户 `999999999` **改指真实平台租户 `9007199254740991`**；界面中文用词定为**「网络区」**，
-且必须是单点可替换变量。剩余 5 条未决项（含 `pivot.is_admin: 1` 权限语义）记在决策包末尾。
-
-⚠️ 上面这段里两处已过期（同日第三轮裁定 + 第 2 步落地后）：
-① **「不砍租户管理界面」不再是口径** —— `GUI = 普通用户前端`，租户 CRUD / overview /
-统计 / `pivot.is_admin` 已从用户面删除（`mynet_gui 716f431`），`/tenants` 页面现在只做
-「列归属 + 切当前」；管理面走 console（轨道 G）。页面**留着**是「改名保留」那条裁定，
-但里面的管理能力已经收敛掉了。
-② **`pivot.is_admin: 1` 不再待裁决** —— 三个候选都没选，裁定取消了问题本身（用户面无权限
-表达）。剩余未决从 5 条变成 7 条，逐条见 `spec/zone-removal.md`「第 2 步留下的未处置项」。
+**裁定结果（2026-10-04，现行口径）**：`ZoneListPage`/`ZoneSharingPage`/`/zones`/`ZoneSelector`
+**改名保留**；`DEFAULT_GLOBAL_ZONE` 硬编码的假租户 `999999999` **改指真实平台租户
+`9007199254740991`**；界面中文用词定为**「网络区」**，且必须是单点可替换变量。
+**`GUI = 普通用户前端`**：租户 CRUD / overview / 统计已从用户面删除（`mynet_gui 716f431`），
+`/tenants` 页面只做「列归属 + 切当前」，管理面走 console（轨道 G）；`pivot.is_admin: 1`
+权限语义随「用户面无权限表达」取消。未处置项 7 条逐条见 `spec/zone-removal.md`
+「第 2 步留下的未处置项」。
 
 ### 0.6 mynet_gnb 布局迁移已收口（2026-10-04）
 
@@ -191,7 +186,7 @@ worktree 也算，这条红线在 gnb 上才第一次真的生效。
 下列五仓是**契约口径**——领域合同、架构、数据流只谈这五个。
 
 - `mynet_api`：租户、用户、邀请、节点、节点池、路由、监控、服务、命令和权限的业务权威。
-- `mynet_gui`：用户和企业管理员界面；隐藏驱动术语，展示节点、连接、网络、服务和密钥操作。
+- `mynet_gui`：**用户交互前端**（社区域，服务后端，`my.mynet.club`）；隐藏驱动术语，展示节点、连接、网络、服务和密钥操作。管理面走 console（`mynet_api` 轨道 G），不进 GUI。
 - `mynet_agent`：节点通信和本地执行；`mynetd` 纯通信，`mynet` 执行系统和驱动操作，`gateway` 只转发。
 - `mynet_openwrt`：LuCI 原生壳、ubus/rpcd/ACL、弱设备执行适配，不形成第二套后端。
 - `mynet_gnb`：已落地的 GNB 底层网络引擎、补丁和多平台构建发布基线；v1 只做版本锁定、产物回归和跨仓集成，`src/` 保持上游只读（布局迁移已于 2026-10-04 收口到 `main` 单线，见 §0.6）。
@@ -201,7 +196,7 @@ worktree 也算，这条红线在 gnb 上才第一次真的生效。
 - `mynet_ctl`：出包发行面——`ReleaseDomainService`、`/d/` 分发、平台枚举与产物命名、部署脚本，以及知识库 SSOT（`docs/knowledge-base/`）。
 - `mynet_desktop`：图形化安装面——macOS pkg/dmg、Windows NSIS、launchd plist 与安装器 CI。
 
-`mynet_utc` 挂载不动（v1 排除 UTC）。`mynet_web` 是「本机域 + 社区域」合并 WebUI 的**在建骨架**（`src/` 仅十余文件，计划吸收 `mynet_ui` 与 `mynet_gui`），当前交付面仍是 `mynet_gui`（`src/` 200+ 文件、真实产品页）。改 GUI 前先确认改的是哪一仓——两边同名概念不等价。
+`mynet_utc` 挂载不动（v1 排除 UTC）。`mynet_web` 是**官网 / 项目主页**（`www.mynet.club`）——D-4 的「合并 mynet_ui + mynet_gui 为一份 WebUI」**已作废**（2026-09-24 裁定），用户交互前端是 `mynet_gui`（`src/` 200+ 文件、真实产品页）。改 GUI 前先确认改的是哪一仓——两边同名概念不等价。
 
 ### 必须保留的硬约束
 
@@ -228,7 +223,7 @@ worktree 也算，这条红线在 gnb 上才第一次真的生效。
 > 这一轮已于 2026-10-04 做完：八个仓共 25 个提交，逐个按**显式路径**入暂存（不用 `git add -A`），入库前先扫敏感文件名/PEM/凭据文本。三件**故意留白**待用户裁定：`mynet_api/database/sql/migrate-tenant-to-platform.sql`（破坏性 + 属 DBA 交接路径，提交即等于排队一次生产数据操作）、`mynet_utc` Phase 7 全部产品代码（挂载不动）、`mynet_gui` 里 12 个被跟踪的 `.quasar` 生成物（`.gitignore` 从未提到 `.quasar`，是策略问题不单方改）。
 >
 > ✅ 门禁缺口已于 2026-10-04 收口：`mynet_gui` 装上守护链（`Makefile` + `.githooks/`，`core.hooksPath=.githooks`），七仓红线不设防的最后一处补齐。两处实测细节：
-> - 该仓四个 `.env*`（`.env`/`.env.dev`/`.env.embed`/`.env.prod`）**必须入库**（Quasar 按固定文件名查找 env，改名即失效），里面只有 API 域名与 Reverb 的**客户端公开值**，但 A3 只按**文件名**拦 → 每次编辑都撞一次红线。给 A3 加了**文件级豁免判据**（① 已在 `HEAD` ② 文件内带 `GUARD-OK <理由>`，两条同时成立才降级为 ⚠；**新增**敏感名文件即使带标注仍硬拦），不放宽红线也不留 `--no-verify` 的口子。判据全文见 AGENTS.md §2.6，自测见 `templates/.githooks/guard_test.sh`（35 用例）。
+> - 该仓四个 `.env*`（`.env`/`.env.dev`/`.env.embed`/`.env.prod`）**必须入库**（Quasar 按固定文件名查找 env，改名即失效），里面只有 API 域名与 Reverb 的**客户端公开值**，但 A3 只按**文件名**拦 → 每次编辑都撞一次红线。给 A3 加了**文件级豁免判据**（① 已在 `HEAD` ② 文件内带 `GUARD-OK <理由>`，两条同时成立才降级为 ⚠；**新增**敏感名文件即使带标注仍硬拦），不放宽红线也不留 `--no-verify` 的口子。判据全文见 AGENTS.md §2.6，自测见 `templates/.githooks/guard_test.sh`（45 用例，实测输出 `guard 自测：45 通过 / 0 失败`）。
 > - `mynet_gui/Makefile` 是 Vue 适配版：`lint` = `eslint` + `check:i18n`，`test` = `vitest run`，且**自己数套件**——零用例时打印 `⚠⚠ 未执行任何测试` 并按 M0 记未达标，不用 `--passWithNoTests` 装作跑过。
 
 ## 4. 冻结的领域合同
