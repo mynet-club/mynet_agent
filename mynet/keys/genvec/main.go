@@ -1,3 +1,10 @@
+// genvec — NodeFace 联测向量生成器。
+//
+// 用途：为 mynet/keys/testdata/node_face_vectors.json 产出 Go/PHP 双端同签名
+// 的固定测试向量（C-2 合同）。改密钥布局或签名算法后应重跑本工具并提交新向量。
+// 用法: go run ./mynet/keys/genvec > mynet/keys/testdata/node_face_vectors.json
+//
+// 实验用的私钥→公钥推导验证原在 cmd/keyprove，已于 G1 删除（零消费者）。
 package main
 
 import (
