@@ -39,6 +39,12 @@ func cmdStatus(_ []string) int {
 	m := collectMetricsBrief()
 	fmt.Printf("cpu=%.1f%% mem=%dMB load1=%.2f vpn=%d\n",
 		m["cpu"], m["mem_used"], m["load1"], m["vpn"])
+	// 缺口⑥：状态面带隧道健康 —— tun 在不在、挂没挂 VPN IP（服务 active≠隧道可用）
+	home := os.Getenv("MYNET_HOME")
+	if home == "" {
+		home = "."
+	}
+	fmt.Println("tun:", currentTunHealth(home).Summary())
 	return 0
 }
 

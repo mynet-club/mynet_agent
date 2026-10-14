@@ -73,6 +73,6 @@ func cmdMetrics(args []string) int {
 	fmt.Printf("collected_at=%s cpu=%.1f%% mem=%d/%dMB load1=%.2f vpn=%d\n",
 		m.CollectedAt.Format(time.RFC3339),
 		m.System.CPUPercent, m.System.MemUsedMB, m.System.MemTotalMB,
-		m.System.Load1, len(m.VPN))
+		m.System.Load1, countUpVPNIfaces(m.VPN)) // 只数活口（down 格是缺口⑥的信号）
 	return 0
 }

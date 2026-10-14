@@ -125,9 +125,6 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 	}
 
 	for _, v := range snap.VPN {
-		if !v.Up {
-			continue
-		}
 		typ := normalizeDriver(v.Driver)
 		if typ == "" {
 			// 后端的验证是 in:gnb,wireguard —— 送别的值整条心跳 422。
@@ -150,10 +147,19 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 			// 不依赖 gnb_ctl（它的状态输出里没有接口名，且读 ctl block 要 root）。
 			continue
 		}
+		status := "up"
+		if !v.Up {
+			// 缺口⑥：tun 未起也报一格 —— status=down 是后端契约既有值
+			// （HeartbeatRequest：vpn_interfaces.*.status in:up,down），此前从不发。
+			// 「服务 active 但 tun 未起/零流量」在心跳里要可见：期望口名在场、
+			// 状态明说 down。后端 areAllVpnInterfacesDown 对 down 行与缺段同判
+			// 离线（行为不变），差别只是信号从「什么都没有」变成「口名 + down」。
+			status = "down"
+		}
 		p.VPNInterfaces = append(p.VPNInterfaces, vpnIfaceHB{
 			Type:       typ,
 			Ifname:     v.Interface,
-			Status:     "up",
+			Status:     status,
 			IP:         firstAddr(v.Addrs),
 			PeersCount: v.Peers,
 		})

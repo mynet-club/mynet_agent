@@ -22,7 +22,7 @@ import (
 func probeWireGuard() []VPNDriverMetrics {
 	iface := detectWGInterface()
 	if iface == "" {
-		return nil
+		return downProbeFallback(domain.DriverTypeWireGuard)
 	}
 	d := driver.NewWireGuardDriver(iface, 0)
 	peers, err := d.GetAllPeers()
@@ -79,7 +79,7 @@ func detectWGInterface() string {
 func probeGNB() []VPNDriverMetrics {
 	ifname, addrs := detectGNBInterface()
 	if ifname == "" {
-		return nil
+		return downProbeFallback(domain.DriverTypeGNB)
 	}
 	d := driver.NewGNBDriver(0)
 	d.ConfDir = gnbConfDir()
@@ -97,6 +97,35 @@ func probeGNB() []VPNDriverMetrics {
 	}
 
 	return []VPNDriverMetrics{m}
+}
+
+// downProbeFallback tun 未起时的「down 格」探测（缺口⑥）：
+// 期望口名（bundle 的 node.interface 权威）在、接口没起 —— 报 Up:false 的一格，
+// 让心跳把「服务 active 但 tun 未起」的信号带上去（vpn_interfaces.*.status=down
+// 是后端契约既有值，此前从不发；后端对 down 行与缺段同判离线，行为不变，
+// 差别是信号可见：期望口名在场，不再是「什么都没有」）。
+//
+// 只在 bundle 的**主驱动**对得上时报：期望口名按驱动各自归属，
+// gnb 节点的口名不能记到 wireguard 头上。期望口名拿不到就不报（不猜）。
+func downProbeFallback(drv domain.VPNDriverType) []VPNDriverMetrics {
+	name, bundleDrv, ok := tunNameFromBundle()
+	if !ok || bundleDrv != drv {
+		return nil
+	}
+	return []VPNDriverMetrics{{Driver: string(drv), Interface: name, Up: false}}
+}
+
+// countUpVPNIfaces 显示面口径的 VPN 口计数：只数 up 的活口。
+// 探测面会报 tun 未起的 down 格（缺口⑥），`vpn=N` 这类摘要若按条数数，
+// 一个没起来的口会被数成「1 个 VPN」——语义就变了。
+func countUpVPNIfaces(ms []VPNDriverMetrics) int {
+	n := 0
+	for _, m := range ms {
+		if m.Up {
+			n++
+		}
+	}
+	return n
 }
 
 // detectGNBInterface 取 gnb 的接口名，并用标准库确认它真的存在且 UP。

@@ -64,6 +64,11 @@ type NodeStatus struct {
 	// Detail 一言之外的补充说明（可空），比如「缺 2 条路由」
 	Detail string `json:"detail,omitempty"`
 
+	// Tunnel 隧道健康信号（缺口⑥）：tun 是否存在、挂没挂 VPN IP。
+	// 与 TunUp 的区别：TunUp 只回答「按 IP 反查有没有接口」，这里把
+	// 期望口名/VPN IP/两态事实分列，供状态面与启动验收共用判据。
+	Tunnel TunHealth `json:"tunnel_health"`
+
 	// ── ④ 运行区（P2）──────────────────────────────────────
 	UptimeSec int64 `json:"uptime_sec,omitempty"`
 	Mtu       int   `json:"mtu,omitempty"`
@@ -119,6 +124,8 @@ type statusProbe struct {
 	localRouteExists func(dest string) bool
 	// findIface 找挂了某 IP 的接口名
 	findIface func(ip string) string
+	// ifaceExists 按接口名查存在（tun 健康信号的「tun 在不在」事实；可空）
+	ifaceExists func(name string) bool
 	// gnbPeerLinks 读 gnb_ctl 的对端链路态；不可用时返回 nil
 	// （前端显示 unknown，不猜）。key = nodeID。
 	gnbPeerLinks func(confDir string) map[int64]PeerLinkInfo
@@ -143,6 +150,7 @@ func defaultProbe() statusProbe {
 		},
 		localRouteExists: localRouteExists,
 		findIface:        ifaceWithAddr,
+		ifaceExists:      ifaceExistsByName,
 		ifaceStats:       ifaceStats,
 		procUptimeSec:    procUptimeSec,
 		gnbPeerLinks:     gnbPeerLinksOf,
@@ -555,6 +563,10 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 		st.TunIface = p.findIface(st.OverlayIP)
 		st.TunUp = st.TunIface != ""
 	}
+	// 缺口⑥：隧道健康信号 —— tun 是否存在、挂没挂 VPN IP（期望口名来自 bundle；
+	// 两者都未知时 Checked=false，如实报「无判据」）
+	expectedTun, _, _ := tunNameFromBundle()
+	st.Tunnel = computeTunHealth(st.OverlayIP, expectedTun, p.findIface, p.ifaceExists)
 	// ④ 运行区：进程时长 + 接口计数器
 	if st.ProcessUp && p.procUptimeSec != nil {
 		st.UptimeSec = p.procUptimeSec(pid)

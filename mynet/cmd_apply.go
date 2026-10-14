@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
 	"github.com/mynet-club/mynet_agent/mynet/upgrade"
@@ -157,7 +158,8 @@ func cmdApply(args []string) int {
 // 与 OpenWrt init 兜底同一路线；热同步 `wg syncconf` 同文件。
 func cmdService(args []string) int {
 	// C3：service 驱动进程生命周期，必须显式 MYNET_HOME
-	if _, code := requireHome(); code != 0 {
+	home, code := requireHome()
+	if code != 0 {
 		return code
 	}
 	if len(args) < 1 {
@@ -208,6 +210,15 @@ func cmdService(args []string) int {
 			return 1
 		}
 		fmt.Printf("started %s\n", name)
+		// 启动验收（缺口⑥）：waitAlive 之后还要看 tun —— gnb 活了但 tun 未起
+		// （tun 名被占/权限不足）时进程在、零流量，只报 "started" 就是骗人。
+		// tun 不在，后面 apply 装路由也是白装，先 fail loud。
+		if err := verifyTunAfterStart(name, func() TunHealth {
+			return currentTunHealth(home)
+		}, 3, 500*time.Millisecond); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ start %s: %v\n", name, err)
+			return 1
+		}
 		// D4/§14：DNS 是**用户三选一**（不劫持 / 指定上游 / 交我们），默认不劫持。
 		// 只有显式 mynet dns apply 或配置 dns.hijack=ours 才接管 ——
 		// service start 自动劫持曾把网络干死（多网卡/目标不稳），禁止默认劫持。

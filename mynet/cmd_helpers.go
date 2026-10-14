@@ -36,7 +36,7 @@ func collectMetricsBrief() map[string]any {
 		"cpu":      m.System.CPUPercent,
 		"mem_used": m.System.MemUsedMB,
 		"load1":    m.System.Load1,
-		"vpn":      len(m.VPN),
+		"vpn":      countUpVPNIfaces(m.VPN), // 只数活口（down 格是缺口⑥的信号，不算「在用」）
 	}
 }
 
