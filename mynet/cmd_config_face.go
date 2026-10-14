@@ -11,6 +11,7 @@ package mynet
 //	mynet config keys --json
 //	mynet config keys generate --vpn gnb|wireguard --json
 //	mynet config keys set (--private-stdin | --private HEX) [--public HEX] [--node-id N] [--algorithm A] [--json]
+//	mynet config keys rotate [--vpn gnb|wireguard] [--node-id N]   # 换钥一条龙（generate→sync→pull→refresh-config）
 //	mynet config plugins --json
 
 import (
@@ -293,6 +294,12 @@ func configFaceKeys(args []string) int {
 			}
 		}
 		return configFaceKeysSync()
+	case "rotate":
+		// G3 缺口⑤：换钥一条龙 generate → sync（自动带新指纹+重绑）→ pull → refresh-config
+		if _, code := requireHome(); code != 0 {
+			return code
+		}
+		return configFaceKeysRotate(args)
 	default:
 		fmt.Fprintf(os.Stderr, "config keys: 未知子命令 %q\n", sub)
 		return 2
