@@ -208,7 +208,9 @@ converge_stale_gnb() {
 start_gnb_instance() {
 	local nid confdir bin
 	nid=$(get_node_id_from_conf)
-	confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
+	# D4-E：节点唯一存放位优先（gnb_confdir 含 mode.json 解析），旧 driver 位只回退
+	confdir=$(gnb_confdir)
+	[ -n "$confdir" ] || confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
 	bin="${MYNET_HOME}/driver/gnb/bin/gnb"
 	[ -x "$bin" ] || bin="$(command -v gnb)"
 	if [ -z "$nid" ] || [ ! -d "$confdir" ] || [ -z "$bin" ]; then
@@ -234,8 +236,11 @@ start_gnb_instance() {
 stop_gnb_instance() {
 	local nid confdir es_bin gnb_pids gnb_pid owned pid exe ppid
 	nid=$(get_node_id_from_conf)
-	confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
+	# D4-E：同 start_gnb_instance，节点唯一存放位优先、旧 driver 位回退
+	confdir=$(gnb_confdir)
+	[ -n "$confdir" ] || confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
 	es_bin="${MYNET_HOME}/driver/gnb/bin/gnb_es"
+	[ -x "$es_bin" ] || es_bin="$(command -v gnb_es)"
 
 	# 归属判据（G-9）：gnb_es 必须 (a) exe 是本部署的 gnb_es，(b) **父进程是本实例 gnb**
 	# —— 后者按「gnb 的 cmdline 指向本实例 confdir」认定。
