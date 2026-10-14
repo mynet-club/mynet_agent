@@ -68,8 +68,9 @@ func TestUnitFileNameMapping(t *testing.T) {
 // 单元装得上、起不来，而错误只在启动那一刻才出现。
 func TestWriteSystemdUnitsSubstitutesGnbPath(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir() // 无 mode.json：-c 走 gnbConfRel 回退（缺口⑦的告警场景）
 	custom := "/opt/gnb/bin/gnb"
-	if err := writeSystemdUnits(dir, custom); err != nil {
+	if err := writeSystemdUnits(dir, custom, home); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,10 +88,70 @@ func TestWriteSystemdUnitsSubstitutesGnbPath(t *testing.T) {
 			if strings.Contains(body, "/usr/local/bin/gnb") {
 				t.Errorf("mynet_gnb 里还残留默认 gnb 路径:\n%s", body)
 			}
+			// 缺口⑦：__GNB_CONF_REL__ 按 gnbConfRel(home) 替换（无 mode.json → 回退 default）
+			if !strings.Contains(body, "-c ${MYNET_HOME}/conf/local/default") {
+				t.Errorf("mynet_gnb 的 -c 未按 gnbConfRel(home) 替换:\n%s", body)
+			}
+			if strings.Contains(body, "__GNB_CONF_REL__") {
+				t.Errorf("占位符 __GNB_CONF_REL__ 残留:\n%s", body)
+			}
 		} else {
 			if strings.Contains(body, custom) {
 				t.Errorf("mynetd 单元不该被 gnb 路径替换影响:\n%s", body)
 			}
 		}
+	}
+}
+
+// TestWriteSystemdUnitsWarnsWhenModeJsonMissing 缺口⑦的告警用例：
+// install 先于 setup 时 home 尚无 mode.json，单元按 gnbConfRel 回退写出
+// （188 实测：拿着 conf/local/default crash-loop 50 次）。
+// 单元**照写**（install 的职责是装服务），但「-c 待归位」必须显式警告 ——
+// 静默写出坏单元正是那次事故的成因。反面：身份已定（mode.json 在位）不许噪音。
+func TestWriteSystemdUnitsWarnsWhenModeJsonMissing(t *testing.T) {
+	home := t.TempDir() // 无 mode.json
+	warn := captureStderrFn(t, func() {
+		if err := writeSystemdUnits(t.TempDir(), "/opt/gnb/bin/gnb", home); err != nil {
+			t.Error(err)
+		}
+	})
+	if !strings.Contains(warn, "mynet_gnb.service 的 -c 待 mynet setup 后归位") {
+		t.Fatalf("home 无 mode.json 时必须显式警告待归位，stderr=%q", warn)
+	}
+	if !strings.Contains(warn, "conf/local/default") {
+		t.Fatalf("警告要指出单元暂指的回退目标，stderr=%q", warn)
+	}
+
+	// 单元照写：警告不许把 install 的落盘职责顶掉
+	dir := t.TempDir()
+	captureStderrFn(t, func() {
+		if err := writeSystemdUnits(dir, "/opt/gnb/bin/gnb", home); err != nil {
+			t.Error(err)
+		}
+	})
+	b, err := os.ReadFile(filepath.Join(dir, unitFileName("mynet_gnb")))
+	if err != nil {
+		t.Fatalf("警告归警告，单元必须照写: %v", err)
+	}
+	if !strings.Contains(string(b), "-c ${MYNET_HOME}/conf/local/default") {
+		t.Fatalf("单元应按回退目标照写（待 setup 归位）:\n%s", b)
+	}
+
+	// 身份已定（conf/mode.json 在位）→ 一个字都不许警告
+	home2 := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home2, "conf"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home2, "conf", "mode.json"),
+		[]byte(`{"mode":"local","active":{"node_id":"3001"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	warn2 := captureStderrFn(t, func() {
+		if err := writeSystemdUnits(t.TempDir(), "/opt/gnb/bin/gnb", home2); err != nil {
+			t.Error(err)
+		}
+	})
+	if warn2 != "" {
+		t.Fatalf("身份已定不该告警，stderr=%q", warn2)
 	}
 }

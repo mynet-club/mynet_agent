@@ -56,13 +56,15 @@ const (
 	launchAgentsDir = "/Library/LaunchAgents"
 )
 
-// installLaunchd 写 plist 并 bootstrap。要求已 root。
-func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
-	if err := os.MkdirAll("/var/log/mynet", 0o755); err != nil {
-		return err
-	}
-	mynetdBin := filepath.Join(binDir, "mynetd")
-	env := map[string]string{
+// launchdMynetdSpec mynetd LaunchDaemon 的 argv + env。
+//
+// ⚠️ launchd 定义一律**不得内嵌 gnb 的 conf 路径**（缺口⑦的 macOS 面）：
+// gnb 不进 launchd（见文件头注释），conf 由 mynetd 运行时按 MYNET_HOME 算。
+// 内嵌了就会在 setup 换身份后指错目录 —— 而 plist 侧没有归位
+// （realignGnbUnitAfterSetup 只管 systemd 单元），坑会一直留着。
+// TestLaunchdSpecsDoNotEmbedGnbConfPath 锁这条：要内嵌，先给 plist 归位。
+func launchdMynetdSpec(home, gateways, binDir string) (argv []string, env map[string]string) {
+	env = map[string]string{
 		"MYNET_HOME":     home,
 		"MYNET_GATEWAYS": gateways,
 		"MYNET_BIN":      filepath.Join(binDir, "mynet"),
@@ -70,9 +72,29 @@ func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
 		// 与 apply/node-status 踩过的是同一个坑
 		"PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
-
 	// 8096 = 本机 API/WebUI 约定端口（AGENTS.md §1.5）；与 DefaultLocalAPI 一致
-	if err := writeLaunchdPlist(LabelMynetd, launchdPlistDir, []string{mynetdBin, "-listen", "127.0.0.1:8096"},
+	argv = []string{filepath.Join(binDir, "mynetd"), "-listen", "127.0.0.1:8096"}
+	return argv, env
+}
+
+// launchdTraySpec 托盘 LaunchAgent 的 argv + env（gui 域、非 root）。
+// 同样不得内嵌 conf 路径（约定见 launchdMynetdSpec）。
+func launchdTraySpec(home, binDir string) (argv []string, env map[string]string) {
+	env = map[string]string{
+		"MYNET_HOME": home,
+		"PATH":       "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+	}
+	argv = []string{filepath.Join(binDir, "mynet_tray")}
+	return argv, env
+}
+
+// installLaunchd 写 plist 并 bootstrap。要求已 root。
+func installLaunchd(home, gateways, binDir, gnbBin string, enable bool) error {
+	if err := os.MkdirAll("/var/log/mynet", 0o755); err != nil {
+		return err
+	}
+	argv, env := launchdMynetdSpec(home, gateways, binDir)
+	if err := writeLaunchdPlist(LabelMynetd, launchdPlistDir, argv,
 		env, "/var/log/mynet/mynetd.log", "/var/log/mynet/mynetd.err", true); err != nil {
 		return err
 	}
@@ -105,14 +127,11 @@ func installTrayAgent(home, binDir string, enable bool) error {
 	if !fileExists(tray) {
 		return nil
 	}
-	env := map[string]string{
-		"MYNET_HOME": home,
-		"PATH":       "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-	}
+	argv, env := launchdTraySpec(home, binDir)
 	// gui 域以登录用户身份跑：/var/log/mynet 是 root 0755 写不进去，
 	// 日志给 /dev/null（托盘状态以 WebUI/mynetd 为准，不靠这份日志）
 	plist := filepath.Join(launchAgentsDir, LabelTray+".plist")
-	if err := writeLaunchdPlist(LabelTray, launchAgentsDir, []string{tray},
+	if err := writeLaunchdPlist(LabelTray, launchAgentsDir, argv,
 		env, "/dev/null", "/dev/null", false); err != nil {
 		return err
 	}

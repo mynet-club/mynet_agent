@@ -231,6 +231,13 @@ func writeSystemdUnits(unitDir, gnbBin, home string) error {
 		if u == "mynet_gnb" {
 			body = strings.ReplaceAll(body, "/usr/local/bin/gnb", gnbBin)
 			body = strings.ReplaceAll(body, "__GNB_CONF_REL__", gnbConfRel(home))
+			// 缺口⑦：home 尚无 mode.json 时 gnbConfRel 回退 conf/<form>/default，
+			// 单元天生指向错目录（188 实测 crash-loop 50 次）。单元照写
+			// （install 的职责是装服务），但把「待归位」明说 ——
+			// mynet setup 后由 realignGnbUnitAfterSetup 自动归位。
+			if modeFileMissing(home) {
+				warnGnbUnitConfRelPending(home)
+			}
 		}
 		// MYNET_HOME 写进 unit（不再有 EnvironmentFile；见 spec/paths.md §2.1）
 		body = strings.ReplaceAll(body, "__MYNET_HOME__", home)

@@ -532,20 +532,36 @@ func renameBak(dir, ts string) error {
 	return os.Rename(dir, bak)
 }
 
+// gnbSystemdUnitPaths mynet_gnb.service 的落位（生成面写 /etc/systemd/system，
+// 发行包可能落 /lib/systemd/system）。包变量便于测试注入临时单元文件。
+var gnbSystemdUnitPaths = []string{
+	"/etc/systemd/system/mynet_gnb.service",
+	"/lib/systemd/system/mynet_gnb.service",
+}
+
 // rewriteGnbUnitConfRel 尽力把已装 mynet_gnb.service 的 `-c` 目标归位到节点目录。
-// 单元生成面（mynet install）是权威；这里是迁移后的兜底归位，失败只提示。
+// 单元生成面（mynet install）是权威；这里是迁移/换身份后的兜底归位，失败只提示。
 func rewriteGnbUnitConfRel(home string) {
-	for _, unitPath := range []string{
-		"/etc/systemd/system/mynet_gnb.service",
-		"/lib/systemd/system/mynet_gnb.service",
-	} {
+	rewriteGnbUnitConfRelFiles(home, gnbSystemdUnitPaths)
+}
+
+// rewriteGnbUnitConfRelFiles 归位给定单元文件里 `-c ${MYNET_HOME}/…` 的目标；
+// 返回改写成功的文件数（0 = 已归位或没找到单元）。
+//
+// ⚠️ 必须用 ReplaceAllLiteralString：want 里含 `${MYNET_HOME}`，而
+// ReplaceAllString 的替换串里 `$` 是**组引用**语法 —— `${MYNET_HOME}` 会被
+// 当命名组引用吃成空串，写出来的单元是 `-c /conf/<node>`（路径裸奔、
+// 指向根下的 /conf）。2026-10-14 测试实锤（TestSetupRealignsGnbUnitToNodeConfDir）。
+func rewriteGnbUnitConfRelFiles(home string, unitPaths []string) int {
+	want := "${MYNET_HOME}/" + gnbConfRel(home)
+	re := regexp.MustCompile(`-c \$\{MYNET_HOME\}/[^ \t\n]+`)
+	n := 0
+	for _, unitPath := range unitPaths {
 		body, err := os.ReadFile(unitPath)
 		if err != nil {
 			continue
 		}
-		want := "${MYNET_HOME}/" + gnbConfRel(home)
-		re := regexp.MustCompile(`-c \$\{MYNET_HOME\}/[^ \t\n]+`)
-		updated := re.ReplaceAllString(string(body), "-c "+want)
+		updated := re.ReplaceAllLiteralString(string(body), "-c "+want)
 		if updated == string(body) {
 			continue
 		}
@@ -554,7 +570,9 @@ func rewriteGnbUnitConfRel(home string) {
 			continue
 		}
 		fmt.Println("已归位服务单元 -c 目标:", unitPath, "→", want)
+		n++
 	}
+	return n
 }
 
 const usageMigrateLayout = `用法:

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
@@ -71,6 +72,50 @@ func gnbConfRel(home string) string {
 		nodeID = "default"
 	}
 	return filepath.Join("conf", form, nodeID)
+}
+
+// modeFileMissing home 还没有 mode.json（conf/ 与旧根位都查）——
+// 身份未定时 gnbConfRel 只能回退 conf/<form>/default，单元里的 -c 是待归位的。
+func modeFileMissing(home string) bool {
+	for _, p := range []string{
+		filepath.Join(home, "conf", "mode.json"),
+		filepath.Join(home, "mode.json"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// warnGnbUnitConfRelPending install 时身份未定的显式警告（缺口⑦）。
+// 188 实测：install 先于 setup，单元按 gnbConfRel 回退写出
+// `-c ${MYNET_HOME}/conf/local/default`，gnb 拿着错目录 crash-loop 50 次。
+// 单元照写（install 的职责是装服务），但把「待归位」明说，别让它静默变坑。
+func warnGnbUnitConfRelPending(home string) {
+	fmt.Fprintf(os.Stderr, "⚠ mynet_gnb.service 的 -c 待 mynet setup 后归位："+
+		"%s 尚无 mode.json，单元暂指 %s（mynet setup 后自动归位，或重跑 mynet install）\n",
+		home, gnbConfRel(home))
+}
+
+// realignGnbUnitAfterSetup setup 写完 mode.json 后把已装服务单元的 `-c` 归位（缺口⑦）。
+//
+// 为什么挂在 setup：单元生成是覆盖写，而 install 可能先于 setup 跑（此时无
+// mode.json，单元必坏）—— 身份定型的时刻在 setup，归位要跟着它走。
+// macOS 的 launchd 不写 gnb plist（gnb 不进 launchd，plist 无内嵌 conf 路径，
+// 由 TestLaunchdSpecsDoNotEmbedGnbConfPath 锁定）—— 无需归位；
+// OpenWrt 走 init/UCI 另线。
+func realignGnbUnitAfterSetup(home string) {
+	n := rewriteGnbUnitConfRelFiles(home, gnbSystemdUnitPaths)
+	if n == 0 {
+		return
+	}
+	// daemon-reload 尽力而为：没有 systemctl / 无权限都只提示，不判失败 ——
+	// 单元内容已归位，systemd 下次读它时自然生效。
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ systemctl daemon-reload 未执行（单元已归位，下次生效）: %v %s\n",
+			err, strings.TrimSpace(string(out)))
+	}
 }
 
 func cmdExists(name string) bool {

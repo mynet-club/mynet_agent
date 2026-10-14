@@ -93,3 +93,47 @@ func TestWriteLaunchdPlistKeepAlive(t *testing.T) {
 		t.Fatalf("托盘 plist 缺 RunAtLoad:\n%s", s)
 	}
 }
+
+// TestLaunchdSpecsDoNotEmbedGnbConfPath 锁「plist 不内嵌 conf 路径」这条不变量
+// （缺口⑦的 macOS 面）。
+//
+// realignGnbUnitAfterSetup 结论「launchd 无需归位」的依据就是这条：
+// gnb 不进 launchd、conf 由 mynetd 运行时按 MYNET_HOME 算 —— 生成面没有
+// 内嵌 conf 路径，setup 换身份就没有 plist 可归位。谁往 argv 里塞 `-c`/conf
+// 路径，必须先给 realignGnbUnitAfterSetup 补 plist 归位，否则换身份后
+// plist 指着旧目录（188 crash-loop 的 macOS 翻版）。
+func TestLaunchdSpecsDoNotEmbedGnbConfPath(t *testing.T) {
+	const home = "/opt/mynet"
+	margv, menv := launchdMynetdSpec(home, "wss://gw.example/1", "/opt/mynet/bin")
+	targv, tenv := launchdTraySpec(home, "/opt/mynet/bin")
+	for _, tc := range []struct {
+		name string
+		argv []string
+		env  map[string]string
+	}{
+		{"mynetd", margv, menv},
+		{"tray", targv, tenv},
+	} {
+		for _, a := range tc.argv {
+			if a == "-c" || strings.Contains(a, "conf") {
+				t.Errorf("%s: argv 内嵌 conf 目标 %q —— setup 换身份后会指错目录", tc.name, a)
+			}
+		}
+		dir := t.TempDir()
+		if err := writeLaunchdPlist("com.test."+tc.name, dir, tc.argv, tc.env,
+			"/dev/null", "/dev/null", true); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "com.test."+tc.name+".plist"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "-c</string>") {
+			t.Errorf("%s: plist 含 -c 参数（内嵌 conf 路径的形态）:\n%s", tc.name, b)
+		}
+		// conf 的运行时来源必须在：MYNET_HOME（mynetd 自己算节点目录）
+		if !strings.Contains(string(b), "<key>MYNET_HOME</key>") {
+			t.Errorf("%s: plist 缺 MYNET_HOME（conf 由运行时按它算）:\n%s", tc.name, b)
+		}
+	}
+}

@@ -25,7 +25,8 @@ import (
 // cmdSetupV2 覆盖原 cmdSetup 的落盘面；密钥生成逻辑与旧版一致。
 func cmdSetupV2(args []string) int {
 	// C3：setup 写 keys/mode.json，必须显式 MYNET_HOME
-	if _, code := requireHome(); code != 0 {
+	home, code := requireHome()
+	if code != 0 {
 		return code
 	}
 	var (
@@ -217,6 +218,9 @@ func cmdSetupV2(args []string) int {
 			fmt.Println("  后端节点面公钥已回填: keys/meta.json")
 		}
 	}
+	// 缺口⑦：身份定型了，把已装服务单元的 -c 归位 —— install 先于 setup 时
+	// 单元按 conf/<form>/default 写出（gnbConfRel 回退），指向的是错目录。
+	realignGnbUnitAfterSetup(home)
 	return 0
 }
 
