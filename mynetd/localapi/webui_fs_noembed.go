@@ -8,4 +8,6 @@ import (
 )
 
 // OpenWrt/瘦构建无 WebUI 产物；返回空 FS
+const allowDiskGUI = true
+
 func webUIFS() fs.FS { return fstest.MapFS{} }

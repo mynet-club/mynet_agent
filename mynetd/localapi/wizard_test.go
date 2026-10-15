@@ -283,6 +283,19 @@ func TestGUIAssetsStripPrefix(t *testing.T) {
 	s := NewServer(Config{Token: "t"})
 	h := s.withSecurity(http.HandlerFunc(s.handleGUI))
 
+	if !allowDiskGUI {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "http://127.0.0.1:8096/gui/", nil)
+		h.ServeHTTP(rec, req)
+		if strings.Contains(rec.Body.String(), "<html>idx</html>") {
+			t.Fatal("release build loaded disk GUI")
+		}
+		if rec.Code != 200 && rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("release GUI status=%d", rec.Code)
+		}
+		return
+	}
+
 	// index
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "http://127.0.0.1:8096/gui/", nil)

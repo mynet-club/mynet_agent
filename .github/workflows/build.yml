@@ -10,16 +10,23 @@ name: build-agent
 # proxy 能力在默认编译里（mynet/proxy_*.go），无需额外 tag
 
 # ⚠️ 触发面：**只 tag + 手动 + PR**，不跟 push:main。
-# 本工作流的 build 矩阵是 6 腿交叉编译 + upload-artifact，而 GitHub Artifact 存储
-# 配额已耗尽（upload-artifact 报 "Artifact storage quota has been hit"），
-# push:main 触发的每次运行都**只烧分钟、拿不到产物**（红）。出包按需跑；
-# PR 仍跑（test 便宜、且能挡坏东西）。
+# 六腿构建与 ctl 分发按需跑；PR 运行测试。GUI/desktop ref 显式指定，
+# tag 触发使用同名 tag，缺失直接失败。实际 SHA 随包记录于 SOURCES.txt。
 on:
   push:
     tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      gui_ref:
+        description: 'mynet_gui commit SHA/tag (required; no default-branch fallback)'
+        required: true
+        type: string
+      desktop_ref:
+        description: 'mynet_desktop commit SHA/tag for darwin installation docs'
+        required: true
+        type: string
 
 # 同一 ref 的并发运行取消旧的（重复 dispatch 不叠加）；tag 出包不取消（防半截发布）。
 concurrency:
@@ -67,11 +74,49 @@ jobs:
             ctlarch: amd64
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve source refs
+        id: sources
+        env:
+          GUI_INPUT: ${{ inputs.gui_ref }}
+          DESKTOP_INPUT: ${{ inputs.desktop_ref }}
+        run: |
+          set -euo pipefail
+          gui_ref="$GUI_INPUT"
+          desktop_ref="$DESKTOP_INPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            gui_ref="${gui_ref:-$GITHUB_REF_NAME}"
+            desktop_ref="${desktop_ref:-$GITHUB_REF_NAME}"
+          fi
+          [ -n "$gui_ref" ] || { echo 'GUI ref required' >&2; exit 1; }
+          [ -n "$desktop_ref" ] || { echo 'desktop ref required' >&2; exit 1; }
+          echo "gui_ref=$gui_ref" >> "$GITHUB_OUTPUT"
+          echo "desktop_ref=$desktop_ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: mynet-club/mynet_gui
+          ref: ${{ steps.sources.outputs.gui_ref }}
+          path: mynet_gui
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mynet_gui/package-lock.json
+      - name: Build embedded GUI
+        working-directory: mynet_gui
+        run: |
+          set -euo pipefail
+          npm ci
+          cp .env.embed .env.prod
+          cp .env.embed .env.local.prod
+          npm run build
+      - name: Prepare embedded GUI
+        run: sh scripts/prepare-gui.sh mynet_gui/dist/spa mynetd/localapi/webui/gui
       # darwin 的安装文档归 mynet_desktop（旧 packaging/darwin 已退役）—— Pack 步取其 docs/INSTALL.md
       - uses: actions/checkout@v4
         if: matrix.goos == 'darwin'
         with:
           repository: mynet-club/mynet_desktop
+          ref: ${{ steps.sources.outputs.desktop_ref }}
           path: mynet_desktop
       - uses: actions/setup-go@v5
         with:
@@ -92,6 +137,9 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "VERSION=$V"
 
+      - name: Verify embedded UI over HTTP
+        run: go run -tags embed scripts/check-embedded-ui.go
+
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -106,6 +154,9 @@ jobs:
           NAME="mynet_agent_${GOOS}_${{ matrix.ctlarch }}_${VER}"
           OUT="dist/${NAME}"
           mkdir -p "$OUT"
+          source_desktop=-
+          if [ "$GOOS" = darwin ]; then source_desktop=mynet_desktop; fi
+          sh scripts/build-sources.sh . mynet_gui mynet_gui/dist/spa "$source_desktop" "$OUT/SOURCES.txt"
           # B4 版本戳：基线 / 补丁 / 构建者（mynet version 三句话）
           GNB_BASELINE="1.6.8-c411f14ee647"
           GNB_PATCHES="p1-hot-restart-v2,p2-route-proxy"
@@ -149,7 +200,7 @@ jobs:
           NAME="mynet_agent_${{ matrix.goos }}_${{ matrix.ctlarch }}_${VER}"
           OUT="dist/${NAME}"
           # 分平台 INSTALL.md 是产物一部分（pack.sh 强制校验）。
-          # darwin 的安装文档归 mynet_desktop（旧打包目录已退役）——上一步已 checkout。
+          # darwin 安装文档来自固定 desktop ref。
           DOC="packaging/${GOOS}/INSTALL.md"
           if [ "$GOOS" = "darwin" ]; then DOC="mynet_desktop/docs/INSTALL.md"; fi
           if [ -f "$DOC" ]; then
@@ -158,11 +209,7 @@ jobs:
             echo "ERROR: 缺 $DOC" >&2
             exit 1
           fi
-          if [ "${{ matrix.goos }}" = "darwin" ] || [ "${{ matrix.goos }}" = "windows" ]; then
-            (cd dist && zip -r "${NAME}.zip" "${NAME}")
-          else
-            (cd dist && tar czf "${NAME}.tgz" "${NAME}")
-          fi
+          sh scripts/pack.sh "$OUT"
           ls -la dist/
 
       # 分发=ctl（不再用 upload-artifact：GitHub artifact 配额已耗尽）。
@@ -186,19 +233,24 @@ jobs:
           if [ "${#files[@]}" -eq 0 ]; then echo "ERROR: dist 下无产物"; exit 1; fi
           f="${files[0]}"
           base="$(basename "$f")"
-          # 幂等：ctl 的 upload 是裸 Release::create()，同 (product,version,platform,arch)
-          # 重推必撞 unique 键回 500。发前先量公开下载面 /d/mynet_agent/<file>，200 = 已发布
-          # → SKIP。判据与 gnb 的 ctl-publish action 同源；版本号是 v0.0.0-<提交sha>，
-          # 同一版本必然是同一提交，只需「发过没发过」这一级。
-          if [ "$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' "$CTL_URL/d/mynet_agent/$base" || echo 000)" = "200" ]; then
+          # Immutable versions may only be skipped when their source and GUI
+          # asset provenance agrees. Agent SHA alone does not identify the GUI.
+          existing=$(mktemp)
+          trap 'rm -f "$existing"' EXIT
+          status=$(curl -sS --max-time 120 -o "$existing" -w '%{http_code}' "$CTL_URL/d/mynet_agent/$base")
+          if [ "$status" = 200 ]; then
+            sh scripts/check-package-sources.sh "$existing" "$base" "dist/${base%.*}/SOURCES.txt"
             echo "SKIP: $base 已在下载面（/d/mynet_agent/$base）"
-          else
+          elif [ "$status" = 404 ]; then
             echo "→ publish mynet_agent ${{ matrix.goos }} ${{ matrix.ctlarch }} $f (is_stable=$stable)"
             curl -sS -f -X POST "$CTL_URL/api/v2/releases" \
               -H "Authorization: Bearer $CTL_TOKEN" \
               -F "product=mynet_agent" -F "version=${VER}" \
               -F "platform=${{ matrix.goos }}" -F "arch=${{ matrix.ctlarch }}" \
               -F "is_stable=$stable" -F "file=@$f"
+          else
+            echo "ERROR: 下载探针 HTTP $status，停止发布" >&2
+            exit 1
           fi
           echo
 

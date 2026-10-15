@@ -16,6 +16,8 @@ import (
 const hasWebUI = true
 
 // webUIFS 开发目录 FS。MYNET_WEBUI_DIR 未设时回落到源码树 webui/。
+const allowDiskGUI = true
+
 func webUIFS() fs.FS {
 	dir := os.Getenv("MYNET_WEBUI_DIR")
 	if dir == "" {

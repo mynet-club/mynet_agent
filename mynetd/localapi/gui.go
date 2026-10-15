@@ -35,7 +35,6 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	root := guiRoot()
 	// Release packages carry the same-origin GUI alongside the native WebUI.
 	// Prefer the compiled copy so an older on-disk GUI cannot shadow an update.
 	if embedded, err := fs.Sub(webUIFS(), "gui"); err == nil {
@@ -63,6 +62,11 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !allowDiskGUI {
+		http.Error(w, "embedded GUI unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	root := guiRoot()
 	if root == "" {
 		http.Error(w, "gui 未安装（找不到 mynet_gui/dist/spa）。设 MYNET_GUI_DIR 或把产物放到 <home>/gui", 404)
 		return
@@ -92,7 +96,6 @@ func guiRoot() string {
 		filepath.Join(guiHome(), "gui"),
 		filepath.Join(guiHome(), "gui", "spa"),
 		"../mynet_gui/dist/spa",
-		"/Users/arthur/Devel/WorkSpaceAI/mynet-club/mynet_gui/dist/spa",
 	} {
 		if d == "" {
 			continue

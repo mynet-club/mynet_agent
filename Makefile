@@ -99,6 +99,8 @@ PACK = sh scripts/pack.sh
 #    拷贝零消费者（mynet/upgrade/install.go:34 不替换、desktop 侧 if -f / /nonfatal 容缺），
 #    与安装文档「WebUI 已 embed，无 webui.html」口径一致（C1-S3）。
 GUI_DIST ?= ../mynet_gui/dist/spa
+GUI_SOURCE ?= ../mynet_gui
+DESKTOP_SOURCE ?= ../mynet_desktop
 # darwin 安装文档来源（旧 packaging/darwin 打包目录已随 H2 退役，文档归 mynet_desktop）
 DESKTOP_INSTALL ?= ../mynet_desktop/docs/INSTALL.md
 
@@ -120,11 +122,9 @@ DESKTOP_INSTALL ?= ../mynet_desktop/docs/INSTALL.md
 dist:
 	@echo "▸ dist（VERSION=$(VERSION)）"
 	@rm -rf dist && mkdir -p dist
-	@set -e; test -f "$(GUI_DIST)/index.html" || { echo "缺 GUI embed 构建: $(GUI_DIST)"; exit 1; }; \
-		grep -q '/gui/assets/' "$(GUI_DIST)/index.html" || { echo "GUI 必须使用 .env.embed 构建"; exit 1; }; \
-		mkdir -p mynetd/localapi/webui/gui; \
-		cp -R "$(GUI_DIST)/." mynetd/localapi/webui/gui/; \
+	@set -e; sh scripts/prepare-gui.sh "$(GUI_DIST)" mynetd/localapi/webui/gui; \
 		trap 'rm -rf mynetd/localapi/webui/gui' EXIT; \
+		go run -tags embed scripts/check-embedded-ui.go; \
 		for entry in $(DIST_MATRIX); do \
 		platform=$${entry%%:*}; r=$${entry#*:}; \
 		goos=$${r%%:*}; r=$${r#*:}; \
@@ -157,6 +157,8 @@ dist:
 		if [ "$$platform" = darwin ]; then doc=$(DESKTOP_INSTALL); fi; \
 		if [ -f "$$doc" ]; then \
 		  cp "$$doc" $$out/INSTALL.md; \
+		  source_desktop=-; if [ "$$platform" = darwin ]; then source_desktop="$(DESKTOP_SOURCE)"; fi; \
+		  sh scripts/build-sources.sh . "$(GUI_SOURCE)" "$(GUI_DIST)" "$$source_desktop" "$$out/SOURCES.txt"; \
 		else \
 		  echo "  ✗ 缺 $$doc —— 分平台安装文档是产物一部分（darwin 归 mynet_desktop/docs/INSTALL.md）"; exit 1; \
 		fi; \
