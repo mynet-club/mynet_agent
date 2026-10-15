@@ -81,7 +81,7 @@ func TestWriteLaunchdPlistShape(t *testing.T) {
 func TestWriteLaunchdPlistKeepAlive(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeLaunchdPlist("club.mynet.tray", dir, []string{"/opt/mynet/bin/mynet_tray"},
-		map[string]string{"MYNET_HOME": "/var/lib/mynet"}, "/dev/null", "/dev/null", false); err != nil {
+		map[string]string{"MYNET_HOME": "/opt/mynet"}, "/dev/null", "/dev/null", false); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "club.mynet.tray.plist"))

@@ -545,16 +545,17 @@ func rewriteGnbUnitConfRel(home string) {
 	rewriteGnbUnitConfRelFiles(home, gnbSystemdUnitPaths)
 }
 
-// rewriteGnbUnitConfRelFiles 归位给定单元文件里 `-c ${MYNET_HOME}/…` 的目标；
+// rewriteGnbUnitConfRelFiles 归位给定单元文件里 `-c …` 的目标（unix=运行投影 /var/run/mynet/<nodeId>）；
 // 返回改写成功的文件数（0 = 已归位或没找到单元）。
 //
-// ⚠️ 必须用 ReplaceAllLiteralString：want 里含 `${MYNET_HOME}`，而
+// ⚠️ 必须用 ReplaceAllLiteralString：旧 want 里曾含 `${MYNET_HOME}`，而
 // ReplaceAllString 的替换串里 `$` 是**组引用**语法 —— `${MYNET_HOME}` 会被
 // 当命名组引用吃成空串，写出来的单元是 `-c /conf/<node>`（路径裸奔、
 // 指向根下的 /conf）。2026-10-14 测试实锤（TestSetupRealignsGnbUnitToNodeConfDir）。
 func rewriteGnbUnitConfRelFiles(home string, unitPaths []string) int {
-	want := "${MYNET_HOME}/" + gnbConfRel(home)
-	re := regexp.MustCompile(`-c \$\{MYNET_HOME\}/[^ \t\n]+`)
+	want := gnbConfPath(home)
+	// 覆盖旧形态（${MYNET_HOME}/…）与新形态（绝对路径）
+	re := regexp.MustCompile(`-c (?:\$\{MYNET_HOME\}/[^ \t\n]+|/var/run/mynet/[^ \t\n]+|/[^ \t\n]*mynet[^ \t\n]*)`)
 	n := 0
 	for _, unitPath := range unitPaths {
 		body, err := os.ReadFile(unitPath)

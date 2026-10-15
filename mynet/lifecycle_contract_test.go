@@ -116,10 +116,10 @@ type registration struct {
 
 // 合同 §3 登记矩阵。service/unitDir/prefix/home 是目标值，必须与代码符号一致。
 var registrationMatrix = []registration{
-	{"linux", "systemd", "mynetd,mynet_gnb", "/etc/systemd/system", "/etc/mynet/mynetd.env", "/opt/mynet", "/var/lib/mynet"},
-	{"darwin", "launchd", "com.mynet.mynetd", "/Library/LaunchDaemons", "", "/usr/local/opt/mynet", "/var/lib/mynet"},
+	{"linux", "systemd", "mynetd,mynet_gnb", "/etc/systemd/system", "/etc/mynet/mynetd.env", "/opt/mynet", "/opt/mynet"},
+	{"darwin", "launchd", "com.mynet.mynetd", "/Library/LaunchDaemons", "", "/opt/mynet", "/opt/mynet"},
 	{"windows", "scm", "mynetd", "", `C:\ProgramData\MyNet\mynetd.env`, `C:\Program Files\MyNet`, `C:\ProgramData\MyNet`},
-	{"openwrt", "procd", "mynetd,mynet", "/etc/init.d", "/etc/mynet/mynetd.env", "/etc/mynet", "/etc/mynet"},
+	{"openwrt", "procd", "mynetd,mynet", "/etc/init.d", "/etc/mynet/mynetd.env", "/usr", "/etc/mynet"},
 }
 
 func registrationFor(goos string) (registration, bool) {

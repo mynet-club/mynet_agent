@@ -219,7 +219,7 @@ func cmdSetupV2(args []string) int {
 		}
 	}
 	// 缺口⑦：身份定型了，把已装服务单元的 -c 归位 —— install 先于 setup 时
-	// 单元按 conf/<form>/default 写出（gnbConfRel 回退），指向的是错目录。
+	// 单元按 /var/run/mynet/default 写出（gnbConfPath 回退），指向的是错目录。
 	realignGnbUnitAfterSetup(home)
 	return 0
 }

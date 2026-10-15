@@ -20,38 +20,28 @@ const (
 	envConfigHome = "MYNET_CONFIG_HOME"
 	envDataHome   = "MYNET_DATA_HOME"
 	envLogDir     = "MYNET_LOG_DIR"
+	envRunRoot    = "MYNET_RUN_ROOT"
 )
 
 // GetMyNetHome 安装/数据根目录。
-// 优先级: MYNET_HOME > 可执行文件上推（…/bin → …）> 当前目录
+// 优先级: MYNET_HOME > 平台默认（PlatformDefaultHome）
 //
-// ⚠️ 仅供探测/迁移工具使用。**装服务、起进程、写配置**必须走 RequireMyNetHome
-// —— 无 env 时静默回退 exe/cwd 会写进错误的树（evidence/20260930-subject）。
+// 不猜 exe/cwd：exe 上推曾导致同机多树（evidence/20260930-subject）。
+// 系统级默认见 PlatformDefaultHome；换树只走显式 MYNET_HOME / --home。
 func GetMyNetHome() string {
 	if mynetHome := os.Getenv(envHome); mynetHome != "" {
 		return mynetHome
 	}
-	if exePath, err := os.Executable(); err == nil {
-		if realPath, err := filepath.EvalSymlinks(exePath); err == nil {
-			exePath = realPath
-		}
-		exeDir := filepath.Dir(exePath)
-		if filepath.Base(exeDir) == "bin" {
-			return filepath.Dir(exeDir)
-		}
-		return exeDir
-	}
-	return "."
+	return PlatformDefaultHome()
 }
 
-// ErrHomeUnset MYNET_HOME 未设置时的错误（装服务/起进程/写配置拒绝）。
-var ErrHomeUnset = fmt.Errorf("MYNET_HOME 未设置 —— 禁止静默回退 exe/cwd（会写进错误的配置树）；" +
-	"请显式 export MYNET_HOME=... 或用 mynet install 写入服务单元")
+// ErrHomeUnset 平台默认不可用时的错误（目前仅占位，解析链恒有默认）。
+var ErrHomeUnset = fmt.Errorf("MYNET_HOME 未设置且平台默认不可用；请 export MYNET_HOME=... 或用 mynet install --home")
 
-// RequireMyNetHome 要求 MYNET_HOME 已设置。
+// RequireMyNetHome 取 home（env > 平台默认）。
 // install / service / apply / claim 等**改变状态**的入口必须走这里。
 func RequireMyNetHome() (string, error) {
-	h := os.Getenv(envHome)
+	h := GetMyNetHome()
 	if h == "" {
 		return "", ErrHomeUnset
 	}
@@ -61,27 +51,21 @@ func RequireMyNetHome() (string, error) {
 	return h, nil
 }
 
-// HomeSource 返回 home 的来源：env | exe | cwd（诊断用）。
+// HomeSource 返回 home 的来源：env | default（诊断用）。
 //
-// 判据与 GetMyNetHome 的解析链一一对应（C1-S3 修）：
-// env 非空 → "env"；能取到可执行路径 → "exe"（无论 bin 上推还是 exeDir，
-// 两者都由 exe 位置推出）；取不到 → "cwd"（GetMyNetHome 回退 "."）。
-// 此前是 `if base=="bin" { return "exe" }; return "exe"` —— 两分支同值的
-// 退化判据，且 "cwd" 永远打不出来。
+// 判据与 GetMyNetHome 的解析链一一对应：
+// env 非空 → "env"；否则 → "default"（PlatformDefaultHome）。
+// 不再有 exe/cwd 来源 —— 那是多树混装的根因。
 func HomeSource() string {
-	exePath, exeErr := os.Executable()
-	return homeSourceFrom(os.Getenv(envHome), exePath, exeErr)
+	return homeSourceFrom(os.Getenv(envHome))
 }
 
-// homeSourceFrom 纯判据（可注入 exe 结果，便于测全三态）。
-func homeSourceFrom(envVal string, exePath string, exeErr error) string {
+// homeSourceFrom 纯判据（可注入 env，便于测）。
+func homeSourceFrom(envVal string) string {
 	if envVal != "" {
 		return "env"
 	}
-	if exeErr == nil && exePath != "" {
-		return "exe"
-	}
-	return "cwd"
+	return "default"
 }
 
 // ── v2 配置树 ─────────────────────────────────────────────────
@@ -303,6 +287,47 @@ func NodeRuntimePath(form, nodeID string) (string, error) {
 	return filepath.Join(confDir(), form, nodeID), nil
 }
 
+// ── 运行投影（/var/run/mynet/<nodeId>）────────────────────────
+//
+// 投影**专为运行时服务**：gnb `-c` 打开的是这里，map/pid 也落这里。
+// conf 节点目录里的驱动文件是**原生配置**（真相源），不是投影。
+// /var/run 常为 tmpfs、重启即空 → 起服务前必须先 apply 投影。
+
+// RunRoot 运行投影根。unix=`/var/run/mynet`（可用 MYNET_RUN_ROOT 覆盖，测试/调试）；
+// Windows 无 /var/run，返回空（调用方回落 conf 节点目录，维持现状）。
+func RunRoot() string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	if v := os.Getenv(envRunRoot); v != "" {
+		return v
+	}
+	return "/var/run/mynet"
+}
+
+// RunProjectionPath 节点运行投影目录（gnb -c 目标）。
+// unix: `/var/run/mynet/<nodeID>`；Windows: `""`（无独立投影，用 conf 节点目录）。
+// nodeID 空时用 "default"（install 先于 setup 的待归位形态）。
+func RunProjectionPath(nodeID string) (string, error) {
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	if err := ValidateDirName(nodeID); err != nil {
+		return "", err
+	}
+	root := RunRoot()
+	if root == "" {
+		return "", nil
+	}
+	return filepath.Join(root, nodeID), nil
+}
+
+// ActiveRunProjectionPath 当前激活节点的运行投影目录（mode.json 判 nodeID）。
+func ActiveRunProjectionPath() (string, error) {
+	_, nodeID := ActiveNodeInfo()
+	return RunProjectionPath(nodeID)
+}
+
 // ActiveNodeInfo 从 mode.json 读当前 form 与 nodeID（不依赖 shared/config，
 // utils 不能反向依赖 config）。未初始化时 form=local、nodeID=""。
 // 旧位置（HOME 根）只读兼容；搬迁由 shared/config.MigrateLegacyModeFile 做。
@@ -487,20 +512,25 @@ func SafeCreateDir(path string, perm os.FileMode) error {
 	return os.MkdirAll(path, perm)
 }
 
-// PlatformDefaultHome 平台默认 **home（Store Root）** —— 只作文档/诊断，
-// 不是 install 的回退值：install 必须显式给 --home 或 MYNET_HOME（见 lifecycle-contract §2.1）。
+// PlatformDefaultHome 平台默认 **home（Store Root）** —— 系统级配置/数据/脚本根。
+// 系统级唯一，不设用户级模式：节点守护要建 TUN/写路由/持身份密钥。
 //
-// 注意与 PlatformDefaultPrefix（二进制安装前缀 /opt/mynet、C:\Program Files\MyNet）**不是一回事**：
-// home 存的是节点身份/密钥/配置，prefix 放程序文件。历史上把两者混用导致 CLI 与安装器各写一棵树。
+// · unix（linux/mac/bsd）：/opt/mynet（与 prefix 同树，bin/ 在其下）
+// · OpenWrt：/etc/mynet（flash 限制，ipk 约定）
+// · Windows：C:\ProgramData\MyNet
+//
+// /var 只放运行时投影（/var/run/mynet/<nodeId>），不是 home。
 func PlatformDefaultHome() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/var/lib/mynet"
+		return "/opt/mynet"
 	case "windows":
 		return `C:\ProgramData\MyNet`
 	default:
-		// OpenWrt 的 home 是 /etc/mynet，由 ipk/安装器显式指定；通用 Linux 用 /var/lib/mynet。
-		return "/var/lib/mynet"
+		if isOpenWrtSystem() {
+			return "/etc/mynet"
+		}
+		return "/opt/mynet"
 	}
 }
 
@@ -511,12 +541,12 @@ func PlatformDefaultHome() string {
 func PlatformDefaultPrefix() string {
 	switch runtime.GOOS {
 	case "darwin":
-		return "/usr/local/opt/mynet"
+		return "/opt/mynet"
 	case "windows":
 		return `C:\Program Files\MyNet`
 	default:
 		if isOpenWrtSystem() {
-			return "/usr" // OpenWrt：二进制由 ipk 装 /usr/sbin，系统里没有 /opt/mynet
+			return "/usr" // OpenWrt：二进制由 ipk 装 /usr/sbin
 		}
 		return "/opt/mynet"
 	}

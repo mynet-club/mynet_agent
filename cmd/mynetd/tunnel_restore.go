@@ -2,7 +2,7 @@ package main
 
 // 隧道随 mynetd 恢复 —— 配置项 + 退出时记住 gnb|wg 状态。
 //
-//	/var/lib/mynet/var/tunnel-state.json
+//	$MYNET_HOME/var/tunnel-state.json
 //	  { "want_running": true, "driver": "gnb", "node_id": "…", "updated_at": "…" }
 //
 //	/conf/agent.json

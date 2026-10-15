@@ -3,7 +3,6 @@ package utils
 // 配置树 v2 路径：三分布局、租户/插件目录名防穿越。
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,23 +143,18 @@ func TestResolveKeysDirCrossModeFallback(t *testing.T) {
 	}
 }
 
-// HomeSource 三态判据（C1-S3：原判据两分支同返回 "exe"，"cwd" 永远打不出）。
-// 与 GetMyNetHome 解析链一一对应：env > exe > cwd（"."）。
-func TestHomeSourceThreeStates(t *testing.T) {
+// HomeSource 判据：env | default（与 GetMyNetHome 解析链一一对应，不再猜 exe/cwd）。
+func TestHomeSourceTwoStates(t *testing.T) {
 	cases := []struct {
-		name    string
-		env     string
-		exePath string
-		exeErr  error
-		want    string
+		name string
+		env  string
+		want string
 	}{
-		{"env 优先", "/var/lib/mynet", "/x/bin/mynet", nil, "env"},
-		{"exe 可取（bin 上推布局）", "", "/x/bin/mynet", nil, "exe"},
-		{"exe 可取（exeDir 直用）", "", "/x/mynet", nil, "exe"},
-		{"exe 取不到回退 cwd", "", "", errors.New("no executable"), "cwd"},
+		{"env 优先", "/opt/mynet", "env"},
+		{"无 env 走平台默认", "", "default"},
 	}
 	for _, c := range cases {
-		if got := homeSourceFrom(c.env, c.exePath, c.exeErr); got != c.want {
+		if got := homeSourceFrom(c.env); got != c.want {
 			t.Errorf("%s: homeSourceFrom()=%q，want %q", c.name, got, c.want)
 		}
 	}
@@ -172,5 +166,17 @@ func TestHomeSourceEnv(t *testing.T) {
 	t.Setenv(envHome, "/tmp/x")
 	if got := HomeSource(); got != "env" {
 		t.Fatalf("HomeSource()=%q，want env", got)
+	}
+}
+
+func TestRunProjectionPath(t *testing.T) {
+	t.Setenv(envRunRoot, "/tmp/run-test")
+	p, err := RunProjectionPath("3001")
+	if err != nil || p != "/tmp/run-test/3001" {
+		t.Fatalf("RunProjectionPath()=%q %v", p, err)
+	}
+	p, err = RunProjectionPath("")
+	if err != nil || p != "/tmp/run-test/default" {
+		t.Fatalf("empty nodeID → default: %q %v", p, err)
 	}
 }

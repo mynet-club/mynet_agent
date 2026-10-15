@@ -35,17 +35,14 @@ func main() {
 	}
 
 	// -home 优先（launchd/计划任务之外的自启通道）；其次环境变量；
-	// 最后按安装约定猜：托盘在 /Applications/MyNet.app/… 时 GetMyNetHome 会猜错，
-	// 未设时用 /var/lib/mynet（darwin/linux）或 ProgramData\MyNet（windows）。
+	// 最后用平台默认（与 utils.PlatformDefaultHome 同口径，不猜 exe 目录）。
 	if *home != "" {
 		_ = os.Setenv("MYNET_HOME", *home)
 	}
 	if os.Getenv("MYNET_HOME") == "" {
 		switch runtime.GOOS {
-		case "darwin", "linux":
-			if _, err := os.Stat("/var/lib/mynet"); err == nil {
-				_ = os.Setenv("MYNET_HOME", "/var/lib/mynet")
-			}
+		case "darwin", "linux", "freebsd", "openbsd", "netbsd":
+			_ = os.Setenv("MYNET_HOME", "/opt/mynet")
 		case "windows":
 			if d := os.Getenv("ProgramData"); d != "" {
 				_ = os.Setenv("MYNET_HOME", filepath.Join(d, "MyNet"))

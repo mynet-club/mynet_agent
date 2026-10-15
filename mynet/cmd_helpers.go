@@ -44,11 +44,11 @@ func collectMetricsBrief() map[string]any {
 func goos() string   { return runtime.GOOS }
 func goarch() string { return runtime.GOARCH }
 
-// gnbConfRel gnb `-c` 的 home 相对目标（D4-E：节点唯一存放位 conf/<form>/<nodeId>）。
-// form+nodeId 取 mode.json；节点未定时给 conf/local/default（setup 后重跑 install 归位）。
-// 服务单元生成面（install / migrate-layout）负责让它与实际节点目录一致。
+// gnbConfPath gnb `-c` 的绝对目标：unix = 运行投影 `/var/run/mynet/<nodeId>`
+// （map/pid 也落这）；Windows 无 /var/run，回落 conf 节点目录。
+// form+nodeId 取 mode.json；节点未定时给 default（setup 后重跑 install 归位）。
 // 放无 build-tag 的本文件：迁移命令（全平台）与 install（分平台）都要用。
-func gnbConfRel(home string) string {
+func gnbConfPath(home string) string {
 	form, nodeID := "local", ""
 	raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json"))
 	if err != nil {
@@ -71,11 +71,15 @@ func gnbConfRel(home string) string {
 	if nodeID == "" {
 		nodeID = "default"
 	}
-	return filepath.Join("conf", form, nodeID)
+	if run, err := utils.RunProjectionPath(nodeID); err == nil && run != "" {
+		return run
+	}
+	// Windows：无独立运行投影，仍指 conf 节点目录
+	return filepath.Join(home, "conf", form, nodeID)
 }
 
 // modeFileMissing home 还没有 mode.json（conf/ 与旧根位都查）——
-// 身份未定时 gnbConfRel 只能回退 conf/<form>/default，单元里的 -c 是待归位的。
+// 身份未定时 gnbConfPath 只能回退 default，单元里的 -c 是待归位的。
 func modeFileMissing(home string) bool {
 	for _, p := range []string{
 		filepath.Join(home, "conf", "mode.json"),
@@ -89,13 +93,13 @@ func modeFileMissing(home string) bool {
 }
 
 // warnGnbUnitConfRelPending install 时身份未定的显式警告（缺口⑦）。
-// 188 实测：install 先于 setup，单元按 gnbConfRel 回退写出
-// `-c ${MYNET_HOME}/conf/local/default`，gnb 拿着错目录 crash-loop 50 次。
+// 188 实测：install 先于 setup，单元按 gnbConfPath 回退写出
+// `-c /var/run/mynet/default`，gnb 拿着错目录 crash-loop 50 次。
 // 单元照写（install 的职责是装服务），但把「待归位」明说，别让它静默变坑。
 func warnGnbUnitConfRelPending(home string) {
 	fmt.Fprintf(os.Stderr, "⚠ mynet_gnb.service 的 -c 待 mynet setup 后归位："+
 		"%s 尚无 mode.json，单元暂指 %s（mynet setup 后自动归位，或重跑 mynet install）\n",
-		home, gnbConfRel(home))
+		home, gnbConfPath(home))
 }
 
 // realignGnbUnitAfterSetup setup 写完 mode.json 后把已装服务单元的 `-c` 归位（缺口⑦）。

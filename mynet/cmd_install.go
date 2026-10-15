@@ -136,10 +136,10 @@ func reportLegacyProxyMigration(home string, dry bool) {
 
 // resolveInstallHome 解析 install/uninstall 的**唯一** home。
 //
-// 口径（lifecycle-contract §2.1，C3）：
-//   - 优先级：--home > MYNET_HOME；
-//   - 两者都无 → 拒绝（禁止静默回退 prefix/exe/cwd —— 会写进错误的配置树）；
+// 口径（lifecycle-contract §2.1）：
+//   - 优先级：--home > MYNET_HOME > 平台默认（PlatformDefaultHome）；
 //   - 两者都给且不同 → 拒绝（私有密钥/配置落在哪不能有歧义）。
+//   - 不回退 prefix/exe/cwd。
 func resolveInstallHome(explicit string) (string, int) {
 	env := os.Getenv("MYNET_HOME")
 	switch {
@@ -167,8 +167,14 @@ func resolveInstallHome(explicit string) (string, int) {
 		}
 		return h, 0
 	default:
-		fmt.Fprintln(os.Stderr, "✗ 未给 home：请用 --home DIR 或 export MYNET_HOME=…（禁止静默回退 prefix/exe/cwd）")
-		return "", 1
+		// 平台默认（unix=/opt/mynet，OpenWrt=/etc/mynet，Windows=ProgramData\MyNet）
+		h := utils.PlatformDefaultHome()
+		if h == "" || !filepath.IsAbs(h) {
+			fmt.Fprintln(os.Stderr, "✗ 无法解析 home：请用 --home DIR 或 export MYNET_HOME=…")
+			return "", 1
+		}
+		fmt.Printf("  home 未显式指定，使用平台默认 %s\n", h)
+		return h, 0
 	}
 }
 

@@ -68,12 +68,13 @@ func TestInstallHomeFlagWorksWithoutEnv(t *testing.T) {
 	}
 }
 
-// C3：既无 --home 又无 MYNET_HOME 必须拒绝（禁止静默回退 prefix/exe/cwd）。
-func TestInstallWithoutAnyHomeRefuses(t *testing.T) {
+// 未给 --home / MYNET_HOME 时使用平台默认（PlatformDefaultHome），不再拒绝。
+// 禁止的是 prefix/exe/cwd 回退；平台默认是编译期已知的系统级 home。
+func TestInstallWithoutAnyHomeUsesPlatformDefault(t *testing.T) {
 	t.Setenv("MYNET_HOME", "")
 	rc := cmdInstall([]string{"--dry-run", "--gateways", "wss://gw.example.com/v1/node/connect"})
-	if rc != 1 {
-		t.Fatalf("无 home 应拒绝，退出码 1，实际 %d", rc)
+	if rc != 0 {
+		t.Fatalf("无 home 应落到平台默认并 dry-run 成功，实际 %d", rc)
 	}
 }
 

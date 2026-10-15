@@ -10,8 +10,8 @@ import (
 // G3 缺口⑦：install 写单元时机早于 setup —— setup 必须把单元的 `-c` 归位。
 //
 // 已核实机制：writeSystemdUnits 是覆盖写；install 跑在 setup 之前时 home 无
-// mode.json → gnbConfRel 回退 conf/local/default → 单元天生坏
-// （188 实测 crash-loop 50 次：ExecStart=… -c ${MYNET_HOME}/conf/local/default）。
+// mode.json → gnbConfPath 回退 /var/run/mynet/default → 单元天生坏
+// （188 实测 crash-loop 50 次：ExecStart=… -c /var/run/mynet/default）。
 
 // setup 后单元内容必须指向 conf/<form>/<nodeId>（文件断言）。
 // 顺带锁第二遍：换身份再 setup 也要跟着归位（归位挂在 setup，不只首次）。
@@ -21,7 +21,7 @@ func TestSetupRealignsGnbUnitToNodeConfDir(t *testing.T) {
 
 	unit := filepath.Join(t.TempDir(), "mynet_gnb.service")
 	// install 先于 setup 写出的坏单元（188 形态）
-	bad := "[Service]\nExecStart=/usr/local/bin/gnb --systemd -c ${MYNET_HOME}/conf/local/default\n"
+	bad := "[Service]\nExecStart=/usr/local/bin/gnb --systemd -c /var/run/mynet/default\n"
 	if err := os.WriteFile(unit, []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -37,10 +37,10 @@ func TestSetupRealignsGnbUnitToNodeConfDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "-c ${MYNET_HOME}/conf/online/n7") {
-		t.Fatalf("setup 后单元应指向 conf/online/n7:\n%s", b)
+	if !strings.Contains(string(b), "-c /var/run/mynet/n7") {
+		t.Fatalf("setup 后单元应指向 /var/run/mynet/n7:\n%s", b)
 	}
-	if strings.Contains(string(b), "conf/local/default") {
+	if strings.Contains(string(b), "/var/run/mynet/default") {
 		t.Fatalf("坏的回退目标没被归位:\n%s", b)
 	}
 
@@ -52,8 +52,8 @@ func TestSetupRealignsGnbUnitToNodeConfDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "-c ${MYNET_HOME}/conf/local/3001") {
-		t.Fatalf("再 setup 后应指向 conf/local/3001:\n%s", b)
+	if !strings.Contains(string(b), "-c /var/run/mynet/3001") {
+		t.Fatalf("再 setup 后应指向 /var/run/mynet/3001:\n%s", b)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestInstallWarnsWhenModeJsonMissing(t *testing.T) {
 	if !strings.Contains(warn, "mynet_gnb.service 的 -c 待 mynet setup 后归位") {
 		t.Fatalf("警告文案必须明说待归位: %q", warn)
 	}
-	if !strings.Contains(warn, "conf/local/default") {
+	if !strings.Contains(warn, "/var/run/mynet/default") {
 		t.Fatalf("警告要指出暂指的目标: %q", warn)
 	}
 

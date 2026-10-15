@@ -35,14 +35,14 @@ sudo cp mynet mynetd /opt/mynet/bin/
 sudo cp gnb gnb_ctl gnb_es gnb_crypto /usr/local/bin/
 
 # 3) 装服务（Linux → systemd）
-export MYNET_HOME=/var/lib/mynet
+export MYNET_HOME=/opt/mynet
 sudo -E /opt/mynet/bin/mynet install \
   --gateways 'wss://gw.mynet.club/v1/node/connect' \
-  --prefix /opt/mynet --home /var/lib/mynet
+  --prefix /opt/mynet --home /opt/mynet
 ```
 
 安装器写 systemd unit + `/opt/mynet/etc/mynetd.env` 并 `enable`，同时把 gnb
-四件套置备到标准位 `/var/lib/mynet/driver/gnb/bin/`（同构建同目录，gnb_ctl
+四件套置备到标准位 `/opt/mynet/bin/`（同构建同目录，gnb_ctl
 计数依赖这一点）。`--gnb-bin` 默认 `/usr/local/bin/gnb`，放在别处才需要指定。
 
 ---
@@ -50,7 +50,7 @@ sudo -E /opt/mynet/bin/mynet install \
 ## 3. 登录
 
 ```bash
-export MYNET_HOME=/var/lib/mynet
+export MYNET_HOME=/opt/mynet
 /opt/mynet/bin/mynet auth login \
   --email '你的邮箱' \
   --password-stdin
@@ -124,7 +124,7 @@ sudo journalctl -u mynetd -n 50 | grep -E '节点面签名就绪|transport: conn
 
 ```bash
 sudo -E /opt/mynet/bin/mynet uninstall
-sudo rm -rf /opt/mynet /var/lib/mynet   # 含私钥，先确认已备份
+sudo rm -rf /opt/mynet   # 含私钥，先确认已备份
 ```
 
 ---
