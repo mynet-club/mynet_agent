@@ -117,6 +117,7 @@ func TestApplyProxyToGnbRespectsCapability(t *testing.T) {
 func TestApplyActiveWritesProxyConfWhenPluginEnabled(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("MYNET_HOME", root)
+	t.Setenv("MYNET_RUN_ROOT", t.TempDir()) // 测试无 root，不写 /var/run
 	old := GNBProxySupported
 	GNBProxySupported = func() (bool, string) { return true, "ok" }
 	defer func() { GNBProxySupported = old }()
