@@ -7,6 +7,9 @@ import (
 )
 
 func TestDeviceFingerprintStable(t *testing.T) {
+	// home 要可写：无 /etc/machine-id 时 machine-id 落 $MYNET_HOME/var/，
+	// 写失败会每次新随机 → 指纹「不稳定」。测试用临时 home。
+	t.Setenv("MYNET_HOME", t.TempDir())
 	a := DeviceFingerprint()
 	b := DeviceFingerprint()
 	if a == "" || a != b {
@@ -21,6 +24,7 @@ func TestDeviceFingerprintStable(t *testing.T) {
 // 指纹不得掺 hostname：hostname 变了（MacBook-Pro-3.local → Mac.lan）
 // 会让后端侧 Token Binding 判 mismatch 并吊销 token。
 func TestDeviceFingerprintIgnoresHostname(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	// 同一 machine-id 下两次调用必须一致；实现已不读 hostname，
 	// 这里用「连续两次一致 + 非空」兜底，并核对公式不含主机名分量。
 	a := DeviceFingerprint()
