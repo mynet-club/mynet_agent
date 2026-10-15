@@ -625,7 +625,7 @@ details.raw pre{
         <tr><td class="k">节点 ID</td><td class="v mono" id="n-id">—</td></tr>
         <tr><td class="k">网络驱动</td><td class="v" id="n-driver">—</td></tr>
         <tr><td class="k">网络接口</td><td class="v mono" id="n-tun">—</td></tr>
-        <tr><td class="k">网络地址</td><td class="v mono" id="n-addr">—</td></tr>
+        <tr><td class="k">节点地址</td><td class="v mono" id="n-addr">—</td></tr>
         <tr><td class="k">MTU</td><td class="v" id="n-mtu">—</td></tr>
       </table>
     </div>
@@ -638,10 +638,10 @@ details.raw pre{
         <tr><td class="k">MyNet 服务</td><td class="v" id="s-daemon">—</td></tr>
         <tr><td class="k">网络驱动进程</td><td class="v" id="s-proc">—</td></tr>
         <tr><td class="k">系统路由</td><td class="v" id="s-routes">—</td></tr>
-        <tr><td class="k">防火墙</td><td class="v" id="s-fw"><span class="badge">未检测</span></td></tr>
+        <tr class="adv-fw" hidden><td class="k">防火墙</td><td class="v" id="s-fw"><span class="badge">未检测</span></td></tr>
         <tr><td class="k">接收 / 发送</td><td class="v mono" id="s-traffic">—</td></tr>
       </table>
-      <p class="note" style="margin-top:12px">防火墙状态暂未接入探测，后端就绪后自动显示。</p>
+      <p class="note adv-fw" hidden style="margin-top:12px">防火墙探测未接入（高级）。</p>
     </div>
   </div>
 
@@ -705,8 +705,8 @@ details.raw pre{
 
       <div class="key-grid" id="key-grid">
         <button type="button" class="key-card" data-key-op="import">
-          <div class="kc-title">① 导入密钥</div>
-          <div class="kc-desc">从备份或其它机器带来的密钥对。可粘贴十六进制，或上传文件（自动识别其中的公钥/私钥）。</div>
+          <div class="kc-title">① 输入/导入密钥</div>
+          <div class="kc-desc">有文本就粘贴十六进制；有备份文件则上传（自动识别公钥/私钥）。</div>
           <div class="kc-meta"><span class="badge warn">覆盖现有身份</span></div>
         </button>
         <button type="button" class="key-card" data-key-op="generate">
@@ -729,7 +729,7 @@ details.raw pre{
       <!-- 选中后的操作面板 -->
       <div class="key-op hidden" id="key-op-import">
         <h4>导入密钥</h4>
-        <p class="note">粘贴 hex 私钥，或上传备份/密钥文件。只给私钥即可 —— 服务端会从私钥推导公钥并做配对校验（私钥是身份源）。</p>
+        <p class="note">粘贴（输入）hex 私钥，或上传备份/密钥文件。只给私钥即可 —— 服务端会从私钥推导公钥并做配对校验（私钥是身份源）。</p>
         <div class="stack">
           <div class="field"><label>私钥（hex）</label><textarea id="key-priv" rows="3" spellcheck="false" autocomplete="off" placeholder="粘贴 128 hex（gnb/ed25519）或 64 hex（x25519）私钥"></textarea></div>
           <div class="field"><label>公钥（hex，可留空 —— 自动从私钥推导）</label><input id="key-pub" placeholder="64 hex 字符（可选）"></div>
@@ -956,7 +956,7 @@ details.raw pre{
         <p class="note">本机 proxy 流量从这些对端出网。</p>
         <div class="exit-add">
           <div class="field"><label>出口设备</label>
-            <select id="plug-peer"><option value="">选择一个对端设备</option></select></div>
+            <select id="plug-peer"><option value="">选择一个对端节点</option></select></div>
           <div class="field"><label>权重</label><input id="plug-weight" value="10"></div>
           <div class="field"><label>顺序</label><input id="plug-order" value="1"></div>
           <button class="btn" id="btn-plug-add">加入出口</button>
@@ -1008,6 +1008,7 @@ details.raw pre{
     <button class="on" data-tab="peer">对端</button>
     <button data-tab="lan">网段</button>
     <button data-tab="topo">拓扑</button>
+    <button data-tab="sys">系统路由</button>
   </div>
 
   <div class="panel on" data-panel="routes/peer">
@@ -1039,13 +1040,48 @@ details.raw pre{
     </div>
   </div>
 
+  <div class="panel" data-panel="routes/sys">
+    <div class="card table-scroll">
+      <div class="cardhead"><h3>系统路由表</h3></div>
+      <pre id="sys-routes" class="mono" style="max-height:320px;overflow:auto;font-size:12px;line-height:1.5">加载中…</pre>
+      <details class="raw" open>
+        <summary>本平台路由操作命令</summary>
+        <div class="note" style="margin-top:8px">
+          <p><b>只读诊断</b></p>
+          <ul>
+            <li><code>mynet route doctor</code> — 连通性机测（路由/回程/计数/对等）</li>
+            <li><code>mynet status</code> — 本机概览（隧道 / 对端）</li>
+            <li><code>mynet node-status --json</code> — 完整节点状态 JSON</li>
+          </ul>
+          <p><b>装 / 卸系统路由</b>（唯一写入口是 apply，勿手写 ip route）</p>
+          <ul>
+            <li><code>mynet apply --auto</code> — 按当前配置安装 OS 路由/防火墙</li>
+            <li><code>mynet apply --active</code> — 只生成驱动原生配置，不装 OS 路由</li>
+            <li><code>mynet apply --clear</code> — 清理本产品装过的隧道路由</li>
+            <li><code>mynet service start|restart gnb</code> — 先投影再启隧道（含路由）</li>
+          </ul>
+          <p class="note">系统路由以本机 OS 为准；本页摘录自 <code>netstat -rn</code>，只读展示。</p>
+        </div>
+      </details>
+    </div>
+  </div>
+
   <div class="panel" data-panel="routes/topo">
     <div class="card">
       <div class="cardhead"><h3>拓扑</h3></div>
-      <p class="note">中心为当前设备，外围为已知对端。连线表示路由可达。</p>
+      <p class="note">中心为本机；对端为「节点名 + 节点地址」。该节点宣告的网段不单独画，点圆在浮窗里查看。连线颜色：绿=直连，黄=中继，红=离线/不可达，灰=路由可达（链路未知）。</p>
       <div class="topo" id="topo-box">
         <div class="placeholder"><b>等待节点数据</b>启动网络后，这里显示拓扑。</div>
       </div>
+      <div class="topo-filters" id="topo-filters" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px">
+        <span class="mut">显示：</span>
+        <label><input type="checkbox" id="topo-f-direct" checked> 直连</label>
+        <label><input type="checkbox" id="topo-f-relay" checked> 中继</label>
+        <label><input type="checkbox" id="topo-f-offline" checked> 离线</label>
+        <label><input type="checkbox" id="topo-f-unknown" checked> 链路未知</label>
+        <button class="btn" id="topo-f-reset" type="button">重置</button>
+      </div>
+      <div id="topo-pop" class="hidden" role="dialog" style="position:fixed;z-index:50;max-width:320px;background:#fff;border:1px solid var(--line,#ccc);border-radius:8px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.12)"></div>
     </div>
   </div>
 </section>
@@ -1144,7 +1180,7 @@ details.raw pre{
   <div class="panel on" data-panel="space/embed">
     <div class="card">
       <div class="cardhead"><h3>控制台</h3></div>
-      <p class="note">固定高度，内容超出时在框内滚动。</p>
+      <p class="note">控制台加载中…</p>
       <iframe class="console-frame" id="console-frame" title="MyNet 网络区"></iframe>
     </div>
   </div>
@@ -1404,7 +1440,7 @@ const DEFAULT_TAB = {
 const TAB_LABEL = {
   nodes: '节点', system: '系统', peers: '连接',
   keys: '节点配置', runtime: '系统配置', proxy: '插件',
-  peer: '对端', lan: '网段', topo: '拓扑',
+  peer: '对端', lan: '网段', topo: '拓扑', sys: '系统路由',
   run: '检查', log: '日志', raw: '原始',
   embed: '控制台', info: '连接'
 };
@@ -1495,7 +1531,11 @@ async function loadSession() {
     api('/api/v1/wizard/state'),
     api('/api/v1/config/identity')
   ]);
-  if (!st.success && !idn.success) return session;
+  if (!st.success && !idn.success) {
+    const cached = cacheGet('identity', 5 * 60 * 1000);
+    if (cached) Object.assign(session, cached);
+    return session;
+  }
   const w = st.success ? st.data || {} : session;
   const i = idn.success ? idn.data || {} : session;
   if (idn.success) { identity = i; if (i.driver === 'gnb' || i.driver === 'wireguard') window.__mynetDriver = i.driver; }
@@ -1514,6 +1554,11 @@ async function loadSession() {
   try { renderConfigFlow(window.__nodeReady, window.__rtReady); } catch (_) {}
   /* 登录态一到就刷新网络区页；失败不得拖垮 refresh */
   try { if (typeof ensureConsole === 'function') ensureConsole(); } catch (_) {}
+  cacheSet('identity', {
+    logged_in: session.logged_in, user_email: session.user_email, user_id: session.user_id,
+    tenant_id: session.tenant_id, tenant_name: session.tenant_name,
+    node_id: session.node_id, node_name: session.node_name
+  });
   return session;
 }
 
@@ -1534,9 +1579,25 @@ async function refresh() {
   window.__mynetDriver = identity.driver === 'wireguard' ? 'wireguard' : 'gnb';
 
   try { await loadSession(); } catch (_) {}
+  // 低频：云端节点清单用于拓扑/列表显示名（缓存优先）
+  try {
+    if (!window.cloudNodesCache || !window.cloudNodesCache.length) {
+      const c = cacheGet('cloudNodes', 30 * 60 * 1000);
+      if (c && c.length) window.cloudNodesCache = c;
+      else if (session.logged_in) {
+        const r = await api('/api/v1/config/cloud');
+        if (r.success && r.data && r.data.nodes) {
+          window.cloudNodesCache = r.data.nodes;
+          cacheSet('cloudNodes', r.data.nodes);
+        }
+      }
+    }
+  } catch (_) {}
 
   const daemonOk = !!d.success;
-  $('net-dot').className = 'dot ' + (daemonOk ? 'ok' : 'bad');
+  // B2：顶栏点/文案跟**隧道**状态，不只跟 daemon
+  const tunRunning = !!(status && (status.state === 'RUNNING' || status.tun_up === true && status.process_up === true));
+  $('net-dot').className = 'dot ' + (!daemonOk ? 'bad' : tunRunning ? 'ok' : 'warn');
 
   try { renderOverview(daemonOk); } catch (e) { console.error('renderOverview', e); }
   try { renderDiag(daemonOk); } catch (e) { console.error('renderDiag', e); }
@@ -1564,7 +1625,8 @@ function startStatusPoll() {
       statusReadOk = !!s.success;
       if (s.success) { status = s.data || status; statusUpdatedAt = new Date(); }
       const daemonOk = !!d.success;
-      $('net-dot').className = 'dot ' + (daemonOk ? 'ok' : 'bad');
+      const tunRun2 = !!(status && (status.state === 'RUNNING' || status.tun_up === true && status.process_up === true));
+      $('net-dot').className = 'dot ' + (!daemonOk ? 'bad' : tunRun2 ? 'ok' : 'warn');
       renderOverview(daemonOk);
     } catch (_) {}
     finally { statusPollBusy = false; }
@@ -1597,9 +1659,9 @@ function renderOverview(daemonOk) {
     detailEl.textContent = (!statusReadOk && (s.one_line || s.detail) ? '上次状态：' : '') + (s.one_line || s.detail || '');
     detailEl.style.display = detailEl.textContent ? '' : 'none';
   }
-  $('net-name').textContent = !modeInfo.initialized
-    ? '未配置'
-    : modeInfo.mode === 'local' ? '自主管理' : (identity.tenant_name || '云端网络');
+  $('net-name').textContent = !modeInfo.initialized ? '未接入'
+    : (s.state === 'RUNNING' ? '运行中' : (s.state === 'STOPPED' || !s.state) ? '已停止' : (s.state || '')) +
+      ' · ' + (identity.tenant_name || (modeInfo.mode === 'local' ? '自主管理' : '云端'));
 
   /* 三格 */
   $('f-net').textContent = !modeInfo.initialized
@@ -1607,12 +1669,12 @@ function renderOverview(daemonOk) {
     : modeInfo.mode === 'local' ? '自主管理' : (identity.tenant_name || '云端');
   /* 节点名：没有名字就显示「未命名节点」，不要拿 node_id 冒充 */
   const nodeName = (identity.node_name || session.node_name || '').trim();
-  $('f-node').textContent = nodeName || '未命名节点';
+  $('f-node').textContent = nodeName || (s.node_id ? String(s.node_id) : '未命名节点');
   $('f-tun').textContent = (identity.driver || 'gnb') + (s.tun_iface ? ' · ' + s.tun_iface : '');
-  $('f-proxy').textContent = s.proxy_enabled ? '转发中' : '未转发';
+  $('f-proxy').textContent = s.proxy_enabled ? '转发中' : '未启用';
 
   /* 节点状态 / 系统状态 功能区（保留） */
-  $('n-name').textContent = nodeName || '未命名节点';
+  $('n-name').textContent = nodeName || (s.node_id || identity.node_id || '未命名节点');
   $('n-id').textContent = s.node_id || identity.node_id || '—';
   $('n-driver').textContent = identity.driver || s.driver || 'gnb';
   $('n-tun').textContent = s.tun_iface || '—';
@@ -1644,11 +1706,18 @@ function renderOverview(daemonOk) {
     : '暂时无法读取状态' + (statusUpdatedAt ? ' · 上次更新 ' + statusUpdatedAt.toLocaleTimeString() : '');
   const next = $('overview-next');
   let title = '', detail = '', label = '', action = null;
-  if (!daemonOk || !statusReadOk) {
+  // daemon 活着 ≠ 节点状态可读。首装/未配置时不得报「服务不可用」——
+  // 那会把用户引去「修服务」，而真实下一步是「开始接入」（2026-10-14 浏览器实测）。
+  if (!daemonOk) {
     $('status-title').textContent = '本机服务暂不可用';
     title = '先恢复本机服务'; detail = '请确认 MyNet 正在运行。保留上次状态供参考，恢复后刷新。'; label = '重新检查'; action = () => busy($('overview-next-btn'), refresh);
   } else if (!modeInfo.initialized || (modeInfo.mode === 'online' && !session.node_id)) {
-    title = '接入你的第一台设备'; detail = '登录账号，创建或选择设备，剩余配置自动完成。'; label = '开始接入'; action = () => { goPage('config'); if (!session.logged_in) openLoginModal(); };
+    // 首装/未选节点：身份未确立，状态红是正常的，引导接入而不是修服务
+    title = '接入第一个节点'; detail = '登录账号，创建或选择节点，剩余配置自动完成。'; label = '开始接入'; action = () => { goPage('config'); if (!session.logged_in) openLoginModal(); };
+  } else if (!statusReadOk) {
+    // 服务在、身份在，只是状态接口异常
+    $('status-title').textContent = '状态暂不可用';
+    title = '重新读取状态'; detail = '本机服务在线，但节点状态暂时读不到。可稍后重试或查看诊断。'; label = '重新检查'; action = () => busy($('overview-next-btn'), refresh);
   } else if (s.state === 'DEGRADED' || s.state === 'FAILED') {
     title = s.state === 'DEGRADED' ? '连接需要检查' : '连接未正常运行'; detail = s.one_line || '查看检查结果，按提示处理后重试。'; label = '查看原因'; action = () => goPage('diag');
   } else if (modeInfo.mode === 'online' && connectResult && connectResult.success && s.state !== 'RUNNING') {
@@ -1667,14 +1736,16 @@ function renderOverview(daemonOk) {
   const drv = window.__mynetDriver || 'gnb';
   const running = statusReadOk && (s.state === 'RUNNING' || s.state === 'DEGRADED' || s.process_up === true);
   $('btn-cfg').onclick = () => goPage('config');
-  $('btn-start').disabled = running || !statusReadOk || !modeInfo.initialized || $('btn-start').dataset.busy === 'true';
-  $('btn-start').classList.toggle('hidden', !modeInfo.initialized || (modeInfo.mode === 'online' && !running && s.state !== 'STOPPED'));
+  // B1：运行中 = 重启/停止；停止/未运行 = 启动（不要三键同屏）
+  const canStart = modeInfo.initialized && !running;
+  $('btn-start').disabled = !canStart || !statusReadOk || $('btn-start').dataset.busy === 'true';
+  $('btn-start').classList.toggle('hidden', !canStart);
   $('btn-stop').classList.toggle('hidden', !running);
   $('btn-restart').classList.toggle('hidden', !running);
   $('btn-stop').disabled = !running || $('btn-stop').dataset.busy === 'true';
   $('btn-restart').disabled = !running || $('btn-restart').dataset.busy === 'true';
   $('btn-start').onclick = () => doAction($('btn-start'), '启动', ['service', 'start', drv]);
-  $('btn-stop').onclick = () => confirmDlg('停止网络连接？', '停止后这台设备无法访问 MyNet 网络，直到再次启动。', '确认停止',
+  $('btn-stop').onclick = () => confirmDlg('停止网络连接？', '停止后本机无法访问 MyNet 网络，直到再次启动。', '确认停止',
     () => doAction($('btn-stop'), '停止', ['service', 'stop', drv]));
   $('btn-restart').onclick = () => confirmDlg('重启网络？', '连接会短暂中断，正在使用这台设备的会话可能需要重连。', '确认重启',
     () => doAction($('btn-restart'), '重启', ['service', 'restart', drv]));
@@ -1726,7 +1797,7 @@ function renderRoutes() {
     const dest = p.overlay || p.node_id || '—';
     rows.push({
       dest: dest,
-      via: p.node_name || p.node_id || lanOwner[dest] || (p.is_self ? '当前设备' : '—'),
+      via: p.is_self ? '本机' : ((p.node_name || p.node_id || lanOwner[dest] || '—') + (p.overlay ? ' · ' + p.overlay : '')),
       iface: p.is_self ? (s.tun_iface || '—') : (s.tun_iface || 'utun'),
       ok: p.is_self ? true : !!p.routed,
       self: !!p.is_self
@@ -1779,49 +1850,202 @@ function renderRoutes() {
   void lanOk;
 
   $('route-conf').textContent = s.route_conf_text || '—';
+  const sysEl = $('sys-routes');
+  if (sysEl) sysEl.textContent = s.system_routes_text || '（本机未返回系统路由表）';
   renderTopo(list, s);
+}
+
+/* 低频数据本地缓存（A：云端清单/显示名等，分钟级 TTL） */
+function cacheGet(key, ttlMs) {
+  try {
+    const raw = localStorage.getItem('mynet:' + key);
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || !o.ts || (Date.now() - o.ts) > ttlMs) return null;
+    return o.v;
+  } catch (_) { return null; }
+}
+function cacheSet(key, v) {
+  try { localStorage.setItem('mynet:' + key, JSON.stringify({ ts: Date.now(), v })); } catch (_) {}
+}
+
+function topoLinkMeta(link, routed) {
+  const l = String(link || 'unknown');
+  if (l === 'direct') return { text: '直连', key: 'direct', color: '#16805d' };
+  if (l === 'relay') return { text: '中继', key: 'relay', color: '#c49211' };
+  if (l === 'offline') return { text: '离线', key: 'offline', color: '#c94b4b' };
+  if (l === 'local') return { text: '本机', key: 'direct', color: '#16805d' };
+  return routed
+    ? { text: '路由可达', key: 'unknown', color: '#8a8f98' }
+    : { text: '不可达', key: 'offline', color: '#c94b4b' };
 }
 
 function renderTopo(list, s) {
   const box = $('topo-box');
+  if (!box) return;
+  if (!window.cloudNodesCache || !window.cloudNodesCache.length) {
+    window.cloudNodesCache = cacheGet('cloudNodes', 30 * 60 * 1000) || [];
+  }
   const peersOnly = list.filter((p) => !p.is_self);
   if (!list.length) {
     box.innerHTML = '<div class="placeholder"><b>等待节点数据</b>启动网络后，这里显示拓扑。</div>';
     return;
   }
-  const W = 640, H = 320, cx = W / 2, cy = H / 2;
-  const n = peersOnly.length || 1;
-  const nodes = peersOnly.map((p, i) => {
-    const a = (-Math.PI / 2) + (i * 2 * Math.PI / n);
-    const R = 110;
-    return {
-      x: cx + R * Math.cos(a) * 1.7,
-      y: cy + R * Math.sin(a),
-      label: (p.node_name || p.node_id || '?').slice(0, 10),
-      ok: !!p.routed
-    };
+
+  /* route.conf：node_id → 网段列表（/32 为节点 VIP，其余为挂载 LAN） */
+  const lansOf = {};
+  String(s.route_conf_text || '').split('\n').forEach((ln) => {
+    const parts = ln.trim().split('|');
+    if (parts.length < 3) return;
+    const id = String(parts[0] || '');
+    const dest = parts[1], mask = parts[2];
+    if (!id || !dest) return;
+    const is32 = mask === '255.255.255.255';
+    if (is32) return;
+    const cidr = (mask === '255.255.255.0') ? dest + '/24' : dest + '/' + mask;
+    (lansOf[id] = lansOf[id] || []).push(cidr);
   });
 
-  const lines = nodes.map((nd) =>
+  const nameOf = (p) => {
+    const id = String(p.node_id || '');
+    const c = (window.cloudNodesCache || []).find(n => String(n.node_id ?? n.id) === id);
+    return (p.node_name || (c && (c.node_name || c.name)) || id || String(p.overlay || ''));
+  };
+  const vipOf = (p) => {
+    if (p.overlay) return String(p.overlay);
+    const id = String(p.node_id || '');
+    const c = (window.cloudNodesCache || []).find(n => String(n.node_id ?? n.id) === id);
+    const raw = c && (c.virtual_ip ?? c.node_ip ?? c.ip);
+    if (typeof raw === 'number' && raw > 0) {
+      return [(raw >>> 24) & 255, (raw >>> 16) & 255, (raw >>> 8) & 255, raw & 255].join('.');
+    }
+    return raw ? String(raw) : '';
+  };
+
+  /* 过滤 */
+  const f = {
+    direct: $('topo-f-direct')?.checked !== false,
+    relay: $('topo-f-relay')?.checked !== false,
+    offline: $('topo-f-offline')?.checked !== false,
+    unknown: $('topo-f-unknown')?.checked !== false,
+  };
+
+  /* 一个节点一圆：只画**有 node_id 的节点**；
+     route.conf 里的网段挂到所属节点（不单独成圆，避免 192.168.x 重复散落）。 */
+  const nodes = peersOnly.map((p) => {
+    const id = String(p.node_id || '').trim();
+    // 无 node_id = 网段/未归属条目，不当节点画
+    if (!id) return null;
+    const lk = topoLinkMeta(p.link, p.routed);
+    if (lk.key === 'direct' && !f.direct) return null;
+    if (lk.key === 'relay' && !f.relay) return null;
+    if (lk.key === 'offline' && !f.offline) return null;
+    if (lk.key === 'unknown' && !f.unknown) return null;
+    const name = nameOf(p);
+    const vip = vipOf(p);
+    return {
+      id,
+      name,
+      vip,
+      lans: lansOf[id] || [],
+      link: lk,
+      latency: p.latency_ms,
+      routed: !!p.routed,
+      raw: p
+    };
+  }).filter(Boolean);
+
+  if (!nodes.length) {
+    box.innerHTML = '<div class="placeholder"><b>没有符合过滤条件的对端</b>请调整下方显示项。</div>';
+    return;
+  }
+
+  const W = 760, H = 420, cx = W / 2, cy = H / 2 - 10;
+  const n = nodes.length || 1;
+  const placed = nodes.map((nd, i) => {
+    const a = (-Math.PI / 2) + (i * 2 * Math.PI / n);
+    const R = 128;
+    return Object.assign({}, nd, {
+      x: cx + R * Math.cos(a) * 1.85,
+      y: cy + R * Math.sin(a)
+    });
+  });
+
+  const lines = placed.map((nd) =>
     '<line x1="' + cx + '" y1="' + cy + '" x2="' + nd.x + '" y2="' + nd.y +
-    '" stroke="' + (nd.ok ? '#16805d' : '#c94b4b') + '" stroke-width="1.5" stroke-opacity="0.7"/>'
-  ).join('');
-  const dots = nodes.map((nd) =>
-    '<g><circle cx="' + nd.x + '" cy="' + nd.y + '" r="22" fill="#fff" stroke="' +
-    (nd.ok ? '#16805d' : '#c94b4b') + '" stroke-width="1.5"/>' +
-    '<text x="' + nd.x + '" y="' + (nd.y + 4) + '" text-anchor="middle" font-size="10" fill="#152a23">' +
-    esc(nd.label) + '</text></g>'
+    '" stroke="' + nd.link.color + '" stroke-width="1.8" stroke-opacity="0.75"/>' +
+    '<text x="' + ((cx + nd.x) / 2) + '" y="' + ((cy + nd.y) / 2) +
+    '" text-anchor="middle" font-size="9" fill="' + nd.link.color + '">' + esc(nd.link.text) + '</text>'
   ).join('');
 
+  const dots = placed.map((nd, idx) => {
+    // 网段不单列；name 与 vip 相同只画一行（防截图里双写）
+    const nameTxt = String(nd.name || '').slice(0, 12);
+    const vipTxt = String(nd.vip || '');
+    const showVip = vipTxt && vipTxt !== nameTxt && vipTxt !== nd.name;
+    const nameY = showVip ? (nd.y - 2) : (nd.y + 4);
+    return '<g class="topo-node" data-idx="' + idx + '" style="cursor:pointer">' +
+      '<circle cx="' + nd.x + '" cy="' + nd.y + '" r="26" fill="#fff" stroke="' + nd.link.color + '" stroke-width="1.8"/>' +
+      '<text x="' + nd.x + '" y="' + nameY + '" text-anchor="middle" font-size="10" fill="#152a23">' +
+      esc(nameTxt) + '</text>' +
+      (showVip ? '<text x="' + nd.x + '" y="' + (nd.y + 11) + '" text-anchor="middle" font-size="8" fill="#61766d">' +
+      esc(vipTxt) + '</text>' : '') +
+      '</g>';
+  }).join('');
+
   box.innerHTML =
-    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" xmlns="http://www.w3.org/2000/svg">' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg">' +
     lines +
-    '<circle cx="' + cx + '" cy="' + cy + '" r="34" fill="#e4f3ed" stroke="#16805d" stroke-width="2"/>' +
-    '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="11" fill="#152a23">当前设备</text>' +
+    '<circle cx="' + cx + '" cy="' + cy + '" r="38" fill="#e4f3ed" stroke="#16805d" stroke-width="2"/>' +
+    '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="11" fill="#152a23">本机</text>' +
     '<text x="' + cx + '" y="' + (cy + 12) + '" text-anchor="middle" font-size="10" fill="#61766d">' +
     esc((s.overlay_ip || '—').slice(0, 16)) + '</text>' +
-    dots +
-    '</svg>';
+    dots + '</svg>';
+
+  /* 点击浮窗 */
+  const pop = $('topo-pop');
+  box.querySelectorAll('.topo-node').forEach((g) => {
+    g.addEventListener('click', (ev) => {
+      const nd = placed[Number(g.dataset.idx)];
+      if (!nd || !pop) return;
+      pop.innerHTML =
+        '<div style="display:flex;justify-content:space-between;gap:8px;align-items:start">' +
+        '<b>' + esc(nd.name) + '</b><button type="button" class="btn" id="topo-pop-x" style="padding:2px 8px">关闭</button></div>' +
+        '<table style="width:100%;font-size:12px;margin-top:8px">' +
+        '<tr><td class="mut">节点 ID</td><td class="mono">' + esc(nd.id) + '</td></tr>' +
+        '<tr><td class="mut">节点地址</td><td class="mono">' + esc(nd.vip || '—') + '</td></tr>' +
+        '<tr><td class="mut">链路</td><td><span style="color:' + nd.link.color + '">' + esc(nd.link.text) + '</span></td></tr>' +
+        '<tr><td class="mut">路由</td><td>' + (nd.routed ? '可达' : '不可达') + '</td></tr>' +
+        (nd.latency != null ? '<tr><td class="mut">时延</td><td>' + esc(String(nd.latency)) + ' ms</td></tr>' : '') +
+        '<tr><td class="mut">挂载网段</td><td class="mono">' + (nd.lans.length ? nd.lans.map(esc).join('<br>') : '—') + '</td></tr>' +
+        '</table>';
+      pop.classList.remove('hidden');
+      const r = ev.target.getBoundingClientRect();
+      pop.style.left = Math.min(window.innerWidth - 340, Math.max(8, r.left - 40)) + 'px';
+      pop.style.top = Math.min(window.innerHeight - 220, r.bottom + 8) + 'px';
+      const x = $('topo-pop-x');
+      if (x) x.onclick = () => pop.classList.add('hidden');
+    });
+  });
+
+  /* 过滤控件绑定（防重复） */
+  ['topo-f-direct', 'topo-f-relay', 'topo-f-offline', 'topo-f-unknown'].forEach((id) => {
+    const el = $(id);
+    if (el && !el.dataset.bound) {
+      el.dataset.bound = '1';
+      el.addEventListener('change', () => renderTopo(list, s));
+    }
+  });
+  const reset = $('topo-f-reset');
+  if (reset && !reset.dataset.bound) {
+    reset.dataset.bound = '1';
+    reset.addEventListener('click', () => {
+      ['topo-f-direct', 'topo-f-relay', 'topo-f-offline', 'topo-f-unknown'].forEach((id) => {
+        const el = $(id); if (el) el.checked = true;
+      });
+      renderTopo(list, s);
+    });
+  }
 }
 
 /* ── 诊断页 ── */
@@ -1830,11 +2054,10 @@ function renderDiag(daemonOk) {
   const okDaemon = daemonOk !== undefined ? daemonOk : true;
   const items = [
     ['MyNet 服务', okDaemon, okDaemon ? '正常' : '本机服务不可用'],
-    ['驱动已安装', !!s.installed, s.gnb_bin ? s.gnb_bin + ' 可用' : (s.installed ? '驱动可用' : '需要安装驱动')],
+    ['驱动', !!s.installed, s.gnb_bin ? s.gnb_bin + ' 可用' : (s.installed ? '驱动可用' : '需要安装驱动')],
     ['运行配置完整', !!s.configured, s.configured ? '运行配置已生成' : '需要完成配置'],
     ['网络接口', !!s.tun_up, s.tun_up ? (s.tun_iface || '已启动') + (s.overlay_ip ? ' · ' + s.overlay_ip : '') : '当前未启动'],
     ['路由', !!s.routes_ok, s.routes_ok ? '全部正常' : '尚未全部就绪'],
-    ['防火墙', null, '未检测（后端未接入）']
   ];
 
   /* 主卡片三格：隧道 / 进程 / 守护 */
@@ -1847,10 +2070,12 @@ function renderDiag(daemonOk) {
   const diagHero = $('diag-hero');
   diagHero.className = 'hero ' + (bad.length ? (okDaemon ? 'warn' : 'bad') : 'ok');
   const shortName = {
-    'MyNet 服务': '服务', '驱动已安装': '驱动', '运行配置完整': '运行配置',
+    'MyNet 服务': '服务', '驱动': '驱动', '运行配置完整': '运行配置',
     '网络接口': '接口', '路由': '路由', '防火墙': '防火墙'
   };
   $('diag-state').textContent = !bad.length ? '系统正常' : (shortName[bad[0][0]] || bad[0][0]) + '未就绪';
+  const diagBtn = diagHero && diagHero.querySelector('button');
+  if (diagBtn) diagBtn.classList.toggle('ghost', !bad.length);
 
   /* 功能区完整清单 */
   const html = items.map((c) => {
@@ -1933,7 +2158,7 @@ async function loadSettings() {
   const drv = identity.driver || window.__mynetDriver || 'gnb';
   $('cfg-artifacts').textContent = drv === 'wireguard'
     ? 'wg → wg0.conf / keys'
-    : 'gnb → address / node / route / keys';
+    : '身份密钥 · 运行配置';
 
   $('cfg-node').innerHTML = nodeReady ? badge('就绪', 'ok') : badge(hasPub ? '缺私钥' : '未配置', 'warn');
   $('cfg-sys').innerHTML = rtReady ? badge('已生成', 'ok') : badge('未生成', 'warn');
@@ -1950,7 +2175,7 @@ async function loadSettings() {
     : badge(hasPub ? '缺少私钥' : '尚未配置', 'warn');
   const inline = $('keys-status-inline');
   if (inline) {
-    inline.textContent = nodeReady ? '密钥完整' : hasPub ? '缺私钥' : '未配置';
+    inline.textContent = nodeReady ? '已就绪' : hasPub ? '缺私钥' : '未配置';
     inline.className = 'badge ' + (nodeReady ? 'ok' : 'warn');
   }
   $('keys-raw').textContent = JSON.stringify({
@@ -1984,7 +2209,7 @@ async function loadSettings() {
 
   const sel = $('plug-peer');
   if (sel && !sel.dataset.ready) {
-    sel.innerHTML = '<option value="">选择一个对端设备</option>' +
+    sel.innerHTML = '<option value="">选择一个对端节点</option>' +
       peers.filter((x) => !x.is_self).map((x) =>
         '<option value="' + esc(x.node_id) + '">' + esc(x.node_name || x.node_id) + ' · ' + esc(x.overlay || '') + '</option>'
       ).join('');
@@ -2269,7 +2494,7 @@ function renderConfigGate() {
     body.innerHTML =
       '<div class="gate-title"><b>第 2 步 · 选择本机对应的节点</b>' +
       '<small>已登录 ' + esc(session.user_email || '云端账号') +
-      '。这台设备要用哪个节点身份？密钥与配置都会挂到它上面。</small></div>' +
+      '。本机要用哪个节点身份？密钥与配置都会挂到它上面。</small></div>' +
       '<div class="actions" style="margin-top:8px"><button class="btn primary" id="gate-nodes">刷新节点列表</button></div>' +
       '<div id="gate-node-list" class="gate-list"></div>';
     $('gate-nodes').onclick = loadGateNodes;
@@ -2282,12 +2507,21 @@ async function loadGateNodes(e) {
   await busy(e.currentTarget, async () => {
     const r = await api('/api/v1/config/cloud');
     if (!r.success) {
+      // 低频清单：失败时用本地缓存（10 分钟）
+      const cached = cacheGet('cloudNodes', 10 * 60 * 1000);
+      if (cached && cached.length) {
+        cloudNodesCache = cached;
+        renderGateNodes(cloudNodesCache);
+        toast('节点列表', '网络暂不可用，显示缓存清单', 'warn');
+        return;
+      }
       const need = r.data && r.data.need_login || /need_login/.test(r.message || '');
       toast('节点列表拉取失败', need ? '登录态已失效，请重新登录' : (r.message || ''), 'err');
       if (need) { await loadSession(); renderConfigGate(); }
       return;
     }
     cloudNodesCache = (r.data && r.data.nodes) || [];
+    cacheSet('cloudNodes', cloudNodesCache);
     renderGateNodes(cloudNodesCache);
   });
 }
@@ -2300,20 +2534,34 @@ function renderGateNodes(nodes) {
     $('gate-create').onclick = () => { goPage('space'); ensureConsole(); $('console-frame').src = '/gui/app/nodes/create'; };
     return;
   }
-  box.innerHTML = nodes.map((n) => {
-    const id = String(n.node_id != null ? n.node_id : (n.id || ''));
-    if (!id) return '';
-    const name = esc(String(n.node_name || n.name || n.hostname || id));
-    const online = n.status === 'online' || n.online === true;
-    const tenant = esc(String(n.tenant_id || n.tenant || session.tenant_id || ''));
-    const active = id === String(session.node_id);
-    return '<div class="gate-row"><div class="grow"><b>' + name + '</b> ' +
-      '<small class="mono">' + esc(id) + '</small></div>' +
-      '<span class="badge ' + (online ? 'ok' : '') + '">' + (online ? '在线' : '离线') + '</span>' +
-      (active ? '<span class="badge ok">当前节点</span>' :
-        '<button class="btn" data-gate-tenant="' + tenant + '" data-gate-node="' + esc(id) + '">用这台</button>') +
-      '</div>';
-  }).join('');
+  box.innerHTML = (() => {
+    // C1：当前节点置顶；C2：无 VIP 显示 node_id
+    const vipOf = (n) => {
+      const raw = n.virtual_ip ?? n.node_ip ?? n.ip;
+      if (typeof raw === 'number' && raw > 0) {
+        return [(raw>>>24)&255,(raw>>>16)&255,(raw>>>8)&255,raw&255].join('.');
+      }
+      return raw ? String(raw) : '';
+    };
+    const rows = nodes.map((n) => {
+      const id = String(n.node_id != null ? n.node_id : (n.id || ''));
+      if (!id) return null;
+      const name = esc(String(n.node_name || n.name || n.hostname || id));
+      const online = n.status === 'online' || n.online === true || ['active'].includes(n.status);
+      const tenant = esc(String(n.tenant_id || n.tenant || session.tenant_id || ''));
+      const active = id === String(session.node_id);
+      const vip = vipOf(n);
+      const sub = esc(vip || id);
+      return { active, html: '<div class="gate-row"><div class="grow"><b>' + name + '</b> ' +
+        '<small class="mono">' + sub + '</small></div>' +
+        '<span class="badge ' + (online ? 'ok' : '') + '">' + (online ? '在线' : '离线') + '</span>' +
+        (active ? '<span class="badge ok">当前节点</span>' :
+          '<button class="btn" data-gate-tenant="' + tenant + '" data-gate-node="' + esc(id) + '">用这台</button>') +
+        '</div>' };
+    }).filter(Boolean);
+    rows.sort((a,b) => (b.active?1:0)-(a.active?1:0));
+    return rows.map(r => r.html).join('');
+  })();
   box.querySelectorAll('[data-gate-node]').forEach((btn) => {
     btn.onclick = () => useGateNode(btn.dataset.gateTenant, btn.dataset.gateNode, btn);
   });
@@ -2360,7 +2608,7 @@ window.addEventListener('message', async event => {
     if (!r.success) throw new Error(r.message || '读取设备列表失败');
     cloudNodesCache = r.data?.nodes || [];
     const selected = cloudNodesCache.find(n => String(n.node_id ?? n.id) === node);
-    if (!selected) throw new Error('账号下找不到此设备，请刷新后重试');
+    if (!selected) throw new Error('账号下找不到此节点，请刷新后重试');
     goPage('config');
     const selectedOK = await useGateNode(String(selected.tenant_id || session.tenant_id || ''), node, document.createElement('button'));
     if (selectedOK && String(session.node_id) === node && $('flow-connect')?.onclick) {
@@ -2385,15 +2633,18 @@ function flowStep(n, title, desc, actions) {
 }
 
 function renderConfigFlow(nodeReady, rtReady) {
-  // 就绪态由 loadSettings 提供；未取到前不渲染，避免 loadSession 先跑时误判
-  if (nodeReady === undefined || rtReady === undefined) return;
+  // 未取到也要渲染：undefined ≠ 禁止显示 CTA（选完节点必须能点「接入本机」）
+  nodeReady = !!nodeReady;
+  rtReady = !!rtReady;
   const flow = $('cfg-flow');
   const body = $('flow-body');
   const grid = $('key-grid');
   const note = $('key-intro-note');
   const ready = $('key-ready');
   const localMode = modeInfo.initialized && modeInfo.mode === 'local';
-  const gatePass = localMode || (modeInfo.mode === 'online' && !!session.logged_in && !!session.node_id);
+  // 选中节点后必须露出「接入本机」——即使 loadSettings 未回、状态接口挂了
+  const nodeChosen = !!(session.node_id || (modeInfo.active && modeInfo.active.node_id));
+  const gatePass = localMode || (modeInfo.mode === 'online' && !!session.logged_in && nodeChosen);
   const s = status || {};
   const running = s.state === 'RUNNING';
 
@@ -2472,7 +2723,7 @@ async function connectLocalDevice() {
     toast(connectResult.success ? '连接已启动' : '接入尚未完成', connectResult.message || '', connectResult.success ? 'ok' : 'err');
   } finally { connectBusy = false; renderConnectFeedback(); }
   await refresh(); await loadSettings();
-  if (connectResult.success) goPage('overview');
+  if (connectResult.success) { /* B4：保留步骤清单在配置页，仅跳概览不抹掉 */ goPage('overview'); }
 }
 
 // flowPullApply：拉取 bundle → 生成驱动投影并安装路由，一步到位。
