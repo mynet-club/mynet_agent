@@ -9,10 +9,10 @@ package mynet
 
 import (
 	"encoding/hex"
-	"path/filepath"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"

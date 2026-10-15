@@ -15,9 +15,9 @@ package mynet
 //	mynet config plugins --json
 
 import (
-	"errors"
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -573,12 +573,12 @@ func configFaceKeysSet(args []string) int {
 			code, msg = ige.Code, ige.Message
 		}
 		return printJSON(map[string]any{
-			"error":         msg,
-			"error_code":    code,
-			"cloud_state":   cloudPubSt.State,
-			"need_rekey":    code == "key_mismatch" || code == "need_rekey_confirm",
-			"need_login":    code == "need_login",
-			"hint":          "私钥不对请找正确私钥；确认换钥请带 --confirm-rekey（会替换云端公钥，对端需重拉配置）",
+			"error":       msg,
+			"error_code":  code,
+			"cloud_state": cloudPubSt.State,
+			"need_rekey":  code == "key_mismatch" || code == "need_rekey_confirm",
+			"need_login":  code == "need_login",
+			"hint":        "私钥不对请找正确私钥；确认换钥请带 --confirm-rekey（会替换云端公钥，对端需重拉配置）",
 		})
 	}
 	backPub, backWarn := backFacePubFor(mode)
@@ -1012,10 +1012,10 @@ func configFacePullOnly(downloadOnly bool) int {
 			code = ige.Code
 		}
 		return printJSON(map[string]any{
-			"error":       err.Error(),
-			"error_code":  code,
+			"error":        err.Error(),
+			"error_code":   code,
 			"need_private": code == "need_private",
-			"need_login":  code == "need_login",
+			"need_login":   code == "need_login",
 		})
 	}
 	cred := LoadCredential()

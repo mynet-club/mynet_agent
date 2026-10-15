@@ -34,4 +34,3 @@ func osRouteExists(dest string) bool {
 func localRouteExists(host string) bool {
 	return osRouteExists(host)
 }
-

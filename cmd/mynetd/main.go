@@ -21,16 +21,16 @@ import (
 	"syscall"
 	"time"
 
-	creds "github.com/mynet-club/mynet_agent/shared/creds"
-	"github.com/mynet-club/mynet_agent/shared/proxysync"
 	"github.com/mynet-club/mynet_agent/mynetd"
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
 	"github.com/mynet-club/mynet_agent/mynetd/localapi"
 	"github.com/mynet-club/mynet_agent/mynetd/transport"
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/config" // GUARD-OK 组合根：ProxyLoad/Save 注入源
+	creds "github.com/mynet-club/mynet_agent/shared/creds"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/proxysync"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
