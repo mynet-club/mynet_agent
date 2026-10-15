@@ -277,8 +277,56 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 		_ = copyDirFiles(d.ConfDir, snap)
 	}
 	pruneLastGood(lastGoodKeep)
-	fmt.Printf("✓ driver 投影 %s\n", d.ConfDir)
+	// 运行投影：conf 原生配置 → /var/run/mynet/<nodeId>（gnb -c 打开处）
+	runDir, err := projectToRun(d.ConfDir, nodeID)
+	if err != nil {
+		return fmt.Errorf("运行投影: %w", err)
+	}
+	fmt.Printf("✓ 原生配置 %s\n✓ 运行投影 %s\n", d.ConfDir, runDir)
 	return nil
+}
+
+// projectToRun 把 conf 节点目录的原生配置投到运行投影目录（专为运行时服务）。
+// 跳过 gnb.map / gnb.pid 等运行脏文件 —— 那是进程产物，不进投影源。
+// Windows 无 /var/run：返回 confDir（无独立投影，维持现状）。
+func projectToRun(confDir, nodeID string) (string, error) {
+	runDir, err := utils.RunProjectionPath(nodeID)
+	if err != nil {
+		return "", err
+	}
+	if runDir == "" {
+		return confDir, nil
+	}
+	if err := utils.SafeCreateDir(runDir, 0o700); err != nil {
+		return "", err
+	}
+	skip := map[string]bool{"gnb.map": true, "gnb.pid": true, "node_cache.dump": true}
+	ents, err := os.ReadDir(confDir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range ents {
+		if skip[e.Name()] {
+			continue
+		}
+		s := filepath.Join(confDir, e.Name())
+		d := filepath.Join(runDir, e.Name())
+		if e.IsDir() {
+			_ = utils.SafeCreateDir(d, 0o700)
+			if err := copyDirFiles(s, d); err != nil {
+				return "", err
+			}
+			continue
+		}
+		b, err := os.ReadFile(s)
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(d, b, 0o600); err != nil {
+			return "", err
+		}
+	}
+	return runDir, nil
 }
 
 // lastGoodKeep state/last-good 快照保留份数（含密钥，宁少勿多；够回滚一次就行）。
@@ -366,7 +414,16 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 			_ = os.WriteFile(varConf, b, 0o600)
 		}
 	}
-	fmt.Printf("✓ driver 投影 %s\n", d.ConfPath)
+	// 运行投影：原生配置 → /var/run/mynet/<nodeId>
+	nid := wgNodeID(env)
+	if nid == "" {
+		_, nid = utils.ActiveNodeInfo()
+	}
+	runDir, err := projectToRun(filepath.Dir(d.ConfPath), nid)
+	if err != nil {
+		return fmt.Errorf("运行投影: %w", err)
+	}
+	fmt.Printf("✓ 原生配置 %s\n✓ 运行投影 %s\n", d.ConfPath, runDir)
 	return nil
 }
 

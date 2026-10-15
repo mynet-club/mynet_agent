@@ -45,8 +45,11 @@ func wgEnv(ifname string) *domain.BundleEnvelope {
 // 此前是 /etc/wireguard/<iface>.conf —— wg-quick 钉死该路径，名字取错就是
 // 「起了另一条隧道」。这里锁：Interface 取 node.interface，ConfPath 跟 node.id 走。
 func TestLifecycleDriverWireGuardUsesResolvedDevice(t *testing.T) {
-	home := writeBundleAtHome(t, wgEnv("wg_home_2"))
+	_ = writeBundleAtHome(t, wgEnv("wg_home_2"))
 
+	// 运行投影：gnb/wg 起进程都指 /var/run/mynet/<nodeId>（测试用 MYNET_RUN_ROOT）
+	runRoot := t.TempDir()
+	t.Setenv("MYNET_RUN_ROOT", runRoot)
 	d, err := buildLifecycleDriver(domain.DriverTypeWireGuard)
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +61,9 @@ func TestLifecycleDriverWireGuardUsesResolvedDevice(t *testing.T) {
 	if wg.Interface != "wg_home_2" {
 		t.Fatalf("Interface=%q，应取 node.interface", wg.Interface)
 	}
-	want := filepath.Join(home, "conf", "local", "5063883630803570", "wg.conf")
+	want := filepath.Join(runRoot, "5063883630803570", "wg.conf")
 	if wg.ConfPath != want {
-		t.Fatalf("ConfPath=%q, want %q（节点唯一存放位，与 node.id 同源）", wg.ConfPath, want)
+		t.Fatalf("ConfPath=%q, want %q（运行投影位，与 node.id 同源）", wg.ConfPath, want)
 	}
 }
 

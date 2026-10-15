@@ -3,6 +3,7 @@ package mynet
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdApply — F-2/F-3/F-5：唯一写入者。
@@ -205,6 +207,17 @@ func cmdService(args []string) int {
 
 	switch action {
 	case "start":
+		// 身份门禁：无私钥不起隧道（口径 B）
+		if err := RequireLocalIdentity(); err != nil {
+			fmt.Fprintf(os.Stderr, "start %s: %v\n", name, err)
+			return 1
+		}
+		// 运行投影先行：/var/run/mynet/<nodeId> 是 gnb -c 打开处，
+		// 重启后 tmpfs 已空 —— 不先投影就 start，gnb 必缺 node.conf。
+		if err := ApplyFromActive(false); err != nil {
+			fmt.Fprintf(os.Stderr, "start %s: 先 apply 运行投影失败: %v\n", name, err)
+			return 1
+		}
 		if err := d.Start(); err != nil {
 			fmt.Fprintf(os.Stderr, "start %s: %v\n", name, err)
 			return 1
@@ -292,9 +305,9 @@ func applyAfterStart() int {
 
 // buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。
 //
-// 两处必须一致：写配置的目录和起进程的目录若对不上，症状是「配置明明写了，
-// 起的却是另一个目录」。D4-E 起两处都指节点唯一存放位 conf/<form>/<nodeId>/
-// （gnbConfDir / driver 的 confPathDefault 同源）。
+// 起进程的目录 = **运行投影** `/var/run/mynet/<nodeId>`（gnb -c 打开处）；
+// 写原生配置的目录仍是 conf 节点目录（project_active 写完再投影过来）。
+// 两处若对不上，症状是「配置明明写了，起的却是另一个目录」。
 func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, error) {
 	env, err := loadBundleEnvelope()
 	if err != nil {
@@ -311,7 +324,12 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("bundle 的 gnb.identity.node_id 非法: %q", env.Gnb.Identity.NodeID)
 		}
 		d := driver.NewGNBDriver(nodeID)
-		d.ConfDir = gnbConfDir()
+		// 运行投影优先；Windows 无 /var/run 时回落 conf 节点目录
+		if run, err := utils.RunProjectionPath(env.Gnb.Identity.NodeID); err == nil && run != "" {
+			d.ConfDir = run
+		} else {
+			d.ConfDir = gnbConfDir()
+		}
 
 		return d, nil
 	case domain.DriverTypeWireGuard:
@@ -323,10 +341,11 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("wireguard 接口名: %w", err)
 		}
 		d := driver.NewWireGuardDriver(dev, 0)
-		// ConfPath 与密钥同居：节点唯一存放位 conf/<form>/<nodeId>/wg.conf（D4-E，
-		// wgNodeConfPath 与 writeWgProjection 同源）。wg-quick 钉死 /etc/wireguard
-		// 的旧位已随装载改 setconf 路线退役。
-		if p := wgNodeConfPath(env.Node.ID); p != "" {
+		// ConfPath = 运行投影 /var/run/mynet/<nodeId>/wg.conf（Windows 回落 conf 节点目录）。
+		// 原生配置写在 conf 节点目录（writeWgProjection），再投影过来。
+		if run, rerr := utils.RunProjectionPath(env.Node.ID); rerr == nil && run != "" {
+			d.ConfPath = filepath.Join(run, "wg.conf")
+		} else if p := wgNodeConfPath(env.Node.ID); p != "" {
 			d.ConfPath = p
 		}
 

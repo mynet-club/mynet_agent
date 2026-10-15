@@ -81,6 +81,8 @@ type NodeStatus struct {
 	Peers []PeerRow `json:"peers"`
 	// RouteConfText route.conf 原文（本机在前、节点一律 /32），供「配置」折叠区
 	RouteConfText string `json:"route_conf_text,omitempty"`
+	// SystemRoutesText 系统路由表摘录（netstat/route），供「系统路由」标签
+	SystemRoutesText string `json:"system_routes_text,omitempty"`
 }
 
 // PeerRow 对端表一行。Routed 是内核路由是否装上 —— 这是 DEGRADED 的判据。
@@ -554,7 +556,16 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	}
 
 	// ── ③ 起没起 ─────────────────────────────────────────
+	// gnb -c 指**运行投影** /var/run/mynet/<id> 时 pid 落在投影目录；
+	// 只读 conf 节点目录会误判 STOPPED（2026-10-15 实测）。
 	pid := readGnbPID(filepath.Join(gnbConf, "gnb.pid"))
+	if pid <= 0 {
+		if id := st.NodeID; id != "" {
+			if run, err := utils.RunProjectionPath(id); err == nil && run != "" {
+				pid = readGnbPID(filepath.Join(run, "gnb.pid"))
+			}
+		}
+	}
 	st.ProcessPID = pid
 	st.ProcessUp = pid > 0 && p.pidAlive(pid)
 
@@ -584,7 +595,16 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	// 链路态来自 gnb_ctl；拿不到就留 unknown，不编
 	var links map[int64]PeerLinkInfo
 	if p.gnbPeerLinks != nil {
-		links = p.gnbPeerLinks(gnbConf)
+		// gnb -c 指运行投影时 gnb.map 在 /var/run/mynet/<id>/（不在 conf 节点目录）
+		mapDir := gnbConf
+		if id := st.NodeID; id != "" {
+			if run, err := utils.RunProjectionPath(id); err == nil && run != "" {
+				if _, serr := os.Stat(filepath.Join(run, "gnb.map")); serr == nil {
+					mapDir = run
+				}
+			}
+		}
+		links = p.gnbPeerLinks(mapDir)
 	}
 	// 本机行在最前（与 route.conf 约定同形：第一条 = 本机）
 	st.Peers = append(st.Peers, PeerRow{
@@ -654,6 +674,7 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 	if b, err := os.ReadFile(filepath.Join(gnbConf, "route.conf")); err == nil {
 		st.RouteConfText = string(b)
 	}
+	st.SystemRoutesText = dumpSystemRoutes()
 
 	// ── ④ 判状态 ─────────────────────────────────────────
 	switch {
@@ -876,4 +897,29 @@ func cmdNodeStatusJSON(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// dumpSystemRoutes 系统 IPv4 路由表摘录（UI「系统路由」标签）。
+// darwin/netstat 或 linux/route；失败返回空串，前端显示「不可用」。
+func dumpSystemRoutes() string {
+	if bin := lookPathAny("netstat"); bin != "" {
+		out, err := exec.Command(bin, "-rn", "-f", "inet").Output()
+		if err == nil {
+			return clipText(string(out), 8000)
+		}
+	}
+	if bin := lookPathAny("route"); bin != "" {
+		out, err := exec.Command(bin, "-n", "get", "default").Output()
+		if err == nil {
+			return clipText(string(out), 4000)
+		}
+	}
+	return ""
+}
+
+func clipText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n…（已截断）"
 }
