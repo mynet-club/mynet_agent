@@ -5,8 +5,10 @@ package mynet
 
 import (
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // gnbKeyType 后端的 putKeys 白名单是 gnbkey,ed25519,wireguard,x25519,curve25519
@@ -21,10 +23,7 @@ func gnbKeyType(vpnType string) string {
 
 // confDir $MYNET_HOME/conf（兼容旧调用：credential / refresh）。
 func confDir() string {
-	if v := os.Getenv("MYNET_HOME"); v != "" {
-		return v + "/conf"
-	}
-	return "conf"
+	return filepath.Join(utils.GetMyNetHome(), "conf")
 }
 
 // cmdStatus / cmdCheck / cmdNodes / cmdPlatform — R2-2 只读面
@@ -40,10 +39,7 @@ func cmdStatus(_ []string) int {
 	fmt.Printf("cpu=%.1f%% mem=%dMB load1=%.2f vpn=%d\n",
 		m["cpu"], m["mem_used"], m["load1"], m["vpn"])
 	// 缺口⑥：状态面带隧道健康 —— tun 在不在、挂没挂 VPN IP（服务 active≠隧道可用）
-	home := os.Getenv("MYNET_HOME")
-	if home == "" {
-		home = "."
-	}
+	home := utils.GetMyNetHome()
 	fmt.Println("tun:", currentTunHealth(home).Summary())
 	return 0
 }

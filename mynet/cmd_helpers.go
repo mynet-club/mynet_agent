@@ -14,7 +14,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
-// requireHome 改变状态的入口必须显式 MYNET_HOME（C3 / spec/paths.md §2）。
+// requireHome 统一校验 env > 平台默认的绝对 home。
 // 静默回退 exe/cwd 会写进错误的配置树 —— 五节点取证里 181/183/188 都栽过。
 func requireHome() (string, int) {
 	h, err := utils.RequireMyNetHome()

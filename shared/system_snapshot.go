@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // SystemSnapshot 是 mynet detector 的产出（system.json），双端消费：
@@ -42,19 +44,9 @@ func DefaultSnapshotPath() string {
 	return filepath.Join(VarDir(), "system.json")
 }
 
-// VarDir 兼容 utils 包（避免 shared→utils 循环，这里内联最小实现）
+// VarDir 与执行器共享同一解析链；读快照时不创建目录。
 func VarDir() string {
-	if v := os.Getenv("MYNET_HOME"); v != "" {
-		return filepath.Join(v, "var")
-	}
-	if v := os.Getenv("MYNET_DATA_HOME"); v != "" {
-		return filepath.Join(v, "var")
-	}
-	// 与 shared/utils.UserBaseDir 保持一致的兜底
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".mynet", "var")
-	}
-	return "var"
+	return utils.VarDirPath()
 }
 
 // ComputeFingerprint 对接口列表做稳定哈希（按名称排序后拼接）

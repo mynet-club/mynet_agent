@@ -412,13 +412,17 @@ func LastGoodDir() string {
 	return d
 }
 
-// VarDir 运行态（可丢）。
-func VarDir() string {
+// VarDirPath 运行态路径，只解析不创建。MYNET_DATA_HOME 是完整运行态目录。
+func VarDirPath() string {
 	if v := os.Getenv(envDataHome); v != "" {
-		_ = SafeCreateDir(v, 0o700)
 		return v
 	}
-	d := filepath.Join(GetMyNetHome(), "var")
+	return filepath.Join(GetMyNetHome(), "var")
+}
+
+// VarDir 运行态（可丢），保留写入调用方的目录置备行为。
+func VarDir() string {
+	d := VarDirPath()
 	_ = SafeCreateDir(d, 0o700)
 	return d
 }

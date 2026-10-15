@@ -45,7 +45,6 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   firewall doctor   防火墙两层检查（云侧清单 + 机内 nft/iptables + fw4 持久化）
   gate              再部署门禁（G-subject/route/fw/sync/update 五闸）
   tree              配置树诊断/收敛（doctor | consolidate）
-  monitor           持续监控输出
   check             自检
   nodes             节点列表
   deviceinfo        report=上报硬件/系统信息到后端（GUI 设备页数据源）
@@ -53,7 +52,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   refresh-<域>      驱动配置刷新（gnb node/route/address/keys）
 
 环境:
-  MYNET_HOME        安装/数据根目录（默认可执行文件上推一级）
+  MYNET_HOME        安装/数据根目录（环境覆盖 > 平台默认；不按 exe/cwd 猜测）
 `
 
 // Run 执行器入口。返回进程退出码。
@@ -65,20 +64,14 @@ func Run(args []string) int {
 	cmd := args[0]
 	rest := args[1:]
 
-	// 不带 home 直接报错：**不再按 exe 目录猜**。OpenWrt 下可执行在 /usr/sbin，
-	// 按 exe 推 home 会得到 /usr/sbin → 读到错的配置树（实测 `mynet config status`
-	// 会静默返回「未初始化」而不是报错）。允许不需要配置树的命令；
-	// install/uninstall 自带 --home/MYNET_HOME 解析（解析不到会自行报错）。
+	// install/uninstall 自行解析 --home 并校验与环境的冲突。
+	// 其他有配置树的命令统一使用 env > 平台默认，禁止相对路径。
 	switch cmd {
 	case "help", "-h", "--help", "version", "-v", "--version", "platform",
 		"install", "uninstall":
-		// 无需 home
 	default:
-		if os.Getenv("MYNET_HOME") == "" {
-			fmt.Fprintln(os.Stderr,
-				"✗ 未设 MYNET_HOME：export MYNET_HOME=/etc/mynet 或用 --home DIR。"+
-					"（不再按 exe 目录猜 home，以免读错配置树）")
-			return 1
+		if _, rc := requireHome(); rc != 0 {
+			return rc
 		}
 	}
 

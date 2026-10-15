@@ -85,9 +85,6 @@ func loadBundleEnvelope() (*domain.BundleEnvelope, error) {
 }
 
 func varDir() string {
-	if v := os.Getenv("MYNET_HOME"); v != "" {
-		return v + "/var"
-	}
 	return sharedVarDir()
 }
 
@@ -106,7 +103,7 @@ func bundledProxyListPath(p *domain.ProxyPolicy) string {
 	case domain.ProxyListChina:
 		name = "chinaip.txt"
 	}
-	home := os.Getenv("MYNET_HOME")
+	home := utils.GetMyNetHome()
 	if name == "" || home == "" {
 		return ""
 	}

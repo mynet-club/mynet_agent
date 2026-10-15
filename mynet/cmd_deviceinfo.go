@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func cmdDeviceInfo(args []string) int {
@@ -46,7 +47,7 @@ func deviceInfoReport() int {
 		}
 	}
 
-	nodeID := ActiveNodeID(os.Getenv("MYNET_HOME"))
+	nodeID := ActiveNodeID(utils.GetMyNetHome())
 	if nodeID == "" {
 		fmt.Fprintln(os.Stderr, "无活动节点（先 mynet node claim）")
 		return 1

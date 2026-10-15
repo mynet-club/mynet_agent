@@ -451,10 +451,7 @@ func resolveGNBBinary() string {
 	if v := os.Getenv("MYNET_GNB_BIN"); v != "" {
 		return v
 	}
-	home := os.Getenv("MYNET_HOME")
-	if home == "" {
-		home = "."
-	}
+	home := utils.GetMyNetHome()
 	cands := []string{
 		filepath.Join(utils.PrefixBinDir(), name),
 		filepath.Join(utils.PrefixBinDir(), "gnb"),

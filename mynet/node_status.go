@@ -139,10 +139,7 @@ func ComputeNodeStatus() NodeStatus {
 }
 
 func defaultProbe() statusProbe {
-	home := os.Getenv("MYNET_HOME")
-	if home == "" {
-		home = "."
-	}
+	home := utils.GetMyNetHome()
 	return statusProbe{
 		home:     home,
 		gnbPath:  lookGnb(),
@@ -311,10 +308,7 @@ func lookGnb() string {
 			return v
 		}
 	}
-	home := os.Getenv("MYNET_HOME")
-	if home == "" {
-		home = "."
-	}
+	home := utils.GetMyNetHome()
 	dirs := append([]string{
 		utils.PrefixBinDir(),
 		filepath.Join(home, "driver", "gnb", "bin"), // 旧标准位（未迁移）
