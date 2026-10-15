@@ -223,6 +223,14 @@ func containsWGPrivateKey(lines []string) bool {
 func LoadNodeKeys(keysDir string) (privHex, pubHex, algorithm, nodeID string, err error) {
 	privHex, pubHex, err = readKeyPair(keysDir)
 	if err != nil {
+		// 无 private 时 public 仍可能在（先传公钥）——诊断/展示要能报出 has_public。
+		if pub, perr := LoadNodePublicKey(keysDir); perr == nil && pub != "" {
+			algorithm, nodeID = "", ""
+			if meta, e := LoadNodeMeta(keysDir); e == nil {
+				algorithm, nodeID = meta.Algorithm, meta.NodeID
+			}
+			return "", pub, algorithm, nodeID, err
+		}
 		return "", "", "", "", err
 	}
 	algorithm, nodeID = "", ""
@@ -253,6 +261,26 @@ func LoadNodePrivateKey(keysDir string) (privHex string, err error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(priv)), nil
+}
+
+// LoadNodePublicKey 只读公钥（可单独存在：先传公钥、后导私钥）。
+// 认 gnb security/*.public 与旧 node.public 两套形态。
+func LoadNodePublicKey(keysDir string) (pubHex string, err error) {
+	if p := findSecurityKeyFile(keysDir, ".public"); p != "" {
+		if b, rerr := os.ReadFile(p); rerr == nil {
+			return strings.TrimSpace(string(b)), nil
+		}
+	}
+	b, err := os.ReadFile(filepath.Join(keysDir, "node.public"))
+	if err != nil {
+		if alt := findKeyFile(keysDir, ".public"); alt != "" {
+			b, err = os.ReadFile(alt)
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 func readKeyPair(keysDir string) (priv, pub string, err error) {

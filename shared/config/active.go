@@ -277,6 +277,11 @@ func (s *Store) SaveOnlineProfile(p *domain.OnlineProfile) error {
 }
 
 // ListTenants conf/online/ 下已存在的租户 id。
+// ListTenants conf/online/ 下**有 profile.json 的租户目录**。
+//
+// ⚠️ D4-E 起 conf/online/ 下同时有租户目录（profile.json）与节点目录
+// （conf/online/<nodeId>/：密钥+驱动 conf）—— 只认「有 profile.json」的是租户，
+// 否则节点 id 会被当成网络区列出来（2026-10-14 实测 UI 网络区混入 nodeId）。
 func (s *Store) ListTenants() ([]string, error) {
 	base := filepath.Join(s.root(), "conf", "online")
 	ents, err := os.ReadDir(base)
@@ -292,6 +297,10 @@ func (s *Store) ListTenants() ([]string, error) {
 			continue
 		}
 		if _, err := domain.TenantDirName(e.Name()); err != nil {
+			continue
+		}
+		// 租户面 = profile.json；节点目录（security/node.conf）不算
+		if _, err := os.Stat(filepath.Join(base, e.Name(), "profile.json")); err != nil {
 			continue
 		}
 		out = append(out, e.Name())

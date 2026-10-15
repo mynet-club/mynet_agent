@@ -15,6 +15,7 @@ package mynet
 //	mynet config plugins --json
 
 import (
+	"errors"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -71,7 +72,11 @@ type remoteTenant struct {
 // executor 是独立进程，无法走 WS —— 远程租户列表由 localapi 经 relay 补，
 // 这里只出本地缓存（profile 里的名字）。直连云端 API 会拖死首屏 30s。
 func fetchRemoteTenants(cred *Credential) []remoteTenant {
-	return nil // 本地缓存优先；远程补名走 WS relay（localapi）
+	// 走执行器侧 HTTP 取 `/api/v1/user/tenants/`（与 `mynet tenants` 同源）。
+	// 此前这里 `return nil` 把补名链路掐死 → UI 网络区/identity.tenant_name 恒空
+	// （2026-10-14 实测：mynet tenants 有「MyNet Platform」，identity 却是空名）。
+	// 「浏览器不直连云端」指的是 GUI 前端；执行器代取是既有路径（login/tenants 同款）。
+	return fetchRemoteTenantsDirectHTTP(cred)
 }
 
 // fetchRemoteTenantsDirectHTTP 仅诊断/CLI 显式用；UI 路径禁止。
@@ -366,7 +371,7 @@ func backFacePubFor(mode *domain.ModeFile) (string, string) {
 //
 // D4-E：keys_dir = 节点唯一存放位 conf/<form>/<nodeId>/（form 跟 mode.json 实际值）；
 // 同时报 home 与 home_source —— MYNET_HOME 未设时 GetMyNetHome 会按 exe 树推断，
-// 那条路径只作参考（曾报 /opt/mynet/conf/local/keys 幻影路径，真实树在 /var/lib/mynet）。
+// 那条路径只作参考（曾报 /opt/mynet/conf/local/keys 幻影路径，真实树随 MYNET_HOME）。
 func configFaceKeysShow() int {
 	keysDir, mode, err := configFaceKeysDir()
 	if err != nil {
@@ -374,13 +379,21 @@ func configFaceKeysShow() int {
 	}
 	priv, pub, algo, nodeID, err := keys.LoadNodeKeys(keysDir)
 	has := err == nil && priv != ""
-	modeName, src := "", keysDir
+	// public 可单独存在（先传公钥、后导私钥）—— LoadNodeKeys 因无 private 会整包失败，
+	// 诊断必须把「盘上有 public」如实报出来，否则 UI/人以为密钥全无、导入链路更乱。
+	if pub == "" {
+		if pubOnly, perr := keys.LoadNodePublicKey(keysDir); perr == nil {
+			pub = pubOnly
+		}
+	}
+	modeName := ""
 	if mode != nil {
 		modeName = string(mode.Mode)
 	}
-	if mode != nil && mode.Active.Source != "" {
-		src = mode.Active.Source
-	}
+	// source = 密钥实际存放位（节点唯一存放位 conf/<form>/<nodeId>/）。
+	// 不要用 mode.Active.Source —— 那是租户空间 conf/online/<tenant>，
+	// 后面跟的是 tenant_id 不是 node_id，当密钥路径会指错（2026-10-14 实测）。
+	src := keysDir
 	out := map[string]any{
 		"has_private":   has,
 		"has_public":    pub != "",
@@ -393,6 +406,10 @@ func configFaceKeysShow() int {
 		"keys_dir":      keysDir,
 		"home":          utils.GetMyNetHome(),
 		"home_source":   utils.HomeSource(),
+	}
+	if mode != nil && mode.Active.TenantID != "" {
+		out["tenant_id"] = mode.Active.TenantID
+		out["tenant_space"] = mode.Active.Source // 仅作对照，不是密钥位
 	}
 	if utils.HomeSource() != "env" {
 		out["warning"] = "MYNET_HOME 未设置：路径按 " + utils.HomeSource() + " 树推断，仅供参考（写入类子命令会拒绝）"
@@ -464,7 +481,7 @@ func configFaceKeysGenerate(args []string) int {
 // argv 会进 `ps`（同机任何进程可见）与本机 API 的 argv 回显面，**私钥不许走 argv**
 // （C1-S1：`POST /api/v1/config/keys` 曾把 private_hex 摆进 argv）。
 // `--private HEX` 仅保留给人工终端/安装文档的一次性导入（文档命令行不进 ps 快照常态）。
-func parseKeysSetArgs(args []string, r io.Reader) (priv, pub, nodeID, algo string, err error) {
+func parseKeysSetArgs(args []string, r io.Reader) (priv, pub, nodeID, algo string, confirmRekey bool, err error) {
 	fromStdin := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -490,6 +507,9 @@ func parseKeysSetArgs(args []string, r io.Reader) (priv, pub, nodeID, algo strin
 				i++
 				algo = args[i]
 			}
+		case "--confirm-rekey":
+			// 换钥 step-up（口径 B）：替换云端已有公钥时必须显式带
+			confirmRekey = true
 		}
 	}
 	if fromStdin && priv == "" {
@@ -498,17 +518,17 @@ func parseKeysSetArgs(args []string, r io.Reader) (priv, pub, nodeID, algo strin
 			priv = strings.TrimSpace(sc.Text())
 		}
 		if serr := sc.Err(); serr != nil {
-			return "", "", "", "", fmt.Errorf("读 stdin 失败: %w", serr)
+			return "", "", "", "", false, fmt.Errorf("读 stdin 失败: %w", serr)
 		}
 	}
 	if priv == "" {
-		return "", "", "", "", fmt.Errorf("需要 --private HEX 或 --private-stdin（--public 可省略，服务端从私钥推导）")
+		return "", "", "", "", false, fmt.Errorf("需要 --private HEX 或 --private-stdin（--public 可省略，服务端从私钥推导）")
 	}
-	return priv, pub, nodeID, algo, nil
+	return priv, pub, nodeID, algo, confirmRekey, nil
 }
 
 func configFaceKeysSet(args []string) int {
-	priv, pub, nodeID, algo, perr := parseKeysSetArgs(args, os.Stdin)
+	priv, pub, nodeID, algo, confirmRekey, perr := parseKeysSetArgs(args, os.Stdin)
 	if perr != nil {
 		return printJSON(map[string]any{"error": perr.Error()})
 	}
@@ -542,6 +562,24 @@ func configFaceKeysSet(args []string) int {
 	}
 	if nodeID == "" && mode != nil {
 		nodeID = mode.Active.NodeID
+	}
+	// ── 身份门禁（口径 B）：先判云端再落盘 ──
+	// 首建=登录即可；匹配=恢复；不一致=拒绝（除非 --confirm-rekey 换钥 step-up）
+	cloudPubSt, gerr := DecideKeyWrite(nodeID, pub, confirmRekey)
+	if gerr != nil {
+		var ige *IdentityGateErr
+		code, msg := "key_gate", gerr.Error()
+		if errors.As(gerr, &ige) {
+			code, msg = ige.Code, ige.Message
+		}
+		return printJSON(map[string]any{
+			"error":         msg,
+			"error_code":    code,
+			"cloud_state":   cloudPubSt.State,
+			"need_rekey":    code == "key_mismatch" || code == "need_rekey_confirm",
+			"need_login":    code == "need_login",
+			"hint":          "私钥不对请找正确私钥；确认换钥请带 --confirm-rekey（会替换云端公钥，对端需重拉配置）",
+		})
 	}
 	backPub, backWarn := backFacePubFor(mode)
 	if backWarn != "" {
@@ -730,6 +768,16 @@ func configFaceIdentity() int {
 			out["tenant_name"] = p.TenantName
 			out["node_name"] = p.NodeName
 
+		}
+		// A1：云端节点显示名（如「Mac 笔记本」）—— profile 缺省时补，写回缓存
+		if (out["node_name"] == nil || out["node_name"] == "") && cred != nil && m.Active.NodeID != "" {
+			if n := fetchRemoteNodeName(cred, m.Active.NodeID); n != "" {
+				out["node_name"] = n
+				if p, err := store.LoadOnlineProfile(m.Active.TenantID); err == nil && p.NodeName != n {
+					p.NodeName = n
+					_ = store.SaveOnlineProfile(p)
+				}
+			}
 		}
 	}
 	// ⚠️ 不直连云端补节点名（架构：请求走 WS relay；直连云端 API 违规，
@@ -956,6 +1004,20 @@ func fetchRemoteParityOptions() map[string]any {
 // configFacePull 从服务端拉 bundle（需登录）→ 落 var/bundle.json → apply 投影。
 func configFacePull() int { return configFacePullOnly(false) }
 func configFacePullOnly(downloadOnly bool) int {
+	// 身份门禁：未确立私钥前不发配置合同（口径 B）
+	if err := RequireLocalIdentity(); err != nil {
+		code := "need_private"
+		var ige *IdentityGateErr
+		if errors.As(err, &ige) {
+			code = ige.Code
+		}
+		return printJSON(map[string]any{
+			"error":       err.Error(),
+			"error_code":  code,
+			"need_private": code == "need_private",
+			"need_login":  code == "need_login",
+		})
+	}
 	cred := LoadCredential()
 	if cred == nil || cred.Token == "" {
 		// 未登录：明确标记，UI 跳登录页
