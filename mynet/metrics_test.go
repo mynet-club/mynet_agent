@@ -2,6 +2,7 @@ package mynet
 
 import (
 	"encoding/json"
+	"net"
 	"strings"
 	"testing"
 
@@ -97,5 +98,66 @@ func TestProjectPeersSkipsLocalDedupsAddrs(t *testing.T) {
 	}
 	if m.Driver != "gnb" || !m.Up {
 		t.Errorf("Driver/Up 不对: %+v", m)
+	}
+}
+
+// ── resolveLiveGNBIface：配置口名 ≠ 真实口名时按 overlay IP 反查 ──
+//
+// darwin/gnb 把 ifname 覆盖成 utunN（gnb_drv_darwin.c:249-252），配置里的
+// gnb_tun 永远查不到。此前 detectGNBInterface 只查配置名 → probeGNB 报
+// up:false → 心跳 status=down → 后端标离线、GUI 设备页无状态（2026-10-15）。
+// 这里锁住回退行为，用 loopback 做真实口（任何跑测试的机器都有）。
+
+func loopbackName(t *testing.T) string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("net.Interfaces: %v", err)
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipnet.IP.IsLoopback() {
+				return iface.Name
+			}
+		}
+	}
+	t.Skip("无 loopback 接口")
+	return ""
+}
+
+func TestResolveLiveGNBIfaceConfiguredNameWins(t *testing.T) {
+	name := loopbackName(t)
+	got := resolveLiveGNBIface(name, "203.0.113.1")
+	if got != name {
+		t.Fatalf("配置口名在场且 UP 时应直接用：got %q, want %q", got, name)
+	}
+}
+
+func TestResolveLiveGNBIfaceFallsBackToOverlayIP(t *testing.T) {
+	name := loopbackName(t)
+	// 配置名是一个不可能存在的口 —— darwin gnb_tun 的同形场景
+	got := resolveLiveGNBIface("gnb_tun_zzz_no_such_if", "127.0.0.1")
+	if got != name {
+		t.Fatalf("配置名不在时应按 overlay IP 反查真实口：got %q, want %q", got, name)
+	}
+}
+
+func TestResolveLiveGNBIfaceMissingBoth(t *testing.T) {
+	if got := resolveLiveGNBIface("gnb_tun_zzz_no_such_if", "203.0.113.1"); got != "" {
+		t.Fatalf("配置名与 overlay IP 都对不上时应返回空（宁缺不猜），got %q", got)
+	}
+	if got := resolveLiveGNBIface("", "203.0.113.1"); got != "" {
+		t.Fatalf("配置名为空且 IP 对不上时应返回空，got %q", got)
 	}
 }

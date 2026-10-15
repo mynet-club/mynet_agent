@@ -457,10 +457,13 @@ func mynetBin() string {
 	return name
 }
 
-// heartbeatLoop 组装心跳（`mynet metrics --json`）并上报后端。
+// heartbeatLoop 组装心跳并上报后端。
 //
-// ⚠️ 采集在**执行器**里（mynet 二进制），这里只 exec + 组装 + 发送 ——
-// AGENTS.md §1.2：mynetd 是纯通信层，不含探测解析。
+// 采集只在**启动时**走一次执行器（`mynet metrics --json`），把快照缓存下来；
+// 后续每一拍只用缓存重打时间戳发「存活」心跳，**不再 exec mynet**（2026-10-15
+// 用户裁定：mynetd 是纯通信层，常驻路径不背系统采集）。
+//
+// ⚠️ 采集在**执行器**里（mynet 二进制）—— AGENTS.md §1.2：mynetd 不含探测解析。
 type heartbeatLoop struct {
 	ops func(argv []string) (string, string, error)
 
@@ -471,6 +474,10 @@ type heartbeatLoop struct {
 	mu       sync.Mutex
 	nodeID   string
 	reporter func(ctx context.Context, sendBody, signBody []byte) error
+
+	// metricsCached / metricsReady：启动采集结果。ready 后 beat 不再碰 ops。
+	metricsCached string
+	metricsReady  bool
 }
 
 // setReporter 绑上上报通道。未绑时 beat 只采集不上报（纯本机模式）。
@@ -502,19 +509,42 @@ func (h *heartbeatLoop) run(ctx context.Context) {
 }
 
 func (h *heartbeatLoop) beat(ctx context.Context) {
-	stdout, stderr, err := h.ops([]string{"metrics", "--json"})
-	if err != nil {
-		logger.Error("heartbeat 采集失败", "err", err, "stderr", strings.TrimSpace(stderr))
-		return
-	}
-	// 本机态也保证 system.json 可用 —— 缺了就地跑 detector，
-	// 否则 apply --auto 读不到 system.json、路由装不全（启动漏 apply 的根因之一）。
-	if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
-		if _, _, dErr := h.ops([]string{"detector"}); dErr != nil {
-			logger.Warn("system.json 缺失且 detector 失败", "err", dErr)
-		} else {
-			logger.Info("system.json 缺失，已自动跑 detector")
+	// 启动采一次，之后纯存活：不再 exec mynet（用户裁定 2026-10-15）。
+	// 首采失败则本拍放弃、下一拍重试 —— 「启动时拿到必要信息」为止，之后冻结。
+	h.mu.Lock()
+	ready, cached := h.metricsReady, h.metricsCached
+	h.mu.Unlock()
+
+	var stdout string
+	if !ready {
+		out, stderr, err := h.ops([]string{"metrics", "--json"})
+		if err != nil {
+			logger.Error("heartbeat 采集失败", "err", err, "stderr", strings.TrimSpace(stderr))
+			return
 		}
+		stdout = out
+		// 本机态也保证 system.json 可用 —— 缺了就地跑 detector，
+		// 否则 apply --auto 读不到 system.json、路由装不全（启动漏 apply 的根因之一）。
+		// 同样只在启动时做，后续拍不碰 mynet。
+		if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
+			if _, _, dErr := h.ops([]string{"detector"}); dErr != nil {
+				logger.Warn("system.json 缺失且 detector 失败", "err", dErr)
+			} else {
+				logger.Info("system.json 缺失，已自动跑 detector")
+			}
+		}
+		h.mu.Lock()
+		h.metricsCached = stdout
+		h.metricsReady = true
+		h.mu.Unlock()
+		// 设备信息也是启动采一次（硬件不变）—— GUI 设备页的数据源。
+		// 失败不阻断心跳（后端未部署/未登录都可能），只记日志。
+		if _, stderr, err := h.ops([]string{"deviceinfo", "report"}); err != nil {
+			logger.Warn("deviceinfo 上报失败（GUI 设备页将为空）", "err", err, "stderr", strings.TrimSpace(stderr))
+		}
+		logger.Info("heartbeat 首次采集完成，后续拍只发存活心跳（不再调 mynet）")
+	} else {
+		stdout = cached
 	}
 
 	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在
@@ -528,6 +558,8 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		logger.Warn("heartbeat metrics 无输出，跳过本次上报", "node_id", nodeID)
 		return
 	}
+	// heartbeatBodies 每次打新 timestamp / last_active_at —— 这就是「活着」信号；
+	// 必填字段与 vpn_interfaces 来自启动快照（后端契约要求，缺了会被判离线）。
 	sendBody, signBody, err := heartbeatBodies(nodeID, stdout)
 	if err != nil {
 		logger.Error("heartbeat 组装失败", "node_id", nodeID, "err", err)
@@ -541,7 +573,7 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 	}
 	// 成功走 Debug：30s 一次，Info 会把日志刷满，而「没消息」本身就是好消息。
 	// 排查时 MYNET_LOG_LEVEL=debug 就能看到每一拍。
-	logger.Debug("heartbeat 已上报", "node_id", nodeID, "bytes", len(sendBody))
+	logger.Debug("heartbeat 已上报", "node_id", nodeID, "bytes", len(sendBody), "live", ready)
 }
 
 // execMynetStd 适配 commands.Executor 签名

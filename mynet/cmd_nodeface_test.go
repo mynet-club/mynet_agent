@@ -34,3 +34,40 @@ func TestNodeFaceSignMatchesKeysPackage(t *testing.T) {
 	_ = filepath.Join
 	_ = os.TempDir
 }
+
+// D4-E 后 gnb 密钥在 security/<id>.private，CLI 门闩曾只 stat node.private
+// → 已迁移节点在 `mynet nodeface sign` 上报「定位 keys 目录失败」。
+// 锁住：security/ 形态可被找到；都缺时返回空。
+func TestFindKeysDirWithPrivateRecognizesGNBSecurity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	nodeID := "3764021915150630"
+	dir := filepath.Join(home, "conf", "online", nodeID)
+	if err := os.MkdirAll(filepath.Join(dir, "security"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	priv := strings.Repeat("c3", 32) // 128 hex，gnb 原生
+	if err := os.WriteFile(filepath.Join(dir, "security", nodeID+".private"), []byte(priv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := `{"node_id":"` + nodeID + `","algorithm":"ed25519","back_pub_hex":"` +
+		strings.Repeat("d4", 32) + `","sign_algorithm":"hmac-sha256-dh"}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !keysDirHasPrivate(dir) {
+		t.Fatalf("keysDirHasPrivate(%s) = false，应认 gnb security/*.private", dir)
+	}
+	got := findKeysDirWithPrivate(nodeID)
+	if got != dir {
+		t.Fatalf("findKeysDirWithPrivate = %q, want %q", got, dir)
+	}
+
+	// 都缺时返回空，不猜
+	home2 := t.TempDir()
+	t.Setenv("MYNET_HOME", home2)
+	if got := findKeysDirWithPrivate("999"); got != "" {
+		t.Fatalf("空树应返回空，got %q", got)
+	}
+}

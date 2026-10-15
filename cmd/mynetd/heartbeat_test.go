@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -298,4 +300,105 @@ func jsonEqual(a, b any) bool {
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
 	return string(ab) == string(bb)
+}
+
+// 启动采一次，后续纯存活 —— 第二次 beat 不得再 exec mynet（2026-10-15 裁定）。
+func TestHeartbeatCollectsMetricsOnlyOnce(t *testing.T) {
+	var calls []string
+	var sent [][]byte
+	h := &heartbeatLoop{
+		ops: func(argv []string) (string, string, error) {
+			calls = append(calls, strings.Join(argv, " "))
+			if len(argv) > 0 && argv[0] == "metrics" {
+				return metricsFixture, "", nil
+			}
+			return "", "", nil
+		},
+	}
+	h.setReporter("1", func(_ context.Context, sendBody, _ []byte) error {
+		sent = append(sent, append([]byte(nil), sendBody...))
+		return nil
+	})
+
+	ctx := context.Background()
+	h.beat(ctx) // 首拍：采集 + 上报
+	h.beat(ctx) // 第二拍：纯存活
+	h.beat(ctx) // 第三拍：纯存活
+
+	var metricsCalls, detectorCalls int
+	for _, c := range calls {
+		if strings.HasPrefix(c, "metrics") {
+			metricsCalls++
+		}
+		if strings.HasPrefix(c, "detector") {
+			detectorCalls++
+		}
+	}
+	if metricsCalls != 1 {
+		t.Fatalf("metrics 调用 %d 次，期望 1 次（启动采一次）: %v", metricsCalls, calls)
+	}
+	if detectorCalls > 1 {
+		t.Fatalf("detector 调用 %d 次，期望 ≤1（只在启动补 system.json）: %v", detectorCalls, calls)
+	}
+	if len(sent) != 3 {
+		t.Fatalf("上报 %d 条，期望 3 条（含纯存活拍）", len(sent))
+	}
+
+	// 每拍都要有新 timestamp —— 这就是「活着」信号
+	var ts []float64
+	for _, b := range sent {
+		m := asMap(t, b)
+		v, _ := m["timestamp"].(float64)
+		ts = append(ts, v)
+	}
+	if ts[0] <= 0 || ts[1] <= 0 || ts[2] <= 0 {
+		t.Fatalf("timestamp 未填: %v", ts)
+	}
+	// 必填字段与 vpn_interfaces 仍来自启动快照（后端契约：缺 vpn 判离线）
+	last := asMap(t, sent[2])
+	for _, k := range []string{"node_id", "cpu_usage", "memory_usage", "disk_usage", "connection_count"} {
+		if _, ok := last[k]; !ok {
+			t.Fatalf("存活心跳缺必填字段 %s: %v", k, last)
+		}
+	}
+	if _, ok := last["vpn_interfaces"]; !ok {
+		t.Fatalf("存活心跳必须带 vpn_interfaces（后端缺段判离线）: %v", last)
+	}
+}
+
+// 首采失败则本拍不报、下一拍重试；成功后冻结，不再 exec。
+func TestHeartbeatRetriesCollectUntilFirstSuccess(t *testing.T) {
+	var metricsCalls, reports int
+	fail := true
+	h := &heartbeatLoop{
+		ops: func(argv []string) (string, string, error) {
+			if len(argv) > 0 && argv[0] == "metrics" {
+				metricsCalls++
+				if fail {
+					return "", "boom", fmt.Errorf("exit 1")
+				}
+				return metricsFixture, "", nil
+			}
+			return "", "", nil
+		},
+	}
+	h.setReporter("1", func(_ context.Context, _, _ []byte) error {
+		reports++
+		return nil
+	})
+
+	ctx := context.Background()
+	h.beat(ctx) // 首采失败
+	if reports != 0 {
+		t.Fatalf("首采失败仍上报了 %d 条", reports)
+	}
+	fail = false
+	h.beat(ctx) // 重试成功
+	h.beat(ctx) // 纯存活
+	if metricsCalls != 2 {
+		t.Fatalf("metrics 调用 %d 次，期望 2（失败重试 1 + 成功 1）", metricsCalls)
+	}
+	if reports != 2 {
+		t.Fatalf("上报 %d 条，期望 2", reports)
+	}
 }

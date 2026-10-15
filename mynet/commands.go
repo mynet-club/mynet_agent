@@ -48,6 +48,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   monitor           持续监控输出
   check             自检
   nodes             节点列表
+  deviceinfo        report=上报硬件/系统信息到后端（GUI 设备页数据源）
   platform          平台标识
   refresh-<域>      驱动配置刷新（gnb node/route/address/keys）
 
@@ -84,6 +85,13 @@ func Run(args []string) int {
 	if strings.HasPrefix(cmd, "refresh") {
 		return cmdRefresh(args)
 	}
+	// 精确命令必须在 SplitN 之前：`node-status` 按 `-` 切开会变成 `node`
+	// （SplitN(...,2)[0]=="node"），case "node-status" 永远进不去，
+	// 诊断页拿到的是「未知 node 子命令: --json」—— 2026-10-14 实测。
+	switch cmd {
+	case "node-status":
+		return cmdNodeStatusJSON(rest)
+	}
 	switch strings.SplitN(cmd, "-", 2)[0] {
 	case "detector":
 		return cmdDetector(rest)
@@ -111,9 +119,6 @@ func Run(args []string) int {
 	case "nodeface":
 		// G5：OpenWrt Lua 无 X25519，C-2 签名委托执行器
 		return cmdNodeFace(rest)
-	case "node-status":
-		// G3：完整节点状态 JSON（localapi / mynetd 经 Ops 调用）
-		return cmdNodeStatusJSON(rest)
 	case "subject":
 		return cmdSubject(rest)
 	case "route":
@@ -147,6 +152,8 @@ func Run(args []string) int {
 		return cmdCheck(rest)
 	case "nodes":
 		return cmdNodes(rest)
+	case "deviceinfo":
+		return cmdDeviceInfo(rest)
 	case "platform":
 		return cmdPlatform(rest)
 	case "refresh":

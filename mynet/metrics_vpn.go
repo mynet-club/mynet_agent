@@ -3,6 +3,7 @@ package mynet
 import (
 	"net"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
@@ -128,6 +129,32 @@ func countUpVPNIfaces(ms []VPNDriverMetrics) int {
 	return n
 }
 
+// resolveLiveGNBIface 把配置口名解析成此刻真实存在且 UP 的接口名。
+//
+// 顺序（与 resolveDevice / tun_health 同一口径）：
+//  1. 配置口名（bundle 的 node.interface）存在且 UP → 直接用（linux 常态）
+//  2. 配置名不在/未 UP → 按 overlay IP 反查真实口（darwin utunN / windows P2PNet）
+//
+// 都找不到返回空 —— 宁缺不猜，让上层走 downProbeFallback 报「期望口 + down」。
+func resolveLiveGNBIface(configured, overlayIP string) string {
+	if configured != "" {
+		if iface, err := net.InterfaceByName(configured); err == nil && iface.Flags&net.FlagUp != 0 {
+			return configured
+		}
+	}
+	if overlayIP == "" {
+		return ""
+	}
+	name := ifaceWithAddr(overlayIP)
+	if name == "" {
+		return ""
+	}
+	if iface, err := net.InterfaceByName(name); err == nil && iface.Flags&net.FlagUp != 0 {
+		return name
+	}
+	return ""
+}
+
 // detectGNBInterface 取 gnb 的接口名，并用标准库确认它真的存在且 UP。
 //
 // 为什么从 bundle 取而不是问 gnb_ctl：`gnb_ctl -b … -c -s` 的输出里
@@ -138,8 +165,20 @@ func countUpVPNIfaces(ms []VPNDriverMetrics) int {
 //
 // 存在性与 UP 用 net.InterfaceByName 判 —— 标准库、跨平台、不 exec、不要 root
 // （对照 detectWGInterface 要 shell 出 wg）。
+//
+// ⚠️ 配置口名 ≠ 真实口名：darwin/gnb 在 tun_alloc 之后用 UTUN_OPT_IFNAME 把
+// ifname 覆盖成 utunN（gnb_drv_darwin.c:249-252），windows/wintun 是 P2PNet。
+// 只查配置名会永远查不到 → probeGNB 报 up:false → 心跳 status=down →
+// 后端 areAllVpnInterfacesDown 标离线并跳过 node_monitor，GUI 设备页无状态。
+// 与 node_status / tun_health / resolveDevice 同一口径：配置名不在时按
+// overlay IP 反查真实口（ifaceWithAddr）。
 func detectGNBInterface() (string, []string) {
 	ifname := gnbIfnameFromBundle()
+	if ifname == "" {
+		return "", nil
+	}
+	overlay := overlayFromRouteConf(filepath.Join(gnbConfDir(), "route.conf"))
+	ifname = resolveLiveGNBIface(ifname, overlay)
 	if ifname == "" {
 		return "", nil
 	}
