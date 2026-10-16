@@ -76,10 +76,19 @@ func cmdFirewallDoctor(args []string) int {
 	// 云侧层：只出清单
 	rep.Cloud = cloudPortChecklist(port)
 
-	// OpenWrt fw4 持久化检查（N5 验收项）
-	if runtime.GOOS == "linux" || fileExists("/etc/nftables.d") {
+	// 防火墙持久化检查：判据必须按**本机实际的持久化面**分流。
+	// 在通用 Linux 上照抄 fw4 的判据（只查 /etc/nftables.d/）会指着一个
+	// 可能根本没人 include 的目录说「没问题」—— 本机实测（Ubuntu 22.04）：
+	// /etc/nftables.conf 不含该目录的 include、netfilter-persistent 未装，
+	// 两条路都无效，而旧判据只会打印 fw4 的文案。
+	if be := currentFirewallBackend(); be == FirewallBackendFw4 {
 		rep.Persistence = checkFw4Persistence(port)
+	} else {
+		rep.Persistence = checkPersistByBackend(port, be)
 	}
+
+	// 存活态：产物 ↔ 内核 一致性（被 reset 了要看得见）
+	rep.Alive = checkRulesAlive()
 
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)
@@ -89,9 +98,12 @@ func cmdFirewallDoctor(args []string) int {
 		printFirewallDoctor(rep)
 	}
 
-	// 退出码：只对「机测到未放行」亮红灯（route doctor 同口径）。
+	// 退出码：只对「机测到未放行」「规则被 reset 了」亮红灯（route doctor 同口径）。
 	// pf / 无工具属「测不了」，不算失败。
 	if !rep.Machine.Accepted && (rep.Machine.Backend == "nft" || rep.Machine.Backend == "iptables") {
+		return 1
+	}
+	if rep.Alive != nil && rep.Alive.Lost {
 		return 1
 	}
 	return 0
@@ -103,7 +115,23 @@ type firewallDoctorReport struct {
 	Machine     machinePortCheck `json:"machine"`
 	Cloud       cloudPortCheck   `json:"cloud"`
 	Persistence *persistCheck    `json:"persistence,omitempty"`
+	Alive       *aliveCheck      `json:"alive,omitempty"`
 	Warnings    []string         `json:"warnings,omitempty"`
+}
+
+// aliveCheck 存活态 —— 你第 4 条「不追求 100% 恢复，但必须可感知」的那半。
+//
+// 不查「防火墙健不健康」，只查一件最要命的事：**产物还在、隧道也在跑，
+// 而内核里已经没有我们那批规则了** —— 那就是被人 flush/reset 掉了，
+// 网关 NAT 静默失效（表象像路由故障，根因在防火墙，最难自己发现）。
+type aliveCheck struct {
+	ArtifactPath   string `json:"artifact_path,omitempty"`
+	ArtifactExists bool   `json:"artifact_exists"`
+	RulesInKernel  bool   `json:"rules_in_kernel"`
+	TunnelUp       bool   `json:"tunnel_up"`
+	// Lost = 该有规则而没有（产物在 + 隧道在跑 + 内核无）。
+	Lost  bool     `json:"lost"`
+	Notes []string `json:"notes,omitempty"`
 }
 
 type machinePortCheck struct {
@@ -119,6 +147,9 @@ type cloudPortCheck struct {
 }
 
 type persistCheck struct {
+	// Backend 本机实际的持久化面（fw4 / nftables-d / iptables-persistent / …）。
+	// 判据按它分流 —— 在通用 Linux 上照抄 fw4 的判据会给出错误的「没问题」。
+	Backend    string   `json:"backend,omitempty"`
 	Fw4NftFile string   `json:"fw4_nft_file,omitempty"`
 	Exists     bool     `json:"exists"`
 	HasRule    bool     `json:"has_rule"`
@@ -238,9 +269,49 @@ func cloudPortChecklist(port int) cloudPortCheck {
 	}
 }
 
+// checkPersistByBackend 非 OpenWrt 的持久化判据：按 selectFirewallBackend 选出的
+// 面查它的承载物，查不到就**如实说规则活不过防火墙重启**（skip ≠ pass）。
+func checkPersistByBackend(port int, backend FirewallBackend) *persistCheck {
+	p := &persistCheck{Backend: string(backend)}
+	portStr := fmt.Sprint(port)
+
+	switch backend {
+	case FirewallBackendNftablesD:
+		p.Fw4NftFile = FirewallNftDropInPath()
+		if b, err := os.ReadFile(p.Fw4NftFile); err == nil {
+			p.Exists = true
+			p.HasRule = strings.Contains(string(b), "masquerade")
+		} else {
+			p.Notes = append(p.Notes,
+				p.Fw4NftFile+" 不存在（nftables.service reload 后无 MYNET 规则）—— 跑 `mynet firewall sync`")
+		}
+	case FirewallBackendIPtablesPersistent:
+		p.Fw4NftFile = "/etc/iptables/rules.v4"
+		if b, err := os.ReadFile(p.Fw4NftFile); err == nil {
+			p.Exists = true
+			p.HasRule = strings.Contains(string(b), "MASQUERADE")
+		} else {
+			p.Notes = append(p.Notes,
+				p.Fw4NftFile+" 不存在（重启后无 MYNET 规则）—— 跑 `mynet firewall sync`")
+		}
+		p.Notes = append(p.Notes,
+			"运行期规则由 apply 装、由 `mynet firewall sync` 走 netfilter-persistent save 落盘")
+	case FirewallBackendUfw, FirewallBackendFirewalld:
+		p.Notes = append(p.Notes,
+			fmt.Sprintf("防火墙由 %s 管理，mynet 尚未接入它的持久化面 —— 规则只在运行期有效", backend))
+	case FirewallBackendNone:
+		p.Notes = append(p.Notes,
+			"无可用的防火墙持久化面 —— 规则只在运行期有效，重启后需重新 `mynet firewall sync`")
+		p.Notes = append(p.Notes,
+			"可选修复：安装 iptables-persistent；或让 /etc/nftables.conf include /etc/nftables.d/ 后启用 nftables.service")
+	}
+	_ = portStr
+	return p
+}
+
 // checkFw4Persistence —— N5 验收：fw4 reload 后规则仍在。
 func checkFw4Persistence(port int) *persistCheck {
-	p := &persistCheck{}
+	p := &persistCheck{Backend: string(FirewallBackendFw4)}
 	candidates := []string{
 		"/etc/nftables.d/mynet.nft",
 		"/etc/nftables.d/mynet-firewall.nft",
@@ -267,6 +338,52 @@ func checkFw4Persistence(port int) *persistCheck {
 	return p
 }
 
+// checkRulesAlive 比对「产物文件」与「内核 nft 规则」。
+// 判据故意窄：只认 mynet 自有表（FirewallNatFamily/Table）+ masquerade，
+// 不扫别人的表 —— 别人的规则丢不丢不是我们的事，扫进来只会误报。
+func checkRulesAlive() *aliveCheck {
+	home := utils.GetMyNetHome()
+	a := &aliveCheck{}
+	for _, p := range []string{FirewallNftPath(home), FirewallIncludePath(home)} {
+		if p == "" {
+			continue
+		}
+		if fileExists(p) {
+			a.ArtifactPath = p
+			a.ArtifactExists = true
+			break
+		}
+	}
+	if a.ArtifactExists {
+		a.Notes = append(a.Notes, "产物: "+a.ArtifactPath)
+	}
+
+	if cmdExists("nft") {
+		out, err := runCapture("nft", "list", "ruleset")
+		if err == nil {
+			// 只认自有表，避免把 iptables-nft 的 `table ip nat` 里的别人的 masq 算成我们的
+			own := strings.Contains(out, "table "+FirewallNatFamily+" "+FirewallNatTable)
+			masq := own && strings.Contains(out, "masquerade")
+			a.RulesInKernel = masq
+			if own && !masq {
+				a.Notes = append(a.Notes, "自有表在、但表里没有 masquerade 规则")
+			}
+		} else {
+			a.Notes = append(a.Notes, "nft list ruleset 失败（无法判定内核规则）")
+		}
+	} else {
+		a.Notes = append(a.Notes, "无 nft：内核规则查不了（不是「没问题」）")
+	}
+
+	a.TunnelUp = currentTunHealth(home).Healthy()
+	// 只有「该在而不在」才算丢：产物没写过 = 从没装过（提示性），不是丢失。
+	a.Lost = a.ArtifactExists && a.TunnelUp && !a.RulesInKernel
+	if a.Lost {
+		a.Notes = append(a.Notes, "隧道在跑却查不到规则 = 被 flush/reset 掉，且当前无自动重放（见持久化面）")
+	}
+	return a
+}
+
 func printFirewallDoctor(rep firewallDoctorReport) {
 	fmt.Println("firewall doctor（两层检查：云侧清单 + 机内 nft/iptables）")
 	if rep.Subject != nil {
@@ -285,8 +402,9 @@ func printFirewallDoctor(rep firewallDoctorReport) {
 		for _, n := range rep.Machine.Notes {
 			fmt.Println("  ", n)
 		}
-		fmt.Printf("  修复: sudo nft insert rule inet filter input udp dport %d accept\n", rep.UDPPort)
-		fmt.Printf("     或 sudo iptables -A INPUT -p udp --dport %d -j ACCEPT\n", rep.UDPPort)
+		// 放行规则随 nft 产物重放（FirewallNftRules 的 input 链），不要手工往
+		// 别人的 `inet filter input` 里插 —— 那是 ufw/fw4 的管辖面，reload 即丢。
+		fmt.Printf("  修复: mynet firewall sync  （放行规则在产物 %s 的 input 链）\n", FirewallNftArtifactName)
 	}
 
 	fmt.Println("\n── 云侧层（需人工核对，本机看不到安全组）──")
@@ -294,14 +412,41 @@ func printFirewallDoctor(rep firewallDoctorReport) {
 		fmt.Println("  ·", it)
 	}
 
+	if rep.Alive != nil {
+		fmt.Println("\n── 规则存活态 ──")
+		switch {
+		case rep.Alive.Lost:
+			fmt.Println("✗ 产物在、隧道在跑，但内核里没有 mynet 规则 —— 已被防火墙 reset")
+			fmt.Println("  修复: mynet firewall sync")
+		case !rep.Alive.ArtifactExists:
+			fmt.Println("· 产物未生成（还没装过规则）: mynet firewall sync")
+		case rep.Alive.RulesInKernel:
+			fmt.Println("✓ 内核里有 mynet 自有表规则（与产物一致）")
+		default:
+			fmt.Println("· 内核里查不到规则（隧道未起或本平台无 nft），未下结论")
+		}
+		for _, n := range rep.Alive.Notes {
+			fmt.Println("  ", n)
+		}
+	}
+
 	if rep.Persistence != nil {
-		fmt.Println("\n── fw4 持久化 ──")
-		if rep.Persistence.Exists && rep.Persistence.HasRule {
-			fmt.Println("✓", rep.Persistence.Fw4NftFile, "含规则 —— fw4 reload 后仍在")
+		title := "fw4 持久化"
+		if rep.Persistence.Backend != "" && rep.Persistence.Backend != string(FirewallBackendFw4) {
+			title = "防火墙持久化（" + rep.Persistence.Backend + "）"
+		}
+		fmt.Println("\n── " + title + " ──")
+		none := rep.Persistence.Backend == string(FirewallBackendNone) ||
+			rep.Persistence.Backend == string(FirewallBackendUfw) ||
+			rep.Persistence.Backend == string(FirewallBackendFirewalld)
+		if none {
+			fmt.Println("✗ 规则活不过防火墙重启（如下）")
+		} else if rep.Persistence.Exists && rep.Persistence.HasRule {
+			fmt.Println("✓", rep.Persistence.Fw4NftFile, "含规则 —— 防火墙重启后仍在")
 		} else if rep.Persistence.Exists {
 			fmt.Println("⚠", rep.Persistence.Fw4NftFile, "存在但缺规则")
 		} else {
-			fmt.Println("✗ 无 /etc/nftables.d/mynet.nft —— fw4 reload 会丢规则")
+			fmt.Println("✗", rep.Persistence.Fw4NftFile, "不存在 —— 防火墙重启会丢规则")
 		}
 		for _, n := range rep.Persistence.Notes {
 			fmt.Println("  ", n)

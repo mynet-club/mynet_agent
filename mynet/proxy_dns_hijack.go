@@ -68,26 +68,30 @@ func DNSHijackCmds(snap *shared.SystemSnapshot, rt DNSHijackRuntime) []routeCmd 
 	var cmds []routeCmd
 
 	if snap.Capabilities["nft"] {
-		// nat 表与 OUTPUT/PREROUTING 链
+		// 落 **自有表 ip mynet_proxy**（dns-hijack-out / dns-hijack-in），不写 `ip nat`：
+		// 那张表归 iptables-nft / ufw 管，`iptables-restore` 整表恢复会冲掉（2026-10-16 实测）。
+		// 先 flush 本链再加（幂等）—— 只动本组，不碰分类器的 PREROUTING。
+		out, in := ProxyChainHijackOut, ProxyChainHijackIn
 		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "table", "ip", "nat"}},
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "nat", "OUTPUT",
+			routeCmd{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+			routeCmd{argv: []string{"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, out,
 				"{ type nat hook output priority -100; }"}, optional: true},
+			routeCmd{argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, out}, optional: true},
 		)
 
 		// ① 放行解析器自己的上游查询（防自环）—— 必须在 redirect 之前
 		cmds = append(cmds,
 			routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "nat", "OUTPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, out,
 				"meta", "skuid", user, "udp", "dport", "53", "accept",
 			}, optional: true},
 			routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "nat", "OUTPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, out,
 				"meta", "skuid", user, "tcp", "dport", "53", "accept",
 			}, optional: true},
 			// 已经是本机解析器的查询不再劫（redirect 到自己无意义）
 			routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "nat", "OUTPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, out,
 				"ip", "daddr", "127.0.0.1", "udp", "dport", "53", "accept",
 			}, optional: true},
 		)
@@ -95,11 +99,11 @@ func DNSHijackCmds(snap *shared.SystemSnapshot, rt DNSHijackRuntime) []routeCmd 
 		// ② 本机劫持
 		cmds = append(cmds,
 			routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "nat", "OUTPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, out,
 				"udp", "dport", "53", "redirect", "to", ":" + port,
 			}},
 			routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "nat", "OUTPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, out,
 				"tcp", "dport", "53", "redirect", "to", ":" + port,
 			}},
 		)
@@ -108,14 +112,16 @@ func DNSHijackCmds(snap *shared.SystemSnapshot, rt DNSHijackRuntime) []routeCmd 
 		if rt.Scope == DNSHijackLAN && rt.LANBridge != "" {
 			cmds = append(cmds,
 				routeCmd{argv: []string{
-					"nft", "add", "chain", "ip", "nat", "PREROUTING",
+					"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, in,
 					"{ type nat hook prerouting priority -100; }"}, optional: true},
 				routeCmd{argv: []string{
-					"nft", "add", "rule", "ip", "nat", "PREROUTING",
+					"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, in}, optional: true},
+				routeCmd{argv: []string{
+					"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, in,
 					"iifname", rt.LANBridge, "udp", "dport", "53", "redirect", "to", ":" + port,
 				}},
 				routeCmd{argv: []string{
-					"nft", "add", "rule", "ip", "nat", "PREROUTING",
+					"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, in,
 					"iifname", rt.LANBridge, "tcp", "dport", "53", "redirect", "to", ":" + port,
 				}},
 			)
@@ -124,36 +130,41 @@ func DNSHijackCmds(snap *shared.SystemSnapshot, rt DNSHijackRuntime) []routeCmd 
 	}
 
 	if snap.Capabilities["iptables"] {
-		// OUTPUT：放行解析器 → REDIRECT
+		// 幂等：规则进**自有链**（-N/-F），共享的 nat OUTPUT/PREROUTING 只留守卫跳转。
+		// 纯 `-A` 会随每次 apply 堆规则（与 dohBlock 同一处实测）。
+		cmds = append(cmds, IptOwnChainCmds("nat", IPTablesChainDnsOut)...)
 		cmds = append(cmds,
 			routeCmd{argv: []string{
-				"iptables", "-t", "nat", "-A", "OUTPUT",
+				"iptables", "-t", "nat", "-A", IPTablesChainDnsOut,
 				"-p", "udp", "--dport", "53", "-m", "owner", "--uid-owner", user, "-j", "ACCEPT",
 			}, optional: true},
 			routeCmd{argv: []string{
-				"iptables", "-t", "nat", "-A", "OUTPUT",
+				"iptables", "-t", "nat", "-A", IPTablesChainDnsOut,
 				"-p", "tcp", "--dport", "53", "-m", "owner", "--uid-owner", user, "-j", "ACCEPT",
 			}, optional: true},
 			routeCmd{argv: []string{
-				"iptables", "-t", "nat", "-A", "OUTPUT",
+				"iptables", "-t", "nat", "-A", IPTablesChainDnsOut,
 				"-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", port,
 			}},
 			routeCmd{argv: []string{
-				"iptables", "-t", "nat", "-A", "OUTPUT",
+				"iptables", "-t", "nat", "-A", IPTablesChainDnsOut,
 				"-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", port,
 			}},
 		)
+		cmds = append(cmds, IptJumpCmd("nat", "OUTPUT", IPTablesChainDnsOut))
 		if rt.Scope == DNSHijackLAN && rt.LANBridge != "" {
+			cmds = append(cmds, IptOwnChainCmds("nat", IPTablesChainDnsPre)...)
 			cmds = append(cmds,
 				routeCmd{argv: []string{
-					"iptables", "-t", "nat", "-A", "PREROUTING",
+					"iptables", "-t", "nat", "-A", IPTablesChainDnsPre,
 					"-i", rt.LANBridge, "-p", "udp", "--dport", "53", "-j", "REDIRECT", "--to-ports", port,
 				}},
 				routeCmd{argv: []string{
-					"iptables", "-t", "nat", "-A", "PREROUTING",
+					"iptables", "-t", "nat", "-A", IPTablesChainDnsPre,
 					"-i", rt.LANBridge, "-p", "tcp", "--dport", "53", "-j", "REDIRECT", "--to-ports", port,
 				}},
 			)
+			cmds = append(cmds, IptJumpCmd("nat", "PREROUTING", IPTablesChainDnsPre))
 		}
 		return cmds
 	}
@@ -165,15 +176,21 @@ func DNSHijackCleanupCmds(snap *shared.SystemSnapshot, rt DNSHijackRuntime) []ro
 	// 精确删规则成本高；flush 指定链上我们加的 redirect 即可。
 	// 这里删 53 相关 redirect/accept，失败可忽略。
 	if snap.Capabilities["nft"] {
+		// 只 flush **自有链** —— 刷 `ip nat` 的 OUTPUT/PREROUTING 会把别人（ufw/Docker）
+		// 的规则一起冲掉，这正是当初写进 `ip nat` 埋下的雷。
 		return []routeCmd{
-			{argv: []string{"nft", "flush", "chain", "ip", "nat", "OUTPUT"}, optional: true},
-			{argv: []string{"nft", "flush", "chain", "ip", "nat", "PREROUTING"}, optional: true},
+			{argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainHijackOut}, optional: true},
+			{argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainHijackIn}, optional: true},
 		}
 	}
 	if snap.Capabilities["iptables"] {
+		// 只摘**自有链**的跳转并清自有链 —— 绝不 `-F OUTPUT`/`-F PREROUTING`：
+		// 那是共享链，刷了会把 ufw/Docker 的规则一起清掉（历史遗留 bug）。
 		return []routeCmd{
-			{argv: []string{"iptables", "-t", "nat", "-F", "OUTPUT"}, optional: true},
-			{argv: []string{"iptables", "-t", "nat", "-F", "PREROUTING"}, optional: true},
+			IptUnjumpCmd("nat", "OUTPUT", IPTablesChainDnsOut),
+			IptUnjumpCmd("nat", "PREROUTING", IPTablesChainDnsPre),
+			{argv: []string{"iptables", "-t", "nat", "-F", IPTablesChainDnsOut}, optional: true},
+			{argv: []string{"iptables", "-t", "nat", "-F", IPTablesChainDnsPre}, optional: true},
 		}
 	}
 	return nil

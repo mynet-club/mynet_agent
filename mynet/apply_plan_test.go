@@ -151,20 +151,21 @@ func TestIfaceArgvBSD(t *testing.T) {
 	}
 }
 
-func TestFirewallMasqPicksToolFromSnapshot(t *testing.T) {
-	snapNft := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true, "iptables": true}}
-	argv := firewallArgv(snapNft, FirewallOp{Action: "ensure-masq", Device: "wg0"})
-	if argv[0] != "nft" {
-		t.Fatalf("prefer nft, got %v", argv)
-	}
-	snapIpt := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
-	argv = firewallArgv(snapIpt, FirewallOp{Action: "ensure-masq", Device: "gnb0"})
-	if argv[0] != "iptables" {
-		t.Fatalf("prefer iptables, got %v", argv)
-	}
-	// 跨驱动：wg0 与 gnb0 对 apply 无差别
-	if len(firewallArgv(snapIpt, FirewallOp{Action: "ensure-masq", Device: "wg0"})) == 0 {
-		t.Fatal("wg0 must be treated same as gnb0")
+// 反不变量：**NAT 规则本体不进 Go**（2026-10-16 裁定）。
+//
+// 网关 masq 的规则活在产物文件里（firewall_persist_common.go 渲染），
+// 由 LoadFirewallRules 委托系统加载器装；apply 路径**不得**拼 `nft add rule`。
+// 谁把 ensure-masq 塞回 firewallArgv，谁就把「实装与重放不一致」的风险加回来。
+func TestFirewallArgvDoesNotComposeNAT(t *testing.T) {
+	for _, caps := range []map[string]bool{
+		{"nft": true, "iptables": true},
+		{"iptables": true},
+		{},
+	} {
+		snap := &shared.SystemSnapshot{Capabilities: caps}
+		if got := firewallArgv(snap, FirewallOp{Action: "ensure-masq", Device: "gnb0"}); got != nil {
+			t.Fatalf("ensure-masq 不应由 Go 拼命令，got %v", got)
+		}
 	}
 }
 
@@ -299,24 +300,21 @@ func TestRollbackInvertsAppliedRoutes(t *testing.T) {
 
 func TestRollbackFirewallArgvSymmetry(t *testing.T) {
 	snapNft := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true, "iptables": true}}
-	wantNft := []string{"nft", "delete", "rule", "ip", "nat", "POSTROUTING", "oifname", "gnb0", "masquerade"}
-	if got := firewallRollbackArgv(snapNft, FirewallOp{Action: "ensure-masq", Device: "gnb0"}); !argvEq(got, wantNft) {
-		t.Fatalf("nft 逆= %v want %v", got, wantNft)
+	// 规则本体不进 Go ⇒ 没有「本轮刚追加的那条」可反删，返回 nil（撤销归产物/系统面）
+	if got := firewallRollbackArgv(snapNft, FirewallOp{Action: "ensure-masq", Device: "gnb0"}); got != nil {
+		t.Fatalf("ensure-masq 应无 Go 侧逆操作，got %v", got)
 	}
-
+	if got := firewallRollbackArgv(snapNft, FirewallOp{Action: "ensure-masq", Device: "gnb0"}); got != nil {
+		t.Fatalf("确保 nft/iptables 两分支都不返回逆操作，got %v", got)
+	}
 	snapIpt := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
-	wantIpt := []string{"iptables", "-t", "nat", "-D", "POSTROUTING", "-o", "wg0", "-j", "MASQUERADE"}
-	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "ensure-masq", Device: "wg0"}); !argvEq(got, wantIpt) {
-		t.Fatalf("iptables masq 逆= %v want %v", got, wantIpt)
+	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "ensure-masq", Device: "wg0"}); got != nil {
+		t.Fatalf("iptables 分支同样返回 nil，got %v", got)
 	}
 
-	wantPort := []string{"iptables", "-D", "INPUT", "-p", "tcp", "--dport", "51820", "-j", "ACCEPT", "-m", "comment", "--comment", "mynet"}
-	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "open-port", Proto: "tcp", Port: 51820, Comment: "mynet"}); !argvEq(got, wantPort) {
-		t.Fatalf("open-port 逆= %v want %v", got, wantPort)
-	}
-	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016}); !argvEq(got,
-		[]string{"iptables", "-D", "INPUT", "-p", "udp", "--dport", "9016", "-j", "ACCEPT"}) {
-		t.Fatalf("无 comment 的 open-port 逆= %v", got)
+	// open-port 同样不进 Go：无「本轮刚追加的那条」可反删
+	if got := firewallRollbackArgv(snapIpt, FirewallOp{Action: "open-port", Proto: "tcp", Port: 51820, Comment: "mynet"}); got != nil {
+		t.Fatalf("open-port 应无 Go 侧逆操作，got %v", got)
 	}
 
 	// 无可用工具 / 未知动作：没有可对称删除的 rule，返回 nil 而不是瞎删

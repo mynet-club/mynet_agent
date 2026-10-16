@@ -14,6 +14,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // ApplyPlan 是 L6 写入计划：只含系统网络语义，不含驱动原生语法。
@@ -54,7 +55,7 @@ type RouteOp struct {
 type FirewallOp struct {
 	Table   string `json:"table,omitempty"`
 	Chain   string `json:"chain,omitempty"`
-	Action  string `json:"action"` // ensure-masq | open-port | …
+	Action  string `json:"action"` // ensure-masq | open-port | …（NAT 类只作意图，不在此执行）
 	Device  string `json:"device,omitempty"`
 	Port    int    `json:"port,omitempty"`
 	Proto   string `json:"proto,omitempty"`
@@ -223,6 +224,10 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 					if err := WriteNftSetFragment(rt.IPSetFile); err != nil {
 						fmt.Fprintf(os.Stderr, "proxy nft fragment: %v\n", err)
 						fail = 1
+					} else if err := PersistProxySetArtifact(utils.GetMyNetHome(), rt.IPSetFile+".nft"); err != nil {
+						// 集合不入产物 = 防火墙重启后规则在、集合空 → 分流静默失效
+						fmt.Fprintf(os.Stderr, "proxy 集合产物: %v\n", err)
+						log.Warn("集合未收进重放产物（重启后可能分流失效）", "err", err)
 					}
 				} else if snap.Capabilities["iptables"] {
 					if err := WriteIPSetRestore(rt.IPSetFile); err != nil {
@@ -294,6 +299,27 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 				}
 				return ""
 			}())
+		// 规则本体**进产物 + 委托 nft -f**（裁定：firewall 是 L6 的事，Go 只写产物、
+		// 系统加载器来装，不 exec `nft add rule`）。其余（ip route / ip rule /
+		// iptables 回退 / sysctl / mynet 子命令 / ipset）不在规则本体范畴，照旧执行。
+		//
+		// ⚠️ 产物只 `flush chain` 不 `flush table`（见 FirewallProxyNftName 注释：
+		// proxy 表里有集合元素，清表会连它们一起清掉）。
+		if batch, rest := SplitNftCmds(pcmds); batch != "" {
+			home := utils.GetMyNetHome()
+			if !dry {
+				if err := WriteFirewallProxyArtifact(home, batch); err != nil {
+					fmt.Fprintf(os.Stderr, "proxy 产物写入: %v\n", err)
+					log.Error("proxy 产物写入失败", "err", err)
+					fail = 1
+				} else if err := runOp(dry, []string{"nft", "-f", FirewallProxyNftPath(home)}); err != nil {
+					fmt.Fprintf(os.Stderr, "proxy nft -f: %v\n", err)
+					log.Error("proxy 规则加载失败", "err", err)
+					fail = 1
+				}
+			}
+			pcmds = rest
+		}
 		for _, c := range pcmds {
 			if err := runOp(dry, c.argv); err != nil {
 				if c.optional {
@@ -613,41 +639,42 @@ func bsdRouteCmds(r RouteOp) []routeCmd {
 	}
 }
 
+// firewallArgv 只翻译**系统里已有管理面的**那类意图（open-port）。
+//
+// NAT / 转发这类**规则本体不进 Go**（2026-10-16 裁定「firewall 是 L6 的事情，
+// 交给系统，不在 go 中实现」）：规则活在**产物文件**里（firewall_persist_common.go
+// 渲染），由 Go 写文件 + **委托系统自己的加载器**装（fw4 include / nft -f），
+// 见 LoadFirewallRules。Go 不拼 `nft add rule`，也就不存在「Go 拼的规则与
+// 重放产物不一致」「flush 后 add 失败导致丢规则」这类问题。
 func firewallArgv(snap *shared.SystemSnapshot, f FirewallOp) []string {
-	switch f.Action {
-	case "ensure-masq":
-		if snap.Capabilities["nft"] {
-			return []string{"nft", "add", "rule", "ip", "nat", "POSTROUTING",
-				"oifname", f.Device, "masquerade"}
-		}
-		if snap.Capabilities["iptables"] {
-			return []string{"iptables", "-t", "nat", "-A", "POSTROUTING",
-				"-o", f.Device, "-j", "MASQUERADE"}
-		}
-		return nil
-	case "open-port":
-		// N5：nft 优先（fw4/nftables 主机），iptables 兜底（fw3/legacy）。
-		// 原先只写 iptables 路径，纯 nft 主机上 open-port 会静默变成 no-op。
-		if snap.Capabilities["nft"] {
-			// inet filter INPUT：与 fw4 的 input 链同表，reload 后由 nftables.d 重建。
-			argv := []string{"nft", "add", "rule", "ip", "filter", "INPUT",
-				"ip", "protocol", f.Proto, f.Proto, "dport", fmt.Sprintf("%d", f.Port), "accept"}
-			if f.Comment != "" {
-				argv = append(argv, "comment", fmt.Sprintf("%q", f.Comment))
-			}
-			return argv
-		}
-		if snap.Capabilities["iptables"] {
-			argv := []string{"iptables", "-A", "INPUT", "-p", f.Proto, "--dport", fmt.Sprintf("%d", f.Port), "-j", "ACCEPT"}
-			if f.Comment != "" {
-				argv = append(argv, "-m", "comment", "--comment", f.Comment)
-			}
-			return argv
-		}
-		return nil
-	default:
-		return nil
+	// 规则本体**一律不在此翻译**：NAT（ensure-masq）与放行（open-port）都进产物
+	// （FirewallNftRules 的 postrouting / input 链），由 LoadFirewallRules 委托
+	// 系统加载器装。这里恒返回 nil —— 谁把规则加回来，谁就破坏了单一来源。
+	_ = snap
+	_ = f
+	return nil
+}
+
+// defaultIfaceFromSnapshot 从 detector 产出的 detail.routing 取默认出口网卡（oif）。
+//
+// 这是**节点侧事实**，所以由 apply 期解析，云端不下发 —— 网关意图只说「要对转发
+// 做 NAT」，出接口填哪张是这台机器自己的事（spec/route-firewall-split.md §1）。
+// 解析不出返回空串，调用方**跳过并报错**：猜一个网卡比不装更危险。
+func defaultIfaceFromSnapshot(snap *shared.SystemSnapshot) string {
+	if snap == nil || snap.Detail == nil {
+		return ""
 	}
+	raw, ok := snap.Detail["routing"]
+	if !ok {
+		return ""
+	}
+	var r struct {
+		DefaultIface string `json:"default_iface"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(r.DefaultIface)
 }
 
 func ifaceArgv(snap *shared.SystemSnapshot, i IfaceOp) []string {
@@ -679,31 +706,11 @@ func ifaceInverseAction(action string) string {
 func firewallRollbackArgv(snap *shared.SystemSnapshot, f FirewallOp) []string {
 	switch f.Action {
 	case "ensure-masq":
-		if snap.Capabilities["nft"] {
-			return []string{"nft", "delete", "rule", "ip", "nat", "POSTROUTING",
-				"oifname", f.Device, "masquerade"}
-		}
-		if snap.Capabilities["iptables"] {
-			return []string{"iptables", "-t", "nat", "-D", "POSTROUTING",
-				"-o", f.Device, "-j", "MASQUERADE"}
-		}
+		// 规则本体不再由 Go 装（见 firewallArgv 顶部注释），因此没有「本轮刚追加的
+		// 那条」需要按同一 spec 反删 —— 撤销归产物与系统加载面，这里返回 nil。
 		return nil
 	case "open-port":
-		if snap.Capabilities["nft"] {
-			argv := []string{"nft", "delete", "rule", "ip", "filter", "INPUT",
-				"ip", "protocol", f.Proto, f.Proto, "dport", fmt.Sprintf("%d", f.Port), "accept"}
-			if f.Comment != "" {
-				argv = append(argv, "comment", fmt.Sprintf("%q", f.Comment))
-			}
-			return argv
-		}
-		if snap.Capabilities["iptables"] {
-			argv := []string{"iptables", "-D", "INPUT", "-p", f.Proto, "--dport", fmt.Sprintf("%d", f.Port), "-j", "ACCEPT"}
-			if f.Comment != "" {
-				argv = append(argv, "-m", "comment", "--comment", f.Comment)
-			}
-			return argv
-		}
+		// 同 ensure-masq：放行规则也不由 Go 装，撤销归产物/系统面。
 		return nil
 	default:
 		return nil

@@ -117,8 +117,9 @@ func cmdApply(args []string) int {
 
 		rc := executeApply(snap, &plan, dry)
 		if rc == 0 && !dry {
-			// OpenWrt：include 持久化 + UCI device 跟随 tun 名（firewall.mynet.include 必留）
-			syncFirewallAfterApply()
+			// 防火墙持久化同步（上层合同见 firewall_persist_common.go）：
+			// OpenWrt 登记 UCI include（fw4 reload 后重放），Linux 按后端登记。
+			syncFirewallAfterTunnelUp()
 		}
 		return rc
 	}
@@ -232,6 +233,10 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "✗ start %s: %v\n", name, err)
 			return 1
 		}
+		// 隧道接口**已建立**，此刻落地防火墙持久化 —— 产物里的 DEV 要对上真实
+		// 接口名，早于这一步算出来的名字可能与实际投影不一致。放在这里而不是
+		// mynetd 启动时：mynetd 是纯通信层，不碰系统能力（AGENTS.md §1.2）。
+		syncFirewallAfterTunnelUp()
 		// D4/§14：DNS 是**用户三选一**（不劫持 / 指定上游 / 交我们），默认不劫持。
 		// 只有显式 mynet dns apply 或配置 dns.hijack=ours 才接管 ——
 		// service start 自动劫持曾把网络干死（多网卡/目标不稳），禁止默认劫持。

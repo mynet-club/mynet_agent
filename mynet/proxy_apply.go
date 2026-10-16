@@ -82,7 +82,7 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	if snap.Capabilities["nft"] {
 		for _, ch := range []string{"PREROUTING"} {
 			cmds = append(cmds, routeCmd{
-				argv: []string{"nft", "flush", "chain", "ip", "mynet_proxy", ch}, optional: true})
+				argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ch}, optional: true})
 		}
 	}
 
@@ -168,8 +168,8 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 		return []routeCmd{
 			// 自建单表：集合与打标规则**同表**（nft 的 @set 只能引用同表集合 ——
 			// 旧版把集合放 `ip mynet_proxy`、规则放 `ip mangle`，跨表引用天然不生效）。
-			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
-			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "mynet_proxy",
+			{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+			{argv: []string{"nft", "add", "set", FirewallNatFamily, FirewallProxyTable, "mynet_proxy",
 				"{ type ipv4_addr; flags interval; }"}, optional: true},
 			// ⚠️ 这里**不能**放 `nft flush set`「占位」：它是真跑的，会把列表步骤刚灌进去的
 			// 元素清成 0（2026-10-11 .182 实测：17789 → 0）。元素的清空+重灌由列表步骤的
@@ -188,8 +188,12 @@ func proxyIPSetCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Proxy
 // proxyMarkCmds 打 fwmark：PREROUTING（LAN 转发）+ OUTPUT（本机 App，同机形态）。
 // nftRule 一条 nft 规则的 argv。
 //
-// 幂等由 apply 开头的 `nft flush table ip mynet_proxy` 保证（每次先清空本表全部规则、
-// 再按序重加）。**不能**用 `nft delete rule <spec>`：本机 nft 版本只认 handle，按 spec
+// 幂等由 apply 开头的 **`nft flush chain ip mynet_proxy <chain>`** 保证（只清链上的
+// 打标规则、再按序重加）。**绝不能改成 `nft flush table`**：那会连本表的 set 元素
+// 一起清掉（2026-10-11 .182 实测 17789 → 0），集合由列表步骤灌好，必须留着 ——
+// 这条见 proxy_apply.go 开头第 0 步的告警，两处注释须同口径。
+//
+// **不能**用 `nft delete rule <spec>`：本机 nft 版本只认 handle，按 spec
 // 删会报 "unexpected …, expecting handle"（2026-10-11 .182 实测）。
 func nftRule(spec []string) []routeCmd {
 	return []routeCmd{{argv: append([]string{"nft", "add", "rule"}, spec...)}}
@@ -210,27 +214,27 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 			// ⚠️ 集合必须兜：打标规则**无条件**引用 @mynet_proxy，没有列表文件时
 			// IPSetSetCmds 不建集合 → add rule 失败、apply 整条废掉
 			// （2026-10-12 .178 首装实证）。空集 = 无命中，是合法状态。
-			{argv: []string{"nft", "add", "table", "ip", "mynet_proxy"}, optional: true},
-			{argv: []string{"nft", "add", "set", "ip", "mynet_proxy", "mynet_proxy",
+			{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+			{argv: []string{"nft", "add", "set", FirewallNatFamily, FirewallProxyTable, "mynet_proxy",
 				"{ type ipv4_addr; flags interval; }"}, optional: true},
 			// ⚠️ **只挂 PREROUTING**（转发流量 = LAN 客户端）。**不挂 OUTPUT**：
 			// Linux（含 OpenWrt）下本地发出包的 FIB 查找发生在 OUTPUT hook **之前**，
 			// OUTPUT 里 `meta mark set` 改不了这一包的路由 —— 「代理由口机自身」既违铁律
 			// 又技术上不成立（2026-10-11 真机实证：强制走隧道成功、打标路径本地必然失败）。
-			{argv: []string{"nft", "add", "chain", "ip", "mynet_proxy", "PREROUTING",
+			{argv: []string{"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainMark,
 				"{ type filter hook prerouting priority -150; }"}, optional: true},
 		}
 		// LAN 回包不重打 mark（防路由回环）
 		if rt.LANBridge != "" {
-			cmds = append(cmds, nftRule([]string{"ip", "mynet_proxy", "PREROUTING",
+			cmds = append(cmds, nftRule([]string{FirewallNatFamily, FirewallProxyTable, ProxyChainMark,
 				"iifname", rt.TunDevice, "ct", "state", "established,related", "return"})...)
 		}
 		markSpec := func(daddrExpr string) []string {
 			if inverted {
-				return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", "!=", daddrExpr,
+				return []string{FirewallNatFamily, FirewallProxyTable, ProxyChainMark, "ip", "daddr", "!=", daddrExpr,
 					"meta", "mark", "set", fwHex, "counter"}
 			}
-			return []string{"ip", "mynet_proxy", "PREROUTING", "ip", "daddr", daddrExpr,
+			return []string{FirewallNatFamily, FirewallProxyTable, ProxyChainMark, "ip", "daddr", daddrExpr,
 				"meta", "mark", "set", fwHex, "counter"}
 		}
 		cmds = append(cmds, nftRule(markSpec("@mynet_proxy"))...)
@@ -304,12 +308,16 @@ func proxyDNSCmds(p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
 		if target == "" {
 			return nil
 		}
-		// DNAT :53 → peer:53。链由执行器确保存在。
+		// DNAT :53 → peer:53。
+		// 落 **自有表 ip mynet_proxy / dns-redirect**，不写 `ip nat`：那张表归
+		// iptables-nft / ufw 管，`iptables-restore` 整表恢复会把规则冲掉（2026-10-16 实测）。
+		// 先 flush 本链再加（幂等）—— 本链只归本组，不会碰到分类器那条 PREROUTING。
 		return []routeCmd{
-			{argv: []string{"nft", "add", "table", "ip", "nat"}},
-			{argv: []string{"nft", "add", "chain", "ip", "nat", "PREROUTING",
+			{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+			{argv: []string{"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainDNSRedirect,
 				"{ type nat hook prerouting priority -100; }"}, optional: true},
-			{argv: []string{"nft", "add", "rule", "ip", "nat", "PREROUTING",
+			{argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainDNSRedirect}, optional: true},
+			{argv: []string{"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, ProxyChainDNSRedirect,
 				"udp", "dport", "53", "dnat", "to", target + ":53"}},
 		}
 	case "resolv":
@@ -447,37 +455,51 @@ func DoHBypassCmds(snap *shared.SystemSnapshot, mode string, rt ProxyRuntime) []
 func dohBlockCmds(snap *shared.SystemSnapshot) []routeCmd {
 	var cmds []routeCmd
 	if snap.Capabilities["nft"] {
+		// 落 **自有表 ip mynet_proxy**（doh-input / doh-forward），不写 `ip filter`：
+		// 那张表归 iptables-nft / ufw 管，`iptables-restore` 整表恢复会冲掉。
+		// 两条链各自 flush 后重加（幂等，只动本组）。
+		for _, ch := range []string{ProxyChainDohInput, ProxyChainDohForward} {
+			cmds = append(cmds,
+				routeCmd{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+				routeCmd{argv: []string{"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, ch,
+					"{ type filter hook " + map[string]string{ProxyChainDohInput: "input", ProxyChainDohForward: "forward"}[ch] + " priority 0; }"}, optional: true},
+				routeCmd{argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ch}, optional: true},
+			)
+		}
+		// DoT :853
 		cmds = append(cmds,
-			routeCmd{argv: []string{"nft", "add", "table", "ip", "filter"}},
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "filter", "INPUT",
-				"{ type filter hook input priority 0; }"}, optional: true},
-			routeCmd{argv: []string{"nft", "add", "chain", "ip", "filter", "FORWARD",
-				"{ type filter hook forward priority 0; }"}, optional: true},
-			// DoT :853
-			routeCmd{argv: []string{"nft", "add", "rule", "ip", "filter", "INPUT",
+			routeCmd{argv: []string{"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, ProxyChainDohInput,
 				"tcp", "dport", "853", "drop"}},
-			routeCmd{argv: []string{"nft", "add", "rule", "ip", "filter", "FORWARD",
+			routeCmd{argv: []string{"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, ProxyChainDohForward,
 				"tcp", "dport", "853", "drop"}},
 			// 已知 DoH IP 的 443（不能全丢 443，会断网）
 		)
 		for _, ip := range WellKnownDoHIPs {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"nft", "add", "rule", "ip", "filter", "INPUT",
+				"nft", "add", "rule", FirewallNatFamily, FirewallProxyTable, ProxyChainDohInput,
 				"ip", "daddr", ip, "tcp", "dport", "443", "drop",
 			}, optional: true})
 		}
 		return cmds
 	}
 	if snap.Capabilities["iptables"] {
+		// 幂等：规则进**自有链**（-N 已存在跳过 + -F + 重加），共享链只留一条守卫跳转。
+		// 纯 `-A INPUT` 会随每次 apply 堆规则（2026-10-17 实测 2→4→6）。
+		cmds = append(cmds, IptOwnChainCmds("", IPTablesChainDohIn)...)
+		cmds = append(cmds, IptOwnChainCmds("", IPTablesChainDohFwd)...)
 		cmds = append(cmds,
-			routeCmd{argv: []string{"iptables", "-A", "INPUT", "-p", "tcp", "--dport", "853", "-j", "DROP"}},
-			routeCmd{argv: []string{"iptables", "-A", "FORWARD", "-p", "tcp", "--dport", "853", "-j", "DROP"}},
+			routeCmd{argv: []string{"iptables", "-A", IPTablesChainDohIn, "-p", "tcp", "--dport", "853", "-j", "DROP"}},
+			routeCmd{argv: []string{"iptables", "-A", IPTablesChainDohFwd, "-p", "tcp", "--dport", "853", "-j", "DROP"}},
 		)
 		for _, ip := range WellKnownDoHIPs {
 			cmds = append(cmds, routeCmd{argv: []string{
-				"iptables", "-A", "INPUT", "-p", "tcp", "-d", ip, "--dport", "443", "-j", "DROP",
+				"iptables", "-A", IPTablesChainDohIn, "-p", "tcp", "-d", ip, "--dport", "443", "-j", "DROP",
 			}, optional: true})
 		}
+		cmds = append(cmds,
+			IptJumpCmd("", "INPUT", IPTablesChainDohIn),
+			IptJumpCmd("", "FORWARD", IPTablesChainDohFwd),
+		)
 		return cmds
 	}
 	return nil

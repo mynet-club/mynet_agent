@@ -16,8 +16,8 @@ func TestDNSHijackLocalPC(t *testing.T) {
 		"meta skuid dnsmasq udp dport 53 accept",
 		"ip daddr 127.0.0.1 udp dport 53 accept",
 		// 本机劫持
-		"nft add rule ip nat OUTPUT udp dport 53 redirect to :53",
-		"nft add rule ip nat OUTPUT tcp dport 53 redirect to :53",
+		"nft add rule ip mynet_proxy dns-hijack-out udp dport 53 redirect to :53",
+		"nft add rule ip mynet_proxy dns-hijack-out tcp dport 53 redirect to :53",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("local 劫持缺 %q\n%s", want, text)
@@ -36,7 +36,7 @@ func TestDNSHijackLANGateway(t *testing.T) {
 	for _, want := range []string{
 		"iifname br-lan udp dport 53 redirect to :53",
 		"iifname br-lan tcp dport 53 redirect to :53",
-		"nft add rule ip nat OUTPUT udp dport 53 redirect to :53",
+		"nft add rule ip mynet_proxy dns-hijack-out udp dport 53 redirect to :53",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("lan 劫持缺 %q\n%s", want, text)
@@ -58,13 +58,28 @@ func TestDNSHijackIptablesFallback(t *testing.T) {
 	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
 	cmds := DNSHijackCmds(snap, DNSHijackRuntime{Scope: DNSHijackLAN, LANBridge: "eth0", ResolverUser: "dnsmasq"})
 	text := joinCmds(cmds)
+	// 幂等形态：规则进**自有链**，共享链只留守卫跳转（-C || -I）。
 	for _, want := range []string{
-		"iptables -t nat -A OUTPUT -p udp --dport 53 -m owner --uid-owner dnsmasq -j ACCEPT",
-		"iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 53",
-		"iptables -t nat -A PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-ports 53",
+		"iptables -t nat -N " + IPTablesChainDnsOut, // 自有链（-N 已存在跳过）
+		"iptables -t nat -F " + IPTablesChainDnsOut, // 清空后重加
+		"iptables -t nat -A " + IPTablesChainDnsOut + " -p udp --dport 53 -m owner --uid-owner dnsmasq -j ACCEPT",
+		"iptables -t nat -A " + IPTablesChainDnsOut + " -p udp --dport 53 -j REDIRECT --to-ports 53",
+		"iptables -t nat -A " + IPTablesChainDnsPre + " -i eth0 -p udp --dport 53 -j REDIRECT --to-ports 53",
+		"iptables -t nat -C OUTPUT -j " + IPTablesChainDnsOut, // 守卫：查到即跳过
+		"iptables -t nat -I OUTPUT 1 -j " + IPTablesChainDnsOut,
+		"iptables -t nat -C PREROUTING -j " + IPTablesChainDnsPre,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("iptables 劫持缺 %q\n%s", want, text)
+		}
+	}
+	// 反不变量：不得直接往共享链追加规则
+	for _, bad := range []string{
+		"iptables -t nat -A OUTPUT ",
+		"iptables -t nat -A PREROUTING ",
+	} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("不得直改共享链（%q）:\n%s", bad, text)
 		}
 	}
 }
@@ -92,7 +107,8 @@ func TestHijackAcceptsBeforeRedirect(t *testing.T) {
 		if acc < 0 && strings.Contains(s, "skuid") && strings.Contains(s, "accept") {
 			acc = i
 		}
-		if red < 0 && strings.Contains(s, "redirect to :53") && strings.Contains(s, "OUTPUT") {
+		// 链名现在是 dns-hijack-out（自有表），不是 `ip nat` 的 OUTPUT
+		if red < 0 && strings.Contains(s, "redirect to :53") && strings.Contains(s, ProxyChainHijackOut) {
 			red = i
 		}
 	}

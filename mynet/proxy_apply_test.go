@@ -530,3 +530,33 @@ func TestProxyPermissionPublisherLoop(t *testing.T) {
 		}
 	}
 }
+
+// 反不变量：proxy 侧的 nft 写入一律落 **自有表 ip mynet_proxy**，
+// 不得写 `ip nat` / `ip filter` —— 那两张表归 iptables-nft / ufw 管，
+// `iptables-restore` 整表恢复会把规则冲掉（2026-10-16 本机实测）。
+//
+// 谁把规则加回 `ip nat`/`ip filter`，谁就把「重启后 DNS/DoT 静默失效」加回来。
+func TestProxyNftRulesStayInOwnedTable(t *testing.T) {
+	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true, "iptables": true, "ip": true}}
+	groups := map[string][]routeCmd{
+		"DNS redirect": proxyDNSCmds(&domain.ProxyPolicy{
+			DNS: &domain.ProxyDNS{Mode: "redirect", RedirectTarget: "10.1.2.3"},
+		}, ProxyRuntime{TunDevice: "gnb_tun"}),
+		"DoT block":   dohBlockCmds(snap),
+		"DNS hijack":  DNSHijackCmds(snap, DNSHijackRuntime{Scope: DNSHijackLocal, Port: 5353}),
+		"DNS cleanup": DNSHijackCleanupCmds(snap, DNSHijackRuntime{Scope: DNSHijackLocal, Port: 5353}),
+	}
+	for name, cmds := range groups {
+		for _, c := range cmds {
+			joined := strings.Join(c.argv, " ")
+			if !strings.HasPrefix(joined, "nft ") {
+				continue
+			}
+			// 禁止：nft ... ip nat|filter ...
+			if strings.Contains(joined, "ip nat ") || strings.Contains(joined, "ip filter ") {
+				t.Fatalf("%s 不得写 ip nat / ip filter（应写自有表 %s）: %s",
+					name, FirewallProxyTable, joined)
+			}
+		}
+	}
+}

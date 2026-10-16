@@ -3,43 +3,27 @@ package mynet
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/mynet-club/mynet_agent/shared"
 )
 
-func TestFirewallArgvOpenPortNft(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true, "iptables": true}}
-	argv := firewallArgv(snap, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016})
-	if len(argv) == 0 {
-		t.Fatal("nft 路径不应为空")
-	}
-	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "nft") || !strings.Contains(joined, "9016") {
-		t.Fatalf("argv=%v", argv)
-	}
-	if strings.Contains(joined, "iptables") {
-		t.Fatalf("有 nft 时不应走 iptables: %v", argv)
-	}
-}
-
-func TestFirewallArgvOpenPortIptablesFallback(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
-	argv := firewallArgv(snap, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016})
-	if len(argv) == 0 {
-		t.Fatal("iptables 兜底不应为空")
-	}
-	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "iptables") || !strings.Contains(joined, "9016") {
-		t.Fatalf("argv=%v", argv)
-	}
-}
-
-func TestFirewallArgvOpenPortNoTools(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{}}
-	if argv := firewallArgv(snap, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016}); argv != nil {
-		t.Fatalf("无工具应返回 nil，实得 %v", argv)
+// 反不变量：open-port 也是**规则本体**，不进 Go（2026-10-16 裁定）。
+// 放行规则活在 nft 产物的 input 链（FirewallNftRules），由 LoadFirewallRules
+// 委托系统加载器装。doctor 的机测是全 ruleset 扫，放自有表照样被认出来。
+func TestFirewallArgvDoesNotComposeOpenPort(t *testing.T) {
+	for _, caps := range []map[string]bool{
+		{"nft": true, "iptables": true},
+		{"iptables": true},
+		{},
+	} {
+		snap := &shared.SystemSnapshot{Capabilities: caps}
+		if got := firewallArgv(snap, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016}); got != nil {
+			t.Fatalf("open-port 不应由 Go 拼命令，got %v", got)
+		}
+		if got := firewallRollbackArgv(snap, FirewallOp{Action: "open-port", Proto: "udp", Port: 9016}); got != nil {
+			t.Fatalf("open-port 同样无 Go 侧逆操作，got %v", got)
+		}
 	}
 }
 
