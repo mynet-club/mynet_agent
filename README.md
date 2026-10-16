@@ -42,5 +42,6 @@ go run -tags dev ./cmd/mynetd -listen 127.0.0.1:8096
 
 ## 文档
 
+- 托盘优化：[Tray 渐进优化 Playbook](docs/TRAY_OPTIMIZATION_PLAYBOOK.md)（沿用现有 App/FSM，局部修复与交互优化）
 - 规则：`mynet_ctl/docs/knowledge-base/AGENTS.md`
 - 设计：`mynet-overview.md` · 仓库：`repo-migration.md` · 计划：`dev-plan.md`（§3 计划顺序表）

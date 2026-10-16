@@ -1,0 +1,5 @@
+{
+  "status": "RUNNING",
+  "processUp": true,
+  "note": "200 但不是 {success,data} 信封，也不是旧的顶层 state/one_line/process_up 形状 —— 必须判 status_invalid，不得当成未连接"
+}

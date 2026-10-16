@@ -1,0 +1,6 @@
+{
+  "success": false,
+  "code": "operation_in_progress",
+  "message": "已有配置操作正在执行，请稍后刷新状态再试",
+  "retryable": true
+}

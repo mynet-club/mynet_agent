@@ -53,7 +53,7 @@ const (
 // LaunchAgent 目录（launchd 在每次登录时自动加载，安装器代写=装完即有托盘）。
 const (
 	launchdPlistDir = "/Library/LaunchDaemons"
-	launchAgentsDir = "/Library/LaunchAgents"
+	launchAgentsDir = utils.LaunchAgentDirSystem
 )
 
 // launchdMynetdSpec mynetd LaunchDaemon 的 argv + env。

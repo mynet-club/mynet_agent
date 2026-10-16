@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "message": "apply: 当前节点未获准使用出口代理",
+  "code": "proxy_exit_denied"
+}

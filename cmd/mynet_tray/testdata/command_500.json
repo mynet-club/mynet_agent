@@ -1,0 +1,8 @@
+{
+  "success": false,
+  "message": "exit status 1",
+  "stdout": "",
+  "stderr": "apply: gnb 启动失败: address.conf 缺失；请检查 /opt/mynet/conf/local/4147069894021999/\n密钥指纹 aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111\n",
+  "argv": ["apply", "--active"],
+  "bin": "/opt/mynet/bin/mynet"
+}

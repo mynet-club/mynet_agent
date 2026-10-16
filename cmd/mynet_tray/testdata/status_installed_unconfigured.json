@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "data": {
+    "state": "INSTALLED",
+    "one_line": "已安装，尚未配置节点",
+    "primary_action": "configure",
+    "actions": {
+      "install": false,
+      "configure": true,
+      "start": false,
+      "restart": false,
+      "stop": false,
+      "fix-routes": false,
+      "uninstall": true,
+      "retry": false
+    },
+    "home": "/opt/mynet",
+    "gnb_bin": "/opt/mynet/bin/gnb",
+    "installed": true,
+    "configured": false,
+    "process_up": false,
+    "tun_up": false,
+    "routes_ok": false,
+    "active_node_id": "",
+    "config_mismatch": false,
+    "peers_total": 0,
+    "peers_routed": 0,
+    "detail": "缺 conf/mynet.conf 或 var/gnb/node.conf"
+  }
+}

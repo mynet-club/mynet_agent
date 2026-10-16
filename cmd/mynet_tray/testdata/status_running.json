@@ -1,0 +1,59 @@
+{
+  "success": true,
+  "data": {
+    "state": "RUNNING",
+    "one_line": "运行中 · utun9 · 10.200.0.17 · 对端 2/2 在线",
+    "primary_action": "restart",
+    "actions": {
+      "install": false,
+      "configure": true,
+      "start": false,
+      "restart": true,
+      "stop": true,
+      "fix-routes": false,
+      "uninstall": true,
+      "retry": false
+    },
+    "labels": {
+      "install": "安装",
+      "configure": "去配置",
+      "start": "启动隧道",
+      "restart": "重启隧道",
+      "stop": "停止",
+      "fix-routes": "修复路由",
+      "uninstall": "卸载",
+      "retry": "重试启动"
+    },
+    "home": "/opt/mynet",
+    "gnb_bin": "/opt/mynet/bin/gnb",
+    "installed": true,
+    "configured": true,
+    "process_up": true,
+    "process_pid": 4321,
+    "tun_iface": "utun9",
+    "overlay_ip": "10.200.0.17",
+    "tun_up": true,
+    "routes_ok": true,
+    "node_id": "4147069894021999",
+    "active_node_id": "4147069894021999",
+    "config_mismatch": false,
+    "peers_total": 2,
+    "peers_routed": 2,
+    "detail": "",
+    "tunnel_health": {
+      "checked": true,
+      "iface_expected": "gnb_tun_16",
+      "iface_found": "utun9",
+      "addr_expected": "10.200.0.17",
+      "addr_found": true
+    },
+    "uptime_sec": 3600,
+    "mtu": 1440,
+    "rx_bytes": 1048576,
+    "tx_bytes": 524288,
+    "peers": [
+      { "node_id": "4147069894021999", "overlay": "10.200.0.17", "is_self": true, "routed": true, "link": "local" },
+      { "node_id": "4147069894022001", "overlay": "10.200.0.21", "is_self": false, "routed": true, "link": "Direct", "latency_ms": 12 }
+    ]
+  }
+}

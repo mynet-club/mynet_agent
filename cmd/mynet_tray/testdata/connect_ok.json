@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "stage": "started",
+  "message": "连接已启动，正在检查实际状态",
+  "retryable": false,
+  "steps": [
+    { "id": "keys", "name": "准备本机身份", "state": "done" },
+    { "id": "sync", "name": "同步公钥与启用设备", "state": "done" },
+    { "id": "pull", "name": "加载网络配置", "state": "done" },
+    { "id": "apply", "name": "生成运行配置", "state": "done" },
+    { "id": "start", "name": "启动网络连接", "state": "done" },
+    { "id": "routes", "name": "应用系统路由", "state": "done" }
+  ]
+}

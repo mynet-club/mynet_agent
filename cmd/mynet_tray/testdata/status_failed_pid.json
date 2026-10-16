@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "data": {
+    "state": "FAILED",
+    "one_line": "隧道已退出",
+    "primary_action": "retry",
+    "actions": {
+      "install": false,
+      "configure": true,
+      "start": true,
+      "restart": false,
+      "stop": false,
+      "fix-routes": false,
+      "uninstall": true,
+      "retry": true
+    },
+    "home": "/opt/mynet",
+    "gnb_bin": "/opt/mynet/bin/gnb",
+    "installed": true,
+    "configured": true,
+    "process_up": false,
+    "process_pid": 4321,
+    "tun_up": false,
+    "routes_ok": false,
+    "node_id": "4147069894021999",
+    "active_node_id": "4147069894021999",
+    "config_mismatch": false,
+    "peers_total": 2,
+    "peers_routed": 0,
+    "overlay_ip": "10.200.0.17",
+    "detail": "进程不在，但 pid 文件仍在 —— 可能是异常退出。查 /var/log/mynet/gnb.err 与配置密钥。"
+  }
+}

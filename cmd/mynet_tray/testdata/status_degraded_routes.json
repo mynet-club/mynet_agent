@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "data": {
+    "state": "DEGRADED",
+    "one_line": "网络连接需要处理 · 2 条路由未安装",
+    "primary_action": "fix-routes",
+    "actions": {
+      "install": false,
+      "configure": false,
+      "start": false,
+      "restart": true,
+      "stop": true,
+      "fix-routes": true,
+      "uninstall": false,
+      "retry": false
+    },
+    "home": "/opt/mynet",
+    "gnb_bin": "/opt/mynet/bin/gnb",
+    "installed": true,
+    "configured": true,
+    "process_up": true,
+    "process_pid": 4321,
+    "tun_iface": "utun9",
+    "overlay_ip": "10.200.0.17",
+    "tun_up": true,
+    "routes_ok": false,
+    "node_id": "4147069894021999",
+    "active_node_id": "4147069894021999",
+    "config_mismatch": false,
+    "peers_total": 2,
+    "peers_routed": 0,
+    "missing_routes": ["10.200.0.21", "10.200.0.33"],
+    "detail": "接口和网络地址正常，但这些目标没有可用路由：10.200.0.21、10.200.0.33。"
+  }
+}

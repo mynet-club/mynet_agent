@@ -1,0 +1,29 @@
+{
+  "success": true,
+  "data": {
+    "state": "UNINSTALLED",
+    "one_line": "未安装 gnb 驱动",
+    "primary_action": "install",
+    "actions": {
+      "install": true,
+      "configure": true,
+      "start": false,
+      "restart": false,
+      "stop": false,
+      "fix-routes": false,
+      "uninstall": false,
+      "retry": false
+    },
+    "home": "/opt/mynet",
+    "gnb_bin": "",
+    "installed": false,
+    "configured": false,
+    "process_up": false,
+    "tun_up": false,
+    "routes_ok": false,
+    "config_mismatch": false,
+    "peers_total": 0,
+    "peers_routed": 0,
+    "detail": "隧道驱动不在 PATH，也没有安装足迹"
+  }
+}

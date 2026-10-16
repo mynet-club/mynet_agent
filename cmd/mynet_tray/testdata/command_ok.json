@@ -1,0 +1,9 @@
+{
+  "success": true,
+  "data": {
+    "argv": ["apply", "--active"],
+    "stdout": "✓ 已应用激活配置 4147069894021999\n✓ 隧道已启动 pid=4321\n",
+    "stderr": "",
+    "bin": "/opt/mynet/bin/mynet"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "success": false,
+  "message": "exit status 1",
+  "stderr": "node-status: 读 mode.json: open /opt/mynet/conf/mode.json: no such file or directory\n"
+}

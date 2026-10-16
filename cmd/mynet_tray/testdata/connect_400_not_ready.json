@@ -1,0 +1,7 @@
+{
+  "success": false,
+  "stage": "identity",
+  "message": "请先登录并选择云端设备，再接入本机",
+  "retryable": false,
+  "steps": []
+}

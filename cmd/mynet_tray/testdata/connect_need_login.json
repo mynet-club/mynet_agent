@@ -1,0 +1,9 @@
+{
+  "success": false,
+  "stage": "identity",
+  "message": "登录已失效，请重新登录后重试",
+  "retryable": true,
+  "code": "need_login",
+  "need_login": true,
+  "steps": []
+}

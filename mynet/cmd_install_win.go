@@ -123,7 +123,7 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 // trayRunKeyPath 托盘自启注册位。HKLM\...\Run = **每个用户登录都拉**，
 // 语义对齐 macOS 的 /Library/LaunchAgents —— 托盘是 GUI 进程，
 // 不能塞进 mynetd 服务（session 0 里没有桌面）。
-const trayRunKeyPath = `HKLM\Software\Microsoft\Windows\CurrentVersion\Run`
+const trayRunKeyPath = utils.TrayRunKeySystem
 
 // installTrayRunKey 注册托盘登录自启。mynet_tray.exe 不在位（服务器形态）静默跳过。
 func installTrayRunKey(binDir, home string) {
@@ -132,10 +132,12 @@ func installTrayRunKey(binDir, home string) {
 		return
 	}
 	// -home 显式传：注册表 Run 给不了环境变量，而托盘的默认猜测
-	// （ProgramData\MyNet）与 install 的 home（默认 Program Files\MyNet）不同树 ——
-	// intent 文件不同树，托盘的启停按钮就是摆设。
+	// （ProgramData\MyNet）与 install 的 home（默认 Program Files\MyNet）不同树。
+	// ⚠️ 自 D9 起托盘的 intent 文件已移到用户配置目录、不再依赖 MYNET_HOME，
+	// 所以这个参数目前**不改变托盘行为**；仍然要传，是因为托盘一旦收到未知
+	// flag 就会 flag.Parse 失败退出 —— 去掉它得同时改托盘，别单侧动。
 	data := `"` + tray + `" -home "` + home + `"`
-	out, err := exec.Command("reg", "add", trayRunKeyPath, "/v", "MyNetTray",
+	out, err := exec.Command("reg", "add", trayRunKeyPath, "/v", utils.TrayRunValueName,
 		"/t", "REG_SZ", "/d", data, "/f").CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "⚠ 托盘自启注册失败（不影响服务）: %v %s\n", err, strings.TrimSpace(string(out)))
@@ -225,7 +227,7 @@ func uninstallWindowsService(home string) error {
 	} else {
 		fmt.Println("deleted service mynetd")
 	}
-	if err := exec.Command("reg", "delete", trayRunKeyPath, "/v", "MyNetTray", "/f").Run(); err == nil {
+	if err := exec.Command("reg", "delete", trayRunKeyPath, "/v", utils.TrayRunValueName, "/f").Run(); err == nil {
 		fmt.Println(`removed 托盘自启 HKLM …\Run\MyNetTray`)
 	}
 	p := filepath.Join(home, "mynetd.env")

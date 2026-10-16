@@ -1,0 +1,14 @@
+{
+  "success": false,
+  "stage": "start",
+  "message": "启动网络连接失败: exit status 1\ngnb: 打开 /opt/mynet/var/run/mynet/4147069894021999/node.conf 失败\n私钥指纹 aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111",
+  "retryable": true,
+  "steps": [
+    { "id": "keys", "name": "准备本机身份", "state": "done" },
+    { "id": "sync", "name": "同步公钥与启用设备", "state": "done" },
+    { "id": "pull", "name": "加载网络配置", "state": "done" },
+    { "id": "apply", "name": "生成运行配置", "state": "done" },
+    { "id": "start", "name": "启动网络连接", "state": "failed" },
+    { "id": "cleanup", "name": "停止未完成的连接", "state": "done" }
+  ]
+}
