@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/mynet-club/mynet_agent/mynet/keys"
@@ -467,13 +468,43 @@ func long2ip(v any) string {
 	return fmt.Sprintf("%d.%d.%d.%d", (n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, n&0xff)
 }
 
+// nodeIDEquals 按无符号整数比较节点 ID。
+// JSON 数字经 encoding/json 落成 float64，fmt.Sprint 会打成科学计数法
+// （1.056…e+15），字符串比永远对不上；直接转 int64 比更干净。
+func nodeIDEquals(v any, want string) bool {
+	wantID, err := strconv.ParseUint(want, 10, 64)
+	if err != nil {
+		return anyToStr(v) == want
+	}
+	switch t := v.(type) {
+	case nil:
+		return false
+	case string:
+		got, err := strconv.ParseUint(t, 10, 64)
+		return err == nil && got == wantID
+	case float64:
+		return t >= 0 && uint64(t) == wantID
+	case json.Number:
+		got, err := t.Int64()
+		return err == nil && uint64(got) == wantID
+	case int:
+		return t >= 0 && uint64(t) == wantID
+	case int64:
+		return t >= 0 && uint64(t) == wantID
+	case uint64:
+		return t == wantID
+	default:
+		return anyToStr(v) == want
+	}
+}
+
 func cloudNodeVPN(rows []any, nodeID string) (string, error) {
 	for _, row := range rows {
 		n, ok := row.(map[string]any)
 		if !ok {
 			continue
 		}
-		if fmt.Sprint(n["node_id"]) != nodeID {
+		if !nodeIDEquals(n["node_id"], nodeID) {
 			continue
 		}
 		raw := n["vpn_type"]

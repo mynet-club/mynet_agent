@@ -56,6 +56,45 @@ func TestCloudNodeVPN(t *testing.T) {
 	}
 }
 
+// 雪花 ID 经 encoding/json 落成 float64，fmt.Sprint 会打成科学计数法
+// （1.056…e+15），与 "1056391690228289" 永远对不上。按整数比较。
+func TestCloudNodeVPNSnowflakeID(t *testing.T) {
+	const snowflake = "1056391690228289"
+	rows := []any{
+		map[string]any{"node_id": float64(1056391690228289), "vpn_type": "gnb"},
+		map[string]any{"node_id": snowflake, "vpn_type": "gnb"},
+		map[string]any{"node_id": int64(1056391690228289), "vpn_type": "gnb"},
+	}
+	for _, row := range rows {
+		m := row.(map[string]any)
+		r := []any{m}
+		vpn, err := cloudNodeVPN(r, snowflake)
+		if err != nil || vpn != "gnb" {
+			t.Fatalf("node_id=%v -> %q %v", m["node_id"], vpn, err)
+		}
+	}
+}
+
+func TestNodeIDEquals(t *testing.T) {
+	const id = "1056391690228289"
+	cases := []struct {
+		v    any
+		want bool
+	}{
+		{float64(1056391690228289), true},
+		{id, true},
+		{int64(1056391690228289), true},
+		{float64(42), false},
+		{"42", false},
+		{nil, false},
+	}
+	for _, c := range cases {
+		if got := nodeIDEquals(c.v, id); got != c.want {
+			t.Fatalf("nodeIDEquals(%v,%s)=%v want %v", c.v, id, got, c.want)
+		}
+	}
+}
+
 func TestEnsureNodeKeysRefusesMismatchedPair(t *testing.T) {
 	// gnb：security/<id>.public 被改坏（与私钥不配对）→ 拒绝、私钥不许被转
 	dir := t.TempDir()
