@@ -209,7 +209,7 @@ var concProbes = struct {
 // newConcApp 造一个不碰 systray 原生的 App：
 //   - renderFn 换成原子计数（并发 render 不在替身里造 race 噪声），计数
 //     同时是 waitSettled 的收敛判据；
-//   - 6 个菜单项手工构造（只用导出字段 ClickedCh，零 cgo），clickLoop 可用；
+//   - 7 个菜单项手工构造（只用导出字段 ClickedCh，零 cgo），clickLoop 可用；
 //   - HOME/AppData 指到 t.TempDir()，saveIntent 不写真实目录（见文件头）。
 func newConcApp(t *testing.T, base string, pr Prober) (*App, *int64) {
 	t.Helper()
@@ -220,9 +220,10 @@ func newConcApp(t *testing.T, base string, pr Prober) (*App, *int64) {
 	a.renderFn = func() { atomic.AddInt64(renders, 1) }
 	mk := func() *systray.MenuItem { return &systray.MenuItem{ClickedCh: make(chan struct{})} }
 	a.mStatus = mk()
-	a.mStart = mk()
-	a.mStop = mk()
+	a.mToggle = mk()
+	a.mCopyIP = mk()
 	a.mPanel = mk()
+	a.mDiag = mk()
 	a.mAuto = mk()
 	a.mQuit = mk() // 只构造、永不发信号：clickLoop 收到 mQuit 会调 systray.Quit（cgo）
 	return a, renders
@@ -388,7 +389,7 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		}
 	})
 
-	t.Run("连接中再点连接与断开走真实clickLoop", func(t *testing.T) {
+	t.Run("进度期间重复点击不重复下发走真实clickLoop", func(t *testing.T) {
 		stub := newConcStub(t)
 		stub.gateConnect() // 把启动 worker 扣在「还在飞」
 		a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.stopped}})
@@ -398,25 +399,30 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		// goroutine 泄漏到测试结束即可：绝不向 mQuit 发信号（会走 systray.Quit → cgo）。
 		go a.clickLoop()
 
-		a.mStart.ClickedCh <- struct{}{} // 点连接
+		a.mToggle.ClickedCh <- struct{}{} // 点一下 → 连接
 		stub.waitHits(t, connectPath, 1)
-		a.mStart.ClickedCh <- struct{}{} // 连接中再点连接
-		a.mStop.ClickedCh <- struct{}{}  // 连接中点断开
-		a.mStop.ClickedCh <- struct{}{}  // 断开中再点断开（幂等）
+
+		// P4 合并后进度期间这一项是**禁用**的（toggleFor 的 Busy 分支），
+		// 但 ClickedCh 仍可能被投递（用户狂点、合成事件）：每一次都必须 no-op，
+		// 既不许再发一次 connect，也不许把这次点击解释成「断开」。
+		// 「Starting 中投 EvStop 会转 Stopping」这条 FSM 能力仍在
+		// （fsm_test.go TestFSM_StopFromStarting），只是不再由合并项触发。
+		for i := 0; i < 3; i++ {
+			a.mToggle.ClickedCh <- struct{}{}
+		}
 		waitSettled(t, renders)
 
 		if n := stub.hits(connectPath); n > 1 {
-			t.Errorf("连接中重复点击打出 %d 次 connect (want ≤1)", n)
+			t.Errorf("进度中重复点击打出 %d 次 connect (want ≤1)", n)
 		}
-		if n := stub.hits(commandPath); n > 1 {
-			t.Errorf("断开中重复点击打出 %d 次 command (want ≤1)", n)
+		if n := stub.hits(commandPath); n != 0 {
+			t.Errorf("进度中重复点击打出 %d 次 command (want 0：Busy 时合并项只禁用，不转向断开)", n)
 		}
-		st := a.fsm.State()
-		if st == StateStarting {
-			t.Errorf("用户最后意图是断开，状态却还停在 Starting（自相矛盾）")
+		if st := a.fsm.State(); st != StateStarting {
+			t.Errorf("状态 = %s, want Starting（进度中的重复点击不该改状态）", st)
 		}
 		if a.fsm.Busy() && a.fsm.CanStart() {
-			t.Errorf("Busy 与 CanStart 同时为真（state=%s）", st)
+			t.Errorf("Busy 与 CanStart 同时为真（state=%s）", a.fsm.State())
 		}
 		stub.releaseConnect() // 放掉扣住的启动 worker，让它落地后再收尾
 		waitSettled(t, renders)

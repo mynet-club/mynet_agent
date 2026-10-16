@@ -67,22 +67,25 @@ func TestProbeFixtures(t *testing.T) {
 		valid   bool
 		state   string
 		procUp  bool
+		wantIP  string
 		wantEv  Event
 		wantFSM State
 	}{
 		// 服务在、事实可信
-		{"status_running.json", 0, true, true, "RUNNING", true, EvNodeHealthy, StateRunning},
-		{"status_stopped.json", 0, true, true, "STOPPED", false, EvDaemonDown, StateStopped},
-		{"status_degraded_routes.json", 0, true, true, "DEGRADED", true, EvNodeDegraded, StateDegraded},
-		{"status_mismatch.json", 0, true, true, "DEGRADED", true, EvNodeDegraded, StateDegraded},
+		{"status_running.json", 0, true, true, "RUNNING", true, "10.200.0.17", EvNodeHealthy, StateRunning},
+		// overlay_ip 出自配置面，**没连上时也有值**（STOPPED 的 fixture 就带着）：
+		// 所以「有没有 IP」不能当连接判据，只有「能不能复制」这一件事用它。
+		{"status_stopped.json", 0, true, true, "STOPPED", false, "10.200.0.17", EvDaemonDown, StateStopped},
+		{"status_degraded_routes.json", 0, true, true, "DEGRADED", true, "10.200.0.17", EvNodeDegraded, StateDegraded},
+		{"status_mismatch.json", 0, true, true, "DEGRADED", true, "10.200.0.17", EvNodeDegraded, StateDegraded},
 		// 节点未安装/未配置/已退出：都是「未连接」，不是异常（D3）
-		{"status_uninstalled.json", 0, true, true, "UNINSTALLED", false, EvDaemonDown, StateStopped},
-		{"status_installed_unconfigured.json", 0, true, true, "INSTALLED", false, EvDaemonDown, StateStopped},
+		{"status_uninstalled.json", 0, true, true, "UNINSTALLED", false, "", EvDaemonDown, StateStopped},
+		{"status_installed_unconfigured.json", 0, true, true, "INSTALLED", false, "", EvDaemonDown, StateStopped},
 		// FAILED 但进程不在 = 没起来，显示「未连接」而不是「连接异常」
-		{"status_failed_pid.json", 0, true, true, "FAILED", false, EvDaemonDown, StateStopped},
+		{"status_failed_pid.json", 0, true, true, "FAILED", false, "10.200.0.17", EvDaemonDown, StateStopped},
 		// 服务在说话但说的听不懂（D4/D17）：不得当成「未连接」
-		{"status_invalid_200.json", 0, true, false, "", false, EvSvcInvalid, StateSvcDown},
-		{"status_executor_500.json", http.StatusInternalServerError, true, false, "", false, EvSvcInvalid, StateSvcDown},
+		{"status_invalid_200.json", 0, true, false, "", false, "", EvSvcInvalid, StateSvcDown},
+		{"status_executor_500.json", http.StatusInternalServerError, true, false, "", false, "", EvSvcInvalid, StateSvcDown},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {
@@ -92,6 +95,9 @@ func TestProbeFixtures(t *testing.T) {
 			}
 			if pr.NodeState != c.state || pr.ProcessUp != c.procUp {
 				t.Fatalf("state=%q process_up=%v, want %q/%v", pr.NodeState, pr.ProcessUp, c.state, c.procUp)
+			}
+			if pr.OverlayIP != c.wantIP {
+				t.Fatalf("overlay_ip=%q, want %q", pr.OverlayIP, c.wantIP)
 			}
 			ev := eventFromProbe(pr)
 			if ev != c.wantEv {

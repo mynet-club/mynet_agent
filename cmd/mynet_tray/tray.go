@@ -2,13 +2,15 @@ package main
 
 // 托盘菜单与事件循环。
 //
-// 菜单面（用户点名的四件事 + 状态行）：
+// 菜单面（P4 收敛后）：
 //
-//	MyNet · <状态一言之>     ← 只读，显示状态机
-//	启动 / 停止              ← 按状态机 CanStart/CanStop 禁用
-//	进入面板
-//	开机启动 ✓
-//	退出
+//	状态：<状态一言之>       ← 只读，显示状态机
+//	连接隧道 / 断开隧道      ← **同一项**，文案与可点性都出自 FSM（CanStart/CanStop/Busy）
+//	复制虚拟 IP              ← 只在 overlay_ip 合法时出现
+//	打开面板                 ← 本机 WebUI 概览（/ui/）
+//	查看诊断                 ← 同一个 WebUI 的 #diag 页（诊断与日志）
+//	登录时启动 ✓
+//	退出托盘
 //
 // 配置的导入/导出**不在托盘**：备份走 WebUI（浏览器写自己的下载目录，
 // 不需要托盘以登录用户身份去碰 root 的系统级 home）。裁决与理由见
@@ -24,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -65,9 +68,12 @@ const (
 const msgUnparsable = "本机服务返回了不可识别的响应"
 
 // autoTitleUnknown 自启状态查不到时的菜单文案。
-// 不用「开机启动」（未勾选）代替 —— 那会被读成「已关闭」，是个未经
+// 不用「登录时启动」（未勾选）代替 —— 那会被读成「已关闭」，是个未经
 // 验证的结论（D10）。
-const autoTitleUnknown = "开机启动（状态未知）"
+//
+// 用「登录时」而不是「开机」：我们登记的是 LaunchAgent / HKCU·HKLM 的 Run，
+// 都在**用户登录**时触发，不是引导时（P4 文案明确）。
+const autoTitleUnknown = "登录时启动（状态未知）"
 
 // errInProgress 409：daemon 的 configMutation 锁已被占（connect_api.go:10-23）。
 // 服务端给 retryable=true + Retry-After: 2，但托盘**不自动重试** ——
@@ -93,9 +99,12 @@ type App struct {
 	hc   *http.Client
 
 	mStatus *systray.MenuItem
-	mStart  *systray.MenuItem
-	mStop   *systray.MenuItem
+	// mToggle 连接/断开合并成一项（P4）：两项时用户要先读状态行才知道该点哪个，
+	// 而且启停过渡期两项都灰着，菜单看起来像坏了。
+	mToggle *systray.MenuItem
+	mCopyIP *systray.MenuItem
 	mPanel  *systray.MenuItem
+	mDiag   *systray.MenuItem
 	mAuto   *systray.MenuItem
 	mQuit   *systray.MenuItem
 
@@ -107,6 +116,11 @@ type App struct {
 	// lastOneLine 最近一次探针拿到的 node-status one_line。
 	// ⚠️ daemon 原文，**未经清洗**；只有渲染路径消费它，且必须过 safeText（D8/D20）。
 	lastOneLine string
+	// overlayIP 最近一次探针拿到的虚拟 IP，**已过 validOverlayIP**：
+	// 空串就是「没有/不合法」，菜单项直接隐藏。存校验后的值而不是 wire 原值，
+	// 是为了让「显示」和「复制」用同一份判据 —— 否则会出现菜单挂着 IP、
+	// 点了却报非法。
+	overlayIP string
 	// opSeq 单调递增的操作序号。worker 回来时先核对它是否仍是最新，
 	// 不是就**整个丢弃**自己的结果 —— 否则一次迟到的「连接成功」会把用户
 	// 已经切到「断开」的 deadline 重写成 startWait，把旧操作复活。
@@ -118,7 +132,7 @@ type App struct {
 	// 带上、到点自动消失，才留得住。
 	noticeText  string
 	noticeUntil time.Time
-	// autoTitle 「开机启动」菜单项的真实文案，由 syncAutoMenu 解析后写入。
+	// autoTitle 「登录时启动」菜单项的真实文案，由 syncAutoMenu 解析后写入。
 	// 存起来而不是渲染时现查：AutoStarter 会 shell out（launchctl / 注册表），
 	// 不能压在 mu 里。
 	autoTitle string
@@ -127,29 +141,43 @@ type App struct {
 
 	renderMu  sync.Mutex // 只保护 systray 推送，锁序恒为 mu → renderMu
 	pushedSeq uint64
+	// pushedIcon 已推给 systray 的图标态；iconUnset = 还没推过。
+	pushedIcon iconKind
+	// pushedCopyIP 已推给 systray 的虚拟 IP；"" = 当前是隐藏态。
+	// 零值刚好就是 onReady 里的初始事实（菜单项建出来就 Hide），不需要哨兵。
+	pushedCopyIP string
 
 	// renderFn 渲染出口替身；nil = 生产路径 snapshot + push。
 	// 存在的唯一理由是 systray 的 darwin 腿为无条件 cgo 调用
 	// （SetTooltip / addOrUpdateMenuItem 不判事件循环是否已起），
 	// 没有 systray.Run 就进不去 —— 换掉渲染出口，App 的逻辑才可测。
 	renderFn func()
+
+	// clipFn 剪贴板出口替身；nil = 生产路径 platformClipboard。
+	// 同样是可测性接缝：测试不该往开发机的真实剪贴板里写东西，
+	// 也不能因为 CI 上没有 pbcopy 就跳过「复制失败要上屏」这条分支。
+	clipFn func(string) error
 }
 
 // view 一次渲染所需的一致快照。在 mu 内算好，锁外推给 systray。
 type view struct {
-	seq               uint64
-	title, tooltip    string
-	canStart, canStop bool
-	autoTitle         string
+	seq            uint64
+	title, tooltip string
+	toggleTitle    string
+	toggleEnabled  bool
+	overlayIP      string // 空 = 隐藏「复制虚拟 IP」
+	autoTitle      string
+	icon           iconKind
 }
 
 func NewApp(prob Prober, base string) *App {
 	return &App{
-		fsm:       NewFSM(),
-		prob:      prob,
-		base:      base,
-		hc:        &http.Client{Timeout: cmdTimeout},
-		autoStart: NewAutoStarter(),
+		fsm:        NewFSM(),
+		prob:       prob,
+		base:       base,
+		hc:         &http.Client{Timeout: cmdTimeout},
+		pushedIcon: iconUnset,
+		autoStart:  NewAutoStarter(),
 	}
 }
 
@@ -159,9 +187,12 @@ func (a *App) Run() {
 }
 
 func (a *App) onReady() {
-	// 只用 icon，不 SetTitle —— macOS 菜单栏上的标题文字很占地方
-	// macOS 用 Template（深浅菜单栏自适应）；Windows 回退彩色 iconPNG
-	systray.SetTemplateIcon(iconTemplatePNG, iconPNG)
+	// 只用 icon，不 SetTitle —— macOS 菜单栏上的标题文字很占地方。
+	// 首帧按当前状态推一次并记进 pushedIcon：Run 起到第一次 render 之间
+	// 若没图标，菜单栏会空一格；之后图标只随状态变化推（acceptIcon）。
+	k := iconKindFor(a.fsm.State())
+	a.pushedIcon = k
+	systray.SetTemplateIcon(iconBytes(k, true), iconBytes(k, false))
 	systray.SetTooltip("MyNet Agent")
 
 	// 冷启动还没探过，不能先断言「已停止」—— 那等于说「服务在跑、只是隧道没连」，
@@ -172,17 +203,28 @@ func (a *App) onReady() {
 
 	// tooltip 不能写「拉起/停掉 mynetd」：托盘只控隧道，mynetd 由系统服务常驻。
 	// Controller 死件撤回后（D15）这句更是彻底的假话。
-	a.mStart = systray.AddMenuItem("连接隧道", "建立到获准网络的连接")
-	a.mStop = systray.AddMenuItem("断开隧道", "断开连接（不退出托盘，也不停本机服务）")
-	a.mStop.Disable()
+	// 初值按 FSM 当前态算（此刻是 SvcDown ⇒ 禁用），bootSequence 第一次探针后替换。
+	t0, en0 := toggleFor(a.fsm.State(), a.fsm.CanStart(), a.fsm.CanStop(), a.fsm.Busy())
+	a.mToggle = systray.AddMenuItem(t0, "只控隧道：不启停本机服务，也不退出托盘")
+	if !en0 {
+		a.mToggle.Disable()
+	}
+
+	// overlay_ip 要等第一次探针，所以初始就是隐藏的；缺失/非法一直隐藏。
+	a.mCopyIP = systray.AddMenuItem("复制虚拟 IP", "")
+	a.mCopyIP.Hide()
 	systray.AddSeparator()
 
-	a.mPanel = systray.AddMenuItem("进入面板", "打开本机 WebUI")
-	// 初值不写「开机启动」：此刻还没查过真实状态，未勾选会被读成「已关闭」，
+	a.mPanel = systray.AddMenuItem("打开面板", "本机 WebUI：概览、节点配置与路由")
+	// 诊断是**真实存在的深链**（WebUI 自带 hash 路由，#diag = 诊断与日志页），
+	// 不是新造的页面；见 DiagURL 的注释。
+	a.mDiag = systray.AddMenuItem("查看诊断", "打开面板的「诊断与日志」页")
+	// 初值不写「登录时启动」：此刻还没查过真实状态，未勾选会被读成「已关闭」，
 	// 是个未经验证的结论（D10）。bootSequence 的 syncAutoMenu 会立刻替换。
 	a.mAuto = systray.AddMenuItem(autoTitleUnknown, "登录后自动拉起托盘")
 	systray.AddSeparator()
-	a.mQuit = systray.AddMenuItem("退出", "退出托盘（不碰节点）")
+	// 「退出托盘」而不是「退出」：用户要能一眼看出这一项不会断开隧道（P4 文案明确）。
+	a.mQuit = systray.AddMenuItem("退出托盘", "只关掉托盘图标；隧道保持现状，本机服务不受影响")
 
 	// 启动序：先 mynetd（本机 API），再按上次意图决定是否起节点
 	go a.bootSequence()
@@ -206,6 +248,7 @@ func (a *App) bootSequence() {
 
 	a.mu.Lock()
 	a.lastOneLine = p.OneLine
+	a.overlayIP = validOverlayIP(p.OverlayIP)
 	a.fsm.On(eventFromProbe(p))
 	// 意图恢复只在「现在确实能起」时发：节点已在跑就别再打一次 connect。
 	// 旧版无条件发 —— 既多发一次有副作用的写操作，又不进 Starting，
@@ -354,12 +397,14 @@ func (a *App) onExit() {
 func (a *App) clickLoop() {
 	for {
 		select {
-		case <-a.mStart.ClickedCh:
-			a.onUserStart()
-		case <-a.mStop.ClickedCh:
-			a.onUserStop()
+		case <-a.mToggle.ClickedCh:
+			a.onUserToggle()
+		case <-a.mCopyIP.ClickedCh:
+			a.copyOverlayIP()
 		case <-a.mPanel.ClickedCh:
 			a.openPanel()
+		case <-a.mDiag.ClickedCh:
+			a.openDiag()
 		case <-a.mAuto.ClickedCh:
 			a.toggleAutoStart()
 		case <-a.mQuit.ClickedCh:
@@ -401,6 +446,31 @@ func (a *App) failOp(seq uint64, ev Event, format string, args ...any) {
 		return
 	}
 	a.render()
+}
+
+// onUserToggle 合并后连接/断开项的唯一点击入口。
+//
+// 判据必须和 snapshot 给菜单的那份**同源**（都出自 FSM 的 CanStart/CanStop/Busy），
+// 否则会出现「菜单写着断开、点了却去连接」。Busy 时菜单是禁用的，但点击
+// channel 仍可能被投递（合成事件 / 用户狂点），这里再挡一道：进度期间绝不
+// 重复发有副作用的写操作。
+//
+// 释锁后再调 onUserStart/onUserStop 是有意的：两者各自在锁内复检 CanStart/
+// CanStop，状态若在窗口里变了就自然变成 no-op，不会发错命令。
+func (a *App) onUserToggle() {
+	a.mu.Lock()
+	busy := a.fsm.Busy()
+	canStart := a.fsm.CanStart()
+	a.mu.Unlock()
+
+	switch {
+	case busy:
+		return
+	case canStart:
+		a.onUserStart()
+	default:
+		a.onUserStop()
+	}
 }
 
 func (a *App) onUserStart() {
@@ -516,8 +586,9 @@ func (a *App) refreshOnce() {
 	}
 
 	a.mu.Lock()
-	// 探不到就清空，别把上一轮的 one_line 留在界面上冒充现状
+	// 探不到就清空，别把上一轮的 one_line / overlay_ip 留在界面上冒充现状
 	a.lastOneLine = p.OneLine
+	a.overlayIP = validOverlayIP(p.OverlayIP)
 	ev := eventFromProbe(p)
 
 	// 过渡态超时：探针还没反映结果时，到点就判失败。
@@ -557,13 +628,40 @@ func (a *App) snapshot() view {
 	if autoTitle == "" {
 		autoTitle = autoTitleUnknown
 	}
+	toggleTitle, toggleEnabled := toggleFor(a.fsm.State(), a.fsm.CanStart(), a.fsm.CanStop(), a.fsm.Busy())
 	return view{
-		seq:       a.renderSeq,
-		title:     title,
-		tooltip:   tooltip,
-		canStart:  a.fsm.CanStart(),
-		canStop:   a.fsm.CanStop() && !a.fsm.Busy(),
-		autoTitle: autoTitle,
+		seq:           a.renderSeq,
+		title:         title,
+		tooltip:       tooltip,
+		toggleTitle:   toggleTitle,
+		toggleEnabled: toggleEnabled,
+		overlayIP:     a.overlayIP,
+		autoTitle:     autoTitle,
+		icon:          iconKindFor(a.fsm.State()),
+	}
+}
+
+// toggleFor 合并项的文案与可点性。纯函数，判据只出自 FSM。
+//
+// Failed 同时满足 CanStart 与 CanStop —— 取「连接」（重试）：连接异常时用户
+// 要的是恢复；真想断开的场景多半是隧道进程还赖着，而进程一没，下一轮探针
+// 就把状态落到 Stopped，这一项自己就变成「连接隧道」，不会少给用户能力。
+//
+// 过渡态用状态机自己的进行时文案（「正在连接…」）并禁用：菜单不许在进度期间
+// 再发一次写操作，也不许用一个静止的动词冒充正在进行的事。
+//
+// SvcDown 落到 default：文案保持「连接隧道」但禁用 —— 状态行已经写明
+// 「本机服务不可用」，不需要第二处表达同一个事实。
+func toggleFor(st State, canStart, canStop, busy bool) (title string, enabled bool) {
+	switch {
+	case busy:
+		return st.Label(), false
+	case canStart:
+		return "连接隧道", true
+	case canStop:
+		return "断开隧道", true
+	default:
+		return "连接隧道", false
 	}
 }
 
@@ -585,6 +683,32 @@ func (a *App) acceptPush(seq uint64) bool {
 	return true
 }
 
+// acceptIcon 图标只在态变了才推。
+//
+// 跟着 3s 轮询每轮白推一次没有意义：Windows 那条腿每次 SetIcon 都要 md5 +
+// stat + 一次 Shell_NotifyIcon（临时文件按内容哈希命名、缺失才写，不会堆积，
+// 但通知是实打实的系统调用）；darwin 那条腿是一次主线程派发。
+func (a *App) acceptIcon(k iconKind) bool {
+	a.renderMu.Lock()
+	defer a.renderMu.Unlock()
+	if k == a.pushedIcon {
+		return false
+	}
+	a.pushedIcon = k
+	return true
+}
+
+// acceptCopyIP 同 acceptIcon：「复制虚拟 IP」的显隐只在值变了才推。
+func (a *App) acceptCopyIP(ip string) bool {
+	a.renderMu.Lock()
+	defer a.renderMu.Unlock()
+	if ip == a.pushedCopyIP {
+		return false
+	}
+	a.pushedCopyIP = ip
+	return true
+}
+
 // push 把快照推给 systray。**mu 锁外**执行：darwin 腿是无条件 cgo，会派发到
 // 主线程，压在状态锁里等于让所有状态读写等一次 UI 往返。
 func (a *App) push(v view) {
@@ -598,15 +722,28 @@ func (a *App) push(v view) {
 	a.mAuto.SetTitle(v.autoTitle)
 	systray.SetTooltip(v.tooltip)
 
-	if v.canStart {
-		a.mStart.Enable()
-	} else {
-		a.mStart.Disable()
+	if a.acceptIcon(v.icon) {
+		systray.SetTemplateIcon(iconBytes(v.icon, true), iconBytes(v.icon, false))
 	}
-	if v.canStop {
-		a.mStop.Enable()
+
+	a.mToggle.SetTitle(v.toggleTitle)
+	if v.toggleEnabled {
+		a.mToggle.Enable()
 	} else {
-		a.mStop.Disable()
+		a.mToggle.Disable()
+	}
+
+	// overlay_ip 是配置面的值，几乎从不变；变了才动菜单（Hide/Show 在 darwin
+	// 是一次主线程派发，Windows 是一次 Shell_NotifyIcon 级别的更新）。
+	// v.overlayIP 已由 validOverlayIP 规范成 net.IP.String()，是纯 ASCII，
+	// 不再过 safeText。
+	if a.acceptCopyIP(v.overlayIP) {
+		if v.overlayIP == "" {
+			a.mCopyIP.Hide()
+		} else {
+			a.mCopyIP.SetTooltip("复制 " + v.overlayIP + " 到剪贴板")
+			a.mCopyIP.Show()
+		}
 	}
 }
 
@@ -662,8 +799,16 @@ func (a *App) statusTextLocked() (title, tooltip string) {
 	return title, tooltip
 }
 
-func (a *App) openPanel() {
-	url := PanelURL(a.base)
+func (a *App) openPanel() { a.openURL(PanelURL(a.base)) }
+
+// openDiag 直接落在面板的「诊断与日志」页。
+//
+// #diag 不是我编的深链：WebUI 自带 hash 路由（index.html:1429-1435 的 PAGES、
+// :1481-1486 的 parseHash、:3167 启动即调用），#diag 就是那一页。
+// 页面键改了这条就会静默退回概览页 —— TestDiagURLMatchesWebUIPage 盯着这件事。
+func (a *App) openDiag() { a.openURL(DiagURL(a.base)) }
+
+func (a *App) openURL(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -676,12 +821,74 @@ func (a *App) openPanel() {
 	_ = cmd.Start()
 }
 
+// validOverlayIP 校验并规范化虚拟 IP。非法/缺失返回 ""（消费方据此隐藏菜单项）。
+//
+// 为什么必须自己验：overlay_ip 出自配置面（route.conf 本机行 → bundle →
+// 旧 mynet.conf，mynet/node_status.go:521-539），是历史遗留字符串也能透出来，
+// 不是从活接口读的事实。复制一个非法值进剪贴板，比不显示更糟（§8.1「不复制旧 IP」）。
+// 规范化用 net.IP.String()：进剪贴板的是压缩后的规范写法，不是配置里的原样文本。
+func validOverlayIP(s string) string {
+	ip := net.ParseIP(strings.TrimSpace(s))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// copyOverlayIP 用户点「复制虚拟 IP」。
+//
+// 三条纪律（playbook P4 / §5.2）：
+//   - 只认结构化字段 overlay_ip，**不解析 OneLine** —— 那是一句给人看的中文，
+//     从里面抠 IP 等于造第二套判据，必然漂；
+//   - 只在用户点击时写剪贴板，**从不读**剪贴板；
+//   - 成败都上屏：点了没反应和「静默失败」是同一件事（P3:114 同一条纪律）。
+func (a *App) copyOverlayIP() {
+	a.mu.Lock()
+	ip := a.overlayIP
+	a.mu.Unlock()
+
+	if ip == "" {
+		// 菜单项此刻是隐藏的，正常点不到；真收到了就如实说没有。
+		a.notice("当前没有可复制的虚拟 IP")
+		return
+	}
+	write := a.clipFn
+	if write == nil {
+		write = platformClipboard
+	}
+	if err := write(ip); err != nil {
+		// 不拼底层 err（含可执行文件路径）；固定短句（D20）。
+		a.notice("复制到剪贴板失败")
+		return
+	}
+	a.notice("已复制虚拟 IP " + ip)
+}
+
+// platformClipboard 写系统剪贴板。托盘只出 darwin / windows 两条腿
+// （Makefile:147-153），所以这里也只实现这两条，其余如实报错，
+// 不去猜 xclip / wl-copy 哪个在（那是没被构建、也没被验证过的路径）。
+func platformClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "windows":
+		// clip.exe 原样把 stdin 送进剪贴板。text 是 net.IP.String()，
+		// 只含 ASCII，不涉及编码转换。
+		cmd = exec.Command("clip")
+	default:
+		return errors.New("该平台不支持复制")
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
+}
+
 func (a *App) toggleAutoStart() {
 	on, err := a.autoStart.IsEnabled()
 	if err != nil {
 		// 读不到就别猜着切：按 err 当「关着」去 Enable，可能把已经开着的东西
 		// 再开一遍（注册表/launchctl 重复项），而且失败对用户完全不可见（D10）。
-		a.notice("读取开机启动状态失败")
+		a.notice("读取登录时启动状态失败")
 		return
 	}
 	if on {
@@ -708,9 +915,9 @@ func autoFailText(wasOn bool, err error) string {
 		return err.Error()
 	}
 	if wasOn {
-		return "关闭开机启动失败"
+		return "关闭登录时启动失败"
 	}
-	return "开启开机启动失败"
+	return "开启登录时启动失败"
 }
 
 // syncAutoMenu 解析真实自启状态并触发一次渲染。
@@ -733,14 +940,17 @@ func (a *App) syncAutoMenu() {
 // 那是一个未经验证的结论（与冷启动不得先断言「已停止」同一条纪律）。
 // 旧版 `on, _ := IsEnabled()` 把 err 丢掉，于是 launchctl 查询失败时
 // 菜单显示「未勾选」，用户再点一次会去 Enable 一个可能已经开着的东西。
+//
+// 用「登录时启动」而不是「开机启动」：登记的是 LaunchAgent / Run 键，
+// 触发点是用户登录，不是引导（P4 文案明确）。
 func autoTitleFor(on bool, err error) string {
 	switch {
 	case err != nil:
 		return autoTitleUnknown
 	case on:
-		return "开机启动 ✓"
+		return "登录时启动 ✓"
 	default:
-		return "开机启动"
+		return "登录时启动"
 	}
 }
 
@@ -772,6 +982,14 @@ type AutoStarter interface {
 // 浏览器打开只会看到一坨 JSON。面板在 /ui/（embed）或 /gui/（Quasar 控制台）。
 func PanelURL(base string) string {
 	return "http://" + base + "/ui/"
+}
+
+// diagHash 诊断页在 WebUI hash 路由里的页面键（index.html:1433 PAGES.diag）。
+const diagHash = "diag"
+
+// DiagURL 面板的「诊断与日志」页。基于 PanelURL 拼，不另写一份地址（§3）。
+func DiagURL(base string) string {
+	return PanelURL(base) + "#" + diagHash
 }
 
 // selfPath 自身可执行文件路径（写自启用）。

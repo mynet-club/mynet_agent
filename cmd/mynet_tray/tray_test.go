@@ -461,8 +461,8 @@ func TestBootSequenceSyncsAutoMenu(t *testing.T) {
 
 	a.bootSequence()
 
-	if got := a.snapshot().autoTitle; got != "开机启动 ✓" {
-		t.Errorf("冷启动后 autoTitle = %q, want %q", got, "开机启动 ✓")
+	if got := a.snapshot().autoTitle; got != "登录时启动 ✓" {
+		t.Errorf("冷启动后 autoTitle = %q, want %q", got, "登录时启动 ✓")
 	}
 }
 

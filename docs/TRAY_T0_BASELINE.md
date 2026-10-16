@@ -215,7 +215,7 @@ B4（多 goroutine 改 FSM/deadline/lastErr）、B6（启动未 `syncAutoMenu`�
 | 测试 | 锁住的语义 |
 |---|---|
 | `TestT0_ProbeNeverEmitsDaemonUp` | 穷举证明 `EvDaemonUp` 不可达（D1/D2 的反证，见 §1.2） |
-| `TestT0_ContractOverlayIPValidated` | `overlay_ip` 必须是合法 IP；缺失/非法不得进剪贴板（§8.1「不复制旧 IP」） |
+| `TestT0_ContractOverlayIPValidated` | `overlay_ip` 必须是合法 IP；缺失/非法不得进剪贴板（§8.1「不复制旧 IP」）。**2026-10-16 更新（P4 已落）**：T0 只锁了合同侧，消费侧现在也有了 —— `validOverlayIP`（`tray.go:830`）+ 缺失即 `Hide()`（`tray.go:742-745`）+ 仅点击才写（`tray.go:845`）；且已取证 `overlay_ip` 是**配置面**值（`mynet/node_status.go:521-539`），STOPPED 时也在，不能当连通信号 |
 | `TestT0_ContractMismatchForbidsConnect` | `config_mismatch` ⇒ `CanConnect()==false`；托盘不得放宽执行器的 `actions` 事实 |
 | `TestT0_ContractActionsAreFactsNotDefaults` | `actions` 缺键即禁止，不以「默认可用」兜底 |
 | `TestT0_ContractEndpointRejectsNonLoopback` | Endpoint 回环判据与 `checkHost` 同源（含 `localhost`）；非回环/非法定端口一律拒绝 |
@@ -280,9 +280,15 @@ overlay `10.200.0.17`，peers `10.200.0.21` / `10.200.0.33`），
    签名一字未动。双来源已有测试：`autostart_test.go` 5 例（darwin，临时目录）
    + `autostart_windows_test.go` 5 例（192.168.0.5 真机，临时 HKCU 键顶替 HKLM）。
 2. **B4 并发缺陷未被证明。** race 跑通是空的（§1），真实 App 编排的 race 矩阵属 T1（§8.1）。
+   **2026-10-16 更新（P2 已落）**：`concurrency_test.go` 8 组用例真实并发驱动
+   clickLoop / 3s 轮询 / 启停 worker，`-race -count=5` 零报警。
 3. **全部结论止于 `源码核对` + `fake行为`。**
    无任何 `本机原生` / `目标真机` / `发布产物` 级证据；未启动过真实 mynetd 或托盘进程，
    未在任何设备上验证菜单、图标、DPI、文件框或登录启动。
+   **2026-10-16 更新（P3/P4）**：Windows 自启腿已有真机级证据（192.168.0.5，见下条）；
+   托盘 UI 本体（菜单排布、tooltip、图标观感、`openURL` 实际拉起）仍未在任何平台实机运行 ——
+   P4 只出了图标三态的**渲染对照图**（模板腿/彩色腿 × 深浅菜单栏 × 16px 与 4× 放大），
+   那是 stdlib 派生结果的直接呈现，不等于菜单栏里的真实观感。归 P5。
 4. **Windows/Linux 侧只有交叉构建通过记录**，不等于可运行（§8.2、§8.3）。
    **2026-10-16 更新（P3）**：Windows 侧已有**可运行**级证据 —— 交叉编出的测试
    exe 在 192.168.0.5 实跑 5/5 通过（真实调用 reg.exe，非 mock）。但托盘 UI 本体
@@ -317,6 +323,12 @@ D4/D8/D20 的**渲染出口**部分顺带落了（`statusText` 是纯函数，�
 但 B4 的 App 并发矩阵仍未证明 —— `-race` 现在绿是因为没有用例真并发，P2 才算数。
 §5 的「9 个红测试」已随 T0 替代架构一并撤回，`make check` 当前全绿。
 未验项照旧：写面没在真机执行过，托盘 UI 本体没实机跑过。
+
+**续（2026-10-16 晚）**：P2 完成（`concurrency_test.go` 真实并发矩阵 + 3 条变异守卫）；
+P3 完成（D9/D10/D11/D20 收尾 + D13 改判落地，14 条变异守卫，Windows 腿真机 5/5）；
+P4 完成（状态图标三态、合并连接/断开、复制虚拟 IP、查看诊断深链、文案明确，
+10 + 18 条变异守卫全 CAUGHT）。P0–P3 已提交为 `545622a`（**未 push**），P4 待提交；
+剩 P5。逐项 `file:line` 证据在 `TRAY_OPTIMIZATION_PLAYBOOK.md` §7 的对应行。
 
 P2 的测试注入限定在现有 App：菜单事件 channel、渲染出口、探针/命令执行替身，以及必要的时间来源。无需启动原生 systray.Run；必须驱动真实点击/轮询/worker完成/FSM.On，不能用另一个测试用 reducer 或纯 FSM 测试证明 App 正确。
 

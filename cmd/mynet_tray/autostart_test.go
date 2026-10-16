@@ -157,7 +157,7 @@ func TestLaunchAgentIsEnabledReportsUnreadable(t *testing.T) {
 	if on {
 		t.Error("报错时 on 应为 false，别让调用方以为它开着")
 	}
-	// 文案出口那侧会把它翻成 autoTitleUnknown，而不是「开机启动」（未勾选）。
+	// 文案出口那侧会把它翻成 autoTitleUnknown，而不是「登录时启动」（未勾选）。
 	if got := autoTitleFor(on, err); got != autoTitleUnknown {
 		t.Errorf("autoTitleFor = %q, want %q", got, autoTitleUnknown)
 	}

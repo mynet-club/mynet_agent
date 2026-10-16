@@ -212,7 +212,7 @@ func TestNoticeSurvivesProbeRefresh(t *testing.T) {
 	}})
 	a.refreshOnce()
 
-	const msg = "开启开机启动失败"
+	const msg = "开启登录时启动失败"
 	a.notice(msg)
 	before := *renders
 
@@ -251,10 +251,10 @@ func TestNoticeCoexistsWithStatus(t *testing.T) {
 		{Up: true, Valid: true, NodeState: "RUNNING", ProcessUp: true, OneLine: "运行中"},
 	}})
 	a.refreshOnce()
-	a.notice("关闭开机启动失败")
+	a.notice("关闭登录时启动失败")
 
 	_, tooltip := a.statusText()
-	for _, want := range []string{"关闭开机启动失败", "运行中"} {
+	for _, want := range []string{"关闭登录时启动失败", "运行中"} {
 		if !strings.Contains(tooltip, want) {
 			t.Errorf("tooltip 缺 %q: %q", want, tooltip)
 		}
@@ -274,8 +274,8 @@ func TestAutoTitleFor(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"开着", true, nil, "开机启动 ✓"},
-		{"关着", false, nil, "开机启动"},
+		{"开着", true, nil, "登录时启动 ✓"},
+		{"关着", false, nil, "登录时启动"},
 		// 读不到状态时 err 压过 on：那才是真正的「未知」，
 		// 显示成「已关闭」是个未经验证的结论。
 		{"查询失败", false, boom, autoTitleUnknown},
@@ -354,7 +354,7 @@ func TestToggleAutoStartRefusesWhenInstallerRegistered(t *testing.T) {
 	st := &fakeAutoStarter{sys: true}
 	a.autoStart = st
 	a.syncAutoMenu()
-	if got := a.snapshot().autoTitle; got != "开机启动 ✓" {
+	if got := a.snapshot().autoTitle; got != "登录时启动 ✓" {
 		t.Fatalf("安装器登记在位时菜单应显示已启用，got %q", got)
 	}
 
@@ -366,7 +366,7 @@ func TestToggleAutoStartRefusesWhenInstallerRegistered(t *testing.T) {
 	if _, tooltip := a.statusText(); !strings.Contains(tooltip, errSystemManaged.Error()) {
 		t.Errorf("没告诉用户为什么改不了，tooltip = %q", tooltip)
 	}
-	if got := a.snapshot().autoTitle; got != "开机启动 ✓" {
+	if got := a.snapshot().autoTitle; got != "登录时启动 ✓" {
 		t.Errorf("菜单翻成了 %q —— 系统级那份还在，自启并没有关掉", got)
 	}
 }
@@ -384,20 +384,20 @@ func TestToggleAutoStartReportsFailure(t *testing.T) {
 			// 再开一遍，且失败对用户完全不可见。
 			name:       "查询失败不动手",
 			starter:    &fakeAutoStarter{on: true, isErr: boom},
-			wantNotice: "读取开机启动状态失败",
+			wantNotice: "读取登录时启动状态失败",
 			wantTitle:  autoTitleUnknown,
 		},
 		{
 			name:       "开启失败",
 			starter:    &fakeAutoStarter{enableErr: boom},
-			wantNotice: "开启开机启动失败",
-			wantTitle:  "开机启动",
+			wantNotice: "开启登录时启动失败",
+			wantTitle:  "登录时启动",
 		},
 		{
 			name:       "关闭失败",
 			starter:    &fakeAutoStarter{on: true, disableErr: boom},
-			wantNotice: "关闭开机启动失败",
-			wantTitle:  "开机启动 ✓",
+			wantNotice: "关闭登录时启动失败",
+			wantTitle:  "登录时启动 ✓",
 		},
 	}
 	for _, c := range cases {
@@ -439,7 +439,7 @@ func TestToggleAutoStartSuccessRereadsState(t *testing.T) {
 	st := &fakeAutoStarter{}
 	a.autoStart = st
 	a.syncAutoMenu()
-	if got := a.snapshot().autoTitle; got != "开机启动" {
+	if got := a.snapshot().autoTitle; got != "登录时启动" {
 		t.Fatalf("前置 autoTitle = %q", got)
 	}
 
@@ -449,8 +449,8 @@ func TestToggleAutoStartSuccessRereadsState(t *testing.T) {
 		t.Fatalf("关着时点一次应只 Enable 一次：Enable=%d Disable=%d", st.enCalls, st.disCalls)
 	}
 	// 菜单显示的是**重读后的真实状态**，不是「我们刚请求的意图」。
-	if got := a.snapshot().autoTitle; got != "开机启动 ✓" {
-		t.Errorf("切换成功后 autoTitle = %q, want %q", got, "开机启动 ✓")
+	if got := a.snapshot().autoTitle; got != "登录时启动 ✓" {
+		t.Errorf("切换成功后 autoTitle = %q, want %q", got, "登录时启动 ✓")
 	}
 	if _, tooltip := a.statusText(); strings.Contains(tooltip, "失败") {
 		t.Errorf("成功路径不该带失败提示: %q", tooltip)
@@ -460,7 +460,7 @@ func TestToggleAutoStartSuccessRereadsState(t *testing.T) {
 	if st.disCalls != 1 {
 		t.Fatalf("再点一次应 Disable：Disable=%d", st.disCalls)
 	}
-	if got := a.snapshot().autoTitle; got != "开机启动" {
+	if got := a.snapshot().autoTitle; got != "登录时启动" {
 		t.Errorf("关闭后 autoTitle = %q", got)
 	}
 }
@@ -474,7 +474,7 @@ func TestSyncAutoMenuReplacesUnknown(t *testing.T) {
 	a.autoStart = &fakeAutoStarter{on: true}
 	a.syncAutoMenu()
 
-	if got := a.snapshot().autoTitle; got != "开机启动 ✓" {
+	if got := a.snapshot().autoTitle; got != "登录时启动 ✓" {
 		t.Errorf("autoTitle = %q", got)
 	}
 	if *renders <= before {

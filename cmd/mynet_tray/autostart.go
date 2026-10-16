@@ -31,7 +31,7 @@ const trayLabel = utils.LaunchdLabelTray
 //
 // 这是我们自己造的错误 ⇒ 文案是安全的，可以直接上屏（区别于 launchctl/reg
 // 的原始输出，那些含路径与 stderr，只能给固定短句）。见 tray.go 的 autoFailText。
-var errSystemManaged = errors.New("开机启动已由安装器在系统级登记，托盘改不了")
+var errSystemManaged = errors.New("登录时启动已由安装器在系统级登记，托盘改不了")
 
 // NewAutoStarter 按平台返回。
 func NewAutoStarter() AutoStarter {

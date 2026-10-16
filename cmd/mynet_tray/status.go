@@ -45,6 +45,11 @@ type Probe struct {
 	NodeState string
 	// ProcessUp 节点/隧道进程是否在（node-status.process_up）。
 	ProcessUp bool
+	// OverlayIP 节点的虚拟 IP（node-status.overlay_ip，wire 原值不加工）。
+	// ⚠️ 它出自配置面（route.conf 本机行 → bundle → 旧 mynet.conf，
+	// mynet/node_status.go:521-539），不是从活接口读的，所以**没连上时也有值**。
+	// 消费方必须自己验合法性（validOverlayIP），非法/缺失一律当「没有」。
+	OverlayIP string
 	// OneLine 状态一言之。⚠️ 未经清洗，进 UI 前必须过 safeText（D20）。
 	OneLine string
 }
@@ -104,6 +109,7 @@ func (p *HTTPProber) Probe() (Probe, error) {
 			State     string `json:"state"`
 			OneLine   string `json:"one_line"`
 			ProcessUp bool   `json:"process_up"`
+			OverlayIP string `json:"overlay_ip"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxStatusBody)).Decode(&env); err != nil {
@@ -119,6 +125,7 @@ func (p *HTTPProber) Probe() (Probe, error) {
 		Valid:     true,
 		NodeState: env.Data.State,
 		ProcessUp: env.Data.ProcessUp,
+		OverlayIP: env.Data.OverlayIP,
 		OneLine:   env.Data.OneLine,
 	}, nil
 }
