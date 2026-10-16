@@ -289,10 +289,20 @@ overlay `10.200.0.17`，peers `10.200.0.21` / `10.200.0.33`），
    托盘 UI 本体（菜单排布、tooltip、图标观感、`openURL` 实际拉起）仍未在任何平台实机运行 ——
    P4 只出了图标三态的**渲染对照图**（模板腿/彩色腿 × 深浅菜单栏 × 16px 与 4× 放大），
    那是 stdlib 派生结果的直接呈现，不等于菜单栏里的真实观感。归 P5。
+   **2026-10-16 更新（P5）**：托盘进程已在本机**真跑**（新构建 darwin/arm64，
+   `-api 127.0.0.1:8096`，日志零报错，节点事实 RUNNING），自启的系统级路径与 label
+   也与真机 `/Library/LaunchAgents/club.mynet.tray.plist` 逐字对上；但**菜单栏观感仍无证据** ——
+   本机 `screencapture` 报 `could not create image from display`（宿主没有「屏幕录制」权限），
+   图标与菜单排布只能由用户肉眼核对。这是 P0–P5 唯一交不出的证据，不宣称完成。
 4. **Windows/Linux 侧只有交叉构建通过记录**，不等于可运行（§8.2、§8.3）。
    **2026-10-16 更新（P3）**：Windows 侧已有**可运行**级证据 —— 交叉编出的测试
    exe 在 192.168.0.5 实跑 5/5 通过（真实调用 reg.exe，非 mock）。但托盘 UI 本体
    仍未在任何平台实机运行；Linux 侧仍只有交叉构建记录。
+   **2026-10-16 更新（P5）**：Windows 真机证据扩到 **20 个用例全 PASS（RC=0）**，
+   覆盖注册表自启 5 条 + 图标 4 条 + 旅程 + 合并项/复制 IP 各组；
+   `TestDiagURLMatchesWebUIPage` 刻意排除（它读开发树里的 `webui/index.html`）。
+   **DPI 与菜单实际观感仍未验** —— 那需要交互式桌面会话，SSH 里跑不出菜单栏。
+   Linux 侧仍只有交叉构建记录（托盘也不出 Linux 腿，Makefile:147-153）。
 5. **T0 的 9 个红测试是刻意的**，`make check` / `pre-push` 当前会红；
    在 T1（D1/D2/D3）与 T2（D4–D8/D14/D16/D17/D18）转绿前不得提交。
 
@@ -308,7 +318,7 @@ overlay `10.200.0.17`，peers `10.200.0.21` / `10.200.0.33`），
 | D3、B4 | P2 现有 App 并发修复；P3 显示服务/节点差异。按实际用例核对，不用纯 FSM race 替代 App race |
 | D4–D8/D14/D16/D17/D18 | P1/P3：在现有 HTTPProber/postCmd 内修响应判定、事实读取与错误处理；保留取证，不强制历史 typed adapters/时序常量/endpoint新限制 |
 | D9 | P3：intentPath → os.UserConfigDir()/MyNet/tray-intent.json；保留 trayIntent/want_node 与函数签名，用户私有目录、文件0600。无自动迁移；旧文件不删，缺新文件按既有默认false；普通用户保存/重读和权限失败均需测试 |
-| D10/D11 | P3：复用 AutoStarter，核实自启来源与初值/操作后状态，失败不可伪装关闭。**2026-10-16 已落**：双来源判定（系统级 OR 用户级）、系统级在位时 `Enable` 拒绝并返回 `errSystemManaged`、`Disable` 先清用户级遗留再报「系统级仍在位」、读不到显示「开机启动（状态未知）」不冒充未勾选、点击失败经 `notice` 上屏且原始 OS 错误不出现在文案里；Windows 腿在 192.168.0.5 真机验证通过（该机现状：HKLM 有 `MyNetTray`、HKCU 没有 —— 正是活体症状）。**残留**：reg 退出码分不清「访问被拒 / 值不存在」，一律当未设置 |
+| D10/D11 | P3：复用 AutoStarter，核实自启来源与初值/操作后状态，失败不可伪装关闭。**2026-10-16 已落**：双来源判定（系统级 OR 用户级）、系统级在位时 `Enable` 拒绝并返回 `errSystemManaged`、`Disable` 先清用户级遗留再报「系统级仍在位」、读不到显示「登录时启动（状态未知）」不冒充未勾选（P4 把「开机启动」全部改为「登录时启动」：登记的是 LaunchAgent / Run 键，不是开机）、点击失败经 `notice` 上屏且原始 OS 错误不出现在文案里；Windows 腿在 192.168.0.5 真机验证通过（该机现状：HKLM 有 `MyNetTray`、HKCU 没有 —— 正是活体症状）。**残留**：reg 退出码分不清「访问被拒 / 值不存在」，一律当未设置 |
 | D12 | P1：修真连接时同时删除 importConfig 成功路径的 EvStart/startTunnel。导入成功只刷新，不发 connect，也不隐式断开；运行中导入的 CLI 行为由 P3 核对，不凭 UI 自造规则 |
 | D13 | **2026-10-16 改判（旧判「经 daemon command 面委托 CLI + 文件框在用户会话」作废）**：导出改为**内存 tar → 响应流**（`Content-Disposition: attachment`），新增专用端点，不接受 `-o`、不落盘；导入改为**浏览器上传 → 专用端点 → daemon 落盘**（现有「导入前自动备份」照用，root 写自己的 backupsDir，无暴露）；`allowedSubcommand` 收掉 `config export`/`config import`（CLI 的 `mynet config export -o` 保留给管理员在终端以 root 自己跑）；**托盘配置菜单整个删掉**。理由：① 包体只有几百字节（`cmd_config.go:44-47` 已排除可再生的 `driver/**` 投影），根本不是"文件落点/权限/交付"问题，把它当文件处理才凭空长出那三件事；② 本文 §3 D13 行早已取证「以登录用户身份写 root 目录 ⇒ 必然 permission denied」，托盘本地 exec 两个方向都不通（导出读不到 root 的 0600 私钥、导入写不进 root 的 0700 conf/；全仓零 `chown`，`PlatformDefaultHome`=`/opt/mynet` 且注释自陈「系统级唯一，不设用户级模式」）；③ 走通用命令面 + `-o` 反而是**恶化** —— `os.Create(out)`=`O_TRUNC` 且路径由未鉴权调用方给 ⇒ 本机任意进程可让 root 截断覆写任意文件（详见记忆 `project-localapi-command-plane-export-hole`）。**残留（不在本包）**：新端点与该 API 其余部分一样无调用方鉴权，属整条 localapi 的信任模型问题 |
 | D15 | P0：control*.go daemon Controller 及 NewController/App.ctrl 死接线列为撤回；核对测试依赖后收敛，不重接到隧道控制 |
@@ -327,8 +337,15 @@ D4/D8/D20 的**渲染出口**部分顺带落了（`statusText` 是纯函数，�
 **续（2026-10-16 晚）**：P2 完成（`concurrency_test.go` 真实并发矩阵 + 3 条变异守卫）；
 P3 完成（D9/D10/D11/D20 收尾 + D13 改判落地，14 条变异守卫，Windows 腿真机 5/5）；
 P4 完成（状态图标三态、合并连接/断开、复制虚拟 IP、查看诊断深链、文案明确，
-10 + 18 条变异守卫全 CAUGHT）。P0–P3 已提交为 `545622a`（**未 push**），P4 待提交；
-剩 P5。逐项 `file:line` 证据在 `TRAY_OPTIMIZATION_PLAYBOOK.md` §7 的对应行。
+10 + 18 条变异守卫全 CAUGHT）。P5 完成 —— `journey_test.go` 一条 11 步用户旅程把
+状态/按钮/图标/可复制 IP 四面串在同一条时间线上断言（4 条变异守卫），门禁全绿、
+四条出包腿编译通过、Windows 真机 20 用例全 PASS、新构建托盘在本机真跑零报错。
+**P0–P5 全部收口。** 提交：P0–P3 = `545622a`、P4 = `5f26af4`、P5 = 本次提交，**均未 push**。
+唯一交不出的证据是**菜单栏观感** —— 本机 `screencapture` 被「屏幕录制」权限挡住，
+图标与菜单排布只能由用户肉眼核对，已如实记为未验。
+逐项 `file:line` 证据与三条附带发现（装机托盘落后 11 个提交、系统级 LaunchAgent
+登记但未加载、`/ui/` 404 的根因是手工 build 覆盖掉 embed 构建）在
+`TRAY_OPTIMIZATION_PLAYBOOK.md` §7 的对应行。
 
 P2 的测试注入限定在现有 App：菜单事件 channel、渲染出口、探针/命令执行替身，以及必要的时间来源。无需启动原生 systray.Run；必须驱动真实点击/轮询/worker完成/FSM.On，不能用另一个测试用 reducer 或纯 FSM 测试证明 App 正确。
 
