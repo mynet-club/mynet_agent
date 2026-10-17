@@ -188,10 +188,24 @@ func ApplyProxyDNSFiles(p *domain.ProxyPolicy, form string, confPath, resolvPath
 	}
 }
 
+// ProxyDNSConfPath 网关 dnsmasq 片段落盘路径。
+// 有 IP 列表时与列表同目录（<list>.dnsmasq.conf，产物挨着源，好一起清）；
+// 没有列表（纯域名白名单，IPSetFile 为空）时落 $MYNET_HOME/var/proxy/。
+// **绝不返回相对路径** —— mynetd/apply 的 cwd 可能在只读卷上（macOS 根）
+// 时 `.dnsmasq.conf` 会 open 失败，把整轮 apply 拖去回滚。
+func ProxyDNSConfPath(ipSetFile string) string {
+	if ipSetFile != "" {
+		return ipSetFile + ".dnsmasq.conf"
+	}
+	return filepath.Join(varDir(), "proxy", "dns-split.dnsmasq.conf")
+}
+
 // DynamicIPSetFilePath 动态 IP 暂存（DNS 回答钩子写入，apply 读出增量入集）。
+// base 为空时同样落到 $MYNET_HOME/var/proxy/，与 ProxyDNSConfPath 同目录，
+// 不用相对路径（理由同上）。
 func DynamicIPSetFilePath(base string) string {
 	if base == "" {
-		base = "var/proxy"
+		base = filepath.Join(varDir(), "proxy")
 	}
 	return filepath.Join(base, "dynamic-ipset.json")
 }

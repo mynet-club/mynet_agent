@@ -54,6 +54,9 @@ type ProxyDomainRules struct {
 	CustomDomains []string `json:"custom_domains,omitempty"`
 	// CustomDirect 用户本机追加的直连域名。优先级最高。
 	CustomDirect []string `json:"custom_direct,omitempty"`
+	// CustomIPs 用户本机追加的代理 IP（PC 形态 /32 钉扎用，不经 DNS 解析）。
+	// 与 CustomDomains 同级：本机叠加、不回写云端。仅 PC pin 消费；网关 nft 集合不读它。
+	CustomIPs []string `json:"custom_ips,omitempty"`
 	// UpstreamProxied fast|clean|balanced。空 = fast。
 	UpstreamProxied string `json:"upstream_proxied,omitempty"`
 	// UpstreamClean 仅这些域名的 DNS 走隧道/出口（clean）。
@@ -276,6 +279,7 @@ func MergeDomainRules(earlier, later *ProxyDomainRules) *ProxyDomainRules {
 	out.Proxied = unionStrings(later.Proxied, earlier.Proxied)
 	out.Direct = unionStrings(later.Direct, earlier.Direct)
 	out.UpstreamClean = unionStrings(later.UpstreamClean, earlier.UpstreamClean)
+	out.CustomIPs = unionStrings(later.CustomIPs, earlier.CustomIPs)
 	if len(out.UpstreamDirect) == 0 {
 		out.UpstreamDirect = append([]string{}, earlier.UpstreamDirect...)
 	}
@@ -291,6 +295,7 @@ func cloneDomainRules(r *ProxyDomainRules) *ProxyDomainRules {
 	c.Direct = append([]string{}, r.Direct...)
 	c.UpstreamClean = append([]string{}, r.UpstreamClean...)
 	c.UpstreamDirect = append([]string{}, r.UpstreamDirect...)
+	c.CustomIPs = append([]string{}, r.CustomIPs...)
 	return &c
 }
 

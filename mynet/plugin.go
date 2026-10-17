@@ -482,12 +482,13 @@ func pluginDomains(args []string) int {
 		rules = p.DomainRules
 	}
 
-	saveCustoms := func(customP, customD []string) int {
-		if err := SetProxyCustomDomains(customP, customD); err != nil {
+	saveCustoms := func(customP, customD, customIPs []string) int {
+		if err := SetProxyCustomAllowlist(customP, customD, customIPs); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		fmt.Printf("✓ 自定义域名已更新（proxy %d / direct %d）\n", len(customP), len(customD))
+		fmt.Printf("✓ 自定义白名单已更新（domain proxy %d / direct %d / ip %d）\n",
+			len(customP), len(customD), len(customIPs))
 		return 0
 	}
 
@@ -498,6 +499,7 @@ func pluginDomains(args []string) int {
 		fmt.Printf("  直连白名单  : %d 条\n", len(rules.Direct))
 		fmt.Printf("  自定义代理  : %d 条\n", len(rules.CustomDomains))
 		fmt.Printf("  自定义直连  : %d 条\n", len(rules.CustomDirect))
+		fmt.Printf("  自定义 IP   : %d 条\n", len(rules.CustomIPs))
 		fmt.Println("  —— 合并结果 ——")
 		effP := rules.EffectiveProxied()
 		effD := rules.EffectiveDirect()
@@ -517,6 +519,16 @@ func pluginDomains(args []string) int {
 			}
 			fmt.Printf("    %s\n", d)
 		}
+		if len(rules.CustomIPs) > 0 {
+			fmt.Println("  —— IP 钉扎白名单（不经 DNS，直接 /32）——")
+			for i, ip := range rules.CustomIPs {
+				if i >= 10 {
+					fmt.Printf("    … 共 %d 条\n", len(rules.CustomIPs))
+					break
+				}
+				fmt.Printf("    %s\n", ip)
+			}
+		}
 		return 0
 
 	case "add":
@@ -526,7 +538,7 @@ func pluginDomains(args []string) int {
 		}
 		cp := append([]string{}, rules.CustomDomains...)
 		cp = append(cp, args[1])
-		return saveCustoms(uniqStrings(cp), rules.CustomDirect)
+		return saveCustoms(uniqStrings(cp), rules.CustomDirect, rules.CustomIPs)
 
 	case "rm":
 		if len(args) < 2 {
@@ -539,7 +551,31 @@ func pluginDomains(args []string) int {
 				cp = append(cp, d)
 			}
 		}
-		return saveCustoms(cp, rules.CustomDirect)
+		return saveCustoms(cp, rules.CustomDirect, rules.CustomIPs)
+
+	case "ip":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip>")
+			return 2
+		}
+		ci := append([]string{}, rules.CustomIPs...)
+		switch args[1] {
+		case "add":
+			ci = append(ci, args[2])
+		case "rm":
+			var keep []string
+			for _, ip := range ci {
+				if ip != args[2] {
+					keep = append(keep, ip)
+				}
+			}
+			ci = keep
+		default:
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip>")
+			return 2
+		}
+		// IP 列表不走 normalizeDomainName（那是域名语义）；去重按字面。
+		return saveCustoms(rules.CustomDomains, rules.CustomDirect, uniqIPs(ci))
 
 	case "direct":
 		if len(args) < 3 {
@@ -562,12 +598,27 @@ func pluginDomains(args []string) int {
 			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains direct add|rm <domain>")
 			return 2
 		}
-		return saveCustoms(rules.CustomDomains, uniqStrings(cd))
+		return saveCustoms(rules.CustomDomains, uniqStrings(cd), rules.CustomIPs)
 
 	default:
-		fmt.Fprintln(os.Stderr, "用法: mynet plugin domains list|add|rm|direct …")
+		fmt.Fprintln(os.Stderr, "用法: mynet plugin domains list|add|rm|ip|direct …")
 		return 2
 	}
+}
+
+// uniqIPs IP 列表字面去重（不做域名 normalize）。
+func uniqIPs(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 func uniqStrings(in []string) []string {

@@ -81,6 +81,8 @@ func SetProxyEnabled(on bool) error {
 		}
 	}
 	p.Enabled = on
+	// 钳 region/policy/role 到合法枚举（UI 串值时不再硬拒）
+	p.NormalizeSplitFields()
 	if p.Role == "" {
 		p.Role = "client"
 	}
@@ -129,6 +131,12 @@ func SetProxyExits(exits []domain.ProxyExit) error {
 // SetProxyCustomDomains D5：写自定义域名叠加（本机，不回写云端）。
 // customProxied 追加到代理组；customDirect 追加到直连组（优先级最高）。
 func SetProxyCustomDomains(customProxied, customDirect []string) error {
+	return SetProxyCustomAllowlist(customProxied, customDirect, nil)
+}
+
+// SetProxyCustomAllowlist D5 扩展：域名 + 原始 IP 白名单（本机，不回写云端）。
+// customIPs 直接进 PC pin 钉扎集（不经 DNS）。
+func SetProxyCustomAllowlist(customProxied, customDirect, customIPs []string) error {
 	st, err := LoadProxyState()
 	if err != nil {
 		return err
@@ -142,6 +150,7 @@ func SetProxyCustomDomains(customProxied, customDirect []string) error {
 	}
 	p.DomainRules.CustomDomains = customProxied
 	p.DomainRules.CustomDirect = customDirect
+	p.DomainRules.CustomIPs = customIPs
 	if err := st.ApplyLocal(p, time.Now()); err != nil {
 		return err
 	}

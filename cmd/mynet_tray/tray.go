@@ -103,10 +103,16 @@ type App struct {
 	// 而且启停过渡期两项都灰着，菜单看起来像坏了。
 	mToggle *systray.MenuItem
 	mCopyIP *systray.MenuItem
-	mPanel  *systray.MenuItem
-	mDiag   *systray.MenuItem
-	mAuto   *systray.MenuItem
-	mQuit   *systray.MenuItem
+	// 加速子菜单：开启加速（dns-hook）/ DNS 状态 / 管理域名（→ 面板）。
+	// 域名白名单在 WebUI 管理（支持 `*.example.com` 通配）；托盘只负责开关与入口。
+	mAccel    *systray.MenuItem
+	mAccelOn  *systray.MenuItem
+	mAccelDNS *systray.MenuItem
+	mAccelDom *systray.MenuItem
+	mPanel    *systray.MenuItem
+	mDiag     *systray.MenuItem
+	mAuto     *systray.MenuItem
+	mQuit     *systray.MenuItem
 
 	autoStart AutoStarter
 
@@ -219,6 +225,15 @@ func (a *App) onReady() {
 	// 诊断是**真实存在的深链**（WebUI 自带 hash 路由，#diag = 诊断与日志页），
 	// 不是新造的页面；见 DiagURL 的注释。
 	a.mDiag = systray.AddMenuItem("查看诊断", "打开面板的「诊断与日志」页")
+
+	// 加速：dns-hook 开关 + DNS 状态 + 管理域名入口。
+	// 域名编辑在 WebUI（支持 *.example.com）；托盘不收集域名文本（systray 无输入框）。
+	a.mAccel = systray.AddMenuItem("加速", "代理加速：本地 DNS 钩子 + 域名白名单钉扎")
+	a.mAccelOn = a.mAccel.AddSubMenuItem("开启加速", "启动 dns-hook：劫持本机 DNS，白名单域名解析后钉进隧道")
+	a.mAccelDNS = a.mAccel.AddSubMenuItem("DNS：—", "当前 DNS 加速状态")
+	a.mAccelDNS.Disable()
+	a.mAccelDom = a.mAccel.AddSubMenuItem("管理域名", "打开面板「代理分流」编辑域名白名单（支持 *.example.com）")
+
 	// 初值不写「登录时启动」：此刻还没查过真实状态，未勾选会被读成「已关闭」，
 	// 是个未经验证的结论（D10）。bootSequence 的 syncAutoMenu 会立刻替换。
 	a.mAuto = systray.AddMenuItem(autoTitleUnknown, "登录后自动拉起托盘")
@@ -269,6 +284,10 @@ func (a *App) bootSequence() {
 	a.refreshOnce()
 	// 自启状态在冷启动时解析一次：菜单初值是「状态未知」，不该一直挂着。
 	a.syncAutoMenu()
+	// 加速菜单初值：仅本机服务在线才探（离线时 HTTP 必失败，还多打一发请求）。
+	if p.Up {
+		a.syncAccelMenu()
+	}
 }
 
 // startTunnel 连接隧道 —— 打 daemon 的**专用编排端点**，不发 argv。
@@ -395,6 +414,14 @@ func (a *App) onExit() {
 }
 
 func (a *App) clickLoop() {
+	// 测试可只构造部分菜单项；nil 的 ClickedCh 永不就绪，select 自然跳过。
+	var accelOn, accelDom <-chan struct{}
+	if a.mAccelOn != nil {
+		accelOn = a.mAccelOn.ClickedCh
+	}
+	if a.mAccelDom != nil {
+		accelDom = a.mAccelDom.ClickedCh
+	}
 	for {
 		select {
 		case <-a.mToggle.ClickedCh:
@@ -407,6 +434,10 @@ func (a *App) clickLoop() {
 			a.openDiag()
 		case <-a.mAuto.ClickedCh:
 			a.toggleAutoStart()
+		case <-accelOn:
+			a.toggleAccel()
+		case <-accelDom:
+			a.openProxyPanel()
 		case <-a.mQuit.ClickedCh:
 			systray.Quit()
 			return
@@ -990,6 +1021,112 @@ const diagHash = "diag"
 // DiagURL 面板的「诊断与日志」页。基于 PanelURL 拼，不另写一份地址（§3）。
 func DiagURL(base string) string {
 	return PanelURL(base) + "#" + diagHash
+}
+
+// proxyHash 代理分流页在 WebUI hash 路由里的键。
+// hash 格式是 `#page/tab`（index.html parseHash 按 / 切两段），
+// 只写 `config` 会停在默认的「节点配置」tab，域名白名单看不见 —— 必须带 /proxy。
+const proxyHash = "config/proxy"
+
+// ProxyURL 面板「代理分流」页（含域名白名单，支持 *.example.com）。
+// 基于 PanelURL 拼，不另写一份地址（§3）。
+func ProxyURL(base string) string {
+	return PanelURL(base) + "#" + proxyHash
+}
+
+// toggleAccel 开启/关闭 dns-hook（经 localapi command 面派发给 root 的 mynet）。
+func (a *App) toggleAccel() {
+	_, body, err := a.postJSON(commandPath, map[string]any{"argv": []string{"proxy", "dns-hook", "status"}})
+	if err != nil {
+		a.notice("加速状态不可用")
+		return
+	}
+	var env struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Stdout string `json:"stdout"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(body, &env)
+	op := "start"
+	if strings.Contains(env.Data.Stdout, "alive=true") {
+		op = "stop"
+	}
+	if err := a.postCommand("proxy", "dns-hook", op); err != nil {
+		a.notice("加速" + opText(op) + "失败")
+		return
+	}
+	a.notice("加速已" + opText(op))
+	a.syncAccelMenu()
+}
+
+func opText(op string) string {
+	if op == "stop" {
+		return "关闭"
+	}
+	return "开启"
+}
+
+// openProxyPanel 打开面板代理分流页（域名白名单管理入口）。
+func (a *App) openProxyPanel() {
+	a.openURL(ProxyURL(a.base))
+}
+
+// syncAccelMenu 拉 dns-hook status，更新子菜单文案（开关项 + DNS 状态行）。
+// shell out / HTTP 在锁外；结果只写文案并 render。
+func (a *App) syncAccelMenu() {
+	_, body, err := a.postJSON(commandPath, map[string]any{"argv": []string{"proxy", "dns-hook", "status"}})
+	title := "加速状态未知"
+	dnsLine := "DNS：—"
+	onTitle := "开启加速"
+	if err == nil {
+		var env struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Stdout string `json:"stdout"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(body, &env) == nil && env.Success {
+			out := env.Data.Stdout
+			alive := strings.Contains(out, "alive=true")
+			pins := ""
+			if i := strings.Index(out, "pins="); i >= 0 {
+				rest := out[i+len("pins="):]
+				j := 0
+				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+					j++
+				}
+				pins = rest[:j]
+			}
+			if alive {
+				onTitle = "关闭加速"
+				title = "加速：已开启"
+				dnsLine = "DNS：钩子运行中 · 钉扎 " + pins
+			} else {
+				onTitle = "开启加速"
+				title = "加速：未开启"
+				dnsLine = "DNS：未接管"
+			}
+		}
+	}
+	// 直接改菜单（与 push 并发；systray 在 darwin 是 cgo——boot 后仅 clickLoop/sync 调，
+	// 轮询不碰这两项，可接受）。测试可构造 nil 菜单项，判空防崩。
+	if a.mAccelOn != nil {
+		a.mAccelOn.SetTitle(onTitle)
+	}
+	if a.mAccelDNS != nil {
+		a.mAccelDNS.SetTitle(dnsLine)
+	}
+	_ = title
+}
+
+// postJSON POST 并返回 body（status 解析用；不走 postCommand 的 success 判定）。
+func (a *App) postJSON(path string, payload map[string]any) (int, []byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	return a.post(path, raw)
 }
 
 // selfPath 自身可执行文件路径（写自启用）。

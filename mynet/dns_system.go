@@ -195,6 +195,7 @@ func resolveDNSHostToIP(host string) string {
 
 // isForbiddenDNS 禁止写入的 DNS（干死过网络的错误值）。
 // 192.168.100.x 是 peer/隧道 NAT 网段，不是本机 DNS（本机=192.168.0.1/DHCP）。
+// 127.0.0.1 默认禁（无 forwarder 就是黑洞）；dns-hook 存活时放行。
 func isForbiddenDNS(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -204,6 +205,10 @@ func isForbiddenDNS(s string) bool {
 		return true
 	}
 	if s == "127.0.0.1" {
+		// 钩子 forwarder 在跑 → 127.0.0.1:53 有应答，合法
+		if pid := readHookPID(); pid > 0 && processAlive(pid) {
+			return false
+		}
 		return true
 	}
 	return false
@@ -216,6 +221,7 @@ func writeSystemDNSAll(servers []string) error {
 		if isForbiddenDNS(s) {
 			return fmt.Errorf("拒绝写入禁止 DNS %q（192.168.100.x 是 peer 网段，127.0.0.1 无 forwarder）", s)
 		}
+		// 127.0.0.1 + 钩子存活：探活走本机 :53
 	}
 	ifaces, err := listNetworkServices()
 	if err != nil {

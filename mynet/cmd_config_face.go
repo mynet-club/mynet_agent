@@ -667,21 +667,18 @@ func configFacePlugins() int {
 		return printJSON(map[string]any{"error": err.Error()})
 	}
 	pdir := utils.PluginsConfDir(src)
+	// proxy 是**内置策略**（gnb 原生 proxy + OS 路由/域名钉扎），不是可安装内核包。
+	// 这里只报 enabled（意图开关），不再查 manifest.json —— 那是 mihomo 之类
+	// 本地代理核的包体概念，与本项目无关（2026-10-17 用户裁定）。
 	type item struct {
-		Name      string `json:"name"`
-		Enabled   bool   `json:"enabled"`
-		Installed bool   `json:"installed"`
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
 	}
 	out := []item{}
 	for _, name := range []string{domain.PluginNameProxy} {
 		it := item{Name: name}
 		if pc, err := store.LoadPlugin(pdir, name); err == nil {
 			it.Enabled = pc.Enabled
-		}
-		if d, err := utils.PluginPackageDir(name); err == nil {
-			if _, err := os.Stat(filepath.Join(d, "manifest.json")); err == nil {
-				it.Installed = true
-			}
 		}
 		out = append(out, it)
 	}

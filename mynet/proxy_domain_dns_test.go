@@ -174,3 +174,75 @@ func TestLoadSaveDynamicIPSetFile(t *testing.T) {
 		t.Fatalf("%v %v", ips2, err)
 	}
 }
+
+// IPSetFile 为空（纯域名白名单，无 IP 列表）时，DNS 产物路径必须是
+// $MYNET_HOME/var/proxy 下的绝对路径 —— 相对路径 `.dnsmasq.conf` 会落到
+// 进程 cwd，mynetd 的 cwd 在只读卷上时 open 失败、整轮 apply 回滚。
+func TestProxyDNSConfPathNoIPSetIsAbsolute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_DATA_HOME", "")
+
+	got := ProxyDNSConfPath("")
+	want := filepath.Join(home, "var", "proxy", "dns-split.dnsmasq.conf")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("路径必须绝对: %q", got)
+	}
+}
+
+// 有 IP 列表时产物仍挨着列表文件（好一起清），且带 .dnsmasq.conf 后缀。
+func TestProxyDNSConfPathKeepsIPSetSibling(t *testing.T) {
+	got := ProxyDNSConfPath("/opt/mynet/var/proxy-lists/interip.txt")
+	want := "/opt/mynet/var/proxy-lists/interip.txt.dnsmasq.conf"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+// DynamicIPSetFilePath 空 base 也不能返回相对路径（同上，apply 读它）。
+func TestDynamicIPSetFilePathEmptyBaseIsAbsolute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_DATA_HOME", "")
+
+	got := DynamicIPSetFilePath("")
+	want := filepath.Join(home, "var", "proxy", "dynamic-ipset.json")
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("路径必须绝对: %q", got)
+	}
+}
+
+// 写入失败不得误伤 apply：路径来自 ProxyDNSConfPath 时父目录可创建、文件可落盘。
+func TestApplyProxyDNSFilesWritesUnderVarProxy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_DATA_HOME", "")
+
+	p := &domain.ProxyPolicy{
+		Enabled: true,
+		DomainRules: &domain.ProxyDomainRules{
+			Direct:          []string{"baidu.com"},
+			Proxied:         []string{"github.com"},
+			UpstreamProxied: domain.DNSUpstreamFast,
+			PlatformDNS:     "dns.mynet.club",
+			UpstreamDirect:  []string{"223.5.5.5"},
+		},
+	}
+	conf := ProxyDNSConfPath("")
+	if _, err := ApplyProxyDNSFiles(p, DNSFormGateway, conf, ""); err != nil {
+		t.Fatalf("ApplyProxyDNSFiles: %v", err)
+	}
+	raw, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatalf("read %s: %v", conf, err)
+	}
+	if !strings.Contains(string(raw), "server=/github.com/") {
+		t.Fatalf("conf=%s", raw)
+	}
+}

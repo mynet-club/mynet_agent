@@ -14,11 +14,14 @@ package mynet
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
@@ -34,20 +37,17 @@ func isPCProxyForm(snap *shared.SystemSnapshot) bool {
 	return snap != nil && (snap.OS == "darwin" || snap.OS == "windows")
 }
 
-// PCProxyPinCmds 把 IP 列表 /32 钉进隧道（主表，PC 方言）。幂等：replace 语义。
-// 非 PC 形态返回 nil —— Linux/OpenWrt 走 nft 打标，不在这里动主表。
+// PCProxyPinCmds 把前缀列表钉进隧道（主表，PC 方言）。幂等：replace 语义。
+// 元素可是裸 IP（视作 /32）或 CIDR。非 PC 形态返回 nil。
 func PCProxyPinCmds(snap *shared.SystemSnapshot, ips []string, tunDev string) []routeCmd {
 	if !isPCProxyForm(snap) || tunDev == "" || len(ips) == 0 {
 		return nil
 	}
 	var cmds []routeCmd
-	for _, ip := range dedupStrings(ips) {
-		if net.ParseIP(ip) == nil {
-			continue
-		}
+	for _, dest := range normalizePinDests(ips) {
 		cmds = append(cmds, routeCmds(snap, RouteOp{
 			Action:      "replace",
-			Destination: ip + "/32",
+			Destination: dest,
 			Device:      tunDev,
 		})...)
 	}
@@ -60,13 +60,10 @@ func PCProxyPinDelCmds(snap *shared.SystemSnapshot, ips []string, tunDev string)
 		return nil
 	}
 	var cmds []routeCmd
-	for _, ip := range dedupStrings(ips) {
-		if net.ParseIP(ip) == nil {
-			continue
-		}
+	for _, dest := range normalizePinDests(ips) {
 		for _, c := range routeCmds(snap, RouteOp{
 			Action:      "del",
-			Destination: ip + "/32",
+			Destination: dest,
 			Device:      tunDev,
 		}) {
 			c.optional = true
@@ -76,20 +73,122 @@ func PCProxyPinDelCmds(snap *shared.SystemSnapshot, ips []string, tunDev string)
 	return cmds
 }
 
-// ResolvePCProxyPinIPs 解析「要代理的域名」→ IPv4 集（去重、排序、封顶）。
-// resolve 可注入（测试）；nil 时用系统解析器（短超时）。
+// normalizePinDests 裸 IP → /32；合法 CIDR 原样；非法丢弃。
+func normalizePinDests(ips []string) []string {
+	var out []string
+	for _, s := range dedupStrings(ips) {
+		if _, n, err := net.ParseCIDR(s); err == nil {
+			out = append(out, n.String())
+			continue
+		}
+		if net.ParseIP(s) != nil {
+			out = append(out, s+"/32")
+		}
+	}
+	return out
+}
+
+// MergeIPsToCIDR 最小合并：把 IPv4 集合收成**精确覆盖**的最少 CIDR。
+// 只合并相邻且对齐的地址（如 .4+.5 → /31，.4–.7 → /30），绝不扩大到未钉扎 IP。
+func MergeIPsToCIDR(ips []string) []string {
+	var nums []uint32
+	seen := map[uint32]bool{}
+	for _, s := range ips {
+		ip := net.ParseIP(strings.TrimSpace(s))
+		if ip == nil {
+			continue
+		}
+		v4 := ip.To4()
+		if v4 == nil {
+			continue
+		}
+		n := binary.BigEndian.Uint32(v4)
+		if !seen[n] {
+			seen[n] = true
+			nums = append(nums, n)
+		}
+	}
+	if len(nums) == 0 {
+		return nil
+	}
+	sort.Slice(nums, func(i, j int) bool { return nums[i] < nums[j] })
+	var out []string
+	i := 0
+	for i < len(nums) {
+		// 从最小对齐块开始扩：blockSize 以 host 数计（2^k）
+		best := uint32(1)
+		for k := uint32(1); k <= 256; k <<= 1 {
+			// 起点必须 k 对齐
+			if nums[i]%k != 0 {
+				break
+			}
+			end := nums[i] + k - 1
+			// 块内每个地址都在集合里？
+			ok := true
+			for a := nums[i]; a <= end; a++ {
+				if !seen[a] {
+					ok = false
+					break
+				}
+			}
+			if !ok {
+				break
+			}
+			best = k
+		}
+		prefix := 32
+		if best > 1 {
+			prefix = 32 - bitsLen(best)
+		}
+		out = append(out, fmt.Sprintf("%s/%d", uint32ToIP(nums[i]), prefix))
+		i += int(best)
+	}
+	return out
+}
+
+func bitsLen(n uint32) int {
+	// n 是 2^k，返回 k
+	k := 0
+	for n > 1 {
+		n >>= 1
+		k++
+	}
+	return k
+}
+
+func uint32ToIP(n uint32) string {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, n)
+	return net.IP(b).String()
+}
+
+// ResolvePCProxyPinIPs 解析「要代理的域名 + 钉扎 IP」→ IPv4 集（去重、排序、封顶）。
+//
+// 域名路径：resolve 可注入（测试）；nil 时走**干净上游 + 磁盘缓存**
+// （proxy_pc_clean_dns.go —— 系统解析器可被污染，钉进隧道的是错 IP）。
+// IP 路径：CustomIPs 原样并入（不解析、不校验域名语法）。
 func ResolvePCProxyPinIPs(rules *domain.ProxyDomainRules, resolve func(string) []string, max int) []string {
 	if rules == nil {
 		return nil
 	}
 	if resolve == nil {
-		resolve = lookupHostV4
+		resolve = func(d string) []string {
+			return ResolveDomainClean(rules, d, time.Now())
+		}
 	}
 	if max <= 0 {
 		max = pcPinMaxIPs
 	}
 	seen := map[string]bool{}
 	var out []string
+	addIP := func(ip string) bool {
+		if net.ParseIP(ip) == nil || seen[ip] {
+			return len(out) >= max
+		}
+		seen[ip] = true
+		out = append(out, ip)
+		return len(out) >= max
+	}
 	add := func(domains []string) {
 		for _, raw := range domains {
 			d := normalizeDomainName(raw)
@@ -97,12 +196,7 @@ func ResolvePCProxyPinIPs(rules *domain.ProxyDomainRules, resolve func(string) [
 				continue
 			}
 			for _, ip := range resolve(d) {
-				if net.ParseIP(ip) == nil || seen[ip] {
-					continue
-				}
-				seen[ip] = true
-				out = append(out, ip)
-				if len(out) >= max {
+				if addIP(ip) {
 					return
 				}
 			}
@@ -114,6 +208,12 @@ func ResolvePCProxyPinIPs(rules *domain.ProxyDomainRules, resolve func(string) [
 	// 代理域名 = 基础清单 ∪ 自定义 − 直连（D5 合并组）；clean 列表同样走隧道。
 	add(rules.EffectiveProxied())
 	add(rules.UpstreamClean)
+	// 原始 IP 白名单：不经 DNS，直接钉（域名语法的条目被 ParseIP 拒绝）。
+	for _, raw := range rules.CustomIPs {
+		if addIP(raw) {
+			break
+		}
+	}
 	sort.Strings(out)
 	return out
 }
@@ -184,14 +284,36 @@ func diffStrings(a, b []string) []string {
 	return out
 }
 
-// ApplyPCPin 对账：先撤失效钉扎，再钉当前域名解析集。返回待执行命令 + 新清单。
-// 调用方逐条 run，成功后 SavePCPinIPs(next)。非 PC 形态返回 (nil, nil)。
+// ApplyPCPin 对账：先撤失效钉扎，再钉当前域名解析集 + 钩子增量集（最小 CIDR 合并）。
+// 返回待执行命令 + **已合并前缀清单**（落 pc-pin.json，禁用时按前缀撤）。
+// 非 PC 形态返回 (nil, nil)。
 func ApplyPCPin(snap *shared.SystemSnapshot, rules *domain.ProxyDomainRules, tunDev string) ([]routeCmd, []string) {
 	if !isPCProxyForm(snap) {
 		return nil, nil
 	}
 	prev := LoadPCPinIPs()
-	next := ResolvePCProxyPinIPs(rules, nil, pcPinMaxIPs)
+	base := ResolvePCProxyPinIPs(rules, nil, pcPinMaxIPs)
+	seen := map[string]bool{}
+	var nextIPs []string
+	for _, ip := range base {
+		if !seen[ip] {
+			seen[ip] = true
+			nextIPs = append(nextIPs, ip)
+		}
+	}
+	for _, ip := range LoadDNSHookPins() {
+		if net.ParseIP(ip) == nil || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		nextIPs = append(nextIPs, ip)
+		if len(nextIPs) >= pcPinMaxIPs {
+			break
+		}
+	}
+	sort.Strings(nextIPs)
+	// 最小合并：相邻 IP 收成更少路由条目（.4+.5 → /31 等）；清单落前缀以便精确撤销
+	next := MergeIPsToCIDR(nextIPs)
 	var cmds []routeCmd
 	cmds = append(cmds, PCProxyPinDelCmds(snap, diffStrings(prev, next), tunDev)...)
 	cmds = append(cmds, PCProxyPinCmds(snap, next, tunDev)...)

@@ -21,7 +21,7 @@ import (
 
 func cmdProxy(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet proxy apply [--dry-run] | dns-split <domestic-csv> <foreign> | resolv <server> | status | migrate [--dry-run]")
+		fmt.Fprintln(os.Stderr, "用法: mynet proxy apply [--dry-run] | dns-split <domestic-csv> <foreign> | resolv <server> | status | migrate [--dry-run] | dns-hook start|stop|status")
 		return 2
 	}
 	switch args[0] {
@@ -46,6 +46,9 @@ func cmdProxy(args []string) int {
 		// O4：旧 proxy_role.conf → 统一 Local 意图（幂等，失败关闭）
 		dry := len(args) > 1 && args[1] == "--dry-run"
 		return proxyMigrate(dry)
+	case "dns-hook":
+		// PC 答案钩子：本地 forwarder，代理域名 A 答案增量钉扎。
+		return cmdProxyDNSHook(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "proxy: 未知子命令 %q\n", args[0])
 		return 2

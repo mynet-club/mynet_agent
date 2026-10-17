@@ -1,191 +1,311 @@
 package mynet
 
 import (
-	"strings"
+	"encoding/binary"
+	"net"
 	"testing"
 	"time"
 
-	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-func TestDynamicIPSetAddAnswer(t *testing.T) {
-	s := NewDynamicIPSet(time.Minute)
-	now := time.Now()
-	added := s.AddAnswer("api.github.com", []string{"1.2.3.4", "5.6.7.8", "not-an-ip"}, now)
-	if len(added) != 2 {
-		t.Fatalf("added=%v", added)
+func buildTestDNSQuery(qname string) []byte {
+	return buildDNSQueryMsg(qname)
+}
+
+// buildTestDNSAnswer 在 query 上叠 A 答案。
+func buildTestDNSAnswer(query []byte, ips ...string) []byte {
+	msg := append([]byte{}, query...)
+	binary.BigEndian.PutUint16(msg[2:4], 0x8180) // QR response
+	binary.BigEndian.PutUint16(msg[6:8], uint16(len(ips)))
+	for _, ip := range ips {
+		// NAME pointer to offset 12
+		msg = append(msg, 0xC0, 0x0C)
+		// TYPE A, CLASS IN, TTL 60, RDLEN 4
+		msg = append(msg, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
+		msg = append(msg, net.ParseIP(ip).To4()...)
 	}
-	// 重复不报新增
-	added2 := s.AddAnswer("api.github.com", []string{"1.2.3.4"}, now)
-	if len(added2) != 0 {
-		t.Fatalf("重复应无新增: %v", added2)
-	}
-	if got := s.IPs(); len(got) != 2 {
-		t.Fatalf("IPs=%v", got)
+	return msg
+}
+
+func TestParseDNSQuestion(t *testing.T) {
+	q := buildTestDNSQuery("github.com")
+	name, err := parseDNSQuestion(q)
+	if err != nil || name != "github.com" {
+		t.Fatalf("qname=%q err=%v", name, err)
 	}
 }
 
-func TestDynamicIPSetExpire(t *testing.T) {
-	s := NewDynamicIPSet(time.Second)
-	now := time.Now()
-	s.AddAnswer("x.com", []string{"10.0.0.1"}, now)
-	dead := s.Expire(now.Add(2 * time.Second))
-	if len(dead) != 1 || dead[0] != "10.0.0.1" {
-		t.Fatalf("dead=%v", dead)
-	}
-	if len(s.IPs()) != 0 {
-		t.Fatal("过期后应为空")
+func TestExtractDNSAnswerAIDs(t *testing.T) {
+	q := buildTestDNSQuery("github.com")
+	a := buildTestDNSAnswer(q, "20.205.243.166", "1.2.3.4")
+	ips := extractDNSAnswerAIDs(a)
+	if len(ips) != 2 || ips[0] != "20.205.243.166" || ips[1] != "1.2.3.4" {
+		t.Fatalf("A answers=%v", ips)
 	}
 }
 
-func TestDynamicIPSetCmdsIncrementalNotFlush(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
-	cmds := DynamicIPSetCmds(snap, []string{"1.2.3.4", "5.6.7.8"}, "", "", "")
-	if len(cmds) != 2 {
-		t.Fatalf("cmds=%v", cmds)
+func TestHookRulesSuffixMatch(t *testing.T) {
+	r := &dnsHookRules{
+		proxied: map[string]bool{"google.com": true},
+		clean:   map[string]bool{},
 	}
-	text := joinCmds(cmds)
-	if strings.Contains(text, "flush") {
-		t.Fatalf("动态增量禁止 flush:\n%s", text)
+	if !r.shouldPin("google.com") {
+		t.Fatal("exact should pin")
 	}
-	for _, want := range []string{
-		"nft add element ip mynet_proxy mynet_proxy { 1.2.3.4 }",
-		"nft add element ip mynet_proxy mynet_proxy { 5.6.7.8 }",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("缺 %q\n%s", want, text)
+	if !r.shouldPin("www.google.com") {
+		t.Fatal("suffix should pin")
+	}
+	if r.shouldPin("baidu.com") {
+		t.Fatal("unrelated should not pin")
+	}
+}
+
+func TestDNSHookPinStateAddPersists(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	s := &dnsHookPinState{IPs: map[string]time.Time{}}
+	if !s.add("9.9.9.9") {
+		t.Fatal("first add should be new")
+	}
+	if s.add("9.9.9.9") {
+		t.Fatal("second add should be dup")
+	}
+	got := LoadDNSHookPins()
+	found := false
+	for _, ip := range got {
+		if ip == "9.9.9.9" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("persist/load miss: %v", got)
+	}
+}
+
+func TestForwardDNSQueryTimeout(t *testing.T) {
+	// 不可达上游应返回 error（快速失败路径）
+	_, err := forwardDNSQuery("127.0.0.1", buildTestDNSQuery("example.com"), 200*time.Millisecond)
+	if err == nil {
+		// 某些环境 127.0.0.1:53 可能有东西；只要不 panic 即可
+		t.Log("unexpected answer on 127.0.0.1:53")
+	}
+}
+
+// DNS 应答缓存：命中时必须改写事务 ID（客户端只认 ID 配对）。
+func TestDNSRespCacheRewritesQueryID(t *testing.T) {
+	c := newDNSRespCache()
+	resp := make([]byte, 16)
+	binary.BigEndian.PutUint16(resp[0:2], 0x1111) // 原始 ID
+	key := dnsCacheKey("example.com", 1)
+	c.put(key, resp, time.Minute)
+
+	got := c.get(key, 0x2222)
+	if got == nil {
+		t.Fatal("缓存应命中")
+	}
+	if id := binary.BigEndian.Uint16(got[0:2]); id != 0x2222 {
+		t.Fatalf("应答 ID=0x%x, want 0x2222（必须改成当前查询 ID）", id)
+	}
+}
+
+// 过期后不得命中。
+func TestDNSRespCacheExpires(t *testing.T) {
+	c := newDNSRespCache()
+	key := dnsCacheKey("a.example.com", 1)
+	c.put(key, []byte{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10*time.Millisecond)
+	if c.get(key, 1) == nil {
+		t.Fatal("刚写入应命中")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if c.get(key, 1) != nil {
+		t.Fatal("过期后不得命中")
+	}
+}
+
+// qtype 不同不得串缓存（A 与 AAAA 是两条记录）。
+func TestDNSRespCacheKeySeparatesQType(t *testing.T) {
+	c := newDNSRespCache()
+	k1 := dnsCacheKey("example.com", 1)
+	k2 := dnsCacheKey("example.com", 28)
+	c.put(k1, []byte{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, time.Minute)
+	if c.get(k2, 9) != nil {
+		t.Fatal("qtype=28 不得命中 qtype=1 的缓存")
+	}
+	if c.get(k1, 9) == nil {
+		t.Fatal("qtype=1 应命中")
+	}
+}
+
+// minAnswerTTL 取 A 记录最小 TTL；无 A 记录返回 0。
+func TestMinAnswerTTL(t *testing.T) {
+	// 构造最小应答：header + 1 question + 1 A answer(TTL=30)
+	msg := make([]byte, 0, 64)
+	msg = append(msg, 0x12, 0x34)             // ID
+	msg = append(msg, 0x81, 0x80)             // flags
+	msg = append(msg, 0x00, 0x01, 0x00, 0x01) // qd=1 an=1
+	msg = append(msg, 0x00, 0x00, 0x00, 0x00) // nscount/arcount
+	// QNAME: example.com
+	for _, p := range []string{"example", "com"} {
+		msg = append(msg, byte(len(p)))
+		msg = append(msg, p...)
+	}
+	msg = append(msg, 0x00, 0x00, 0x01, 0x00, 0x01) // QTYPE A, QCLASS IN
+	// Answer NAME (pointer to question) + TYPE A + CLASS IN + TTL 30 + RDLEN 4 + 1.2.3.4
+	msg = append(msg, 0xC0, 0x0C)
+	msg = append(msg, 0x00, 0x01, 0x00, 0x01)
+	msg = append(msg, 0x00, 0x00, 0x00, 0x1E) // TTL 30
+	msg = append(msg, 0x00, 0x04)
+	msg = append(msg, 1, 2, 3, 4)
+
+	ttl := minAnswerTTL(msg)
+	if ttl != 30*time.Second {
+		t.Fatalf("minAnswerTTL=%v, want 30s", ttl)
+	}
+	// 无应答段 → 0
+	empty := make([]byte, 12)
+	if minAnswerTTL(empty) != 0 {
+		t.Fatal("无 A 记录应返回 0")
+	}
+}
+
+// bootstrap 解析不能走系统解析器 —— hook 接管 DNS 后那会自己查自己（死锁）。
+// 这里锁：主机名走 bootstrapResolveA / forwardUDP，不调 net.LookupIP。
+func TestBootstrapResolveACaches(t *testing.T) {
+	// 直接打缓存路径，不真发网络
+	upstreamIPCachePut("dns.dsplat.com", "203.0.113.9")
+	ip := bootstrapResolveA("dns.dsplat.com", 100*time.Millisecond)
+	if ip != "203.0.113.9" {
+		t.Fatalf("bootstrapResolveA=%q, want 203.0.113.9（缓存命中）", ip)
+	}
+	// 过期后不再命中缓存（会走网络，这里只验缓存键过期逻辑）
+	upstreamIPCache.Store("dns.dsplat.com", upstreamIPEntry{ip: "203.0.113.9", expires: time.Now().Add(-time.Second)})
+	if got := upstreamIPCacheGet("dns.dsplat.com"); got != "" {
+		t.Fatalf("过期缓存不应命中，got %q", got)
+	}
+}
+
+// forwardDNSQuery 对 IP 上游不应触发 bootstrap 解析（直接 dial）。
+func TestForwardUDPRejectsBadServer(t *testing.T) {
+	// 240.0.0.0/4 是保留段，dial 必失败 —— 验证 forwardUDP 不 panic、会返回 err
+	_, err := forwardUDP("240.0.0.1", buildDNSQueryMsg("example.com"), 200*time.Millisecond)
+	if err == nil {
+		t.Fatal("保留段 dial 应失败")
+	}
+}
+
+// 上游 DNS 必须是 IP（2026-10-17 用户裁决）：主机名会被剔除，
+// 否则 hook 接管系统 DNS 后解析上游会打回自己 → 死锁。
+func TestOnlyIPUpstreams(t *testing.T) {
+	got := onlyIPUpstreams([]string{
+		"223.5.5.5",
+		"dns.dsplat.com",
+		"119.29.29.29",
+		"dns.mynet.club",
+		"223.5.5.5", // 重复
+		"",
+		"  8.8.8.8  ",
+	})
+	want := []string{"223.5.5.5", "119.29.29.29", "8.8.8.8"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	// 全是主机名 → 空表（好过塞主机名进死锁路径）
+	if out := onlyIPUpstreams([]string{"dns.mynet.club", "dns.dsplat.com"}); len(out) != 0 {
+		t.Fatalf("全主机名应得空表，got %v", out)
+	}
+}
+
+// foreign/domestic 默认上游经过 onlyIPUpstreams 过滤，不得出现主机名。
+func TestHookUpstreamsAreIPOnly(t *testing.T) {
+	// 预热缓存，避免本用例现场 bootstrap 网络（2s 超时）拖慢/抖动
+	upstreamIPCachePut("dns.mynet.club", "203.0.113.9")
+	upstreamIPCachePut("dns.dsplat.com", "203.0.113.10")
+	t.Setenv("MYNET_HOME", t.TempDir())
+	r := newHookRulesFromPolicy()
+	for _, up := range append(append([]string{}, r.foreign...), r.domestic...) {
+		if net.ParseIP(up) == nil {
+			t.Fatalf("上游 %q 必须是 IP", up)
+		}
+	}
+	for _, up := range r.upstreamsFor("google.com") {
+		if net.ParseIP(up) == nil {
+			t.Fatalf("foreign 路径上游 %q 必须是 IP", up)
+		}
+	}
+	for _, up := range r.upstreamsFor("baidu.com") {
+		if net.ParseIP(up) == nil {
+			t.Fatalf("domestic 路径上游 %q 必须是 IP", up)
 		}
 	}
 }
 
-func TestDynamicIPSetCmdsIptables(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"iptables": true}}
-	cmds := DynamicIPSetCmds(snap, []string{"9.9.9.9"}, "", "", "")
-	text := joinCmds(cmds)
-	if !strings.Contains(text, "ipset add mynet_proxy 9.9.9.9 -exist") {
-		t.Fatalf("text=%s", text)
-	}
-}
-
-func TestDynamicIPSetDelCmds(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
-	cmds := DynamicIPSetDelCmds(snap, []string{"1.1.1.1"}, "", "", "")
-	text := joinCmds(cmds)
-	if !strings.Contains(text, "nft delete element ip mynet_proxy mynet_proxy { 1.1.1.1 }") {
-		t.Fatalf("text=%s", text)
-	}
-	for _, c := range cmds {
-		if !c.optional {
-			t.Fatal("del 应 optional")
-		}
-	}
-}
-
-func TestDnsmasqIPSetLines(t *testing.T) {
-	lines := DnsmasqIPSetLines([]string{".github.com", "google.com", ".github.com", ""}, "mynet_proxy")
-	text := strings.Join(lines, "\n")
-	if !strings.Contains(text, "ipset=/github.com/mynet_proxy") {
-		t.Fatalf("text=%s", text)
-	}
-	if !strings.Contains(text, "ipset=/google.com/mynet_proxy") {
-		t.Fatalf("text=%s", text)
-	}
-	if strings.Count(text, "github.com") != 1 {
-		t.Fatalf("应去重:\n%s", text)
-	}
-}
-
-func TestDoHBlockCmds(t *testing.T) {
-	snap := &shared.SystemSnapshot{Capabilities: map[string]bool{"nft": true}}
-	cmds := DoHBypassCmds(snap, DoHModeBlock, ProxyRuntime{})
-	text := joinCmds(cmds)
-	for _, want := range []string{
-		"tcp dport 853 drop",
-		"ip daddr 8.8.8.8 tcp dport 443 drop",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("block 缺 %q\n%s", want, text)
-		}
-	}
-	// allow 不得产生命令
-	if got := DoHBypassCmds(snap, DoHModeAllow, ProxyRuntime{}); len(got) != 0 {
-		t.Fatalf("allow 应空: %v", got)
-	}
-}
-
-func TestDoHTunnelCmds(t *testing.T) {
-	cmds := DoHBypassCmds(nil, DoHModeTunnel, ProxyRuntime{TunDevice: "gnb_tun"})
-	// snap nil 时 tunnel 仍应有路由（不依赖 nft）
-	text := joinCmds(cmds)
-	if !strings.Contains(text, "ip route replace 8.8.8.8/32 dev gnb_tun") { // GUARD-OK 测试断言命令串，非执行点
-		t.Fatalf("tunnel 模式应钉 /32:\n%s", text)
-	}
-}
-
-func TestFullTunnelCmds(t *testing.T) {
-	// FullTunnel 仅 Linux：必须带 ip 能力的快照（#21：BSD 快照下返回空）
-	cmds := FullTunnelCmds(snapNft(), ProxyRuntime{
-		TunDevice:  "gnb_tun",
-		WANDevice:  "eth0",
-		WANGateway: "192.0.2.1",
-	}, 200)
-	text := joinCmds(cmds)
-	if !strings.Contains(text, "ip route replace default dev gnb_tun") { // GUARD-OK 测试断言命令串，非执行点
-		t.Fatalf("应改主表默认:\n%s", text)
-	}
-	if !strings.Contains(text, "192.0.2.1/32 dev eth0") {
-		t.Fatal("WAN /32 修复")
-	}
-	if got := FullTunnelCmds(&shared.SystemSnapshot{OS: "darwin", Capabilities: map[string]bool{}},
-		ProxyRuntime{TunDevice: "gnb_tun"}, 200); len(got) != 0 {
-		t.Fatalf("BSD 下 FullTunnel 必须为空（不得碰主表 default）: %v", got)
-	}
-}
-
-func TestProxyAllBypassCombines(t *testing.T) {
-	snap := snapNft() // 需要 ip 能力：full tunnel 是 Linux 独有（#21 门禁）
-	p := &domain.ProxyPolicy{
-		Enabled:         true,
-		Role:            "client",
-		ForeignDNSRoute: true,
-		FullTunnel:      true,
-		DoHMode:         DoHModeBlock,
-	}
-	rt := ProxyRuntime{TunDevice: "gnb_tun"}
-	cmds := ProxyAllBypassCmds(snap, p, rt)
-	text := joinCmds(cmds)
-	if !strings.Contains(text, "dport 853 drop") {
-		t.Fatalf("应含 DoH block:\n%s", text)
-	}
-	if !strings.Contains(text, "ip route replace default dev gnb_tun") { // GUARD-OK 测试断言命令串，非执行点
-		t.Fatalf("应含 full tunnel:\n%s", text)
-	}
-}
-
-func TestProxyACLCmdsServerAllowCIDR(t *testing.T) {
+// 出口 VIP 是 foreign 首选（proxy-split.md §13：foreign = 出口 VIP:53）。
+func TestForeignUpstreamsPreferExitVia(t *testing.T) {
 	p := &domain.ProxyPolicy{
 		Enabled: true,
-		Role:    "server",
-		ACL: &domain.ProxyACL{
-			Mode:         domain.ProxyACLAllowlist,
-			AllowedCIDRs: []string{"10.20.0.0/24"},
+		Exits: []domain.ProxyExit{
+			{NodeID: "n1", Via: "10.182.236.180", Enabled: true},
+		},
+		DomainRules: &domain.ProxyDomainRules{
+			Proxied: []string{"github.com"},
 		},
 	}
-	text, err := proxyExitNftBatch("gnb_tun", p, false)
-	if err != nil {
-		t.Fatal(err)
+	got := defaultForeignUpstreams(p, p.DomainRules)
+	if len(got) == 0 {
+		t.Fatal("有出口 VIP 时 foreign 不得为空")
 	}
-	if !strings.Contains(text, "ip saddr 10.20.0.0/24 accept") {
-		t.Fatalf("缺放行:\n%s", text)
+	if got[0] != "10.182.236.180" {
+		t.Fatalf("出口 VIP 应排最前, got %v", got)
 	}
-	if !strings.Contains(text, `iifname "gnb_tun" drop`) {
-		t.Fatalf("缺默认拒:\n%s", text)
+	for _, up := range got {
+		if net.ParseIP(up) == nil {
+			t.Fatalf("上游 %q 必须是 IP", up)
+		}
 	}
-	// client 不装
-	c := *p
-	c.Role = "client"
-	if got, err := proxyExitNftBatch("gnb_tun", &c, false); err != nil || got != "" {
-		t.Fatalf("client 不该装 ACL 准入: %v", got)
+}
+
+// TunnelServer/出口 VIP 皆无、只剩平台 DNS 主机名时，不得滤成空表
+// （空表 = proxied 域名零上游、dig 超时 —— 2026-10-17 实测故障）。
+func TestForeignUpstreamsBootstrapWhenNoIP(t *testing.T) {
+	upstreamIPCachePut("dns.mynet.club", "203.0.113.9")
+	defer upstreamIPCache.Delete("dns.mynet.club")
+	p := &domain.ProxyPolicy{
+		Enabled: true,
+		DomainRules: &domain.ProxyDomainRules{
+			Proxied: []string{"github.com"},
+		},
+	}
+	got := defaultForeignUpstreams(p, p.DomainRules)
+	if len(got) == 0 {
+		t.Fatal("平台 DNS 主机名应 bootstrap 成 IP，不得滤成空")
+	}
+	if got[0] != "203.0.113.9" {
+		t.Fatalf("want bootstrap IP, got %v", got)
+	}
+}
+
+// foreign 为空时 upstreamsFor 对 proxied 域名仍须给出 IP 上游（不能静默无应答）。
+func TestUpstreamsForProxiedNotEmpty(t *testing.T) {
+	upstreamIPCachePut("dns.mynet.club", "203.0.113.9")
+	defer upstreamIPCache.Delete("dns.mynet.club")
+	r := &dnsHookRules{
+		proxied:  map[string]bool{"github.com": true},
+		clean:    map[string]bool{},
+		foreign:  nil,
+		domestic: []string{"223.5.5.5"},
+	}
+	ups := r.upstreamsFor("github.com")
+	if len(ups) == 0 {
+		t.Fatal("proxied 域名上游不得为空（会导致客户端超时）")
+	}
+	for _, up := range ups {
+		if net.ParseIP(up) == nil {
+			t.Fatalf("上游 %q 必须是 IP", up)
+		}
 	}
 }

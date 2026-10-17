@@ -332,6 +332,40 @@ func TestDiagURLMatchesWebUIPage(t *testing.T) {
 	}
 }
 
+// TestProxyURLMatchesWebUIPage 「管理域名」的深链必须落在 config/proxy 页，
+// 且 hash 形状与 parseHash 的 `#page/tab` 对齐。只写 `config` 会停在默认
+// 「节点配置」tab，域名白名单看不见。
+func TestProxyURLMatchesWebUIPage(t *testing.T) {
+	const webui = "../../mynetd/localapi/webui/index.html"
+	raw, err := os.ReadFile(webui)
+	if err != nil {
+		t.Fatalf("读 WebUI 源文件（%s）: %v", webui, err)
+	}
+	// parseHash 按 `/` 切 page/tab；config 页必须有 proxy 这个 tab，
+	// 且域名输入框确实在 config/proxy 面板里。
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`parseHash`),
+		regexp.MustCompile(`data-panel="config/proxy"`),
+		regexp.MustCompile(`proxy-domains-proxied`),
+	} {
+		if !re.Match(raw) {
+			t.Errorf("WebUI 里找不到 %s —— #config/proxy 深链已失效，ProxyURL 得跟着改", re)
+		}
+	}
+
+	const base = "127.0.0.1:8096"
+	if got, want := ProxyURL(base), "http://127.0.0.1:8096/ui/#config/proxy"; got != want {
+		t.Errorf("ProxyURL = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(ProxyURL(base), PanelURL(base)) {
+		t.Error("ProxyURL 必须基于 PanelURL 拼，否则两处地址会各自漂")
+	}
+	// 只写 `config` 是老 bug 的形态，锁死不许回退
+	if strings.HasSuffix(ProxyURL(base), "#config") {
+		t.Error("ProxyURL 停在 #config 会落默认 keys tab，域名页看不见")
+	}
+}
+
 // TestAcceptCopyIPOnlyOnChange 显隐只在值变了才推 systray（同 acceptIcon）。
 func TestAcceptCopyIPOnlyOnChange(t *testing.T) {
 	a, _ := newBootApp(t, bootProbes["stopped"])

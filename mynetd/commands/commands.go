@@ -5,6 +5,24 @@
 // mynet 降级为可选运维 CLI（人手敲），daemon 不再依赖 bin/mynet 路径。
 package commands
 
+import "time"
+
+// ExecTimeoutFor 按命令选执行超时。
+//
+// 默认 60s 够用；但 `service start|stop|reload` 要先等驱动生命周期锁
+// （flock，lifecycleLockTimeout=60s）再执行 Stop/Start + apply ——
+// 60s 总预算会在「刚拿到锁」时被掐死，且 SIGKILL 可能落在 Stop 之后，
+// 隧道就停在「已断开」（2026-10-17 实测）。这类给 120s。
+func ExecTimeoutFor(argv []string) time.Duration {
+	if len(argv) >= 2 && argv[0] == "service" {
+		switch argv[1] {
+		case "start", "stop", "reload", "restart":
+			return 120 * time.Second
+		}
+	}
+	return 60 * time.Second
+}
+
 // Request 是一条待执行的指令（来自 WS / 本机 API）。
 type Request struct {
 	ID   string            `json:"id"`

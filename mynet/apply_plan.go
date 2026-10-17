@@ -253,7 +253,7 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			dnsForm = DNSFormPC
 		}
 		if plan.Proxy.Policy.DomainRules != nil || (plan.Proxy.Policy.DNS != nil && plan.Proxy.Policy.DNS.Hijack != "" && plan.Proxy.Policy.DNS.Hijack != "off") {
-			reloads, derr := ApplyProxyDNSFiles(plan.Proxy.Policy, dnsForm, rt.IPSetFile+".dnsmasq.conf", "")
+			reloads, derr := ApplyProxyDNSFiles(plan.Proxy.Policy, dnsForm, ProxyDNSConfPath(rt.IPSetFile), "")
 			if derr != nil {
 				fmt.Fprintf(os.Stderr, "proxy dns files: %v\n", derr)
 				fail = 1

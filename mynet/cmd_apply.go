@@ -247,18 +247,14 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "start %s: 隧道已启动，但 apply（投影+路由）未全部成功（exit %d）\n", name, code)
 			return code
 		}
+		// 侧车编排（proxy ∥ dns-plan → dns-hook）：只同步**已启用**的，
+		// 失败不回滚隧道。托盘/WebUI 的启停都汇到这里，故挂在此处。
+		SyncSidecarsOnTunnelUp()
 		return 0
 	case "stop":
-		// 还原遗留 DNS 接管（幂等；只有显式接管过才有备份）
-		if isPCDNSPlatform() {
-			if err := RestoreSystemDNS(); err != nil {
-				fmt.Fprintf(os.Stderr, "⚠ DNS 还原失败: %v\n", err)
-			} else if DNSRestoreNeeded() {
-				fmt.Println("dns: 仍有未还原的接管（mynet dns restore）")
-			} else {
-				fmt.Println("dns: 无接管或已还原")
-			}
-		}
+		// 栈式逆序收侧车：dns-hook → dns-restore（不再单独跑 RestoreSystemDNS，
+		// 已并入 restoreDNSSidecar，避免双跑）。
+		SyncSidecarsOnTunnelDown()
 		if err := d.Stop(); err != nil {
 			fmt.Fprintf(os.Stderr, "stop %s: %v\n", name, err)
 			return 1
@@ -276,6 +272,7 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "reload %s: apply（投影+路由）未全部成功（exit %d）\n", name, code)
 			return code
 		}
+		SyncSidecarsOnTunnelUp()
 		return 0
 	case "status":
 		st, err := d.Status()

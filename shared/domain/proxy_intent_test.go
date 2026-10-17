@@ -237,9 +237,20 @@ func TestApplyLocalResolvesSplit(t *testing.T) {
 	if s.Local.Policy.Split.ListSource != ProxyListInternational || s.Local.Policy.Split.MatchMode != ProxyMatchNormal {
 		t.Fatalf("split 解算错: %+v", s.Local.Policy.Split)
 	}
-	// 非法 region/policy 仍拒（不静默兜底）
-	if err := (&ProxyIntentState{}).ApplyLocal(
-		ProxyPolicy{Enabled: true, Role: ProxyRoleClient, Region: "xx", Policy: "yy"}, time.Now()); err == nil {
-		t.Fatal("非法 region/policy 应拒")
+	// 非法 region/policy 不再硬拒（2026-10-17 用户裁决）：钳到合法默认后继续，
+	// 否则 UI 串值（region=dns policy=off）会卡死保存。
+	var s2 ProxyIntentState
+	if err := s2.ApplyLocal(
+		ProxyPolicy{Enabled: true, Role: ProxyRoleClient, Region: "dns", Policy: "off"}, time.Now()); err != nil {
+		t.Fatalf("非法 region/policy 应钳到默认，不报错: %v", err)
+	}
+	if s2.Local == nil {
+		t.Fatal("应写入 Local")
+	}
+	if s2.Local.Policy.Region != ProxyRegionDomestic || s2.Local.Policy.Policy != ProxyPolicyWhitelist {
+		t.Fatalf("应钳到 domestic/whitelist，got %s/%s", s2.Local.Policy.Region, s2.Local.Policy.Policy)
+	}
+	if s2.Local.Policy.Split == nil || s2.Local.Policy.Split.ListSource != ProxyListInternational {
+		t.Fatalf("钳后应解算出 split，got %+v", s2.Local.Policy.Split)
 	}
 }

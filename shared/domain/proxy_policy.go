@@ -1,5 +1,7 @@
 package domain
 
+import "fmt"
+
 // ProxyPolicy 代理分流意图（主线⑦「通过部分节点访问到不了的地方」）。
 //
 // 这是**节点级**业务意图，不是 Connection 级路径选择（那在 ConnectionPlan.TransportPolicy）。
@@ -309,11 +311,30 @@ func (p *ProxyPolicy) IsServerLike() bool {
 	return p.Role == "server" || p.Role == "both"
 }
 
+// NormalizeSplitFields 把 region/policy/role 钳到合法枚举（非法时回退默认）。
+// UI 侧 segify 按钮组在异常时序下可能串值（实测 region=dns policy=off/peer_smart），
+// 后端不该因此硬拒保存 —— 钳到合法值继续，比报错卡死用户体验好（2026-10-17）。
+func (p *ProxyPolicy) NormalizeSplitFields() {
+	if p == nil {
+		return
+	}
+	if p.Region != "" && p.Region != ProxyRegionDomestic && p.Region != ProxyRegionIntl {
+		p.Region = ProxyRegionDomestic
+	}
+	if p.Policy != "" && p.Policy != ProxyPolicyWhitelist && p.Policy != ProxyPolicyBlacklist {
+		p.Policy = ProxyPolicyWhitelist
+	}
+	if p.Role != "" && p.Role != "client" && p.Role != "server" && p.Role != "both" {
+		p.Role = "client"
+	}
+}
+
 // Validate 形状校验。enabled 时要求 split/exits/dns 的必要字段。
 func (p *ProxyPolicy) Validate() error {
 	if p == nil {
 		return nil
 	}
+	p.NormalizeSplitFields()
 	if !p.Enabled {
 		return nil
 	}
@@ -321,8 +342,11 @@ func (p *ProxyPolicy) Validate() error {
 		return &ProxySplitError{Region: p.Region, Policy: "role=" + p.Role}
 	}
 	if p.IsClientLike() {
-		if p.Region == "" || p.Policy == "" {
-			return &ProxySplitError{Region: p.Region, Policy: p.Policy}
+		if p.Region == "" {
+			p.Region = ProxyRegionDomestic
+		}
+		if p.Policy == "" {
+			p.Policy = ProxyPolicyWhitelist
 		}
 		// 与解算结果交叉验证，防止上游手写错
 		src, mode, err := ResolveProxySplit(p.Region, p.Policy)
@@ -344,12 +368,15 @@ func (p *ProxyPolicy) Validate() error {
 	}
 	if p.DNS != nil {
 		switch p.DNS.Mode {
+		// 旧模式（gateway 兼容）
 		case "", "none", "redirect", "resolv", "split":
+		// 新三选一（spec §13.1）：off / peer / smart / peer_smart
+		case DNSModeOff, DNSModePeer, DNSModeSmart, DNSModePeerSmart:
 		default:
-			return &ProxySplitError{Region: "dns", Policy: p.DNS.Mode}
+			return fmt.Errorf("proxy dns.mode 非法: %q（合法 off|peer|smart|peer_smart 或 none|redirect|resolv|split）", p.DNS.Mode)
 		}
 		if p.DNS.Mode == "redirect" && p.DNS.RedirectTarget == "" {
-			return &ProxySplitError{Region: "dns", Policy: "redirect 缺 redirect_target"}
+			return fmt.Errorf("proxy dns redirect 缺 redirect_target")
 		}
 	}
 	return nil

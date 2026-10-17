@@ -275,9 +275,8 @@ func (p *PluginConfig) Validate() error {
 // gnb 的 proxy 开关（proxy on）就在这份 proxy.conf 里，**不进 node.conf**。
 type PluginProxyConfig struct {
 	// Role 明确节点角色：client、server 或 both。
-	Role     string              `json:"role,omitempty"`
-	Core     string              `json:"core,omitempty"` // mihomo 等（本地代理核，可选）
-	Listen   PluginProxyListen   `json:"listen"`
+	Role   string              `json:"role,omitempty"`
+	Listen PluginProxyListen   `json:"listen"`
 	Outbound PluginProxyOutbound `json:"outbound"`
 	Rules    []string            `json:"rules,omitempty"`
 	// Exits 出站 peer 列表：选谁、几个、权重、顺序。
@@ -356,9 +355,10 @@ type PluginProxyOutbound struct {
 }
 
 // NewPluginProxy 默认 proxy 插件配置。
+// 注意：proxy 是 **gnb 原生 proxy + OS 路由/域名钉扎**，不是 mihomo 之类本地代理核。
+// Listen 字段仅作配置占位（历史 JSON 兼容），运行时不拉起本地 7890 监听。
 func NewPluginProxy() PluginConfig {
 	raw, _ := json.Marshal(PluginProxyConfig{
-		Core:   "mihomo",
 		Listen: PluginProxyListen{Mixed: "127.0.0.1:7890", API: "127.0.0.1:9090"},
 		Outbound: PluginProxyOutbound{
 			Mode: "rule",

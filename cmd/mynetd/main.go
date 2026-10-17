@@ -294,6 +294,10 @@ func runAgent(ctx context.Context) {
 		}
 
 		dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
+		// bundle_changed 的 service.reload 必须与 connect/config 写面互斥：
+		// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
+		// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
+		dispatcher.setConfigExclusive(api.TryRunExclusive)
 
 		// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
 		// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
@@ -418,7 +422,10 @@ func runAgent(ctx context.Context) {
 // execMynet 命令分派：桌面 exec mynet <子命令>；OpenWrt 构建可换 lua -e。
 func execMynet(argv []string) (any, error) {
 	bin := mynetBin()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// service 生命周期命令要等驱动 flock（lifecycleLockTimeout=60s）再执行，
+	// 60s 总预算会在「刚拿到锁」时被掐死在 Stop 之后 —— 隧道停在「已断开」。
+	// 给 120s：锁等待 + Stop/Start + apply 都装得下。
+	ctx, cancel := context.WithTimeout(context.Background(), commands.ExecTimeoutFor(argv))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, argv...)
 	var stdout, stderr strings.Builder

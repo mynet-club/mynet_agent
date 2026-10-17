@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mynet-club/mynet_agent/mynetd/commands"
 	"github.com/mynet-club/mynet_agent/shared/utils"
-	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
 )
@@ -109,6 +109,8 @@ func allowedSubcommand(cmd string) bool {
 		"setup", "install", "uninstall", "update", "config",
 		"refresh-config", "refresh-routes", "refresh-address",
 		"status", "node-status", "route", "monitor", "check", "nodes", "platform", "plugin",
+		// PC 加速：dns-hook start/stop/status、proxy apply
+		"proxy",
 		// 向导用到的账号态/节点归属原语
 		"auth", "tenants", "node":
 		return true
@@ -167,7 +169,7 @@ func (s *Server) dispatch(w http.ResponseWriter, argv []string) {
 func defaultExecMynet(argv []string) (any, error) {
 	// 执行器：桌面 exec mynet <子命令>；OpenWrt 装配时换 lua
 	bin := resolveMynetBin()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), commands.ExecTimeoutFor(argv))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, argv...)
 	var stdout, stderr strings.Builder

@@ -2,15 +2,23 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // commandPullTimeout 一次 command_queued 处理（拉取 + 执行 + 回报）的总超时。
@@ -55,9 +63,24 @@ type eventDispatcher struct {
 	// 不先拉就只能读到上一版、或者根本没有那个文件（V1-10① 的断点）。
 	syncBundle func(ctx context.Context) (string, error)
 
+	// tryConfigExclusive 与 HTTP 写面（connect / config 写）共用同一把互斥：
+	// 拿到锁则 fn 独占执行，拿不到返回 false（用户写进行中，事件侧让路）。
+	// 未装配时为 nil，退化为直接跑（旧单进程行为）。
+	//
+	// 为什么必须接：connect 的 `config pull` 自己会触发 bundle_changed，
+	// 事件侧再跑 service.reload（= gnb Stop+Start）会与 connect 的 service start
+	// 抢同一把驱动生命周期锁 —— 两边都卡到 exec 60s 被 SIGKILL，
+	// 若恰在 Stop 之后被杀，隧道就停在「已断开」（2026-10-17 实测）。
+	tryConfigExclusive func(fn func() error) bool
+
 	// pending 是「跑的时候又来事件」的补跑队列（按事件名合并，见 runExclusive）。
 	pendingMu sync.Mutex
 	pending   map[string]func()
+}
+
+// setConfigExclusive 注入与 HTTP 写面共享的互斥（main.go 装配 api.TryRunExclusive）。
+func (d *eventDispatcher) setConfigExclusive(fn func(func() error) bool) {
+	d.tryConfigExclusive = fn
 }
 
 // bundleStatusUpdated 是 bundleStore.Sync 在拿到新版时返回的标记
@@ -170,11 +193,31 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 //
 // 每步都单独报结果，不因为前一步成功就假定后面也成功。
 func (d *eventDispatcher) runBundleLifecycle() {
+	// refresh-config 始终跑：写驱动投影是本地幂等写盘，与用户写面无互斥必要。
+	req := commands.Request{Op: commands.OpNodeRefresh}
+	res := commands.Run(d.exec, req, d.nodeID)
+	if res.OK {
+		d.logf("event: bundle_changed → 刷新驱动配置（node.refresh）成功")
+	} else {
+		d.logf("event: bundle_changed → 刷新驱动配置（node.refresh）失败: %s%s",
+			res.Error, stderrSuffix(res.Stderr))
+	}
+
+	// 指纹：与「上次成功 reload 时」比。refresh-config 已写完新投影，
+	// 若内容与上次 reload 后一致，说明 bundle 只动了 keys/status 等元数据 ——
+	// 再 Stop+Start 一次会把好端端的隧道打断（「通了不久就断」的一类）。
+	fp := driverConfFingerprint()
+	if fp != "" && fp == lastReloadFingerprint() && d.driverLikelyRunning() {
+		d.logf("event: bundle_changed → 驱动配置未变，跳过 reload（保留当前隧道）")
+		// 路由仍刷：bundle 可能只动了 OS 路由段。
+		d.runLifecycleStep("装内核路由", commands.OpRouteUpdate)
+		return
+	}
+
 	steps := []struct {
 		label string
 		op    string
 	}{
-		{"刷新驱动配置", commands.OpNodeRefresh},
 		// ⚠️ 必须 reload（Stop+Start），不能是 start：
 		// Start() 在驱动已在跑时会短路（先查 IsProcessAlive），而 gnb 的
 		// HotReload 是 false（见 driver/gnb.go 的 Capabilities）→
@@ -185,18 +228,107 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		{"重载驱动", commands.OpServiceReload},
 		{"装内核路由", commands.OpRouteUpdate},
 	}
-	for _, s := range steps {
-		req := commands.Request{Op: s.op}
-		// service start 不带 name：执行器会从 bundle 的 driver 字段取，
-		// 守护进程不该硬编码驱动类型
-		res := commands.Run(d.exec, req, d.nodeID)
-		if res.OK {
-			d.logf("event: bundle_changed → %s（%s）成功", s.label, s.op)
+	run := func() error {
+		for _, s := range steps {
+			req := commands.Request{Op: s.op}
+			// service reload 不带 name：执行器会从 bundle 的 driver 字段取，
+			// 守护进程不该硬编码驱动类型
+			res := commands.Run(d.exec, req, d.nodeID)
+			if res.OK {
+				d.logf("event: bundle_changed → %s（%s）成功", s.label, s.op)
+				if s.op == commands.OpServiceReload {
+					recordReloadFingerprint(fp)
+				}
+				continue
+			}
+			d.logf("event: bundle_changed → %s（%s）失败: %s%s",
+				s.label, s.op, res.Error, stderrSuffix(res.Stderr))
+		}
+		return nil
+	}
+	// 与 connect/config 写面互斥：拿不到锁说明用户正在启停/改配置，
+	// 事件侧**让路**（用户操作自己会 apply+start），绝不并行抢驱动锁。
+	if d.tryConfigExclusive != nil {
+		if !d.tryConfigExclusive(run) {
+			d.logf("event: bundle_changed → 有配置操作进行中，跳过 reload/route（以用户操作为准）")
+		}
+		return
+	}
+	_ = run()
+}
+
+// runLifecycleStep 单步执行（跳过 reload 时刷路由用）。
+func (d *eventDispatcher) runLifecycleStep(label, op string) {
+	res := commands.Run(d.exec, commands.Request{Op: op}, d.nodeID)
+	if res.OK {
+		d.logf("event: bundle_changed → %s（%s）成功", label, op)
+		return
+	}
+	d.logf("event: bundle_changed → %s（%s）失败: %s%s", label, op, res.Error, stderrSuffix(res.Stderr))
+}
+
+// driverConfFingerprint 驱动投影指纹（node.conf/route.conf/address.conf 等）。
+// 空串 = 算不出来（保守：调用方不得据此跳过 reload）。
+func driverConfFingerprint() string {
+	dir, err := utils.ActiveNodeRuntimeDir()
+	if err != nil {
+		return ""
+	}
+	names := []string{"node.conf", "route.conf", "address.conf", "proxy.conf"}
+	h := sha256.New()
+	for _, n := range names {
+		b, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			// 文件缺失也参与指纹（有↔无是真实变更）
+			h.Write([]byte(n + "!\n"))
 			continue
 		}
-		d.logf("event: bundle_changed → %s（%s）失败: %s%s",
-			s.label, s.op, res.Error, stderrSuffix(res.Stderr))
+		h.Write([]byte(n + "\n"))
+		h.Write(b)
 	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func lastReloadFingerprintFile() string {
+	return filepath.Join(utils.VarDir(), "last-reload-fingerprint")
+}
+
+func lastReloadFingerprint() string {
+	b, err := os.ReadFile(lastReloadFingerprintFile())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func recordReloadFingerprint(fp string) {
+	if fp == "" {
+		return
+	}
+	_ = os.WriteFile(lastReloadFingerprintFile(), []byte(fp+"\n"), 0o644)
+}
+
+// driverLikelyRunning 粗判驱动进程是否在跑（只看 pid 文件，不 fork）。
+// 用于「配置未变」时决定要不要保住当前隧道；拿不准时返回 false（走 reload，保守）。
+func (d *eventDispatcher) driverLikelyRunning() bool {
+	dir, err := utils.ActiveNodeRuntimeDir()
+	if err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "gnb.pid"))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return false
+	}
+	// signal 0：进程存在性探测，不发信号
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 // runCommandPull 收到 command_queued 后回后端拉命令、执行、回报结果。

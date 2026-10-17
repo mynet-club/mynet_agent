@@ -225,6 +225,10 @@ func newConcApp(t *testing.T, base string, pr Prober) (*App, *int64) {
 	a.mPanel = mk()
 	a.mDiag = mk()
 	a.mAuto = mk()
+	a.mAccel = mk()
+	a.mAccelOn = mk()
+	a.mAccelDNS = mk()
+	a.mAccelDom = mk()
 	a.mQuit = mk() // 只构造、永不发信号：clickLoop 收到 mQuit 会调 systray.Quit（cgo）
 	return a, renders
 }
