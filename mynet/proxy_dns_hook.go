@@ -925,8 +925,11 @@ func runDNSHookServer(listen string, done <-chan struct{}) error {
 	go warmUpstreamIPs(rules.foreign, rules.domestic,
 		[]string{domain.PlatformDNSDefault, domain.PlatformDNSDomestic})
 
-	// 持久化已加载
+	// 持久化已加载；路由是运行时事实，启动时重放（清单在 ≠ FIB 在）。
+	// **必须放后台**：几百条 host 路由要几秒，同步跑会卡住 ReadFrom，
+	// 父进程 2s 探活窗口一到就 SIGKILL（「端口未就绪」）。
 	pins.load()
+	go replayPinRoutes()
 
 	go func() {
 		<-done
@@ -986,7 +989,13 @@ func handleHookQuery(pc net.PacketConn, addr net.Addr, query []byte, rules *dnsH
 				continue
 			}
 			// 已被现有前缀覆盖 或 FIB 已走隧道 → 不进清单、不碰路由
-			if ipCoveredByPinCIDRs(ip) || ipRoutedViaTun(ip, hookTunDevice()) {
+			// 清单有、FIB 无（重启丢路由）时仍要补装 —— 只看 FIB，不看清单
+			if ipRoutedViaTun(ip, hookTunDevice()) {
+				continue
+			}
+			if ipCoveredByPinCIDRs(ip) {
+				// 在清单但未进 FIB：补装，不重复记日志
+				pinOneIP(ip)
 				continue
 			}
 			if pins.add(ip) {
@@ -1091,11 +1100,9 @@ func pinOneIP(ip string) {
 	if tun == "" {
 		return
 	}
-	// 已被现有前缀（本钩子 / apply 的合并集）覆盖 → 静默跳过
-	if ipCoveredByPinCIDRs(ip) {
-		return
-	}
-	// FIB 最长前缀匹配：已有更宽路由把它送进隧道 → 也跳过
+	// FIB 已进隧道 → 跳过。**不要**再用「清单已覆盖」短路：
+	// 重启后 pins.load() 只恢复清单、不恢复路由，清单在而 FIB 不在时必须补装
+	// （2026-10-18 实测：x.com 等 PIN 了却仍走 en0）。
 	if ipRoutedViaTun(ip, tun) {
 		return
 	}
@@ -1106,6 +1113,29 @@ func pinOneIP(ip string) {
 	for _, c := range cmds {
 		_ = runOp(false, c.argv)
 	}
+}
+
+// replayPinRoutes 启动时把 pins 清单里的 IP 重新装进 FIB。
+// pins.load() 只读清单；路由是运行时事实，重启/隧道抖动后会丢。
+func replayPinRoutes() {
+	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
+	if err != nil || snap == nil || !isPCProxyForm(snap) {
+		return
+	}
+	tun := hookTunDevice()
+	if tun == "" {
+		return
+	}
+	all := LoadDNSHookPins()
+	if len(all) == 0 {
+		return
+	}
+	merged := MergeIPsToCIDR(all)
+	cmds := PCProxyPinCmds(snap, merged, tun)
+	for _, c := range cmds {
+		_ = runOp(false, c.argv)
+	}
+	hookLogf("replay pins=%d prefixes=%d → %s", len(all), len(merged), tun)
 }
 
 // ipCoveredByPinCIDRs IP 是否已落在本机已钉前缀（dns-hook-pins + pc-pin）内。

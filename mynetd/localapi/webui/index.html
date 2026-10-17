@@ -878,8 +878,8 @@ details.raw pre{
         <p class="note">输入量大时用多行文本框；一行一个域名，也支持逗号分隔。云端基线清单由服务端下发，这里填的是<strong>本机自定义叠加</strong>（不回写云端）。命中即干净解析并钉进隧道，其余域名正常直连。</p>
         <div class="form-grid g1">
           <div class="field">
-            <label>加速域名（钉扎隧道）</label>
-            <textarea id="proxy-domains-proxied" rows="10" spellcheck="false" placeholder="github.com&#10;*.google.com&#10;openai.com"></textarea>
+            <label>本机自定义叠加（不影响服务端基础清单）</label>
+            <textarea id="proxy-domains-proxied" rows="10" spellcheck="false" placeholder="my-company.com&#10;*.internal.example"></textarea>
           </div>
         </div>
         <div class="actions">
@@ -2250,8 +2250,11 @@ async function loadProxyPolicy(pluginList) {
   setv('proxy-doh-mode', p.doh_mode || 'allow');
   setv('proxy-full-tunnel', p.full_tunnel ? '1' : '0');
   const dr = p.domain_rules || {};
+  // 基础清单（ctl 下发）与本机叠加分离：
+  // 文本框只编辑 custom_domains；proxied 原样保留，避免「保存=冲掉 884 条」
+  window.__proxyBaselineProxied = (dr.proxied || []).slice();
   // textarea 形态：一行一个（也兼容逗号），回填时用换行
-  setv('proxy-domains-proxied', (dr.proxied || []).join('\n'));
+  setv('proxy-domains-proxied', (dr.custom_domains || []).join('\n'));
   setv('proxy-upstream-proxied', dr.upstream_proxied || 'fast');
   const acl = p.acl || {};
   setv('proxy-acl-mode', acl.mode || 'open');
@@ -2941,7 +2944,9 @@ function collectProxyPolicy() {
       smart_servers: smartServers
     },
     domain_rules: {
-      proxied: splitList($('proxy-domains-proxied') ? $('proxy-domains-proxied').value : ''),
+      // 基础清单原样保留（ctl 400+ 条）；文本框只写本机叠加
+      proxied: (window.__proxyBaselineProxied || []).slice(),
+      custom_domains: splitList($('proxy-domains-proxied') ? $('proxy-domains-proxied').value : ''),
       // 当前设计只维护加速域名（2026-10-17 用户裁决）：
       // 命中 → 干净解析 + 钉隧道；其余正常直连。直连/干净单列已移除。
       upstream_proxied: segVal('proxy-upstream-proxied', ['fast', 'clean', 'balanced'], 'fast')
