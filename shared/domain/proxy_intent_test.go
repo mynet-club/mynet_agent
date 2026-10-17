@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -154,6 +155,53 @@ func TestDescribe(t *testing.T) {
 	got := s.Describe()
 	if got == "" {
 		t.Fatal("Describe 为空")
+	}
+}
+
+// LocalOnly 故意不回写云端：不得标 dirty，否则「待同步」永远清不掉
+// （proxy_api 回写段被 `!p.LocalOnly` 短路，MarkWritebackOK 不会跑）。
+func TestApplyLocalOnlyDoesNotMarkDirty(t *testing.T) {
+	now := time.Now()
+	s := &ProxyIntentState{}
+	p := mustOKPolicy()
+	p.LocalOnly = true
+	if err := s.ApplyLocal(p, now); err != nil {
+		t.Fatal(err)
+	}
+	if s.Status.Dirty {
+		t.Fatal("LocalOnly 不应 Dirty（无回写义务）")
+	}
+	if s.Status.PendingRevision != 0 {
+		t.Fatalf("pending 应为 0，got %d", s.Status.PendingRevision)
+	}
+	if got := s.Describe(); !strings.Contains(got, "local-only") {
+		t.Fatalf("Describe 应报 local-only，got %q", got)
+	}
+}
+
+func TestHealLocalOnlyDirty(t *testing.T) {
+	now := time.Now()
+	s := &ProxyIntentState{}
+	p := mustOKPolicy()
+	p.LocalOnly = true
+	if err := s.ApplyLocal(p, now); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟历史脏数据：LocalOnly 仍挂着 dirty
+	s.Status.Dirty = true
+	s.Status.PendingRevision = 9
+	s.HealLocalOnlyDirty()
+	if s.Status.Dirty || s.Status.PendingRevision != 0 {
+		t.Fatalf("自愈后应 clean: dirty=%v pending=%d", s.Status.Dirty, s.Status.PendingRevision)
+	}
+	// 非 LocalOnly 不得被自愈清掉
+	s2 := &ProxyIntentState{}
+	if err := s2.ApplyLocal(mustOKPolicy(), now); err != nil {
+		t.Fatal(err)
+	}
+	s2.HealLocalOnlyDirty()
+	if !s2.Status.Dirty {
+		t.Fatal("非 LocalOnly 的 dirty 不得被自愈清掉")
 	}
 }
 

@@ -91,7 +91,9 @@ func (s *ProxyIntentState) Effective() *StampedProxyPolicy {
 	return &base
 }
 
-// ApplyLocal 本地写入：revision 自增（在当前最大上 +1），标 Dirty。
+// ApplyLocal 本地写入：revision 自增（在当前最大上 +1）。
+// LocalOnly = 仅本机生效、故意不回写云端 —— **不标 Dirty**
+// （否则「待同步」永远清不掉：proxy_api 回写段被 `!p.LocalOnly` 短路）。
 func (s *ProxyIntentState) ApplyLocal(p ProxyPolicy, now time.Time) error {
 	// 先钳 region/policy 到合法枚举（UI 串值时不再硬拒）
 	p.NormalizeSplitFields()
@@ -121,9 +123,29 @@ func (s *ProxyIntentState) ApplyLocal(p ProxyPolicy, now time.Time) error {
 		UpdatedAt: now.UTC(),
 		Policy:    p,
 	}
-	s.Status.Dirty = true
-	s.Status.PendingRevision = next
+	if p.LocalOnly {
+		// 无云端回写义务：清 pending，避免历史脏标记粘住
+		s.Status.Dirty = false
+		s.Status.PendingRevision = 0
+		s.Status.LastError = ""
+	} else {
+		s.Status.Dirty = true
+		s.Status.PendingRevision = next
+	}
 	return nil
+}
+
+// HealLocalOnlyDirty 旧状态自愈：LocalOnly 仍挂着 dirty 时清掉。
+// 历史版本 ApplyLocal 无条件标 dirty，而回写被 `!LocalOnly` 短路 → 永不清。
+func (s *ProxyIntentState) HealLocalOnlyDirty() {
+	if s == nil || !s.Status.Dirty {
+		return
+	}
+	if s.Local != nil && s.Local.Policy.LocalOnly {
+		s.Status.Dirty = false
+		s.Status.PendingRevision = 0
+		s.Status.LastError = ""
+	}
 }
 
 // ApplyCloud 云端写入。已知云端 generation 时用 knownRevision；0 则自增。
@@ -212,7 +234,10 @@ func (s *ProxyIntentState) Describe() string {
 		rev = eff.Revision
 	}
 	dirty := "clean"
-	if s.Status.Dirty {
+	if s.Local != nil && s.Local.Policy.LocalOnly {
+		// 仅本机生效，无云端回写义务 —— 不是「待同步」
+		dirty = "local-only"
+	} else if s.Status.Dirty {
 		dirty = "dirty"
 		if s.Status.LastError != "" {
 			dirty = "dirty(" + s.Status.LastError + ")"

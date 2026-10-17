@@ -29,6 +29,8 @@ func LoadProxyIntent(base string) (*domain.ProxyIntentState, error) {
 	if err := json.Unmarshal(raw, &st); err != nil {
 		return nil, err
 	}
+	// 旧状态自愈：LocalOnly 不该挂 dirty（历史 ApplyLocal 无条件标脏）
+	st.HealLocalOnlyDirty()
 	return &st, nil
 }
 

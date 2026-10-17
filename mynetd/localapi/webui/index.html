@@ -2195,10 +2195,15 @@ async function loadProxyPolicy(pluginList) {
   const st = d.status || {};
   const dirty = st.dirty === true;
   const lastErr = st.last_error || '';
+  // LocalOnly = 仅本机生效，故意不回写云端 —— 不是「待同步」
+  const localOnly = !!(eff && eff.policy && eff.policy.local_only);
 
   for (const badgeEl of [$('proxy-sync-badge'), $('proxy-sync-badge-2')]) {
     if (!badgeEl) continue;
-    if (dirty) {
+    if (localOnly) {
+      badgeEl.textContent = '仅本机';
+      badgeEl.className = 'badge';
+    } else if (dirty) {
       badgeEl.textContent = lastErr ? '回写失败' : '待同步';
       badgeEl.className = 'badge ' + (lastErr ? 'danger' : 'warn');
     } else if (eff) {
@@ -2212,10 +2217,14 @@ async function loadProxyPolicy(pluginList) {
   const syncBox = $('proxy-sync-status');
   if (syncBox) {
     // 只在异常时露出细节，正常时不占版面
-    const dirty = /dirty|fail|待同步/i.test(d.describe || '') || lastErr;
-    syncBox.innerHTML = dirty
-      ? '<span class="badge warn">待同步</span> ' + esc(lastErr || d.describe || '')
-      : '';
+    if (localOnly) {
+      syncBox.innerHTML = '';
+    } else {
+      const dirty = /dirty|fail|待同步/i.test(d.describe || '') || lastErr;
+      syncBox.innerHTML = dirty
+        ? '<span class="badge warn">待同步</span> ' + esc(lastErr || d.describe || '')
+        : '';
+    }
   }
 
   const p = (eff && eff.policy) || {};
