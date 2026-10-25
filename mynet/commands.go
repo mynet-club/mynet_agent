@@ -131,6 +131,9 @@ func Run(args []string) int {
 		if len(rest) > 0 && rest[0] == "doctor" {
 			return cmdFirewallDoctor(rest[1:])
 		}
+		if len(rest) > 0 && rest[0] == "watch" {
+			return cmdFirewallWatch(rest[1:])
+		}
 		if len(rest) > 0 && rest[0] == "sync" {
 			return cmdFirewallSync(rest[1:])
 		}

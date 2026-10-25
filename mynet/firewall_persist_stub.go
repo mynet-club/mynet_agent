@@ -19,3 +19,5 @@ func LoadFirewallRules(home string) error { return nil }
 
 // currentFirewallBackend 这些平台不托管防火墙，无持久化面。
 func currentFirewallBackend() FirewallBackend { return FirewallBackendNone }
+
+func firewalldEventHookActive() bool { return false }

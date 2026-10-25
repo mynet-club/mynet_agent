@@ -11,12 +11,13 @@ func TestDNSBackupRestoreState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MYNET_HOME", dir)
 
+	ops := systemDNSOps{read: func(iface string) ([]string, string, error) { return nil, iface, nil }, write: func(string, []string) error { return nil }}
 	// 无备份 → DNSRestoreNeeded 为 false（状态机不需还原）
 	if DNSRestoreNeeded() {
 		t.Fatal("无备份不该需要还原")
 	}
 	// 无备份 restore 会写 DHCP（恢复默认=DHCP）——需管理员权限，测试环境可能失败
-	if err := RestoreSystemDNS(); err != nil {
+	if err := restoreSystemDNS(ops); err != nil {
 		t.Logf("无备份 restore 写 DHCP：%v（无管理员权限属预期）", err)
 	}
 
@@ -35,7 +36,7 @@ func TestDNSBackupRestoreState(t *testing.T) {
 	}
 
 	// 幂等：还原后 Applied=false，再调用无害
-	if err := RestoreSystemDNS(); err != nil {
+	if err := restoreSystemDNS(ops); err != nil {
 		// Windows/Linux 真改系统 DNS 可能失败 —— 这里只要状态机对
 		t.Logf("还原调用返回（环境无真 DNS 可改属预期）: %v", err)
 	}

@@ -19,13 +19,13 @@ func TestIsLoopback(t *testing.T) {
 		want   bool
 		why    string
 	}{
-		{"127.0.0.1:8710", true, "IPv4 回环"},
-		{"[::1]:8710", true, "IPv6 回环"},
-		{"localhost:8710", true, "localhost 主机名"},
-		{":8710", false, "空 host = 绑所有接口，属对外"},
-		{"0.0.0.0:8710", false, "显式全接口"},
-		{"[::]:8710", false, "IPv6 全接口"},
-		{"192.168.0.5:8710", false, "内网地址仍属对外"},
+		{"127.0.0.1:8097", true, "IPv4 回环"},
+		{"[::1]:8097", true, "IPv6 回环"},
+		{"localhost:8097", true, "localhost 主机名"},
+		{":8097", false, "空 host = 绑所有接口，属对外"},
+		{"0.0.0.0:8097", false, "显式全接口"},
+		{"[::]:8097", false, "IPv6 全接口"},
+		{"192.168.0.5:8097", false, "内网地址仍属对外"},
 		{"52.77.179.176:443", false, "公网地址"},
 		{"not-an-address", false, "解析失败按对外处理（保守）"},
 		{"", false, "空串解析失败"},
@@ -44,12 +44,12 @@ func TestValidateConfig(t *testing.T) {
 		internalToken string
 		wantErr       bool
 	}{
-		{"127.0.0.1:8710", "", false}, // 回环，本地开发免口令
-		{"127.0.0.1:8710", "sekret", false},
-		{":8710", "sekret", false}, // 对外但有口令
-		{":8710", "", true},        // 对外且无口令 → 拒启
-		{"0.0.0.0:8710", "", true},
-		{"192.168.0.5:8710", "", true},
+		{"127.0.0.1:8097", "", false}, // 回环，本地开发免口令
+		{"127.0.0.1:8097", "sekret", false},
+		{":8097", "sekret", false}, // 对外但有口令
+		{":8097", "", true},        // 对外且无口令 → 拒启
+		{"0.0.0.0:8097", "", true},
+		{"192.168.0.5:8097", "", true},
 	}
 	for _, c := range cases {
 		err := validateConfig(c.listen, c.internalToken)

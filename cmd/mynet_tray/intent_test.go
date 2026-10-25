@@ -167,7 +167,7 @@ func TestIntentSaveFailureReachesUser(t *testing.T) {
 	if !strings.Contains(tooltip, "意图保存失败") {
 		t.Errorf("意图写失败没有上屏，tooltip = %q", tooltip)
 	}
-	if len(stub.hits(connectPath)) != 1 {
+	if len(stub.hits(commandPath)) != 1 {
 		t.Errorf("意图写失败不该拦住连接本身")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,6 +29,7 @@ type recordedReq struct {
 
 // apiStub 按路径回放 fixture 的本机 API 替身。
 type apiStub struct {
+	mu          sync.Mutex
 	srv         *httptest.Server
 	connectFile string
 	connectCode int
@@ -61,10 +63,12 @@ func newStub(t *testing.T, spec stubSpec) *apiStub {
 
 func (s *apiStub) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	s.mu.Lock()
 	s.reqs = append(s.reqs, recordedReq{
 		method: r.Method, origin: r.Header.Get("Origin"),
 		path: r.URL.Path, body: string(body),
 	})
+	s.mu.Unlock()
 	var file string
 	var code int
 	switch r.URL.Path {
@@ -89,6 +93,8 @@ func (s *apiStub) handle(w http.ResponseWriter, r *http.Request) {
 func (s *apiStub) base() string { return strings.TrimPrefix(s.srv.URL, "http://") }
 
 func (s *apiStub) hits(path string) []recordedReq {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []recordedReq
 	for _, r := range s.reqs {
 		if r.path == path {
@@ -96,6 +102,21 @@ func (s *apiStub) hits(path string) []recordedReq {
 		}
 	}
 	return out
+}
+
+// startHits / stopHits 按 argv 区分启停：连接与断开同打 commandPath，
+// 用总数会把「断开」算成「启动」。
+func (s *apiStub) startHits() int { return s.cmdHitsWith(`"start"`) }
+func (s *apiStub) stopHits() int  { return s.cmdHitsWith(`"stop"`) }
+
+func (s *apiStub) cmdHitsWith(frag string) int {
+	n := 0
+	for _, r := range s.hits(commandPath) {
+		if strings.Contains(r.body, frag) {
+			n++
+		}
+	}
+	return n
 }
 
 // testApp 造一个不碰 systray 的 App：渲染出口换成计数器，探针用替身。
@@ -111,23 +132,24 @@ func testApp(t *testing.T, base string, pr Prober) (*App, *int) {
 
 // ── 连接：端点与请求形状 ───────────────────────────────────────
 
-// TestStartTunnelUsesConnectEndpoint 锁 D19。
+// TestStartTunnelUsesCommandEndpoint 锁「托盘只启停本机隧道」这条边界。
 //
-// 旧版发的是 POST /api/v1/command {"argv":["apply","--active"]}，而
-// cmd_apply.go:25/33 自己写着 --active 是「投影（不装 OS 路由）」、
-// cmdApply 全程不起隧道进程 ⇒「连接」按钮从来没连接过；而且它不走 service
-// 分支，markTunnelWantDriver 从不触发，var/tunnel-state.json 的 want_running
-// 永远为假，开机恢复（cmd/mynetd/tunnel_restore.go:130-151）也不会拉起。
-func TestStartTunnelUsesConnectEndpoint(t *testing.T) {
-	stub := newStub(t, stubSpec{connectFile: "connect_ok.json"})
+// D19 的教训是旧版发 `apply --active`（只投影、不起隧道进程）⇒「连接」从未
+// 连接过。修好之后改成了打 /api/v1/config/connect —— 那是**接入编排**
+// （keys ensure → keys sync --connect → config pull → apply → start → routes），
+// 每一步都要过云端鉴权。实测 access token 过期后 `config keys sync --connect`
+// 直接 HTTP 401，托盘连不上，而同一台机器上 WebUI 的「启动」（service start）
+// 照常可用。托盘的分工是启停本机隧道，云端那半属于配置向导。
+func TestStartTunnelUsesCommandEndpoint(t *testing.T) {
+	stub := newStub(t, stubSpec{commandFile: "command_ok.json"})
 	a, _ := testApp(t, stub.base(), &fakeProber{})
 
 	if err := a.startTunnel(); err != nil {
-		t.Fatalf("connect_ok 应成功: %v", err)
+		t.Fatalf("command_ok 应成功: %v", err)
 	}
-	got := stub.hits(connectPath)
+	got := stub.hits(commandPath)
 	if len(got) != 1 {
-		t.Fatalf("打了 %d 次 %s, want 1", len(got), connectPath)
+		t.Fatalf("打了 %d 次 %s, want 1", len(got), commandPath)
 	}
 	if got[0].method != http.MethodPost {
 		t.Errorf("method=%s, want POST", got[0].method)
@@ -136,58 +158,33 @@ func TestStartTunnelUsesConnectEndpoint(t *testing.T) {
 	if got[0].origin != "http://"+stub.base() {
 		t.Errorf("Origin=%q", got[0].origin)
 	}
-	// 不再自己发 argv —— 编排权威在守护侧
-	if stub.hits(commandPath) != nil {
-		t.Errorf("不该打 command 面: %+v", stub.hits(commandPath))
+	// 启停不碰会走云端的接入编排
+	if n := len(stub.hits(connectPath)); n != 0 {
+		t.Errorf("不该打 %s: %d 次", connectPath, n)
 	}
-	if strings.Contains(got[0].body, "argv") || strings.Contains(got[0].body, "--active") {
-		t.Errorf("body 里还有 argv/apply: %q", got[0].body)
+	if !strings.Contains(got[0].body, `"service"`) || !strings.Contains(got[0].body, `"start"`) {
+		t.Errorf("body 应含 service start: %q", got[0].body)
 	}
-}
-
-// ── 连接：各种失败 ─────────────────────────────────────────────
-
-func TestStartTunnelNeedLogin(t *testing.T) {
-	stub := newStub(t, stubSpec{connectFile: "connect_need_login.json", connectCode: http.StatusUnauthorized})
-	a, _ := testApp(t, stub.base(), &fakeProber{})
-
-	err := a.startTunnel()
-	if err == nil {
-		t.Fatal("need_login 必须报错")
-	}
-	if !strings.Contains(err.Error(), "登录已失效") {
-		t.Fatalf("文案没指向登录: %q", err.Error())
-	}
-	if strings.Contains(err.Error(), "identity") {
-		t.Errorf("不该把内部 stage 名当文案: %q", err.Error())
+	// 驱动名由 cmdService 从 bundle 解析（gnb/wireguard 两种节点同一套托盘逻辑）
+	if strings.Contains(got[0].body, "gnb") || strings.Contains(got[0].body, "wireguard") {
+		t.Errorf("托盘不该写死驱动名: %q", got[0].body)
 	}
 }
 
-func TestStartTunnelNotReady(t *testing.T) {
-	stub := newStub(t, stubSpec{connectFile: "connect_400_not_ready.json", connectCode: http.StatusBadRequest})
-	a, _ := testApp(t, stub.base(), &fakeProber{})
-
-	err := a.startTunnel()
-	if err == nil {
-		t.Fatal("未登录/未选设备必须报错")
-	}
-	if !strings.Contains(err.Error(), "请先登录并选择云端设备") {
-		t.Fatalf("文案不可行动: %q", err.Error())
-	}
-}
+// ── 连接：失败面 ───────────────────────────────────────────────
 
 // TestStartTunnelConflict 锁 409 与「不自动重试」。
-// 服务端给 retryable=true + Retry-After，但连接是有副作用的写操作，
+// 服务端给 retryable=true + Retry-After，但启停是有副作用的写操作，
 // 用户没要求的启停不能替他做。
 func TestStartTunnelConflict(t *testing.T) {
-	stub := newStub(t, stubSpec{connectFile: "connect_409.json", connectCode: http.StatusConflict})
+	stub := newStub(t, stubSpec{commandFile: "command_409.json", commandCode: http.StatusConflict})
 	a, _ := testApp(t, stub.base(), &fakeProber{})
 
 	err := a.startTunnel()
 	if !errors.Is(err, errInProgress) {
 		t.Fatalf("409 应返回 errInProgress, got %v", err)
 	}
-	if n := len(stub.hits(connectPath)); n != 1 {
+	if n := len(stub.hits(commandPath)); n != 1 {
 		t.Fatalf("客户端自动重试了：%d 次请求", n)
 	}
 	if strings.Contains(err.Error(), "operation_in_progress") {
@@ -195,33 +192,32 @@ func TestStartTunnelConflict(t *testing.T) {
 	}
 }
 
-// TestStartTunnelStageFailureIsRedacted 锁 D7/D20。
+// TestStartTunnelFailureDoesNotLeakStderr 锁 D7。
 //
-// fixture 的 message 刻意保留了 daemon **没遮住**的东西：一条绝对路径和
-// 「私钥指纹 <64 hex>」。守护侧 redactSecrets（wizard.go:376）的关键字表
-// 只有英文（token/refresh/priv/private/password/secret），实测中文「私钥指纹」
-// 那一行原样透出 ⇒ 托盘侧的遮蔽不是冗余，是承重的。
-func TestStartTunnelStageFailureIsRedacted(t *testing.T) {
-	stub := newStub(t, stubSpec{connectFile: "connect_stage_failed.json", connectCode: http.StatusInternalServerError})
+// command 面失败时 UI 只拿 message，绝不碰 stderr —— fixture 里那条 stderr
+// 刻意带着绝对路径和「密钥指纹 <64 hex>」（本地实测原样透出过一次），
+// 它们一条都不该出现在菜单文案里。
+func TestStartTunnelFailureDoesNotLeakStderr(t *testing.T) {
+	stub := newStub(t, stubSpec{commandFile: "command_500.json", commandCode: http.StatusInternalServerError})
 	a, _ := testApp(t, stub.base(), &fakeProber{})
 
 	err := a.startTunnel()
 	if err == nil {
-		t.Fatal("stage=failed 必须报错")
+		t.Fatal("500 必须报错")
 	}
 	msg := err.Error()
 	const fingerprint = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 	if strings.Contains(msg, fingerprint) {
-		t.Errorf("私钥指纹泄漏进 UI 文案: %q", msg)
+		t.Errorf("密钥指纹泄漏进 UI 文案: %q", msg)
+	}
+	if strings.Contains(msg, "address.conf") || strings.Contains(msg, "/opt/mynet/conf") {
+		t.Errorf("stderr 里的路径细节泄漏: %q", msg)
 	}
 	if strings.ContainsAny(msg, "\n\r\t\x1b\x07") {
 		t.Errorf("控制字符/换行泄漏: %q", msg)
 	}
 	if n := len([]rune(msg)); n > MaxMenuRunes*2 {
 		t.Errorf("文案没截断: %d runes", n)
-	}
-	if !strings.Contains(msg, "启动网络连接失败") {
-		t.Errorf("失败原因丢了，只剩兜底文案: %q", msg)
 	}
 }
 
@@ -499,8 +495,8 @@ func TestBootSequenceRestoresIntent(t *testing.T) {
 			if c.wantFire {
 				waitWorkerLanded(t, a)
 			}
-			if n := len(stub.hits(connectPath)); (n > 0) != c.wantFire {
-				t.Errorf("connect 打了 %d 次, wantFire=%v", n, c.wantFire)
+			if n := stub.startHits(); (n > 0) != c.wantFire {
+				t.Errorf("启动请求打了 %d 次, wantFire=%v", n, c.wantFire)
 			}
 			if got := a.fsm.State(); got != c.wantState {
 				t.Errorf("状态 = %s, want %s", got, c.wantState)
@@ -508,3 +504,5 @@ func TestBootSequenceRestoresIntent(t *testing.T) {
 		})
 	}
 }
+
+func (s *apiStub) reqCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.reqs) }

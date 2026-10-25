@@ -5,9 +5,7 @@ package mynet
 //	启动：备份系统 DNS → 系统 DNS = dns.mynet.club / <tenant>.dns.mynet.club
 //	停止：还原备份（幂等）
 //
-// ⚠️ 客户端不自建 DNS、**无本地 forwarder**（已裁掉，徒增体积）：
-// 系统 DNS 直接指平台智能 DNS，域名分流在服务端做。
-// 不要写 127.0.0.1 —— 那会把解析指到空端口（实测教训）。
+// PC 加速由 dns-hook 提供本地 forwarder；只有监听就绪后才接管到 127.0.0.1。
 //
 // crash 保护：备份写入 $MYNET_HOME/var/dns-backup.json；
 // 下次启动发现「上次没还原」先补还原再重来。
@@ -17,10 +15,12 @@ package mynet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -31,12 +31,13 @@ import (
 
 // DNSBackup 系统 DNS 备份（crash 后可还原）。
 type DNSBackup struct {
-	Platform   string   `json:"platform"`
-	Interface  string   `json:"interface,omitempty"` // macOS 服务名 / Windows ifIndex
-	Servers    []string `json:"servers"`             // 原 DNS；空 = 跟随 DHCP
-	Applied    bool     `json:"applied"`             // true = 已改、待还原
-	AppliedAt  string   `json:"applied_at,omitempty"`
-	RestoredAt string   `json:"restored_at,omitempty"`
+	Platform   string              `json:"platform"`
+	Interface  string              `json:"interface,omitempty"` // macOS 服务名 / Windows ifIndex
+	Servers    []string            `json:"servers"`             // 原 DNS；空 = 跟随 DHCP
+	Applied    bool                `json:"applied"`             // true = 已改、待还原
+	AppliedAt  string              `json:"applied_at,omitempty"`
+	RestoredAt string              `json:"restored_at,omitempty"`
+	Services   map[string][]string `json:"services,omitempty"` // 每个接口原有设置，空列表 = DHCP
 	// Target 接管时指向的 DNS（诊断用）
 	Target string            `json:"target,omitempty"`
 	Extra  map[string]string `json:"extra,omitempty"`
@@ -65,7 +66,14 @@ func saveDNSBackup(d *DNSBackup) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dnsBackupPath(), b, 0o600)
+	if err := os.MkdirAll(filepath.Dir(dnsBackupPath()), 0755); err != nil {
+		return err
+	}
+	p := dnsBackupPath()
+	if err := os.WriteFile(p+".tmp", b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
 }
 
 // ApplySystemDNS 改系统 DNS（单上游便捷入口）。
@@ -83,8 +91,7 @@ func ApplySystemDNS(iface, nameserver string) error {
 //	peer_smart  → [peer VIP..., smart IP...]（顺序即优先级，OS 自带 fallback）
 //
 // ⚠️ **指 peer 隧道 VIP 而非公网 DNS** —— 后者 UDP:53 可被链路劫持/污染。
-// ⚠️ 客户端（Mac/Win）不自建 DNS、无本地 forwarder：系统 DNS 直接指上游。
-// 不要写 127.0.0.1 —— 那会把解析指到空端口（实测教训）。
+// 本地 hook 就绪时允许 127.0.0.1，其余模式仍可直接指向上游。
 //
 // nameservers 为空 → 自动取租户 DNS（profile.TenantDNS > 约定域名 > 默认）。
 // iface：macOS 网络服务名 / Windows ifIndex；空则自动探测。
@@ -94,70 +101,99 @@ func ApplySystemDNS(iface, nameserver string) error {
 //	① 写前探活：第一个上游必须能解析，否则拒绝（不把系统 DNS 指到死路）
 //	② 写后验证：系统解析必须仍可用，失败立即回滚
 //	③ 紧急恢复：mynet dns restore（只读备份，不依赖网络）
+type systemDNSOps struct {
+	list   func() ([]string, error)
+	read   func(string) ([]string, string, error)
+	write  func(string, []string) error
+	probe  func(string) error
+	verify func() error
+}
+
+func nativeSystemDNSOps() systemDNSOps {
+	list := listNetworkServices
+	if !isPCDNSPlatform() {
+		list = func() ([]string, error) { return []string{""}, nil }
+	}
+	return systemDNSOps{list, readSystemDNS, writeSystemDNS, probeDNSAlive, verifySystemDNSWorks}
+}
+
 func ApplySystemDNSMulti(iface string, nameservers []string) error {
-	// crash 保护：上次改了没还原 → 先还原（避免叠加在错误状态上）
+	if !isPCDNSPlatform() {
+		return fmt.Errorf("system DNS takeover requires pc runtime mode")
+	}
+	if usesResolverFile(runtimeOS()) {
+		if len(nameservers) == 0 {
+			nameservers = []string{resolveClientDNS()}
+		}
+		var ips []string
+		for _, ns := range nameservers {
+			if isForbiddenDNS(ns) {
+				return fmt.Errorf("DNS forwarder is not ready")
+			}
+			ip := resolveDNSHostToIP(ns)
+			if ip == "" {
+				return fmt.Errorf("cannot resolve DNS upstream %q", ns)
+			}
+			ips = append(ips, ip)
+		}
+		return applyResolverFileDNS("/etc/resolv.conf", ips, probeDNSAlive, verifySystemDNSWorks)
+	}
+	return applySystemDNSMulti(iface, nameservers, nativeSystemDNSOps())
+}
+
+func applySystemDNSMulti(iface string, nameservers []string, ops systemDNSOps) error {
 	if prev := LoadDNSBackup(); prev != nil && prev.Applied {
-		if err := RestoreSystemDNS(); err != nil {
-			return fmt.Errorf("上次 DNS 未还原且还原失败: %w", err)
+		if err := restoreSystemDNS(ops); err != nil {
+			return err
 		}
 	}
-
-	// 目标 DNS 列表：显式 > 租户智能 DNS
 	if len(nameservers) == 0 || (len(nameservers) == 1 && nameservers[0] == "") {
 		nameservers = []string{resolveClientDNS()}
 	}
-	// 域名 → IP（networksetup 只认 IP）；过滤禁写值
-	targetIPs := make([]string, 0, len(nameservers))
+	var targets []string
 	for _, ns := range nameservers {
 		if isForbiddenDNS(ns) {
-			return fmt.Errorf("拒绝写入禁止 DNS %q（192.168.100.x 是 peer 网段，127.0.0.1 无监听）", ns)
+			return fmt.Errorf("refusing DNS %q without a live forwarder", ns)
 		}
 		ip := resolveDNSHostToIP(ns)
 		if ip == "" {
-			// 非首个上游解析不出 → 跳过（兜底项可缺）；首个必须成功
-			if len(targetIPs) == 0 {
-				return fmt.Errorf("DNS 目标 %q 解析不出 IP，拒绝接管（保险丝①）", ns)
-			}
-			continue
+			return fmt.Errorf("cannot resolve DNS upstream %q", ns)
 		}
-		targetIPs = append(targetIPs, ip)
+		targets = append(targets, ip)
 	}
-	if len(targetIPs) == 0 {
-		return fmt.Errorf("无可用 DNS 上游，拒绝接管")
+	if err := ops.probe(targets[0]); err != nil {
+		return fmt.Errorf("DNS upstream probe: %w", err)
 	}
-
-	cur, usedIface, err := readSystemDNS(iface)
-	if err != nil {
-		return fmt.Errorf("读系统 DNS 失败: %w", err)
+	services := []string{iface}
+	if iface == "" {
+		var err error
+		services, err = ops.list()
+		if err != nil {
+			return err
+		}
 	}
-
-	// 保险丝①：写前探活 —— 第一个上游（primary）必须能解析
-	if err := probeDNSAlive(targetIPs[0]); err != nil {
-		return fmt.Errorf("DNS 目标 %s 探活失败，拒绝接管（保险丝①）: %w", targetIPs[0], err)
+	backup := &DNSBackup{Platform: runtimeOS(), Applied: true, Target: strings.Join(targets, ","), AppliedAt: time.Now().UTC().Format(time.RFC3339), Services: map[string][]string{}}
+	for _, service := range services {
+		original, actual, err := ops.read(service)
+		if err != nil {
+			return err
+		}
+		backup.Services[actual] = original
 	}
-
-	if err := writeSystemDNSAll(targetIPs); err != nil {
-		return fmt.Errorf("写系统 DNS 失败: %w", err)
+	if len(backup.Services) == 0 {
+		return fmt.Errorf("no network service available")
 	}
-
-	// 保险丝②：写后验证 —— 系统解析必须仍可用，失败立即回滚
-	if err := verifySystemDNSWorks(); err != nil {
-		_ = writeSystemDNSAll(cur) // 回滚
-		return fmt.Errorf("接管后系统解析失败，已回滚（保险丝②）: %w", err)
-	}
-
-	backup := &DNSBackup{
-		Platform:  runtimeOS(),
-		Interface: usedIface,
-		Servers:   cur,
-		Applied:   true,
-		Target:    strings.Join(targetIPs, ","),
-		AppliedAt: time.Now().UTC().Format(time.RFC3339),
-	}
+	// 先写备份再接管。中途失败/进程退出也能按接口恢复，绝不把一张网卡的 DNS 灌到所有网卡。
 	if err := saveDNSBackup(backup); err != nil {
-		// 备份写失败要立刻回滚，否则 crash 后还原不回来
-		_ = writeSystemDNSAll(cur)
-		return fmt.Errorf("写 DNS 备份失败，已回滚: %w", err)
+		return err
+	}
+	for service := range backup.Services {
+		if err := ops.write(service, targets); err != nil {
+			return errors.Join(err, restoreSystemDNS(ops))
+		}
+	}
+	if err := ops.verify(); err != nil {
+		return errors.Join(err, restoreSystemDNS(ops))
 	}
 	return nil
 }
@@ -165,7 +201,7 @@ func ApplySystemDNSMulti(iface string, nameservers []string) error {
 // ApplyProxyDNSPlan 按三选一模式落地系统 DNS（spec §13.1）。
 // mode=off/空 → 不碰；否则按 Nameservers() 顺序写。
 func ApplyProxyDNSPlan(iface string, d *domain.ProxyDNS) error {
-	if !d.Active() {
+	if !isPCDNSPlatform() || !d.Active() {
 		return nil // ③ 不加速（默认）—— 不碰 DNS
 	}
 	return ApplySystemDNSMulti(iface, d.Nameservers())
@@ -314,28 +350,50 @@ func tenantDNSFromProfile() string {
 }
 
 // RestoreSystemDNS 还原系统 DNS（幂等）。
-func RestoreSystemDNS() error {
-	backup := LoadDNSBackup()
-	// 无备份 = 没接管过，但用户要「恢复」时**安全默认是 DHCP**（不卡在错值上）
-	if backup == nil {
-		return writeSystemDNS("", nil) // 跟随 DHCP
-	}
-	if !backup.Applied {
-		return nil // 已还原过
-	}
+func RestoreSystemDNS() error { return restoreSystemDNS(nativeSystemDNSOps()) }
 
-	// 空列表 = 原本跟随 DHCP → 明确写回 DHCP（各平台 reset）
-	// ⚠️ 绝不能把「空」当成无操作 —— 上次接管前是 DHCP，就必须回 DHCP
-	servers := backup.Servers
-	if len(servers) == 0 {
-		servers = nil // 显式 DHCP
+func restoreSystemDNS(ops systemDNSOps) error {
+	backup := LoadDNSBackup()
+	if backup == nil || !backup.Applied {
+		return nil
 	}
-	if err := writeSystemDNSAll(servers); err != nil {
-		return fmt.Errorf("还原系统 DNS 失败: %w", err)
+	if backup.Extra["resolver_file"] != "" {
+		return restoreResolverFileDNS(backup)
+	}
+	originals := backup.Services
+	if len(originals) == 0 {
+		originals = map[string][]string{backup.Interface: backup.Servers}
+	}
+	var errs []error
+	for service, original := range originals {
+		current, _, err := ops.read(service)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		// 用户/其它软件已经修改的接口不再归本次接管，保留其设置。
+		if backup.Target != "" && !reflect.DeepEqual(current, strings.Split(backup.Target, ",")) {
+			continue
+		}
+		if err := ops.write(service, original); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
 	}
 	backup.Applied = false
 	backup.RestoredAt = time.Now().UTC().Format(time.RFC3339)
 	return saveDNSBackup(backup)
+}
+
+// 仅 hook 自己接管到 loopback 的 DNS 才能由 hook 退出路径恢复。
+func restoreHookDNS() error {
+	b := LoadDNSBackup()
+	if b == nil || !b.Applied || b.Target != "127.0.0.1" {
+		return nil
+	}
+	return RestoreSystemDNS()
 }
 
 // DNSRestoreNeeded 是否有未还原的接管（诊断用）。
@@ -346,11 +404,4 @@ func DNSRestoreNeeded() bool {
 
 // isPCDNSPlatform 客户端形态：改系统 DNS 到本机 53。
 // Mac/Win 没有 nft OUTPUT 劫持，走「改系统 DNS」；Linux 网关走 nft 劫持。
-func isPCDNSPlatform() bool {
-	switch runtimeOS() {
-	case "darwin", "windows":
-		return true
-	default:
-		return false
-	}
-}
+func isPCDNSPlatform() bool { return pcRuntimeForOS(runtimeOS()) }

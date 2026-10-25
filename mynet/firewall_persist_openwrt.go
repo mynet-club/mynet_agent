@@ -32,6 +32,9 @@ func currentFirewallBackend() FirewallBackend { return FirewallBackendFw4 }
 // WriteFirewallInclude 写 include 脚本（0755）并保证 UCI include 段指向它。幂等。
 // tunDev 可为空（bundle 未就绪）：脚本只出骨架，等 sync 按实际接口名重写。
 func WriteFirewallInclude(home, tunDev string) error {
+	if err := ensureProxyExitReplay(home, tunDev); err != nil {
+		return err
+	}
 	body, err := FirewallIncludeScript(tunDev)
 	if err != nil {
 		return err
@@ -40,7 +43,7 @@ func WriteFirewallInclude(home, tunDev string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 scripts 目录: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := writeFirewallArtifact(path, []byte(body), 0o755); err != nil {
 		return fmt.Errorf("写 include: %w", err)
 	}
 	// nft 产物是 include 末尾 `for f in *.nft` 的输入 —— OpenWrt 也必须写，
@@ -52,12 +55,14 @@ func WriteFirewallInclude(home, tunDev string) error {
 	// 段名即标识 —— fw4 的 include 段**不认 name option**（写 name 会报
 	// unknown option 并被忽略，2026-10-12 .178 实证），别加。
 	// 顺手清掉旧写法留下的匿名 @include 段（两代同名即旧的一代）。
-	step := `for x in $(uci show firewall | awk -F"[.=]" '/^firewall\..*=include$/ {print $2}'); do ` +
+	step := `set -e; for x in $(uci show firewall | awk -F"[.=]" '/^firewall\..*=include$/ {print $2}'); do ` +
 		`[ "$x" = "mynet_include" ] && continue; ` +
 		`[ "$(uci -q get firewall.$x.path)" = "` + path + `" ] && uci -q delete firewall.$x; ` +
 		`done; ` +
 		`uci -q get firewall.mynet_include >/dev/null || uci set firewall.mynet_include=include; ` +
+		`uci set firewall.mynet_include.enabled=1; ` +
 		`uci set firewall.mynet_include.type=script; ` +
+		`uci set firewall.mynet_include.fw4_compatible=1; ` +
 		`uci set firewall.mynet_include.path=` + path + `; uci commit firewall`
 	if out, err := exec.Command("sh", "-c", step).CombinedOutput(); err != nil {
 		return fmt.Errorf("uci include 登记: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -76,10 +81,6 @@ func LoadFirewallRules(home string) error {
 	if out, err := exec.Command("sh", path).CombinedOutput(); err != nil {
 		return fmt.Errorf("加载 include: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
-	// proxy 规则产物（nft 文本）也要加载 —— 与 include 同一次「系统加载」动作。
-	if err := LoadNftArtifacts(home); err != nil {
-		return fmt.Errorf("加载 nft 产物: %w", err)
-	}
 	return nil
 }
 
@@ -92,11 +93,13 @@ func SyncFirewallTunDevice(tunDev string) (bool, error) {
 	if tunDev == "" {
 		return false, nil
 	}
-	step := `changed=0; ` +
+	p := EffectiveProxyPolicy()
+	wanEnabled := p != nil && p.Enabled && p.IsServerLike()
+	step := `set -e; changed=0; ` +
 		`[ "$(uci get network.mynet.device 2>/dev/null)" = "` + tunDev + `" ] || { uci set network.mynet.device=` + tunDev + `; uci commit network; changed=1; }; ` +
 		openWrtZoneLookup +
 		`[ "$(uci get firewall.$s.device 2>/dev/null)" = "` + tunDev + `" ] || { uci set firewall.$s.device=` + tunDev + `; uci commit firewall; changed=1; }; ` +
-		`echo $changed`
+		openWrtWANForwardingStep(wanEnabled) + `echo $changed`
 	out, err := exec.Command("sh", "-c", step).CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("uci device 对齐: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -112,3 +115,14 @@ func SyncFirewallTunDevice(tunDev string) (bool, error) {
 	}
 	return changed, nil
 }
+
+// WAN forwarding is plumbing for an active grant; the nft WAN guard remains
+// authoritative even if a third-party restores an old broad forwarding entry.
+func openWrtWANForwardingStep(enabled bool) string {
+	if enabled {
+		return `f(){ ` + uciLoopForwarding + `[ "$(uci -q get firewall.$x.src)" = mynet ] && [ "$(uci -q get firewall.$x.dest)" = wan ] && return 0; done; return 1; }; f || { s=$(uci add firewall forwarding); uci set firewall.$s.src=mynet; uci set firewall.$s.dest=wan; changed=1; }; ` + `[ "$changed" = 0 ] || uci commit firewall; `
+	}
+	return uciLoopForwarding + `[ "$(uci -q get firewall.$x.src)" = mynet ] && [ "$(uci -q get firewall.$x.dest)" = wan ] || continue; uci delete firewall.$x; changed=1; done; [ "$changed" = 0 ] || uci commit firewall; `
+}
+
+func firewalldEventHookActive() bool { return false }

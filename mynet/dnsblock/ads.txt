@@ -1,0 +1,37 @@
+# Curated common advertising domains; suffix matching. Reviewed 2026-10-20.
+# Independent ad endpoints only; no shared content/CDN parent domains.
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+adservice.google.com
+adnxs.com
+adsrvr.org
+advertising.com
+adform.net
+adform.com
+adsafeprotected.com
+amazon-adsystem.com
+appnexus.com
+bidswitch.net
+casalemedia.com
+criteo.com
+criteo.net
+exelator.com
+media.net
+openx.net
+outbrain.com
+pubmatic.com
+rubiconproject.com
+scorecardresearch.com
+smartadserver.com
+taboola.com
+teads.tv
+trafficjunky.com
+trafficjunky.net
+exoclick.com
+exosrv.com
+juicyads.com
+popads.net
+popcash.net
+propellerads.com
+adsterra.com

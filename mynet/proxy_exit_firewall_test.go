@@ -1,8 +1,10 @@
 package mynet
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mynet-club/mynet_agent/shared"
 	"strings"
 	"testing"
 
@@ -57,32 +59,32 @@ func (f *exitNftFake) run(argv []string, input string) (string, error) {
 }
 func TestProxyExitNftReplaceRevokeAndIsolation(t *testing.T) {
 	f := &exitNftFake{}
-	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.3/32"), "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), exitTestPolicy("10.30.0.3/32"), "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(f.table, `iifname "gnb_tun" drop`) || !strings.Contains(f.table, "masquerade") {
+	if !strings.Contains(f.table, `iifname "gnb_tun" oifname "eth0" drop`) || !strings.Contains(f.table, "masquerade") {
 		t.Fatal(f.table)
 	}
-	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(f.table, "10.30.0.3/32") || !strings.Contains(f.table, "delete table inet "+proxyExitName("gnb_tun")) {
 		t.Fatal("旧白名单未替换")
 	}
 	previous := f.table
-	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
 	if f.table != previous {
 		t.Fatal("重复 apply 不幂等")
 	}
-	if err := syncProxyExitFirewall(snapNft(), nil, "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
-	if f.table != "" {
-		t.Fatal("撤销后仍有 NAT/ACL")
+	if strings.Contains(f.table, "masquerade") || !strings.Contains(f.table, `iifname "gnb_tun" oifname "eth0" drop`) {
+		t.Fatal("撤销必须保留 WAN 拒绝并移除 NAT")
 	}
-	if err := syncProxyExitFirewall(snapNft(), nil, "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
 	for _, batch := range f.batches {
@@ -96,47 +98,47 @@ func TestProxyExitNftReplaceRevokeAndIsolation(t *testing.T) {
 }
 func TestProxyExitNftFailurePreservesPrevious(t *testing.T) {
 	f := &exitNftFake{}
-	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.3/32"), "gnb_tun", false, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), exitTestPolicy("10.30.0.3/32"), "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
 	before := f.table
 	f.failWrite = true
-	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err == nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, f.run); err == nil {
 		t.Fatal("ACL 失败被忽略")
 	}
 	if f.table != before {
 		t.Fatal("失败破坏上一代规则")
 	}
-	if err := syncProxyExitFirewall(snapNft(), nil, "gnb_tun", false, f.run); err == nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err == nil {
 		t.Fatal("停用失败被忽略")
 	}
 	f.failWrite = false
 	f.readErr = true
-	if err := syncProxyExitFirewall(snapNft(), nil, "gnb_tun", false, f.run); err == nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err == nil {
 		t.Fatal("权限不足被当作规则不存在")
 	}
 }
 func TestProxyExitEmptyCIDRsFailClosedAndIPv6(t *testing.T) {
-	text, err := proxyExitNftBatch("gnb_tun", exitTestPolicy(), false)
+	text, err := proxyExitNftBatch("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, `iifname "gnb_tun" drop`) {
+	if !strings.Contains(text, `iifname "gnb_tun" oifname "eth0" drop`) {
 		t.Fatal("空地址白名单变成开放")
 	}
-	text, err = proxyExitNftBatch("gnb_tun", exitTestPolicy("fd00::3/128"), false)
+	text, err = proxyExitNftBatch("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy("fd00::3/128"), false)
 	if err != nil || !strings.Contains(text, "ip6 saddr fd00::3/128 accept") {
 		t.Fatalf("IPv6: %s %v", text, err)
 	}
-	if _, err = proxyExitNftBatch("bad\";flush ruleset", exitTestPolicy(), false); err == nil {
+	if _, err = proxyExitNftBatch("bad\";flush ruleset", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy(), false); err == nil {
 		t.Fatal("接口注入未拒绝")
 	}
 	for _, bad := range []string{"bad", "10.0.0.1/33"} {
-		if _, err = proxyExitNftBatch("gnb_tun", exitTestPolicy(bad), false); err == nil {
+		if _, err = proxyExitNftBatch("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy(bad), false); err == nil {
 			t.Fatal("非法 CIDR 未拒绝")
 		}
 	}
-	if _, err = proxyExitIPTDesired("gnb_tun", exitTestPolicy("fd00::3/128")); err == nil {
+	if _, err = proxyExitIPTDesired("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy("fd00::3/128")); err == nil {
 		t.Fatal("iptables 静默忽略 IPv6")
 	}
 }
@@ -150,7 +152,7 @@ func TestProxyExitLegacyCleanupExactRulesOnly(t *testing.T) {
  iifname "gnb_tun" tcp dport 443 accept # handle 22
  iifname "wg0" drop # handle 23`,
 	}}
-	if err := syncProxyExitFirewall(snapNft(), nil, "gnb_tun", true, f.run); err != nil {
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", true, f.run); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.batches) != 1 {
@@ -169,7 +171,7 @@ func TestProxyExitLegacyCleanupExactRulesOnly(t *testing.T) {
 func TestProxyExitIPTablesOwnedReplaceAndDelete(t *testing.T) {
 	name := proxyExitName("gnb_tun")
 	snapshot := "-P FORWARD DROP\n-N " + name + "\n-A " + name + " -s 10.30.0.3/32 -j ACCEPT\n-A " + name + " -j DROP\n-A FORWARD -i gnb_tun -j " + name + "\n-A FORWARD -i wg0 -j ACCEPT\n"
-	desired, err := proxyExitIPTDesired("gnb_tun", exitTestPolicy("10.30.0.4/32"))
+	desired, err := proxyExitIPTDesired("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy("10.30.0.4/32"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +208,7 @@ func TestProxyExitIPTablesFailureRollsBackOwnedRules(t *testing.T) {
 		}
 		return "", nil
 	}
-	if err := syncProxyExitIPTables(exitTestPolicy("10.30.0.4/32"), "gnb_tun", false, run); err == nil {
+	if err := syncProxyExitIPTables(exitTestPolicy("10.30.0.4/32"), "gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, false, run); err == nil {
 		t.Fatal("中途失败被当成功")
 	}
 	if len(inputs) != 3 || !strings.Contains(inputs[2], "-A "+name+" -j DROP") || strings.Contains(inputs[2], "10.30.0.4") {
@@ -215,7 +217,7 @@ func TestProxyExitIPTablesFailureRollsBackOwnedRules(t *testing.T) {
 }
 
 func TestProxyExitMarkCollisionRejected(t *testing.T) {
-	desired, err := proxyExitIPTDesired("gnb_tun", exitTestPolicy("10.30.0.3/32"))
+	desired, err := proxyExitIPTDesired("gnb_tun", proxyExitScope{WAN: []string{"eth0"}}, exitTestPolicy("10.30.0.3/32"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,4 +228,10 @@ func TestProxyExitMarkCollisionRejected(t *testing.T) {
 	if err := proxyExitMarkConflict("-A client -j MARK --set-xmark 0xc8/0xff", proxyExitName("gnb_tun"), desired["mangle"]); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func exitNftSnapshot() *shared.SystemSnapshot {
+	s := snapNft()
+	s.Detail = map[string]json.RawMessage{"routing": json.RawMessage(`{"default_iface":"eth0"}`)}
+	return s
 }

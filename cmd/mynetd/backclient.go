@@ -28,7 +28,7 @@ import (
 // mynet/keys/node_face.go:66 ↔ NodeFaceAuthService.php:62）。
 // ⚠️ path 差一个斜杠就全 401，且症状是「鉴权失败」而非「路径写错」，极难定位。
 type backClient struct {
-	relayBase string // 形如 http://127.0.0.1:8710/v1/relay
+	relayBase string // 形如 http://127.0.0.1:8097/v1/relay
 	id        *nodeIdentity
 	hc        *http.Client
 }
@@ -38,8 +38,8 @@ const backRequestTimeout = 20 * time.Second
 
 // newBackClient 从网关的 WS 地址推出 relay 的 HTTP 地址。
 //
-//	gatewayWS: ws://127.0.0.1:8710/v1/node/connect
-//	        →  http://127.0.0.1:8710/v1/relay
+//	gatewayWS: ws://127.0.0.1:8097/v1/node/connect
+//	        →  http://127.0.0.1:8097/v1/relay
 func newBackClient(gatewayWS string, id *nodeIdentity) (*backClient, error) {
 	u, err := url.Parse(strings.TrimSpace(gatewayWS))
 	if err != nil {

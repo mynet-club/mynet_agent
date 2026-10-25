@@ -46,7 +46,7 @@ jobs:
 
   build:
     needs: test
-    # PR 只跑 test（便宜、能挡坏东西）；6 腿交叉编译只在 tag/手动跑 —— 省额度。
+    # PR 只跑 test（便宜、能挡坏东西）；平台矩阵交叉编译只在 tag/手动跑 —— 省额度。
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -69,6 +69,18 @@ jobs:
           - goos: darwin
             goarch: amd64
             ctlarch: amd64
+          - goos: freebsd
+            goarch: amd64
+            ctlarch: amd64
+          - goos: freebsd
+            goarch: arm64
+            ctlarch: arm64
+          - goos: openbsd
+            goarch: amd64
+            ctlarch: amd64
+          - goos: openbsd
+            goarch: arm64
+            ctlarch: arm64
           - goos: windows
             goarch: amd64
             ctlarch: amd64

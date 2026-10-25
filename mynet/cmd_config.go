@@ -68,6 +68,8 @@ func cmdConfig(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "form":
+		return cmdConfigRuntime(args[1:])
 	case "export":
 		return cmdConfigExport(args[1:])
 	case "import", "restore":

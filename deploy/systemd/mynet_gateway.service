@@ -1,9 +1,9 @@
 # V3-3：mynet_gateway 常驻单元（生产主机 10.182.236.180）
 #
 # 为什么绑回环而不是 0.0.0.0：
-#   `gw.mynet.club` 由**主机 nginx** 反代到 `127.0.0.1:8710`
+#   `gw.mynet.club` 由**主机 nginx** 反代到 `127.0.0.1:8097`
 #   （`mynet_api/deploy/nginx.conf:165,183`）。绑回环有两个直接好处：
-#     1. 不把 8710 暴露到公网 —— gateway **自身不鉴权**（C-3：纯透传 + 连接状态表），
+#     1. 不把 8097 暴露到公网 —— gateway **自身不鉴权**（C-3：纯透传 + 连接状态表），
 #        敞开等于把节点面入口送给任何人
 #     2. 按 `cmd/mynet_gateway/main.go:113` 的 fail-fast 规则，**回环监听不需要
 #        `-internal-token`**；只有非回环才强制要（空口令下 `/v1/notify` 完全不校验，
@@ -33,7 +33,7 @@ Type=simple
 # 配置（后端内网地址等）走环境文件，不进 unit —— 部署值随环境变，unit 保持通用。
 # `-` 前缀：文件不存在也不报错（gateway 在 upstream 为空时仍能起，只是 relay 无处可转）
 EnvironmentFile=-/etc/mynet/gateway.env
-ExecStart=/opt/mynet/bin/mynet_gateway -listen 127.0.0.1:8710
+ExecStart=/opt/mynet/bin/mynet_gateway -listen 127.0.0.1:8097
 
 # 收到 SIGTERM 后优雅关闭：main.go 给在途请求 15s（shutdownTimeout），
 # 这里留 20s 余量再 SIGKILL

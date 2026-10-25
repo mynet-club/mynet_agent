@@ -230,7 +230,12 @@ func (c *backClient) doJSON(method, path string, body any) ([]byte, int, error) 
 		return raw, code, err
 	}
 	if rerr := c.refreshSession(); rerr != nil {
-		return raw, code, err // 原错误更有诊断价值
+		// 把续期失败的原因带出来：只回原始 401，「token 过期且续期被后端拒」
+		// 与「续期请求自己打不通」会长得一模一样，实测就是这样卡了一整天。
+		if err != nil {
+			return raw, code, fmt.Errorf("%w；自动续期失败: %v", err, rerr)
+		}
+		return raw, code, fmt.Errorf("HTTP %d；自动续期失败: %v", code, rerr)
 	}
 
 	return c.raw(method, path, body)

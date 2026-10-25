@@ -25,13 +25,13 @@ systemctl enable --now mynet_gateway
 systemctl status mynet_gateway --no-pager
 
 # 4) 验活（应当返回 {"data":{"conns":0},"success":true}）
-curl -sS http://127.0.0.1:8710/healthz
+curl -sS http://127.0.0.1:8097/healthz
 ```
 
 nginx 侧见 [`mynet_api/deploy/nginx.conf`](../../../mynet_api/deploy/nginx.conf) 的
-`gw.mynet.club` 段 —— 反代到 `127.0.0.1:8710`，且**必须显式写 WS 升级头**
+`gw.mynet.club` 段 —— 反代到 `127.0.0.1:8097`，且**必须显式写 WS 升级头**
 （`proxy_http_version 1.1` + `Upgrade` + `Connection`），漏了会 501/400，
-而直接 curl 8710 却正常，极难定位。
+而直接 curl 8097 却正常，极难定位。
 
 ## 为什么绑回环
 

@@ -22,8 +22,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/mynet-club/mynet_agent/shared/logger"
 )
 
 // WriteFirewallInclude 落地上层合同：
@@ -32,6 +30,9 @@ import (
 //
 // tunDev 可为空（bundle 未就绪）：产物只出骨架，等 sync 按实际接口名重写。
 func WriteFirewallInclude(home, tunDev string) error {
+	if err := ensureProxyExitReplay(home, tunDev); err != nil {
+		return err
+	}
 	body, err := FirewallIncludeScript(tunDev)
 	if err != nil {
 		return err
@@ -40,7 +41,7 @@ func WriteFirewallInclude(home, tunDev string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 scripts 目录: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+	if err := writeFirewallArtifact(path, []byte(body), 0o755); err != nil {
 		return fmt.Errorf("写 include: %w", err)
 	}
 	// nft 产物是**系统原生加载器** `nft -f` 的输入（规则本体不进 Go，见 LoadFirewallRules）。
@@ -50,13 +51,17 @@ func WriteFirewallInclude(home, tunDev string) error {
 
 	switch backend := currentFirewallBackend(); backend {
 	case FirewallBackendNftablesD:
-		return writeNftDropIn(tunDev)
-	case FirewallBackendIPtablesPersistent:
-		// 运行期规则已由 apply 装进内核，这里只是把它们存下来。
-		if out, err := exec.Command("netfilter-persistent", "save").CombinedOutput(); err != nil {
-			return fmt.Errorf("netfilter-persistent save: %w (%s)", err, strings.TrimSpace(string(out)))
+		if nftablesConfIncludesDropInDir() {
+			return writeNftDropIn(home)
 		}
-		return nil
+		return installFirewallServiceHook(home, "nftables")
+	case FirewallBackendUfw:
+		return installUfwReplayHook(home, "/etc/ufw/after.init")
+	case FirewallBackendFirewalld:
+		return installFirewalldReloadHooks(home)
+	case FirewallBackendIPtablesPersistent:
+		// iptables-save 不会保存 nft 自有表；随系统加载器启动重放同一产物。
+		return writeNetfilterReplayPlugin(home)
 	case FirewallBackendNone:
 		// 丢的只是「防火墙重启后自动重放」，**产物与当次加载照做**：
 		// 返回哨兵而非硬失败，调用方告警后仍继续（见 ErrNoPersistenceSurface 注释）。
@@ -67,23 +72,13 @@ func WriteFirewallInclude(home, tunDev string) error {
 }
 
 // writeNftDropIn 写 nftables 加载面里的 mynet 自有文件（不动用户文件）。
-func writeNftDropIn(tunDev string) error {
-	content, err := FirewallNftRules(tunDev)
-	if err != nil {
-		return err
-	}
+func writeNftDropIn(home string) error {
+	content := firewallNftDropIn(home)
 	path := FirewallNftDropInPath()
-	if content == "" {
-		// 无规则（tun 未就绪）：清掉上一版，免得留着旧接口名的规则。
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("清 nft drop-in: %w", err)
-		}
-		return nil
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := writeFirewallArtifact(path, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("写 nft drop-in: %w", err)
 	}
 	return nil
@@ -95,42 +90,19 @@ func LoadFirewallRules(home string) error {
 	return LoadNftArtifacts(home)
 }
 
-// SyncFirewallTunDevice Linux 无 UCI。等价物 = 让落盘的持久化产物跟上**当前** tun 名
-// （tun 名变了而产物还写旧名，症状是重启后规则匹配不到接口 = 静默失效）。
-// 返回 changed。
+// SyncFirewallTunDevice Linux 无 UCI；接口由当次产物写入与加载完成同步。
 func SyncFirewallTunDevice(tunDev string) (bool, error) {
-	if err := validateTunDeviceName(tunDev); err != nil {
-		return false, err
+	// WriteFirewallInclude 已写当前接口产物，LoadFirewallRules 已加载它。
+	// 不重载整套系统防火墙，避免再次 flush 其他刚应用的规则。
+	return false, validateTunDeviceName(tunDev)
+}
+
+func writeNetfilterReplayPlugin(home string) error {
+	path := NetfilterReplayPluginPath
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
 	}
-	if tunDev == "" {
-		return false, nil
-	}
-	if currentFirewallBackend() != FirewallBackendNftablesD {
-		// 其余后端的产物是「运行期规则集的快照」，无接口名漂移问题。
-		return false, nil
-	}
-	path := FirewallNftDropInPath()
-	want, err := FirewallNftRules(tunDev)
-	if err != nil {
-		return false, err
-	}
-	cur, err := os.ReadFile(path)
-	if err == nil && string(cur) == want {
-		return false, nil
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return false, fmt.Errorf("读 %s: %w", path, err)
-	}
-	if err := writeNftDropIn(tunDev); err != nil {
-		return false, err
-	}
-	// 已加载的旧规则要换掉：nftables.service reload 才会重读 drop-in。
-	// 没这个 unit 时（纯手写 nft 的机器）只告警不阻断 —— 文件已经对了。
-	if out, err := exec.Command("systemctl", "reload", "nftables").CombinedOutput(); err != nil {
-		logger.Comp("apply").Warn("nftables reload 失败（drop-in 已更新，重启后生效）",
-			"err", err, "out", strings.TrimSpace(string(out)))
-	}
-	return true, nil
+	return writeFirewallArtifact(path, []byte(netfilterReplayPlugin(home)), 0755)
 }
 
 // currentFirewallBackend 本机持久化面（执行面填样本 + 纯函数选择）。
@@ -181,14 +153,107 @@ func nftablesConfIncludesDropInDir() bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "include") {
+	return nftablesConfLoadsDropIn(string(b))
+}
+
+func removeLinuxFirewallRegistration(home string) error {
+	for path, want := range map[string]string{FirewallNftDropInPath(): firewallNftDropIn(home), NetfilterReplayPluginPath: netfilterReplayPlugin(home)} {
+		body, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
 			continue
 		}
-		if strings.Contains(line, "/etc/nftables.d/") {
-			return true
+		if err != nil {
+			return err
+		}
+		if string(body) != want {
+			continue
+		} // 管理员或其他实例已接管时不删。
+		if err := os.Remove(path); err != nil {
+			return err
 		}
 	}
-	return false
+	if err := removeUfwReplayHook(home, "/etc/ufw/after.init"); err != nil {
+		return err
+	}
+	for _, service := range []string{"nftables", "firewalld"} {
+		path := filepath.Join("/etc/systemd/system", service+".service.d", "90-mynet-replay.conf")
+		body, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if string(body) == firewallServiceHook(home) {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+		}
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	watchPath := "/etc/systemd/system/mynet-firewall-watch.service"
+	body, err := os.ReadFile(watchPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if string(body) == firewalldWatchUnit(home, bin) {
+		if out, err := exec.Command("systemctl", "disable", "--now", "mynet-firewall-watch.service").CombinedOutput(); err != nil {
+			return fmt.Errorf("stop firewalld event hook: %w: %s", err, out)
+		}
+		if err := os.Remove(watchPath); err != nil {
+			return err
+		}
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("unregister firewall hooks: %w: %s", err, out)
+	}
+	return nil
 }
+
+func installFirewallServiceHook(home, service string) error {
+	path := filepath.Join("/etc/systemd/system", service+".service.d", "90-mynet-replay.conf")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	want := firewallServiceHook(home)
+	old, _ := os.ReadFile(path)
+	if string(old) == want {
+		return nil
+	}
+	if err := writeFirewallArtifact(path, []byte(want), 0644); err != nil {
+		return err
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("register firewall hook: %w: %s", err, out)
+	}
+	return nil
+}
+func installFirewalldReloadHooks(home string) error {
+	if err := installFirewallServiceHook(home, "firewalld"); err != nil {
+		return err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	path := "/etc/systemd/system/mynet-firewall-watch.service"
+	want := firewalldWatchUnit(home, bin)
+	old, _ := os.ReadFile(path)
+	if string(old) != want {
+		if err := writeFirewallArtifact(path, []byte(want), 0644); err != nil {
+			return err
+		}
+		if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			return fmt.Errorf("register firewalld events: %w: %s", err, out)
+		}
+	}
+	if out, err := exec.Command("systemctl", "enable", "--now", "mynet-firewall-watch.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("start firewalld events: %w: %s", err, out)
+	}
+	return nil
+}
+
+func firewalldEventHookActive() bool { return systemdUnitActive("mynet-firewall-watch") }

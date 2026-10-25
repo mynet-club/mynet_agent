@@ -186,3 +186,25 @@ func TestTryRunExclusiveSkipsWhenMutationInFlight(t *testing.T) {
 	}
 	s.configMutation.Unlock()
 }
+
+func TestRuntimeFormSwitchUsesConfigMutationLock(t *testing.T) {
+	if !isContextMutation([]string{"config", "form", "pc"}) || !isContextMutation([]string{"config", "form", "gw"}) {
+		t.Fatal("runtime form writes bypass config mutation lock")
+	}
+	if isContextMutation([]string{"config", "form"}) || isContextMutation([]string{"config", "form", "--json"}) {
+		t.Fatal("read-only runtime form classified as write")
+	}
+}
+
+func TestAccelerationMutationsSerializeWithTunnel(t *testing.T) {
+	for _, argv := range [][]string{{"proxy", "apply"}, {"proxy", "dns-hook", "start"}, {"proxy", "dns-hook", "stop"}} {
+		if !isContextMutation(argv) {
+			t.Fatalf("must serialize %v", argv)
+		}
+	}
+	for _, argv := range [][]string{{"proxy", "status"}, {"proxy", "dns-hook", "status"}} {
+		if isContextMutation(argv) {
+			t.Fatalf("read must remain available %v", argv)
+		}
+	}
+}

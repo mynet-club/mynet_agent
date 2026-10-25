@@ -35,6 +35,8 @@ import (
 // FirewallIncludeName 重放产物文件名（OpenWrt 侧由 UCI mynet_include 指向它）。
 const FirewallIncludeName = "firewall.mynet.include"
 
+const NetfilterReplayPluginPath = "/usr/share/netfilter-persistent/plugins.d/90-mynet"
+
 // ── mynet 自有表（唯一写入面）────────────────────────────────────
 //
 // 为什么不用 `ip nat`：那张表归 iptables-nft / ufw 等管理方，`iptables-restore`
@@ -184,44 +186,22 @@ func FirewallIncludeScript(tunDev string) (string, error) {
 
 // firewallIncludeScript 纯核：已知 tun/wan 时渲染 sh 重放脚本。
 func firewallIncludeScript(tunDev, wanDev string) (string, error) {
-	rules, err := FirewallReplayRules(tunDev, wanDev)
-	if err != nil {
+	if _, err := FirewallReplayRules(tunDev, wanDev); err != nil {
 		return "", err
 	}
-	var b strings.Builder
-	b.WriteString("#!/bin/sh\n")
-	b.WriteString("# mynet firewall include —— 由 mynet 生成，勿手改。\n")
-	b.WriteString("# 职责：防火墙 reload/restart 后重放 mynet 手写的 NAT 规则。\n")
-	b.WriteString("# 丢了这个文件 = 防火墙一重启规则就丢（持久化机制必须保留）。\n")
-	b.WriteString("# 接口名与驱动投影同源；变更由 `mynet firewall sync` 对齐。\n")
-	fmt.Fprintf(&b, "DEV=%q\n", tunDev)
-	fmt.Fprintf(&b, "WAN=%q\n", wanDev)
-	b.WriteString("[ -n \"$DEV\" ] || exit 0\n")
-	b.WriteString("command -v nft >/dev/null 2>&1 || exit 0\n\n")
-	// 表/链与 firewallArgv 装的是同一张（FirewallNatTable）—— 重放的就是实装的那条。
-	fmt.Fprintf(&b, "nft list table %s %s >/dev/null 2>&1 || nft add table %s %s\n",
-		FirewallNatFamily, FirewallNatTable, FirewallNatFamily, FirewallNatTable)
-	fmt.Fprintf(&b, "nft list chain %s %s %s >/dev/null 2>&1 || "+
-		"nft add chain %s %s %s '{ type nat hook postrouting priority srcnat; }'\n",
-		FirewallNatFamily, FirewallNatTable, FirewallNatChain,
-		FirewallNatFamily, FirewallNatTable, FirewallNatChain)
-	for _, r := range rules {
-		match := nftRuleMatch(r)
-		// 幂等 grep 只认匹配式本身 —— 注释可有可无，两边都不因此重复加。
-		fmt.Fprintf(&b, "nft list chain %s %s %s 2>/dev/null | grep -q %s || nft add rule %s %s %s %s%s\n",
-			FirewallNatFamily, FirewallNatTable, FirewallNatChain,
-			shDoubleQuote(match),
-			FirewallNatFamily, FirewallNatTable, FirewallNatChain, match, nftCommentSuffix(r))
-	}
-	// 加载**其余 nft 产物**（集合元素 + proxy 规则）—— fw4 只会跑本脚本，
-	// 所以「防火墙重启后完整重放」的义务全在这条循环里：规则 + 集合一起回来。
-	// 不加这段的话：fw4 reload 后网关规则在、proxy 集合空、分流静默失效。
-	b.WriteString("\n# 重放 scripts/ 下的 nft 产物（集合 + proxy 规则）\n")
-	b.WriteString("for f in \"$(dirname \"$0\")\"/*.nft; do\n")
-	b.WriteString("  [ -f \"$f\" ] && nft -f \"$f\"\n")
-	b.WriteString("done\n")
-	b.WriteString("exit 0\n")
-	return b.String(), nil
+	return fmt.Sprintf(`#!/bin/sh
+set -e
+LC_ALL=C
+export LC_ALL
+# mynet firewall include: one atomic transaction for all owned artifacts.
+DEV=%q
+WAN=%q
+command -v nft >/dev/null 2>&1 || exit 1
+DIR=$(dirname "$0")
+exec nft -f - <<EOF
+include "$DIR/*.nft"
+EOF
+`, tunDev, wanDev), nil
 }
 
 // nftRuleMatch 规则的**完整 nft 规则式**（含 masquerade，不含 comment）。
@@ -443,7 +423,7 @@ func selectFirewallBackend(f FirewallBackendFacts) FirewallBackend {
 		return FirewallBackendFirewalld
 	case f.UfwActive:
 		return FirewallBackendUfw
-	case f.NftablesUnitPresent && f.NftablesConfIncludesD:
+	case f.NftablesUnitPresent:
 		return FirewallBackendNftablesD
 	case f.NetfilterPersistent:
 		return FirewallBackendIPtablesPersistent
@@ -489,7 +469,7 @@ func WriteFirewallNftArtifact(home, tunDev string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 scripts 目录: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if err := writeFirewallArtifact(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("写 nft 产物: %w", err)
 	}
 	return nil
@@ -536,7 +516,7 @@ func PersistProxySetArtifact(home, setFragmentPath string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("建 scripts 目录: %w", err)
 	}
-	if err := os.WriteFile(dst, body, 0o644); err != nil {
+	if err := writeFirewallArtifact(dst, body, 0o644); err != nil {
 		return fmt.Errorf("写集合产物: %w", err)
 	}
 	return nil
@@ -610,7 +590,7 @@ func WriteFirewallProxyArtifact(home, batch string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 scripts 目录: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(batch), 0o644); err != nil {
+	if err := writeFirewallArtifact(path, []byte(batch), 0o644); err != nil {
 		return fmt.Errorf("写 proxy 产物: %w", err)
 	}
 	return nil
@@ -620,7 +600,7 @@ func WriteFirewallProxyArtifact(home, batch string) error {
 // 交给 `nft -f`。这是「Go 只写产物 + 委托系统加载」的统一出口 —— 网关与 proxy
 // 各一份产物，加载方式完全相同。
 func LoadNftArtifacts(home string) error {
-	if !commandExists("nft") {
+	if !cmdExists("nft") {
 		return errors.New("系统无 nft，无法加载防火墙产物")
 	}
 	dir := filepath.Join(home, "scripts")
@@ -630,20 +610,66 @@ func LoadNftArtifacts(home string) error {
 	}
 	loaded := 0
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".nft") {
-			continue
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".nft") {
+			loaded++
 		}
-		path := filepath.Join(dir, e.Name())
-		if out, err := exec.Command("nft", "-f", path).CombinedOutput(); err != nil {
-			return fmt.Errorf("nft -f %s: %w (%s)", path, err, strings.TrimSpace(string(out)))
-		}
-		loaded++
 	}
 	if loaded == 0 {
 		return fmt.Errorf("scripts/ 下无 nft 产物（先 mynet firewall sync / apply）")
+	}
+	cmd := exec.Command("nft", "-f", "-")
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Stdin = strings.NewReader(firewallNftDropIn(home))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("nft artifact transaction: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
 // FirewallNftDropInPath nftables 加载面里的 mynet 自有文件。
 func FirewallNftDropInPath() string { return "/etc/nftables.d/mynet.nft" }
+
+// 外部防火墙加载器可能同时读取，只有完整文件才对它可见。
+func writeFirewallArtifact(path string, body []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".mynet-firewall-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+func firewallNftDropIn(home string) string {
+	return fmt.Sprintf("# mynet: replay base, proxy sets/rules and exit ACL together\ninclude %q\n", filepath.Join(home, "scripts", "*.nft"))
+}
+
+func netfilterReplayPlugin(home string) string {
+	return fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n  start|restart|reload) exec sh %s ;;\n  save|stop|flush) exit 0 ;;\n  *) exit 1 ;;\nesac\n", "'"+strings.ReplaceAll(FirewallIncludePath(home), "'", "'\"'\"'")+"'")
+}
+
+func nftablesConfLoadsDropIn(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != "include" {
+			continue
+		}
+		pattern := strings.Trim(strings.TrimSuffix(fields[1], ";"), "\"")
+		matched, err := filepath.Match(pattern, FirewallNftDropInPath())
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}

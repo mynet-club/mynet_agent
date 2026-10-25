@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -125,6 +126,17 @@ func (j *applyJournal) empty() bool {
 //     否则我们自己的路由永远装不回去（见 apply_osroute_unix.go）
 //  3. 网关被隧道盖住时才钉回物理口（fix_wan_gateway_route 同款，先查再钉）
 func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
+	if snap != nil && snap.OS == runtime.GOOS {
+		if _, err := runtimeModeForOS(snap.OS); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if snap != nil && (snap.OS == "freebsd" || snap.OS == "openbsd" || snap.OS == "netbsd") && !isPCProxyForm(snap) && plan.Proxy != nil {
+		fmt.Fprintln(os.Stderr, "BSD gateway proxy requires a PF backend; use pc mode for local acceleration")
+		return 1
+	}
+
 	log := logger.Comp("apply")
 	log.Info("apply 开始",
 		"routes", len(plan.Routes), "firewall", len(plan.Firewall), "ifaces", len(plan.Interfaces),
@@ -206,7 +218,7 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 		// 代理分流（L6）：先取 IP 列表并生成 set 片段，再跑策略路由/DNS
 		rt := plan.Proxy.Runtime
 		rt.TunDevice = resolveDevice(rt.TunDevice, plan.LocalAddresses)
-		if rt.IPSetFile != "" {
+		if !isPCProxyForm(snap) && rt.IPSetFile != "" {
 			// 有 ref（云端解算的列表源）才需要先取；**本地回落文件**（随包 proxy_sources）
 			// 直接用盘上的，不再要求 ref —— 否则集合为空、打标匹配不到任何目的
 			// （2026-10-11 .182 实测：集合 0 条）。
@@ -252,7 +264,7 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			// 只劫本机时按 PC 形态配上游
 			dnsForm = DNSFormPC
 		}
-		if plan.Proxy.Policy.DomainRules != nil || (plan.Proxy.Policy.DNS != nil && plan.Proxy.Policy.DNS.Hijack != "" && plan.Proxy.Policy.DNS.Hijack != "off") {
+		if !isPCProxyForm(snap) && (plan.Proxy.Policy.DomainRules != nil || (plan.Proxy.Policy.DNS != nil && plan.Proxy.Policy.DNS.Hijack != "" && plan.Proxy.Policy.DNS.Hijack != "off")) {
 			reloads, derr := ApplyProxyDNSFiles(plan.Proxy.Policy, dnsForm, ProxyDNSConfPath(rt.IPSetFile), "")
 			if derr != nil {
 				fmt.Fprintf(os.Stderr, "proxy dns files: %v\n", derr)
@@ -263,33 +275,14 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			}
 		}
 		// P0-c：动态 ipset（DNS 回答钩子写入的文件）增量入集
-		if dyn, err := LoadDynamicIPSetFile(DynamicIPSetFilePath("")); err == nil && len(dyn) > 0 {
+		if dyn, err := LoadDynamicIPSetFile(DynamicIPSetFilePath("")); err == nil && len(dyn) > 0 && !isPCProxyForm(snap) {
 			for _, c := range DynamicIPSetCmds(snap, dyn, "", "", "") {
 				if err := runOp(dry, c.argv); err != nil && !c.optional {
 					fail = 1
 				}
 			}
 		}
-		// PC 形态（mac/win）自出口：指定域名解析 → /32 钉隧道（主表）。
-		// 域名驱动、无固定 IP 集（用户裁决 2026-10-11）；Linux/OpenWrt 不走这里
-		// （nft 打标 + 策略表，主表保持干净，spec §15.4）。
-		if isPCProxyForm(snap) {
-			pinCmds, next := ApplyPCPin(snap, plan.Proxy.Policy.DomainRules, rt.TunDevice)
-			pinOK := true
-			for _, c := range pinCmds {
-				if err := runOp(dry, c.argv); err != nil {
-					if c.optional {
-						continue
-					}
-					fmt.Fprintf(os.Stderr, "proxy pc-pin %v: %v\n", c.argv, err)
-					fail = 1
-					pinOK = false
-				}
-			}
-			if !dry && pinOK {
-				_ = SavePCPinIPs(next)
-			}
-		}
+		// PC 域名与自定义 IP 路由由 dns-hook 会话按需加载/释放，apply 不预解析整表。
 		pcmds := proxyAllCmds(snap, plan.Proxy.Policy, rt)
 		log.Info("proxy apply", "cmds", len(pcmds),
 			"role", plan.Proxy.Policy.Role,
@@ -360,17 +353,14 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 				fail = 1
 			}
 		}
-		// PC 形态：撤销域名驱动的 /32 钉扎（PC 走主表，不走 proxyCleanupCmds 的策略表清理）
-		if isPCProxyForm(snap) {
-			for _, c := range PCProxyPinDelCmds(snap, LoadPCPinIPs(), crt.TunDevice) {
-				if err := runOp(dry, c.argv); err != nil && !c.optional {
-					fail = 1
-				}
-			}
-			if !dry {
-				_ = SavePCPinIPs(nil)
+		if !dry && !isPCProxyForm(snap) {
+			if err := removeGatewayProxyArtifacts(snap); err != nil {
+				fmt.Fprintf(os.Stderr, "proxy artifact cleanup: %v\n", err)
+				fail = 1
 			}
 		}
+
+		// PC hook 读到禁用策略后自动回收；不与会话并发修改路由。
 	}
 	for _, e := range plan.ExtraExec {
 		if err := runOp(dry, e.Argv); err != nil {
@@ -395,6 +385,17 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 			func(argv []string, input string) (string, error) { return runProxyFirewall(dry, argv, input) }); err != nil {
 			log.Error("出口 NAT/ACL 应用或清理失败", "err", err)
 			fmt.Fprintf(os.Stderr, "proxy exit firewall: %v\n", err)
+			fail = 1
+		}
+	}
+
+	if fail == 0 && !dry && exitDev != "" && snap.OS == "linux" && snap.Capabilities["nft"] {
+		scope, scopeErr := proxyExitScopeFromSnapshot(snap, exitDev)
+		if scopeErr != nil {
+			return 1
+		}
+		if err := writeProxyExitReplayArtifact(utils.GetMyNetHome(), exitDev, scope, exitPolicy); err != nil {
+			fmt.Fprintf(os.Stderr, "proxy exit replay artifact: %v\n", err)
 			fail = 1
 		}
 	}
@@ -434,12 +435,17 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 
 // preferBSDNetTools 当前环境是否该用 route/ifconfig 而不是 ip。
 //
-// 判据是 system.json 的 capabilities，**不是 runtime.GOOS**：macOS 装了
-// iproute2mac 时 `ip` 可用，那条路更统一；没装才是 BSD 语义。Linux 一般有 ip，
-// 极老的发行版退到 net-tools 的 route，参数形状与 darwin 的 route 同族。
+// Linux 使用 iproute2，macOS/BSD 使用 route/ifconfig；不能因为 PC/GW 形态
+// 或偶然安装了同名 ip 工具而混用 OS 方言。无 OS 信息的旧快照才按工具能力选择。
 func preferBSDNetTools(snap *shared.SystemSnapshot) bool {
 	if snap == nil {
 		// 测试与未知快照：保持既有 `ip route` 形状，避免静默换方言
+		return false
+	}
+	switch snap.OS {
+	case "darwin", "freebsd", "openbsd", "netbsd":
+		return true
+	case "linux":
 		return false
 	}
 	return !snap.Capabilities["ip"]

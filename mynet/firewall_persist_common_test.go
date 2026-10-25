@@ -105,32 +105,13 @@ func TestFirewallIncludeScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		`DEV="gnb_tun"`,
-		"masquerade",
-		"grep -q", // 幂等判据
-		"exit 0",
-		FirewallNatFamily + " " + FirewallNatTable, // 自有表，不是 ip nat
-	} {
+	for _, want := range []string{`DEV="gnb_tun"`, `exec nft -f -`, `include "$DIR/*.nft"`, "set -e"} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("include 缺 %q:\n%s", want, body)
+			t.Fatalf("include missing %q: %s", want, body)
 		}
 	}
-	// 反不变量：不得往别人的 `ip nat` 里加规则（那是 iptables-nft 的管辖面，
-	// iptables-restore 整表恢复会把我们冲掉）
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "nft add table ip nat") ||
-			strings.Contains(line, "nft add rule ip nat ") {
-			t.Fatalf("重放产物不得写 ip nat（应写自有表 %s %s）:\n%s",
-				FirewallNatFamily, FirewallNatTable, body)
-		}
-	}
-	// 双向两条都在（oif/iif），与 OpenWrt 既有语义逐字一致
-	if n := strings.Count(body, "nft add rule"); n != 2 {
-		t.Fatalf("应渲染 2 条 masq 规则，得到 %d:\n%s", n, body)
-	}
-	if !strings.Contains(body, `oifname "$DEV"`) || !strings.Contains(body, `iifname "$DEV"`) {
-		t.Fatalf("oif/iif 双向匹配式缺失:\n%s", body)
+	if strings.Contains(body, "nft add rule") {
+		t.Fatal("include must delegate to owned artifacts, not duplicate rules")
 	}
 
 	if _, err := FirewallIncludeScript("bad;rm -rf /"); err == nil {
@@ -153,17 +134,8 @@ func TestFirewallIncludeScriptGatewayRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(body, `iifname "$DEV" oifname "$WAN"`) {
-		t.Fatalf("缺网关两向匹配:\n%s", body)
-	}
-	if !strings.Contains(body, GatewayForwardComment) {
-		t.Fatalf("缺网关规则注释:\n%s", body)
-	}
-	if !strings.Contains(body, `WAN="enp4s3"`) {
-		t.Fatalf("缺出接口赋值:\n%s", body)
-	}
-	if n := strings.Count(body, "nft add rule"); n != 3 {
-		t.Fatalf("tun+wan 应渲染 3 条，得到 %d:\n%s", n, body)
+	if !strings.Contains(body, `WAN="enp4s3"`) || !strings.Contains(body, `include "$DIR/*.nft"`) {
+		t.Fatalf("gateway replay metadata/loader missing: %s", body)
 	}
 }
 
@@ -235,7 +207,7 @@ func TestSelectFirewallBackend(t *testing.T) {
 		{"iptables-persistent", FirewallBackendFacts{NetfilterPersistent: true}, FirewallBackendIPtablesPersistent},
 		{"都没有", FirewallBackendFacts{}, FirewallBackendNone},
 		// 本机实测的反例：目录存在但没人 include → 不能算可用
-		{"nftables.d 未被 include", FirewallBackendFacts{NftablesUnitPresent: true}, FirewallBackendNone},
+		{"nftables.d 未被 include，用服务钩子", FirewallBackendFacts{NftablesUnitPresent: true}, FirewallBackendNftablesD},
 	}
 	for _, c := range cases {
 		if got := selectFirewallBackend(c.facts); got != c.want {

@@ -201,14 +201,10 @@ func TestProxyCleanupRemovesForeignDNSAndRule(t *testing.T) {
 			t.Fatalf("cleanup 命令应全部 optional: %v", c.argv)
 		}
 	}
-	// BSD 方言：只撤 /32 钉扎（route del 不触碰 default），且不得出现任何 default 命令
+	// PC 的路由只由 hook 会话按所有权清理，旧网关路径不得盲删公共 DNS 主机路由。
 	snapBSD := &shared.SystemSnapshot{OS: "darwin", Capabilities: map[string]bool{}}
-	bsdText := joinCmds(proxyCleanupCmds(snapBSD, p, rt))
-	if !strings.Contains(bsdText, "route -n delete -host 8.8.8.8") { // GUARD-OK 测试断言命令串，非执行点
-		t.Fatalf("BSD cleanup 应撤国外 DNS 钉扎:\n%s", bsdText)
-	}
-	if strings.Contains(bsdText, "default") || strings.Contains(bsdText, "ip route") || strings.Contains(bsdText, "ip rule") {
-		t.Fatalf("BSD cleanup 不该出现策略路由/default:\n%s", bsdText)
+	if cmds := proxyCleanupCmds(snapBSD, p, rt); len(cmds) != 0 {
+		t.Fatalf("PC cleanup must stay with session: %v", cmds)
 	}
 }
 
