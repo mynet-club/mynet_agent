@@ -254,7 +254,7 @@ func TestReportHeartbeatSignsBodyWithoutNodeMonitor(t *testing.T) {
 	}
 	bc := &backClient{relayBase: srv.URL + "/v1/relay", id: ident, hc: srv.Client()}
 
-	send, sign, err := heartbeatBodies(ident.nodeID, metricsFixture)
+	send, sign, err := heartbeatBodies(ident.nodeID, metricsFixture, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestReportHeartbeatSurfacesFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			bc := &backClient{relayBase: srv.URL + "/v1/relay", id: ident, hc: srv.Client()}
-			send, sign, err := heartbeatBodies(ident.nodeID, metricsFixture)
+			send, sign, err := heartbeatBodies(ident.nodeID, metricsFixture, true)
 			if err != nil {
 				t.Fatal(err)
 			}
