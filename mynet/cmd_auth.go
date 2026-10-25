@@ -278,7 +278,6 @@ func fetchBackFacePub() (string, error) {
 	return data.PublicKeyHex, nil
 }
 
-
 // fetchDefaultTenantID 登录后回填默认网络区。
 // 列表端点 data 是数组 [{tenant_id,name},…]；取首个可用。
 // （上游登录响应 tenant_id 为空时的补偿，见 authLogin 注释。）
