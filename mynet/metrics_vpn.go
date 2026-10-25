@@ -235,6 +235,22 @@ func projectPeers(drv, iface string, peers []*domain.VPNPeer) VPNDriverMetrics {
 		if p.IsOnline() {
 			m.PeersUp++
 		}
+		if ct := heartbeatConnType(p); ct != "" {
+			// 驱动层有的只填 NodeID（gnb 两个都填）；后端要的是 node id。
+			pid := p.PeerID
+			if pid <= 0 {
+				pid = p.NodeID
+			}
+			if pid > 0 {
+				m.PeersStatus = append(m.PeersStatus, VPNPeerStatus{
+					PeerID:    pid,
+					ConnType:  ct,
+					LatencyMs: p.LatencyMs,
+					RxBytes:   p.RxBytes,
+					TxBytes:   p.TxBytes,
+				})
+			}
+		}
 		m.RxBytes += p.RxBytes
 		m.TxBytes += p.TxBytes
 		for _, a := range []string{p.VirtualIP, p.VirtualIP6} {
@@ -245,4 +261,22 @@ func projectPeers(drv, iface string, peers []*domain.VPNPeer) VPNDriverMetrics {
 		}
 	}
 	return m
+}
+
+// heartbeatConnType 把驱动层的连接态映射成后端 peers_status.conn_type 枚举。
+// 只返回活跃值（offline/unknown 返回空 → 心跳不发这一条：
+// 后端把数组里的每条都记成 online）。
+func heartbeatConnType(p *domain.VPNPeer) string {
+	switch p.ConnectionType {
+	case "direct_ipv4", "direct_ipv6", "dual_stack":
+		if p.IsOnline() {
+			return p.ConnectionType
+		}
+	case "relay":
+		return "relay"
+	}
+	if p.ConnectionStatus == "relay" {
+		return "relay"
+	}
+	return ""
 }

@@ -39,6 +39,15 @@ type metricsSnapshot struct {
 		Addrs     []string `json:"addrs"`
 		RxBytes   uint64   `json:"rx_bytes"`
 		TxBytes   uint64   `json:"tx_bytes"`
+		// PeersStatus 逐对端快照（只有活跃对端）；mynet metrics 新增，
+		// 老执行器没有这个字段时就是空数组。
+		PeersStatus []struct {
+			PeerID   int64   `json:"peer_id"`
+			ConnType string  `json:"conn_type"`
+			Latency  float64 `json:"latency"`
+			Rx       uint64  `json:"rx"`
+			Tx       uint64  `json:"tx"`
+		} `json:"peers_status"`
 	} `json:"vpn"`
 }
 
@@ -78,6 +87,21 @@ type vpnIfaceHB struct {
 
 type nodeMonitor struct {
 	NodeSelf nodeSelf `json:"node_self"`
+	// PeersStatus 只放**活跃**对端 —— 后端把数组里的每条都记成 online
+	// （NodeMonitorService:197），offline/本地节点混进来会污染对端列表。
+	// 该段在签名体里被剔除（signBody 不含 node_monitor），不影响 401 排查。
+	PeersStatus []peerStatusHB `json:"peers_status,omitempty"`
+}
+
+// peerStatusHB 对齐 HeartbeatRequest 的 node_monitor.peers_status.*：
+// peer_id/conn_type/latency/rx/tx/seen 必填，wanip 可省。
+type peerStatusHB struct {
+	PeerID   int64   `json:"peer_id"`
+	ConnType string  `json:"conn_type"`
+	Latency  float64 `json:"latency"`
+	Rx       uint64  `json:"rx"`
+	Tx       uint64  `json:"tx"`
+	Seen     int64   `json:"seen"`
 }
 
 // nodeSelf 的**七个**字段都是 required_with:node_monitor.node_self
@@ -92,6 +116,16 @@ type nodeSelf struct {
 	LastActiveAt   int64  `json:"last_active_at"`
 	RxBytes        uint64 `json:"rx_bytes"`
 	TxBytes        uint64 `json:"tx_bytes"`
+}
+
+// validHeartbeatConnType 后端 node_monitor.peers_status.*.conn_type 的枚举子集
+// （HeartbeatRequest.php:122）。local/none 不发：数组里的每条都会被记成 online。
+func validHeartbeatConnType(s string) bool {
+	switch s {
+	case "direct_ipv4", "direct_ipv6", "dual_stack", "relay":
+		return true
+	}
+	return false
 }
 
 // heartbeatBodies 组装心跳，返回**两份** JSON：发送体与签名体。
@@ -176,6 +210,29 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		RxBytes:      totalRx(snap),
 		TxBytes:      totalTx(snap),
 	}}
+
+	// 逐对端状态：只发活跃对端，且按 node_id 去重（gnb/wg 可能各报一份）。
+	// 后端按 conn_type 枚举校验，非法值会让整条心跳 422 —— 宁可不发这条。
+	seenPeer := make(map[int64]bool, len(snap.VPN))
+	for _, v := range snap.VPN {
+		for _, ps := range v.PeersStatus {
+			if ps.PeerID <= 0 || ps.PeerID == id || seenPeer[ps.PeerID] {
+				continue
+			}
+			if !validHeartbeatConnType(ps.ConnType) {
+				continue
+			}
+			seenPeer[ps.PeerID] = true
+			p.NodeMonitor.PeersStatus = append(p.NodeMonitor.PeersStatus, peerStatusHB{
+				PeerID:   ps.PeerID,
+				ConnType: ps.ConnType,
+				Latency:  ps.Latency,
+				Rx:       ps.Rx,
+				Tx:       ps.Tx,
+				Seen:     p.Timestamp,
+			})
+		}
+	}
 
 	sendBody, err = encodeHeartbeat(p)
 	if err != nil {

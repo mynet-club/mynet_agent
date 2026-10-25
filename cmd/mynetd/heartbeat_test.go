@@ -402,3 +402,51 @@ func TestHeartbeatRetriesCollectUntilFirstSuccess(t *testing.T) {
 		t.Fatalf("上报 %d 条，期望 2", reports)
 	}
 }
+
+// 逐对端状态：只发活跃对端、跳过本机与非法枚举、按 peer_id 去重；
+// 并且 node_monitor 整体不进签名体（否则后端验签必 401）。
+func TestPeersStatusOnlyActiveDeduped(t *testing.T) {
+	metrics := `{
+	  "system": {"cpu_percent": 1, "mem_used_mb": 1, "mem_total_mb": 2,
+	             "disk_used_percent": 1, "uptime_sec": 1, "interface_up": 1, "load1": 0.1},
+	  "vpn": [
+	    {"driver": "gnb", "up": true, "interface": "gnb_tun", "peers": 4,
+	     "peers_status": [
+	       {"peer_id": 1001, "conn_type": "direct_ipv4", "latency": 12.5, "rx": 10, "tx": 20},
+	       {"peer_id": 9999, "conn_type": "direct_ipv4", "latency": 1, "rx": 1, "tx": 1},
+	       {"peer_id": 1002, "conn_type": "offline", "latency": 1, "rx": 1, "tx": 1}
+	     ]},
+	    {"driver": "wireguard", "up": true, "interface": "wg0", "peers": 1,
+	     "peers_status": [
+	       {"peer_id": 1001, "conn_type": "relay", "latency": 5, "rx": 2, "tx": 3}
+	     ]}
+	  ]
+	}`
+	send, sign := mustBodies(t, "9999", metrics)
+
+	var got struct {
+		NodeMonitor struct {
+			PeersStatus []struct {
+				PeerID   int64   `json:"peer_id"`
+				ConnType string  `json:"conn_type"`
+				Latency  float64 `json:"latency"`
+				Rx       uint64  `json:"rx"`
+				Tx       uint64  `json:"tx"`
+				Seen     int64   `json:"seen"`
+			} `json:"peers_status"`
+		} `json:"node_monitor"`
+	}
+	if err := json.Unmarshal(send, &got); err != nil {
+		t.Fatalf("decode send: %v\n%s", err, send)
+	}
+	ps := got.NodeMonitor.PeersStatus
+	if len(ps) != 1 {
+		t.Fatalf("peers_status=%+v，期望 1 条（本机/非法枚举跳过、重复 peer_id 去重）", ps)
+	}
+	if ps[0].PeerID != 1001 || ps[0].ConnType != "direct_ipv4" || ps[0].Rx != 10 || ps[0].Tx != 20 || ps[0].Seen == 0 {
+		t.Fatalf("peer status=%+v", ps[0])
+	}
+	if strings.Contains(string(sign), "peers_status") || strings.Contains(string(sign), "node_monitor") {
+		t.Fatal("签名体不得含 node_monitor/peers_status")
+	}
+}

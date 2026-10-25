@@ -80,10 +80,10 @@ func TestLeadingUint(t *testing.T) {
 
 func TestProjectPeersSkipsLocalDedupsAddrs(t *testing.T) {
 	peers := []*domain.VPNPeer{
-		{NodeID: 1, ConnectionStatus: "online", VirtualIP: "10.1.0.1", VirtualIP6: "2001:db8::1"},
+		{NodeID: 1, ConnectionStatus: "online", ConnectionType: "direct_ipv4", VirtualIP: "10.1.0.1", VirtualIP6: "2001:db8::1"},
 		{NodeID: 2, ConnectionStatus: "relay", VirtualIP: "10.1.0.2"},
 		{NodeID: 3, IsLocal: true, VirtualIP: "10.1.0.3"},
-		{NodeID: 4, ConnectionStatus: "online", VirtualIP: "10.1.0.1"}, // 与 peer 1 同地址
+		{NodeID: 4, ConnectionStatus: "online", ConnectionType: "direct_ipv4", VirtualIP: "10.1.0.1"}, // 与 peer 1 同地址
 		nil,
 	}
 	m := projectPeers("gnb", "", peers)
@@ -95,6 +95,16 @@ func TestProjectPeersSkipsLocalDedupsAddrs(t *testing.T) {
 	}
 	if len(m.Addrs) != 3 {
 		t.Errorf("Addrs = %v，期望 3 个（10.1.0.1 去重、10.1.0.2、2001:db8::1）", m.Addrs)
+	}
+	// 心跳逐对端：online/relay 都要进，本地与 nil 不进。
+	if len(m.PeersStatus) != 3 {
+		t.Fatalf("PeersStatus = %+v，期望 3 条（online 2 + relay 1，本机/nil 跳过）", m.PeersStatus)
+	}
+	if m.PeersStatus[0].PeerID != 1 || m.PeersStatus[0].ConnType != "direct_ipv4" {
+		t.Errorf("peer1 status = %+v", m.PeersStatus[0])
+	}
+	if m.PeersStatus[1].PeerID != 2 || m.PeersStatus[1].ConnType != "relay" {
+		t.Errorf("peer2 status = %+v", m.PeersStatus[1])
 	}
 	if m.Driver != "gnb" || !m.Up {
 		t.Errorf("Driver/Up 不对: %+v", m)

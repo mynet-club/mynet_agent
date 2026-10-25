@@ -45,6 +45,20 @@ type VPNDriverMetrics struct {
 	// 收发字节 —— 早先投影成统一视图时把它们丢了，等于白解析。
 	RxBytes uint64 `json:"rx_bytes,omitempty"`
 	TxBytes uint64 `json:"tx_bytes,omitempty"`
+	// PeersStatus 逐对端状态（只含活跃对端），心跳 node_monitor.peers_status
+	// 的数据源。后端把该数组里的每条都记成 online（NodeMonitorService:197），
+	// 所以 offline/本地行不许混进来。
+	PeersStatus []VPNPeerStatus `json:"peers_status,omitempty"`
+}
+
+// VPNPeerStatus 逐对端最小快照，字段名对齐后端 HeartbeatRequest 的
+// node_monitor.peers_status.*（conn_type 枚举、rx/tx 必填）。
+type VPNPeerStatus struct {
+	PeerID    int64   `json:"peer_id"`
+	ConnType  string  `json:"conn_type"` // direct_ipv4|direct_ipv6|dual_stack|relay
+	LatencyMs float64 `json:"latency"`
+	RxBytes   uint64  `json:"rx"`
+	TxBytes   uint64  `json:"tx"`
 }
 
 // cmdMetrics — S2-1。用法: mynet metrics [--json]
