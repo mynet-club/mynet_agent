@@ -102,13 +102,15 @@ func TestSelectExecutor_DefaultIsMynet(t *testing.T) {
 
 // O1：config/setup/plugin 在 Lua 执行器下必须改走 Go 二进制；proxy 同理
 // （client 分流的落地是 L6，Lua 侧已退役，走 Lua 桩会报「不支持子命令: proxy」）。
+// metrics/node-status 同理：Lua 的 metrics 是旧形状（心跳会判离线），
+// node-status 在 Lua 执行器里根本没有实现（localapi 直接 500）。
 func TestGoNativeInLua(t *testing.T) {
-	for _, cmd := range []string{"config", "setup", "plugin", "proxy"} {
+	for _, cmd := range []string{"config", "setup", "plugin", "proxy", "metrics", "node-status"} {
 		if !goNativeInLua(cmd) {
 			t.Fatalf("%s 应走 Go", cmd)
 		}
 	}
-	for _, cmd := range []string{"apply", "service", "metrics", "detector", "nodes", ""} {
+	for _, cmd := range []string{"apply", "service", "detector", "nodes", ""} {
 		if goNativeInLua(cmd) {
 			t.Fatalf("%s 不应走 Go（Lua 有实现）", cmd)
 		}

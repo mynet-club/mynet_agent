@@ -61,9 +61,15 @@ func execLuaStd(argv []string) (string, string, error) {
 // `plugin`（proxy 投影/出口/域名的唯一入口）同理：Lua 侧无对应实现。
 // `proxy` 也归 Go：它的落地（client 分流的 nft/ip rule/table/DNS）是 L6，Lua 侧已退役
 // （2026-10-11）—— 走 Lua 桩会得到「不支持子命令: proxy」，第三段刷新就断在这。
+// `metrics` 归 Go：Lua 的 collect_metrics 仍是旧形状（顶层 vpn_status/peer_count，
+// 没有 system.* 与 vpn[]），而 mynetd 心跳按后者组装 vpn_interfaces —— 旧形状解析出
+// 空数组，后端据此判「VPN 接口全部 down」并提前 return，节点在平台恒离线、
+// node_monitor/对端列表永不刷新（2026-10-25 .182 实证，last_seen 停在 4 月）。
+// `node-status` 归 Go：Lua 执行器根本没有该子命令，localapi /api/v1/node-status
+// 会直接 500，WebUI 的 peers/连接页读不到任何节点。
 func goNativeInLua(cmd string) bool {
 	switch cmd {
-	case "config", "setup", "plugin", "proxy":
+	case "config", "setup", "plugin", "proxy", "metrics", "node-status":
 		return true
 	}
 	return false
