@@ -278,27 +278,43 @@ func checkPersistByBackend(port int, backend FirewallBackend) *persistCheck {
 	switch backend {
 	case FirewallBackendNftablesD:
 		p.Fw4NftFile = FirewallNftDropInPath()
+		if !nftablesConfLoadsCurrentDropIn() {
+			p.Fw4NftFile = "/etc/systemd/system/nftables.service.d/90-mynet-replay.conf"
+		}
 		if b, err := os.ReadFile(p.Fw4NftFile); err == nil {
 			p.Exists = true
-			p.HasRule = strings.Contains(string(b), "masquerade")
+			p.HasRule = (strings.Contains(string(b), filepath.Join(utils.GetMyNetHome(), "scripts", "*.nft")) || strings.Contains(string(b), FirewallIncludePath(utils.GetMyNetHome()))) && replayListenPortPresent(utils.GetMyNetHome(), port)
 		} else {
 			p.Notes = append(p.Notes,
 				p.Fw4NftFile+" 不存在（nftables.service reload 后无 MYNET 规则）—— 跑 `mynet firewall sync`")
 		}
 	case FirewallBackendIPtablesPersistent:
-		p.Fw4NftFile = "/etc/iptables/rules.v4"
+		p.Fw4NftFile = NetfilterReplayPluginPath
 		if b, err := os.ReadFile(p.Fw4NftFile); err == nil {
 			p.Exists = true
-			p.HasRule = strings.Contains(string(b), "MASQUERADE")
+			p.HasRule = strings.Contains(string(b), FirewallIncludePath(utils.GetMyNetHome())) && replayListenPortPresent(utils.GetMyNetHome(), port)
 		} else {
 			p.Notes = append(p.Notes,
 				p.Fw4NftFile+" 不存在（重启后无 MYNET 规则）—— 跑 `mynet firewall sync`")
 		}
 		p.Notes = append(p.Notes,
-			"运行期规则由 apply 装、由 `mynet firewall sync` 走 netfilter-persistent save 落盘")
+			"nft 自有表由 90-mynet 插件在 netfilter-persistent start/reload 时重放；不保存全机规则快照")
 	case FirewallBackendUfw, FirewallBackendFirewalld:
-		p.Notes = append(p.Notes,
-			fmt.Sprintf("防火墙由 %s 管理，mynet 尚未接入它的持久化面 —— 规则只在运行期有效", backend))
+		p.Fw4NftFile = "/etc/ufw/after.init"
+		if backend == FirewallBackendFirewalld {
+			p.Fw4NftFile = "/etc/systemd/system/firewalld.service.d/90-mynet-replay.conf"
+		}
+		if b, err := os.ReadFile(p.Fw4NftFile); err == nil {
+			p.Exists = true
+			p.HasRule = strings.Contains(string(b), FirewallIncludePath(utils.GetMyNetHome())) && replayListenPortPresent(utils.GetMyNetHome(), port)
+		} else {
+			p.Notes = append(p.Notes, "外部 reload 钩子未登记：运行 mynet firewall sync")
+		}
+		if backend == FirewallBackendFirewalld {
+			p.HasRule = p.HasRule && firewalldEventHookActive()
+			p.Notes = append(p.Notes, "firewall-cmd --reload 另由 mynet-firewall-watch 的 D-Bus Reloaded 事件重放；需确认该服务运行")
+		}
+
 	case FirewallBackendNone:
 		p.Notes = append(p.Notes,
 			"无可用的防火墙持久化面 —— 规则只在运行期有效，重启后需重新 `mynet firewall sync`")
@@ -359,17 +375,17 @@ func checkRulesAlive() *aliveCheck {
 	}
 
 	if cmdExists("nft") {
-		out, err := runCapture("nft", "list", "ruleset")
+		out, err := runCapture("nft", "list", "table", FirewallNatFamily, FirewallNatTable)
 		if err == nil {
 			// 只认自有表，避免把 iptables-nft 的 `table ip nat` 里的别人的 masq 算成我们的
-			own := strings.Contains(out, "table "+FirewallNatFamily+" "+FirewallNatTable)
+			own := strings.Contains(out, "table "+FirewallNatFamily+" "+FirewallNatTable+" {")
 			masq := own && strings.Contains(out, "masquerade")
 			a.RulesInKernel = masq
 			if own && !masq {
 				a.Notes = append(a.Notes, "自有表在、但表里没有 masquerade 规则")
 			}
 		} else {
-			a.Notes = append(a.Notes, "nft list ruleset 失败（无法判定内核规则）")
+			a.Notes = append(a.Notes, "读取 mynet 基础专表失败（无法判定内核规则）")
 		}
 	} else {
 		a.Notes = append(a.Notes, "无 nft：内核规则查不了（不是「没问题」）")
@@ -421,7 +437,7 @@ func printFirewallDoctor(rep firewallDoctorReport) {
 		case !rep.Alive.ArtifactExists:
 			fmt.Println("· 产物未生成（还没装过规则）: mynet firewall sync")
 		case rep.Alive.RulesInKernel:
-			fmt.Println("✓ 内核里有 mynet 自有表规则（与产物一致）")
+			fmt.Println("✓ 内核里有 mynet 基础专表规则（不代表 proxy 集合/出口 ACL 已逐项核对）")
 		default:
 			fmt.Println("· 内核里查不到规则（隧道未起或本平台无 nft），未下结论")
 		}
@@ -456,4 +472,14 @@ func printFirewallDoctor(rep firewallDoctorReport) {
 	for _, w := range rep.Warnings {
 		fmt.Println("⚠", w)
 	}
+}
+
+func replayListenPortPresent(home string, port int) bool {
+	body, err := os.ReadFile(FirewallNftPath(home))
+	return err == nil && strings.Contains(string(body), fmt.Sprintf("udp dport %d accept", port)) && strings.Contains(string(body), ListenPortComment)
+}
+
+func nftablesConfLoadsCurrentDropIn() bool {
+	b, err := os.ReadFile("/etc/nftables.conf")
+	return err == nil && nftablesConfLoadsDropIn(string(b))
 }

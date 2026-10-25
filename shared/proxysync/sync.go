@@ -28,6 +28,24 @@ func loadPluginAt(base, name string) (*domain.PluginConfig, error) {
 	return domain.DecodePluginConfig(raw)
 }
 
+// LoadPluginProxyConfig 读插件壳里的 proxy 配置本体（含出口列表）。
+//
+// 为什么需要它：出口（config.exits）在本机环境这一侧，**不进 intent 的 wire**。
+// SyncPluginProxyFromPolicy 在 intent 没有 exits 时会保留插件已有值，于是
+// 「实际生效的出口」可以和「意图」不一致 —— UI 只读 intent 就会在明明有出口
+// 的节点上显示「尚未选择出口设备」。
+func LoadPluginProxyConfig() (*domain.PluginProxyConfig, error) {
+	base, _, err := activePluginBase()
+	if err != nil {
+		return nil, err
+	}
+	pc, err := loadPluginAt(base, domain.PluginNameProxy)
+	if err != nil {
+		return nil, err
+	}
+	return domain.DecodePluginProxy(pc)
+}
+
 // SyncPluginProxyFromPolicy 把生效策略投影到 plugins/proxy.json（插件壳）。
 // 保持旧链（enrichIntentWithProxy / plugin apply）能读到同一开关与出口。
 func SyncPluginProxyFromPolicy(p *domain.ProxyPolicy) error {

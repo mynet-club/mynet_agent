@@ -30,7 +30,7 @@ func TestLaunchAgentIsEnabled(t *testing.T) {
 		t.Skip("userPlistPath 走 os.UserHomeDir，Windows 上不看 HOME，隔离不住")
 	}
 	isolateUserConfig(t)
-	s := &launchAgentStarter{systemDir: filepath.Join(t.TempDir(), "LaunchAgents")}
+	s := newTestLaunchAgentStarter(t)
 
 	if on, err := s.IsEnabled(); on || err != nil {
 		t.Errorf("两处都没有 plist 应是 (false, nil)，got (%v, %v)", on, err)
@@ -122,7 +122,13 @@ func TestLaunchAgentUserOnlyToggle(t *testing.T) {
 
 func newTestLaunchAgentStarter(t *testing.T) *launchAgentStarter {
 	t.Helper()
-	return &launchAgentStarter{systemDir: filepath.Join(t.TempDir(), "LaunchAgents")}
+	return &launchAgentStarter{
+		systemDir: filepath.Join(t.TempDir(), "LaunchAgents"),
+		// 绝不执行真实 launchctl：label 固定为 club.mynet.tray，命令会按 label
+		// 打到宿主 gui 域。实测过一次——单测跑完，装机托盘的登录自启被标成
+		// disabled，菜单栏图标消失，而且之后 bootstrap 恒返回 EIO。
+		run: func(string, ...string) error { return nil },
+	}
 }
 
 func writePlist(t *testing.T, p string) {
@@ -160,5 +166,30 @@ func TestLaunchAgentIsEnabledReportsUnreadable(t *testing.T) {
 	// 文案出口那侧会把它翻成 autoTitleUnknown，而不是「登录时启动」（未勾选）。
 	if got := autoTitleFor(on, err); got != autoTitleUnknown {
 		t.Errorf("autoTitleFor = %q, want %q", got, autoTitleUnknown)
+	}
+}
+
+// TestLaunchAgentDisableSkipsUnloadWhenNoUserPlist 锁「用户级 plist 不在时不许
+// 调平台命令」。`launchctl unload -w <不存在的路径>` 会按文件名推断 label，
+// 把**系统级**那个同名 job 在 gui 域标成 disabled —— label 是固定的
+// club.mynet.tray，于是自启被连坐关掉，之后 bootstrap 恒返回 EIO。
+func TestLaunchAgentDisableSkipsUnloadWhenNoUserPlist(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("同上：注册表腿没有等价语义")
+	}
+	isolateUserConfig(t)
+	calls := 0
+	s := newTestLaunchAgentStarter(t)
+	s.run = func(string, ...string) error { calls++; return nil }
+	writePlist(t, s.systemPlistPath()) // 系统级在位，用户级不在
+
+	if err := s.Disable(); !errors.Is(err, errSystemManaged) {
+		t.Errorf("Disable = %v, want errSystemManaged", err)
+	}
+	if calls != 0 {
+		t.Errorf("用户级 plist 不存在却跑了 %d 次平台命令 —— 会误 disable 系统级同名 job", calls)
+	}
+	if _, err := os.Stat(s.systemPlistPath()); err != nil {
+		t.Errorf("不许动系统级那份: %v", err)
 	}
 }

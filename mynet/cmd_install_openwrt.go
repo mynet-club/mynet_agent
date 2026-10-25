@@ -316,7 +316,8 @@ func openWrtUciSteps(dev string) [][]string {
 	return append(steps,
 		[]string{"sh", "-c", openWrtZoneStep(dev)},
 		[]string{"sh", "-c", openWrtForwardingStep("lan", "mynet")},
-		[]string{"sh", "-c", openWrtForwardingStep("mynet", "wan")},
+		[]string{"sh", "-c", openWrtForwardingStep("mynet", "lan")},
+		[]string{"sh", "-c", "set -e; changed=0; " + openWrtWANForwardingStep(false)},
 		[]string{"uci", "commit", "network"},
 		[]string{"uci", "commit", "firewall"},
 	)

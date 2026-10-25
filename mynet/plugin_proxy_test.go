@@ -286,3 +286,22 @@ func TestProvisionProxyPlugin(t *testing.T) {
 		t.Fatalf("复跑应幂等不动: created=%v err=%v", created, err)
 	}
 }
+
+func TestDisabledProxyProjectionOverwritesEnabledConfig(t *testing.T) {
+	oldProbe := GNBProxySupported
+	GNBProxySupported = func() (bool, string) { return true, "test" }
+	t.Cleanup(func() { GNBProxySupported = oldProbe })
+	dir := t.TempDir()
+	for _, cfg := range []*domain.PluginProxyConfig{{Role: "client"}, nil} {
+		if _, _, err := ApplyProxyToGnb(dir, cfg, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "proxy.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "proxy on") || !strings.Contains(string(raw), "proxy off") || !strings.Contains(string(raw), "ingress_open off") {
+		t.Fatalf("disabled projection retains enabled data plane: %s", raw)
+	}
+}

@@ -81,7 +81,53 @@ func proxyApply(dry bool) int {
 	plan.Firewall = nil
 	plan.Interfaces = nil
 	plan.ProxyOnly = true
-	return executeApply(snap, &plan, dry)
+	rc := executeApply(snap, &plan, dry)
+	if rc == 0 && !dry {
+		syncFirewallAfterTunnelUp()
+		if isPCDNSPlatform() {
+			return applyPCAcceleration()
+		}
+	}
+	return rc
+}
+
+// applyPCAcceleration 将已保存的客户端策略同步到 PC DNS 会话。
+func applyPCAcceleration() int {
+	// 此入口代表策略刚被用户保存，显式新策略优先于旧版 hook 开关。
+	st, err := LoadProxyState()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if st.Local != nil {
+		if err := saveDNSHookIntent(st.Local.Policy.Enabled && st.Local.Policy.Role != domain.ProxyRoleServer); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if !DNSHookWanted() {
+		result := stopDNSHookSidecar()
+		result.log()
+		if result.err != nil {
+			return 1
+		}
+		if liveHookTunDevice() != "" {
+			if err := ApplyFromActive(false); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		return 0
+	}
+	if liveHookTunDevice() == "" {
+		fmt.Println("加速：等待隧道连接")
+		return 0
+	}
+	if err := ApplyFromActive(false); err != nil {
+		fmt.Fprintln(os.Stderr, "加速策略准备失败:", err)
+		return 1
+	}
+	return dnsHookStart(DNSHookListenDefault)
 }
 
 // proxyMigrate 折叠旧 Lua 权威 conf 到统一意图（CLI 入口）。

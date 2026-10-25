@@ -31,6 +31,11 @@ func LoadProxyIntent(base string) (*domain.ProxyIntentState, error) {
 	}
 	// 旧状态自愈：LocalOnly 不该挂 dirty（历史 ApplyLocal 无条件标脏）
 	st.HealLocalOnlyDirty()
+	baseline, err := LoadProxyDomainBaseline(base)
+	if err != nil {
+		return nil, err
+	}
+	applyProxyBaseline(&st, baseline)
 	return &st, nil
 }
 
@@ -39,9 +44,25 @@ func SaveProxyIntent(base string, st *domain.ProxyIntentState) error {
 	if err := utils.SafeCreateDir(base, 0o700); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(st, "", "  ")
+	disk := *st
+	baseline, err := LoadProxyDomainBaseline(base)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(ProxyIntentPath(base), raw, 0o600)
+	if baseline != nil && st.Local != nil && st.Local.Policy.DomainRules != nil {
+		local := *st.Local
+		rules := *local.Policy.DomainRules
+		rules.Proxied, rules.Direct = nil, nil
+		local.Policy.DomainRules = &rules
+		disk.Local = &local
+	}
+	raw, err := json.MarshalIndent(&disk, "", "  ")
+	if err != nil {
+		return err
+	}
+	p := ProxyIntentPath(base)
+	if err := os.WriteFile(p+".tmp", raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
 }

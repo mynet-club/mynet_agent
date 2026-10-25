@@ -141,3 +141,20 @@ sudo rm -rf /opt/mynet   # 含私钥，先确认已备份
 | 路由走物理口 | `mynet route doctor`；`apply --auto` |
 
 排错手册：`troubleshoot-connectivity.md`（A–E 五步法）
+
+## PC / GW 运行形态
+
+Linux 包在两种形态下都嵌入 WebUI。`mynet config form pc` 选择本机白名单加速；`mynet config form gw` 选择下游转发分流。
+也可在 setup 时指定 `--runtime-mode pc|gw`，或在本机面板切换。身份来源 local/online 与运行形态独立。
+旧安装未设置运行形态时保留 GW；PC 模式不装全量 IP 集和 fwmark 策略表。
+
+## 外部防火墙 reload / restart
+
+`mynet firewall sync`（正常 apply 后也会自动执行）登记当前系统的重放钩子。外部 OP 或其他软件重载防火墙时，MyNet 的基础规则、proxy 集合及 WAN 授权边界会重新加载。
+
+- nftables：系统 include 或 systemd 的启动/重载后置钩子。
+- ufw：after.init，保留并串联原钩子；卸载时还原。
+- firewalld：服务后置钩子，加 `mynet-firewall-watch.service` 订阅 D-Bus Reloaded，覆盖 `firewall-cmd --reload`。
+- netfilter-persistent：90-mynet 加载插件。
+
+用 `mynet firewall doctor --json` 检查登记和基础规则；firewalld 另查 `systemctl status mynet-firewall-watch`。未授权/撤销出口会保留 WAN 拒绝规则，直连 LAN 互访不随出口许可关闭。无可用系统钩子时会明确告警。

@@ -32,7 +32,9 @@ package main
 //     用 gate 通道把 handler 扣住（模拟「启动 worker 还在飞」）。
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,15 +71,21 @@ func (p *cycleProber) Probe() (Probe, error) {
 type concStub struct {
 	srv *httptest.Server
 
-	mu           sync.Mutex
-	connectHits  int
-	commandHits  int
-	connectGate  chan struct{} // 非 nil：connect handler 阻塞等它关闭
-	connectDelay time.Duration
-	connectCode  int
-	connectBody  string
-	commandCode  int
-	commandBody  string
+	mu          sync.Mutex
+	connectHits int
+	commandHits int
+	// 连接与断开同打 commandPath，靠 argv 区分；闸门只扣「启动」
+	// （断开必须立刻返回，否则测不出「陈旧完成」这类时序）。
+	startHits   int
+	stopHits    int
+	startGate   chan struct{} // 非 nil：启动请求阻塞等它关闭
+	startDelay  time.Duration
+	startCode   int
+	startBody   string
+	stopCode    int
+	stopBody    string
+	connectCode int
+	connectBody string
 }
 
 func newConcStub(t *testing.T) *concStub {
@@ -85,12 +93,14 @@ func newConcStub(t *testing.T) *concStub {
 	s := &concStub{
 		connectCode: http.StatusOK,
 		connectBody: `{"success":true}`,
-		commandCode: http.StatusOK,
-		commandBody: `{"success":true}`,
+		startCode:   http.StatusOK,
+		startBody:   `{"success":true}`,
+		stopCode:    http.StatusOK,
+		stopBody:    `{"success":true}`,
 	}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.handle))
 	t.Cleanup(func() {
-		s.releaseConnect() // 别把扣住的 handler 留到 Close 之后
+		s.releaseStart() // 别把扣住的 handler 留到 Close 之后
 		s.srv.Close()
 	})
 	return s
@@ -107,11 +117,27 @@ func (s *concStub) handle(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case connectPath:
 		s.connectHits++
-		gate, delay = s.connectGate, s.connectDelay
 		code, body = s.connectCode, s.connectBody
 	case commandPath:
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		// 加速状态轮询是读操作，不能计为一次启动，也不能被启动闸门扣住。
+		if bytes.Contains(raw, []byte(`"dns-hook","status"`)) {
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"success":true,"data":{"stdout":"alive=false wanted=false state=disabled"}}`))
+			return
+		}
 		s.commandHits++
-		code, body = s.commandCode, s.commandBody
+		// 启停同端点（见 tray.go:startTunnel）：按 argv 分开计数，
+		// 闸门/延迟只作用于「启动」—— 断开被扣住就测不出并发时序了。
+		if bytes.Contains(raw, []byte(`"stop"`)) {
+			s.stopHits++
+			code, body = s.stopCode, s.stopBody
+		} else {
+			s.startHits++
+			gate, delay = s.startGate, s.startDelay
+			code, body = s.startCode, s.startBody
+		}
 	default:
 		s.mu.Unlock()
 		http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
@@ -139,46 +165,50 @@ func (s *concStub) hits(path string) int {
 	return s.commandHits
 }
 
-// gateConnect 让后续 connect 请求扣在服务器里，直到 releaseConnect。
-func (s *concStub) gateConnect() {
+// gateStart 让后续 connect 请求扣在服务器里，直到 releaseStart。
+func (s *concStub) gateStart() {
 	s.mu.Lock()
-	if s.connectGate == nil {
-		s.connectGate = make(chan struct{})
+	if s.startGate == nil {
+		s.startGate = make(chan struct{})
 	}
 	s.mu.Unlock()
 }
 
-func (s *concStub) releaseConnect() {
+func (s *concStub) releaseStart() {
 	s.mu.Lock()
-	g := s.connectGate
-	s.connectGate = nil
+	g := s.startGate
+	s.startGate = nil
 	s.mu.Unlock()
 	if g != nil {
 		close(g)
 	}
 }
 
-func (s *concStub) setConnectDelay(d time.Duration) {
+func (s *concStub) setStartDelay(d time.Duration) {
 	s.mu.Lock()
-	s.connectDelay = d
+	s.startDelay = d
 	s.mu.Unlock()
 }
 
-// failConnect 让 connect 返回 200+success:false（业务失败，D5 同款信封）。
-func (s *concStub) failConnect(message string) {
+// failStart 让「启动」返回 200+success:false（业务失败，D5 同款信封）。
+func (s *concStub) failStart(message string) {
 	b, _ := json.Marshal(map[string]any{"success": false, "message": message})
 	s.mu.Lock()
-	s.connectCode, s.connectBody = http.StatusOK, string(b)
+	s.startCode, s.startBody = http.StatusOK, string(b)
 	s.mu.Unlock()
 }
 
-// failCommand 让 command 返回 200+success:false。
-func (s *concStub) failCommand(message string) {
+// failStop 让「断开」返回 200+success:false。
+func (s *concStub) failStop(message string) {
 	b, _ := json.Marshal(map[string]any{"success": false, "message": message})
 	s.mu.Lock()
-	s.commandCode, s.commandBody = http.StatusOK, string(b)
+	s.stopCode, s.stopBody = http.StatusOK, string(b)
 	s.mu.Unlock()
 }
+
+// starts / stops 按语义取计数：两者同打 commandPath，用总数会互相串味。
+func (s *concStub) starts() int { s.mu.Lock(); defer s.mu.Unlock(); return s.startHits }
+func (s *concStub) stops() int  { s.mu.Lock(); defer s.mu.Unlock(); return s.stopHits }
 
 // waitHits 阻塞到 path 至少收到 n 个请求（3s 上限，防挂死）。
 func (s *concStub) waitHits(t *testing.T, path string, n int) {
@@ -352,7 +382,7 @@ func TestConc_PollAndClickRace(t *testing.T) {
 	if st := a.fsm.State(); !validState(st) {
 		t.Errorf("状态机落到非法状态: %v", st)
 	}
-	if stub.hits(connectPath)+stub.hits(commandPath) == 0 {
+	if stub.hits(commandPath)+stub.hits(commandPath) == 0 {
 		t.Error("stub 一个请求都没收到：并发场景没有真实跑起来")
 	}
 }
@@ -385,8 +415,8 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		wg.Wait()
 		waitSettled(t, renders)
 
-		if n := stub.hits(connectPath); n > 1 {
-			t.Errorf("并发点击打出 %d 次 %s (want ≤1)：Starting 期间 CanStart 应为 false，判定与投递没有串行化", n, connectPath)
+		if n := stub.hits(commandPath); n > 1 {
+			t.Errorf("并发点击打出 %d 次 %s (want ≤1)：Starting 期间 CanStart 应为 false，判定与投递没有串行化", n, commandPath)
 		}
 		if st := a.fsm.State(); !validState(st) {
 			t.Errorf("状态机落到非法状态: %v", st)
@@ -395,7 +425,7 @@ func TestConc_RepeatedClicks(t *testing.T) {
 
 	t.Run("进度期间重复点击不重复下发走真实clickLoop", func(t *testing.T) {
 		stub := newConcStub(t)
-		stub.gateConnect() // 把启动 worker 扣在「还在飞」
+		stub.gateStart() // 把启动 worker 扣在「还在飞」
 		a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.stopped}})
 		a.refreshOnce() // → Stopped
 
@@ -404,7 +434,7 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		go a.clickLoop()
 
 		a.mToggle.ClickedCh <- struct{}{} // 点一下 → 连接
-		stub.waitHits(t, connectPath, 1)
+		stub.waitHits(t, commandPath, 1)
 
 		// P4 合并后进度期间这一项是**禁用**的（toggleFor 的 Busy 分支），
 		// 但 ClickedCh 仍可能被投递（用户狂点、合成事件）：每一次都必须 no-op，
@@ -416,11 +446,13 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		}
 		waitSettled(t, renders)
 
-		if n := stub.hits(connectPath); n > 1 {
-			t.Errorf("进度中重复点击打出 %d 次 connect (want ≤1)", n)
+		// 启停同打 commandPath，所以按 argv 分开数：启动恰好一次，
+		// 而进度中的点击一次都不许被解释成「断开」。
+		if n := stub.starts(); n != 1 {
+			t.Errorf("启动请求打了 %d 次 (want 1)", n)
 		}
-		if n := stub.hits(commandPath); n != 0 {
-			t.Errorf("进度中重复点击打出 %d 次 command (want 0：Busy 时合并项只禁用，不转向断开)", n)
+		if n := stub.stops(); n != 0 {
+			t.Errorf("进度中重复点击转向了断开：stop 打了 %d 次 (want 0)", n)
 		}
 		if st := a.fsm.State(); st != StateStarting {
 			t.Errorf("状态 = %s, want Starting（进度中的重复点击不该改状态）", st)
@@ -428,7 +460,7 @@ func TestConc_RepeatedClicks(t *testing.T) {
 		if a.fsm.Busy() && a.fsm.CanStart() {
 			t.Errorf("Busy 与 CanStart 同时为真（state=%s）", a.fsm.State())
 		}
-		stub.releaseConnect() // 放掉扣住的启动 worker，让它落地后再收尾
+		stub.releaseStart() // 放掉扣住的启动 worker，让它落地后再收尾
 		waitSettled(t, renders)
 	})
 }
@@ -443,19 +475,19 @@ func TestConc_RepeatedClicks(t *testing.T) {
 func TestConc_StaleCompletionDoesNotResurrectDeadline(t *testing.T) {
 	t.Run("陈旧成功不得覆盖stop的deadline", func(t *testing.T) {
 		stub := newConcStub(t)
-		stub.gateConnect()
+		stub.gateStart()
 		a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.stopped}})
 		a.refreshOnce() // → Stopped
 
 		a.onUserStart() // 老操作：worker 扣在 connect 里
-		stub.waitHits(t, connectPath, 1)
+		stub.waitHits(t, commandPath, 1)
 
 		a.onUserStop() // 新操作：Starting → Stopping，worker 打 service stop
 		stub.waitHits(t, commandPath, 1)
 		waitSettled(t, renders) // 停止 worker 已写入 now+stopWait 的 deadline
 
 		releaseAt := time.Now()
-		stub.releaseConnect()   // 老启动 worker 此刻才拿到 success 返回
+		stub.releaseStart()     // 老启动 worker 此刻才拿到 success 返回
 		waitSettled(t, renders) // 等它把结果写回 App（或按修复语义丢弃）
 
 		if st := a.fsm.State(); st != StateStopping {
@@ -478,14 +510,14 @@ func TestConc_StaleCompletionDoesNotResurrectDeadline(t *testing.T) {
 
 	t.Run("陈旧失败不得污染新操作后的状态", func(t *testing.T) {
 		stub := newConcStub(t)
-		stub.gateConnect()
-		stub.failConnect("旧连接操作失败OLDOP")
+		stub.gateStart()
+		stub.failStart("旧连接操作失败OLDOP")
 		a, renders := newConcApp(t, stub.base(),
 			&cycleProber{script: []Probe{concProbes.stopped, concProbes.running}})
 		a.refreshOnce() // script[0]=stopped → Stopped
 
 		a.onUserStart() // 老操作：worker 扣在 connect 里
-		stub.waitHits(t, connectPath, 1)
+		stub.waitHits(t, commandPath, 1)
 
 		a.refreshOnce() // script[1]=running：Starting → Running（真实探针事实）
 		waitSettled(t, renders)
@@ -501,7 +533,7 @@ func TestConc_StaleCompletionDoesNotResurrectDeadline(t *testing.T) {
 		}
 
 		releaseAt := time.Now()
-		stub.releaseConnect() // 老启动 worker 此刻才带着 OLDOP 失败返回
+		stub.releaseStart() // 老启动 worker 此刻才带着 OLDOP 失败返回
 		waitSettled(t, renders)
 
 		// 陈旧 = 有更新的操作在其后发生（opSeq 语义）。它的失败结果必须整个丢弃：
@@ -526,14 +558,14 @@ func TestConc_StaleCompletionDoesNotResurrectDeadline(t *testing.T) {
 // 上一次操作的死因，不是这一次的。
 func TestConc_StaleErrorDoesNotOverwriteNewer(t *testing.T) {
 	stub := newConcStub(t)
-	stub.gateConnect()
-	stub.failConnect("旧操作失败OLDOP")
-	stub.failCommand("新操作失败NEWOP")
+	stub.gateStart()
+	stub.failStart("旧操作失败OLDOP")
+	stub.failStop("新操作失败NEWOP")
 	a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.stopped}})
 	a.refreshOnce() // → Stopped
 
 	a.onUserStart() // 老操作：扣在 connect
-	stub.waitHits(t, connectPath, 1)
+	stub.waitHits(t, commandPath, 1)
 
 	a.onUserStop() // 新操作：command 立刻业务失败 → lastErr=NEWOP, Failed
 	stub.waitHits(t, commandPath, 1)
@@ -543,7 +575,7 @@ func TestConc_StaleErrorDoesNotOverwriteNewer(t *testing.T) {
 	}
 	stBefore := a.fsm.State()
 
-	stub.releaseConnect() // 老操作带着 OLDOP 失败返回
+	stub.releaseStart() // 老操作带着 OLDOP 失败返回
 	waitSettled(t, renders)
 
 	le := a.fsm.LastError()
@@ -567,7 +599,7 @@ func TestConc_StaleErrorDoesNotOverwriteNewer(t *testing.T) {
 // now+startWait —— 既报成功又报超时。-race 同时应报 a.deadline 的读写竞争。
 func TestConc_TimeoutInterleavesWithCompletion(t *testing.T) {
 	stub := newConcStub(t)
-	stub.setConnectDelay(30 * time.Millisecond) // 拉开 worker 回写与超时判定的交错窗口
+	stub.setStartDelay(30 * time.Millisecond) // 拉开 worker 回写与超时判定的交错窗口
 	a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.stopped}})
 	a.refreshOnce() // → Stopped（deadline 零值，Stopped 不 Busy，超时不触发）
 
@@ -577,7 +609,7 @@ func TestConc_TimeoutInterleavesWithCompletion(t *testing.T) {
 	waitPoll := pollLoop(a, stop, 500*time.Microsecond)
 
 	a.onUserStart() // → Starting；30ms 后 worker 成功回写 deadline
-	stub.waitHits(t, connectPath, 1)
+	stub.waitHits(t, commandPath, 1)
 	time.Sleep(300 * time.Millisecond) // 轮询与 worker 充分交错
 
 	close(stop)
@@ -615,7 +647,7 @@ func TestConc_QuitDoesNotStop(t *testing.T) {
 	waitPoll()
 	waitSettled(t, renders)
 
-	if n := stub.hits(connectPath) + stub.hits(commandPath); n != 0 {
+	if n := stub.hits(commandPath) + stub.hits(commandPath); n != 0 {
 		t.Errorf("退出路径打了 %d 个请求：托盘退出不得停隧道/停 mynetd", n)
 	}
 }

@@ -30,15 +30,16 @@ func cmdSetupV2(args []string) int {
 		return code
 	}
 	var (
-		printKeys = false
-		local     = false
-		online    = false
-		tenant    = ""
-		nodeID    = os.Getenv("MYNET_NODE_ID")
-		overlay   = ""
-		vpnType   = "gnb"
-		backPub   = ""
-		nodeName  = ""
+		printKeys   = false
+		local       = false
+		online      = false
+		tenant      = ""
+		nodeID      = os.Getenv("MYNET_NODE_ID")
+		overlay     = ""
+		vpnType     = "gnb"
+		backPub     = ""
+		nodeName    = ""
+		runtimeMode = ""
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -51,6 +52,12 @@ func cmdSetupV2(args []string) int {
 			return args[i], true
 		}
 		switch a {
+		case "--runtime-mode":
+			v, ok := need()
+			if !ok {
+				return 2
+			}
+			runtimeMode = v
 		case "--print-keys":
 			printKeys = true
 		case "--local":
@@ -122,6 +129,13 @@ func cmdSetupV2(args []string) int {
 	driverType := domain.DriverTypeGNB
 	if vpnType == "wireguard" || vpnType == "wg" {
 		driverType = domain.DriverTypeWireGuard
+	}
+
+	if runtimeMode != "" {
+		if err := setRuntimeMode(runtimeMode); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 
 	// 不生成密钥。profile/intent 与 keys 分离：
@@ -225,7 +239,7 @@ func cmdSetupV2(args []string) int {
 }
 
 const usageSetupV2 = `用法:
-  mynet setup --local  --node-id ID [--overlay CIDR] [--vpn-type gnb|wireguard] [--name N]
+  mynet setup --local  --node-id ID [--overlay CIDR] [--vpn-type gnb|wireguard] [--name N] [--runtime-mode pc|gw]
   mynet setup --online --tenant T --node-id ID [--vpn-type …]
 
 setup 只写 profile/intent 并激活，**不生成密钥**：

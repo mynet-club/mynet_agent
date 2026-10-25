@@ -827,6 +827,18 @@ details.raw pre{
       </div>
     </div>
 
+    <div class="card">
+      <div class="cardhead"><h3>运行形态</h3></div>
+      <div class="actions"><select id="runtime-form"><option value="pc">PC：加速本机应用</option><option value="gw">GW：为下游设备分流</option></select>
+      <button id="runtime-form-save" type="button">切换形态</button></div>
+      <p class="note">切换会释放旧形态的代理资源。两种形态均可使用此面板。</p>
+      <div class="actions" id="pc-acceleration"><button id="pc-acceleration-toggle" type="button">开启本机加速</button><span id="pc-acceleration-status" class="note"></span><button id="pc-adblock-toggle" type="button">广告与恶意域名拦截</button><span id="pc-adblock-status" class="note">仅 DNS hook 运行时生效</span></div>
+      <div id="pc-dns-controls">
+        <div class="field"><label for="pc-clean-dns">本机干净 DNS（优先于租户下发）</label><input id="pc-clean-dns" placeholder="留空跟随租户；多个 IP 或域名用逗号分隔"></div>
+        <div class="actions"><button id="pc-clean-dns-save" type="button">保存 DNS</button><button id="pc-clean-dns-clear" type="button">恢复跟随租户</button><span id="pc-clean-dns-status" class="note"></span></div>
+        <p class="note">仅保存于本机，不回写云端；租户 DNS 和 peer 作为后备。设置 10 秒内应用，不会自动开启加速。</p>
+      </div>
+    </div>
     <!-- 分流 / DNS / 出口 / ACL：子 Tab -->
     <div class="proxy-tabs" id="proxy-tabs" role="tablist">
       <button type="button" class="on" data-sec="split">分流规则</button>
@@ -892,7 +904,7 @@ details.raw pre{
 
     <div class="proxy-sec" data-sec="dns">
       <div class="card">
-        <div class="cardhead"><h3>DNS（PC 形态）</h3></div>
+        <div class="cardhead"><h3>DNS</h3></div>
         <p class="note">
           <strong>PC 上加速 = dns-hook</strong>：托盘「开启加速」或面板一键启动本地 DNS 钩子，
           白名单域名干净解析后钉进隧道，其余域名正常直连。<strong>这里不提供 DNS 模式选择。</strong><br>
@@ -1592,6 +1604,9 @@ function startStatusPoll() {
       const tunRun2 = !!(status && (status.state === 'RUNNING' || status.tun_up === true && status.process_up === true));
       $('net-dot').className = 'dot ' + (!daemonOk ? 'bad' : tunRun2 ? 'ok' : 'warn');
       renderOverview(daemonOk);
+      if (document.querySelector('#page-config.on') && $('pc-acceleration').style.display !== 'none') {
+        await refreshPCAccelerationState();
+      }
     } catch (_) {}
     finally { statusPollBusy = false; }
   }, 8000);
@@ -2188,7 +2203,103 @@ async function loadSettings() {
 }
 
 /** 双控 proxy 策略：GET /api/v1/plugin/proxy → 表单 + 回写状态角标。 */
+async function loadRuntimeForm() {
+  const r = await api('/api/v1/command', 'POST', { argv: ['config', 'form', '--json'] });
+  const raw = (r.data && r.data.stdout) || r.stdout || '';
+  const d = JSON.parse(raw);
+  const sel = $('runtime-form');
+  sel.innerHTML = d.choices.map(mode => '<option value="' + mode + '">' + (mode === 'pc' ? 'PC：加速本机应用' : 'GW：为下游设备分流') + '</option>').join('');
+  sel.value = d.mode;
+  for (const id of ['proxy-region', 'proxy-policy', 'proxy-full-tunnel', 'proxy-doh-mode', 'proxy-foreign-dns']) {
+    const field = $(id) && $(id).closest('.field');
+    if (field) field.style.display = d.mode === 'pc' ? 'none' : '';
+  }
+  $('runtime-form-save').disabled = d.choices.length === 1;
+  $('runtime-form-save').onclick = async () => {
+    await doAction($('runtime-form-save'), '切换运行形态', ['config', 'form', sel.value]);
+    await loadRuntimeForm();
+  };
+  $('pc-acceleration').style.display = d.mode === 'pc' ? '' : 'none';
+  $('pc-dns-controls').style.display = d.mode === 'pc' ? '' : 'none';
+  if (d.mode === 'pc') await refreshPCAccelerationState();
+}
+
+let pcAccelerationPollBusy = false;
+async function refreshPCAccelerationState() {
+  const toggle = $('pc-acceleration-toggle');
+  if (!toggle || toggle.disabled || pcAccelerationPollBusy) return;
+  pcAccelerationPollBusy = true;
+  try {
+    const state = await api('/api/v1/command', 'POST', { argv: ['proxy', 'dns-hook', 'status'] });
+    if (!state.success) throw new Error('acceleration status unavailable');
+    const out = (state.data && state.data.stdout) || state.stdout || '';
+    const overridden = out.includes('state=dns_overridden');
+    const unknown = out.includes('state=dns_unknown');
+    const running = out.includes('alive=true') && !overridden && !unknown;
+    const wanted = running || out.includes('wanted=true');
+    const btn = $('pc-acceleration-toggle');
+    btn.textContent = overridden ? '重新开启本机加速' : wanted ? '关闭本机加速' : '开启本机加速';
+    $('pc-acceleration-status').textContent = overridden ? '加速已中断：系统 DNS 被外部更改，自动接管已暂停' : unknown ? '无法确认系统 DNS 接管状态' : running ? '加速运行中' : out.includes('state=failed') ? '加速启动异常，请重新开启或查看诊断' : wanted ? '等待隧道连接' : '未开启';
+    btn.onclick = async () => {
+      await doAction(btn, wanted && !overridden ? '关闭本机加速' : '开启本机加速', ['proxy', 'dns-hook', wanted && !overridden ? 'stop' : 'start']);
+      await refreshPCAccelerationState();
+    };
+  } catch (_) {
+    $('pc-acceleration-status').textContent = '加速状态不可用，不能确认 DNS 接管';
+  } finally { pcAccelerationPollBusy = false; }
+  await refreshPCAdBlockState();
+  await refreshPCDNSConfig();
+}
+
+let pcDNSConfigBusy = false;
+async function refreshPCDNSConfig(reloadInput = false) {
+  const input = $('pc-clean-dns');
+  if (!input || pcDNSConfigBusy) return;
+  pcDNSConfigBusy = true;
+  try {
+    const r = await api('/api/v1/command', 'POST', { argv: ['proxy', 'dns-hook', 'dns', 'status', '--json'] });
+    if (!r.success) throw new Error('DNS status unavailable');
+    const d = JSON.parse((r.data && r.data.stdout) || r.stdout || '');
+    if (reloadInput || !input.dataset.loaded) { input.value = (d.configured || []).join(', '); input.dataset.loaded = '1'; }
+    const source = {custom:'本机配置', tenant:'租户下发', policy:'策略下发', default:'默认兜底'}[d.source] || d.source;
+    $('pc-clean-dns-status').textContent = source + ' · 上游顺序：' + (d.upstreams || []).join(' → ');
+  } catch (_) { $('pc-clean-dns-status').textContent = '无法读取 DNS 配置'; }
+  finally { pcDNSConfigBusy = false; }
+}
+$('pc-clean-dns-save').onclick = async () => {
+  const values = $('pc-clean-dns').value.split(/[\s,]+/).filter(Boolean);
+  const args = values.length ? ['set', ...values] : ['clear'];
+  await doAction($('pc-clean-dns-save'), '保存本机 DNS', ['proxy', 'dns-hook', 'dns', ...args]);
+  await refreshPCDNSConfig();
+};
+$('pc-clean-dns-clear').onclick = async () => {
+  await doAction($('pc-clean-dns-clear'), '恢复跟随租户 DNS', ['proxy', 'dns-hook', 'dns', 'clear']);
+  await refreshPCDNSConfig(true);
+};
+
+async function refreshPCAdBlockState() {
+  const btn = $('pc-adblock-toggle');
+  if (!btn || btn.disabled) return;
+  try {
+    const state = await api('/api/v1/command', 'POST', { argv: ['proxy', 'dns-hook', 'ad-block', 'status'] });
+    if (!state.success) throw new Error('ad-block status unavailable');
+    const out = (state.data && state.data.stdout) || state.stdout || '';
+    const enabled = out.includes('enabled=true');
+    const count = (out.match(/domains=(\d+)/) || [,'0'])[1];
+    const source = out.includes('source=ctl') ? '云端名单' : '内置兜底名单';
+    btn.textContent = enabled ? '关闭广告与恶意域名拦截' : '开启广告与恶意域名拦截';
+    $('pc-adblock-status').textContent = enabled ? '已启用 · ' + source + ' · ' + count + ' 条规则 · 仅 DNS hook 运行时生效，设置 10 秒内应用' : '已关闭 · 设置 10 秒内应用';
+    btn.onclick = async () => {
+      await doAction(btn, enabled ? '关闭域名拦截' : '开启域名拦截', ['proxy', 'dns-hook', 'ad-block', enabled ? 'off' : 'on']);
+      await refreshPCAdBlockState();
+    };
+  } catch (_) {
+    $('pc-adblock-status').textContent = '无法读取域名拦截设置';
+  }
+}
+
 async function loadProxyPolicy(pluginList) {
+  await loadRuntimeForm();
   const r = await api('/api/v1/plugin/proxy');
   const d = (r && r.data) || {};
   const eff = d.effective || d.local || d.cloud || null;
@@ -2228,6 +2339,8 @@ async function loadProxyPolicy(pluginList) {
   }
 
   const p = (eff && eff.policy) || {};
+  window.__proxyLoadedDNS = p.dns || {};
+  window.__proxyLoadedDomainRules = p.domain_rules || {};
   const setv = (id, v) => {
     const el = $(id);
     if (el && v != null && v !== '') {
@@ -2261,11 +2374,22 @@ async function loadProxyPolicy(pluginList) {
   const aclNames = (acl.allowed_node_ids || []).concat(acl.allowed_cidrs || []).join(',');
   setv('proxy-acl-names', aclNames);
 
-  const exits = (p.exits || []).filter((e) => e && e.node_id);
+  // 出口以插件壳里**实际生效**的值为准：intent 的 exits 允许为空
+  // （SyncPluginProxyFromPolicy 在 intent 空时保留插件已有值），只读 intent
+  // 会在明明配了出口的节点上显示「尚未选择出口设备」。
+  const intentExits = (p.exits || []).filter((e) => e && e.node_id);
+  const exits = intentExits.length
+    ? intentExits
+    : (d.plugin_exits || []).filter((e) => e && e.node_id);
   const exitsBox = $('plug-exits');
   if (exitsBox) {
     exitsBox.innerHTML = exits.length
-      ? exits.map((e) => badge((e.node_id) + ' · w' + (e.weight || 10) + ' · #' + (e.order || 0), e.enabled === false ? '' : 'ok')).join(' ')
+      ? exits.map((e) => {
+          const peer = peers.find((x) => String(x.node_id) === String(e.node_id));
+          const name = (peer && (peer.node_name || peer.overlay)) || e.node_id;
+          return badge(name + ' · w' + (e.weight || 10) + ' · #' + (e.order || 0),
+            e.enabled === false ? '' : 'ok');
+        }).join(' ')
       : '<span class="note">尚未选择出口设备</span>';
   }
   // 表单里的出口列表进 raw，保存时一并带回
@@ -2906,8 +3030,7 @@ function segVal(id, allowed, fallback) {
 }
 
 function collectProxyPolicy() {
-  // PC 不暴露 DNS 模式 —— 恒 off，加速归 dns-hook（不与 apply 抢系统 DNS）
-  const dnsMode = 'off';
+  // 隐藏的网关 DNS / 域名高级字段保持原值，保存本机叠加不清空它们。
   const region = segVal('proxy-region', ['domestic', 'international'], 'domestic');
   const policyName = segVal('proxy-policy', ['whitelist', 'blacklist'], 'whitelist');
   const matrix = {
@@ -2926,9 +3049,6 @@ function collectProxyPolicy() {
     if (x.indexOf('/') >= 0) aclCidrs.push(x); else aclNodes.push(x);
   }
 
-  // DNS 三选一在 PC 面板已收起（spec §13 网关高级配置）；peer/smart 恒空
-  const peerServers = [];
-  const smartServers = [];
 
   return {
     enabled: segVal('proxy-enabled', ['0', '1'], '0') === '1',
@@ -2938,12 +3058,9 @@ function collectProxyPolicy() {
     policy: policyName,
     split: { list_source: hit[0], match_mode: hit[1] },
     exits: window.__proxyExits || [],
-    dns: {
-      mode: dnsMode,
-      peer_servers: peerServers,
-      smart_servers: smartServers
-    },
+    dns: { ...(window.__proxyLoadedDNS || {}) },
     domain_rules: {
+      ...(window.__proxyLoadedDomainRules || {}),
       // 基础清单原样保留（ctl 400+ 条）；文本框只写本机叠加
       proxied: (window.__proxyBaselineProxied || []).slice(),
       custom_domains: splitList($('proxy-domains-proxied') ? $('proxy-domains-proxied').value : ''),

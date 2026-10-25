@@ -145,6 +145,14 @@ func runAgent(ctx context.Context) {
 	api.ProxySyncPlugin = func(p *domain.ProxyPolicy) error {
 		return proxysync.SyncPluginProxyFromPolicy(p)
 	}
+	// 出口实际生效值在插件壳里（intent 允许为空），界面需要它才不会误报未选中
+	api.ProxyPluginExits = func() ([]domain.ProxyExit, int, error) {
+		pc, err := proxysync.LoadPluginProxyConfig()
+		if err != nil {
+			return nil, 0, err
+		}
+		return pc.Exits, pc.MaxExits, nil
+	}
 	// B2：会话落盘 / 设备指纹经注入，localapi 不 import mynet
 	api.DeviceFingerprint = creds.DeviceFingerprint
 	api.SaveLoginSession = func(sess localapi.LoginSession) error {

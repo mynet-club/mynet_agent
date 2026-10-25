@@ -104,21 +104,20 @@ func TestOnUserToggleDecidesFromState(t *testing.T) {
 	failedProbe := Probe{Up: true, Valid: true, NodeState: "FAILED", ProcessUp: true, OneLine: "节点失败"}
 
 	cases := []struct {
-		name        string
-		pr          Probe
-		prep        func(t *testing.T, a *App) // 额外把 App 摆到目标态
-		wantConnect int
-		wantCommand int
-		wantState   State
+		name       string
+		pr         Probe
+		prep       func(t *testing.T, a *App) // 额外把 App 摆到目标态
+		wantWrites int                        // command 面的写请求次数（连接与断开都走它）
+		wantState  State
 	}{
-		{"停着点一下是连接", bootProbes["stopped"], nil, 1, 0, StateStarting},
-		{"跑着点一下是断开", bootProbes["running"], nil, 0, 1, StateStopping},
-		{"服务离线点一下什么都不发", bootProbes["down"], nil, 0, 0, StateSvcDown},
-		{"连接异常点一下是重试", failedProbe, nil, 1, 0, StateStarting},
+		{"停着点一下是连接", bootProbes["stopped"], nil, 1, StateStarting},
+		{"跑着点一下是断开", bootProbes["running"], nil, 1, StateStopping},
+		{"服务离线点一下什么都不发", bootProbes["down"], nil, 0, StateSvcDown},
+		{"连接异常点一下是重试", failedProbe, nil, 1, StateStarting},
 		{"进度中再点是no-op", bootProbes["stopped"], func(t *testing.T, a *App) {
 			a.onUserToggle() // → Starting，worker 在飞
 			waitWorkerLanded(t, a)
-		}, 1, 0, StateStarting},
+		}, 1, StateStarting},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -130,15 +129,17 @@ func TestOnUserToggleDecidesFromState(t *testing.T) {
 			before := a.fsm.State()
 
 			a.onUserToggle()
-			if c.wantConnect > 0 || c.wantCommand > 0 {
+			if c.wantWrites > 0 {
 				waitWorkerLanded(t, a)
 			}
 
-			if n := len(stub.hits(connectPath)); n != c.wantConnect {
-				t.Errorf("connect 打了 %d 次, want %d", n, c.wantConnect)
+			// 托盘是启停本机隧道，接入编排（含云端 keys sync / config pull）
+			// 属于配置向导 —— 任何一次点击都不该打到那个端点。
+			if n := len(stub.hits(connectPath)); n != 0 {
+				t.Errorf("托盘不该打 %s（接入编排走云端），打了 %d 次", connectPath, n)
 			}
-			if n := len(stub.hits(commandPath)); n != c.wantCommand {
-				t.Errorf("command 打了 %d 次, want %d", n, c.wantCommand)
+			if n := len(stub.hits(commandPath)); n != c.wantWrites {
+				t.Errorf("command 打了 %d 次, want %d", n, c.wantWrites)
 			}
 			if got := a.fsm.State(); got != c.wantState {
 				t.Errorf("状态 = %s, want %s（点击前是 %s）", got, c.wantState, before)

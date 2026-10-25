@@ -65,7 +65,7 @@ func planProxy(p *domain.ProxyPolicy, rt ProxyRuntime) *ProxyApplyPlan {
 // proxyClientCmds client/both 侧：IP 集合 + 策略路由 + mangle 打标 + WAN 修复。
 // 纯函数，便于断言命令形状（D2：不测 fixture skip，测真生成结果）。
 func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
-	if !p.IsClientLike() {
+	if !p.IsClientLike() || isPCProxyForm(snap) {
 		return nil
 	}
 	fw := p.EffectiveFwmark()
@@ -290,7 +290,7 @@ func proxyServerCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	if !p.IsServerLike() {
 		return nil
 	}
-	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" {
+	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" || snap.OS == "freebsd" || snap.OS == "openbsd" || snap.OS == "netbsd" {
 		return nil
 	}
 	// NAT/ACL 由 executeApply 的专表事务统一安装，不能再追加到共享链。
@@ -354,6 +354,9 @@ func mynetBinPath() string {
 // proxyAllCmds 一次拼齐 client+server+dns+hijack+bypass（apply 用）。
 func proxyAllCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
 	var cmds []routeCmd
+	if isPCProxyForm(snap) {
+		return proxyServerCmds(snap, p, rt)
+	}
 	cmds = append(cmds, proxyClientCmds(snap, p, rt)...)
 	cmds = append(cmds, proxyServerCmds(snap, p, rt)...)
 	cmds = append(cmds, proxyDNSCmds(p, rt)...)
@@ -371,7 +374,7 @@ func proxyAllCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRu
 
 // proxyCleanupCmds 禁用时的清理（stop/disable）。del 均 optional。
 func proxyCleanupCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyRuntime) []routeCmd {
-	if p == nil {
+	if p == nil || isPCProxyForm(snap) {
 		return nil
 	}
 	var cmds []routeCmd

@@ -10,15 +10,17 @@ package mynet
 // PC/无 dnsmasq 时由调用方把 (domain, IPs) 喂给 DynamicIPSet。
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -239,20 +241,19 @@ func dnsHookPinFile() string {
 	return filepath.Join(varDir(), "proxy", "dns-hook-pins.json")
 }
 
-type dnsHookPinState struct {
-	mu    sync.Mutex
-	IPs   map[string]time.Time `json:"ips"` // ip → first seen
-	rules *dnsHookRules
-}
-
 // dnsHookRules 钩子侧规则快照（从 intent 读；运行中每 N 秒刷新）。
 type dnsHookRules struct {
 	mu      sync.RWMutex
 	proxied map[string]bool // 归一化域名
-	clean   map[string]bool
 	// foreign 国外/代理域名上游：peer 出口 SmartDNS 优先（隧道内干净）。
 	// 不塞 8.8.8.8——那也会绕隧道，不如直接问 peer。
-	foreign []string
+	foreign        []string
+	direct         map[string]bool
+	customIPs      []string
+	signature      string
+	block          *dnsAdBlock
+	blockSignature string
+	upstreamError  error
 	// domestic 国内/其他域名上游：平台大陆 DNS + 公共国内 DNS，直连不进隧道。
 	domestic []string
 }
@@ -287,7 +288,7 @@ func filterIPUpstreams(list []string, quiet bool) []string {
 	return out
 }
 
-// ipUpstreamsOrResolve IP 优先；主机名 bootstrap 成 IP 作**后备**，不丢。
+// ipUpstreamsOrResolve IP 优先，主机名命中 bootstrap 缓存则用 IP，否则保留给查询路径解析。
 // 上游必须是 IP（不能走系统解析器），但**不能滤成空或只留一个死 IP**——
 // 空表会让 proxied 域名零上游；只留出口 VIP 时对端 DNS 一挂就全断
 // （2026-10-17 实测：github.com 走 dns-hook 超时）。
@@ -307,13 +308,8 @@ func ipUpstreamsOrResolve(list []string) []string {
 		}
 		ip := upstreamIPCacheGet(s)
 		if ip == "" {
-			ip = bootstrapResolveA(s, 2*time.Second)
-			if ip == "" {
-				hookLogf("上游 %q 既非 IP 也 bootstrap 失败，忽略", s)
-				continue
-			}
-			hookLogf("上游 %q → %s（bootstrap）", s, ip)
-		}
+			ip = s
+		} // 未预热时保留端点，查询时独立 bootstrap，构造规则不等网络。
 		if seen[ip] {
 			continue
 		}
@@ -360,30 +356,12 @@ func proxyExitVias(p *domain.ProxyPolicy) []string {
 	return out
 }
 
-// defaultForeignUpstreams 国外上游：TunnelServer/ExitDNS → 出口 VIP → 平台 DNS。
-// 全部收敛成 IP（出口 VIP 本就是 IP；平台 DNS 主机名走 bootstrap）。
+// Fallback only when neither local nor tenant/policy DNS is configured.
+const dnsHookPreferredCleanDNS = "221.216.138.69"
+
 func defaultForeignUpstreams(p *domain.ProxyPolicy, rules *domain.ProxyDomainRules) []string {
-	var out []string
-	if rules != nil {
-		if rules.TunnelServer != "" {
-			out = append(out, rules.TunnelServer)
-		}
-		if rules.ExitDNS != "" && rules.ExitDNS != rules.TunnelServer {
-			out = append(out, rules.ExitDNS)
-		}
-	}
-	// 出口 peer VIP（设计：foreign 默认 = 出口 VIP:53）
-	out = append(out, proxyExitVias(p)...)
-	if rules != nil {
-		// 平台 DNS 兜底（仍经隧道 IP 钉扎路径时可用）
-		if pd := rules.EffectivePlatformDNS(); pd != "" {
-			out = append(out, pd)
-		}
-	}
-	if len(out) == 0 {
-		out = []string{domain.PlatformDNSDefault}
-	}
-	return ipUpstreamsOrResolve(out)
+	upstreams, _ := hookForeignUpstreams(p, rules)
+	return upstreams
 }
 
 // defaultDomesticUpstreams 国内上游：快、直连、不进隧道。
@@ -400,19 +378,26 @@ func defaultDomesticUpstreams(rules *domain.ProxyDomainRules) []string {
 }
 
 func newHookRulesFromPolicy() *dnsHookRules {
-	r := &dnsHookRules{proxied: map[string]bool{}, clean: map[string]bool{}}
+	r := &dnsHookRules{proxied: map[string]bool{}, direct: map[string]bool{}}
 	p := EffectiveProxyPolicy()
+	raw, _ := json.Marshal(p)
+	r.signature = string(raw)
 	var dr *domain.ProxyDomainRules
-	if p != nil && p.DomainRules != nil {
-		dr = p.DomainRules
+	if p != nil && p.Role != domain.ProxyRoleServer && p.DomainRules != nil {
+		pcRules := *p.DomainRules
+		// 兼容旧配置，但基础直连名单不再覆盖 PC 加速白名单。
+		// CustomDirect 保留为本机显式的白名单排除项。
+		pcRules.Direct = nil
+		dr = &pcRules
+		r.customIPs = append([]string{}, dr.CustomIPs...)
+		for _, d := range dr.EffectiveDirect() {
+			r.direct[normalizeDomainName(d)] = true
+		}
 		for _, d := range dr.EffectiveProxied() {
 			r.proxied[normalizeDomainName(d)] = true
 		}
-		for _, d := range dr.UpstreamClean {
-			r.clean[normalizeDomainName(d)] = true
-		}
 	}
-	r.foreign = defaultForeignUpstreams(p, dr)
+	r.foreign, r.upstreamError = hookForeignUpstreams(p, dr)
 	r.domestic = defaultDomesticUpstreams(dr)
 	return r
 }
@@ -427,7 +412,7 @@ func (r *dnsHookRules) shouldPin(qname string) bool {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return matchHookDomain(d, r.proxied) || matchHookDomain(d, r.clean)
+	return !r.block.blocked(d) && !matchHookDomain(d, r.direct) && matchHookDomain(d, r.proxied)
 }
 
 // matchHookDomain 精确或后缀匹配；map 键可含 `*.` 前缀（归一化时已去）。
@@ -447,15 +432,14 @@ func matchHookDomain(d string, set map[string]bool) bool {
 	return false
 }
 
-// upstreamsFor 按域名选上游：代理/干净域名 → 国外（peer）；其他 → 国内（直连）。
+// upstreamsFor 按白名单选上游：命中 → 出口；未命中 → 普通直连上游。
 func (r *dnsHookRules) upstreamsFor(qname string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.shouldPinLocked(qname) {
 		if len(r.foreign) == 0 {
-			// 上游必须是 IP，但不能滤成空——空表 = proxied 域名零上游、客户端超时。
-			// 主机名走 bootstrap（不经系统解析器，无死锁）。
-			return ipUpstreamsOrResolve([]string{domain.PlatformDNSDefault})
+			// Keep the same clean primary even for an incomplete rule snapshot.
+			return []string{dnsHookPreferredCleanDNS}
 		}
 		return append([]string{}, r.foreign...)
 	}
@@ -470,7 +454,7 @@ func (r *dnsHookRules) shouldPinLocked(qname string) bool {
 	if d == "" {
 		return false
 	}
-	return matchHookDomain(d, r.proxied) || matchHookDomain(d, r.clean)
+	return !r.block.blocked(d) && !matchHookDomain(d, r.direct) && matchHookDomain(d, r.proxied)
 }
 
 // ── 最小 DNS 报文：抽 QNAME 与 A 答案 ──────────────────────────
@@ -493,37 +477,40 @@ func buildDNSQueryMsg(qname string) []byte {
 // parseDNSQName 解析报文 offset 处的域名标签，返回名与新 offset。
 func parseDNSQName(msg []byte, offset int) (string, int, error) {
 	var parts []string
-	// 防压缩指针死循环
-	for hops := 0; hops < 64; hops++ {
-		if offset >= len(msg) {
+	next, size := -1, 0
+	for hops := 0; hops < 128; hops++ {
+		if offset < 0 || offset >= len(msg) {
 			return "", 0, fmt.Errorf("qname truncated")
 		}
 		l := int(msg[offset])
 		if l == 0 {
-			return strings.Join(parts, "."), offset + 1, nil
+			if next < 0 {
+				next = offset + 1
+			}
+			return strings.Join(parts, "."), next, nil
 		}
-		if l&0xC0 == 0xC0 {
+		if l&0xc0 == 0xc0 {
 			if offset+1 >= len(msg) {
 				return "", 0, fmt.Errorf("bad pointer")
 			}
-			ptr := int(binary.BigEndian.Uint16(msg[offset:offset+2]) & 0x3FFF)
-			name, _, err := parseDNSQName(msg, ptr)
-			if err != nil {
-				return "", 0, err
+			if next < 0 {
+				next = offset + 2
 			}
-			if name != "" {
-				parts = append(parts, name)
-			}
-			return strings.Join(parts, "."), offset + 2, nil
+			offset = int(binary.BigEndian.Uint16(msg[offset:offset+2]) & 0x3fff)
+			continue
 		}
-		offset++
-		if offset+l > len(msg) {
+		if l > 63 || offset+1+l > len(msg) {
 			return "", 0, fmt.Errorf("label overflow")
 		}
+		size += l + 1
+		if size > 254 {
+			return "", 0, fmt.Errorf("qname too long")
+		}
+		offset++
 		parts = append(parts, string(msg[offset:offset+l]))
 		offset += l
 	}
-	return "", 0, fmt.Errorf("qname too deep")
+	return "", 0, fmt.Errorf("qname compression loop")
 }
 
 // parseDNSQuestion 取查询名（跳过 id/flags/qdcount）。
@@ -741,6 +728,7 @@ const (
 type dnsCacheEntry struct {
 	resp    []byte
 	expires time.Time
+	stored  time.Time
 }
 
 type dnsRespCache struct {
@@ -759,8 +747,13 @@ func dnsCacheKey(qname string, qtype uint16) string {
 
 // get 命中返回应答副本（ID 已用 queryID 改写）；未命中/过期返回 nil。
 func (c *dnsRespCache) get(key string, queryID uint16) []byte {
+	resp, _ := c.getWithExpiry(key, queryID)
+	return resp
+}
+
+func (c *dnsRespCache) getWithExpiry(key string, queryID uint16) ([]byte, time.Time) {
 	if c == nil {
-		return nil
+		return nil, time.Time{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -769,13 +762,14 @@ func (c *dnsRespCache) get(key string, queryID uint16) []byte {
 		if ok {
 			delete(c.entries, key)
 		}
-		return nil
+		return nil, time.Time{}
 	}
 	out := append([]byte{}, e.resp...)
 	if len(out) >= 2 {
 		binary.BigEndian.PutUint16(out[0:2], queryID)
+		ageDNSResponse(out, uint32(time.Since(e.stored)/time.Second))
 	}
-	return out
+	return out, e.expires
 }
 
 // put 写入应答；ttl<=0 用默认。超容量时清掉已过期项，仍满则丢弃新增。
@@ -805,6 +799,7 @@ func (c *dnsRespCache) put(key string, resp []byte, ttl time.Duration) {
 	c.entries[key] = dnsCacheEntry{
 		resp:    append([]byte{}, resp...),
 		expires: time.Now().Add(ttl),
+		stored:  time.Now(),
 	}
 }
 
@@ -884,175 +879,245 @@ var hookLogf = func(format string, args ...any) {
 }
 
 // runDNSHookServer 前台跑 forwarder（阻塞）。stop 由信号/CLI pid kill。
+// dnsHookServer 的策略锁避免旧上游查询在规则刷新后重新写回旧缓存/租约。
+type dnsHookServer struct {
+	gate    sync.RWMutex
+	rules   *dnsHookRules
+	pins    *pcProxySession
+	cache   *dnsRespCache
+	forward func(string, []byte, time.Duration) ([]byte, error)
+	tun     func() string
+}
+
+func (s *dnsHookServer) refresh(fresh *dnsHookRules, now time.Time) error {
+	if fresh.upstreamError != nil {
+		return fmt.Errorf("DNS config (retaining previous rules): %w", fresh.upstreamError)
+	}
+	block, sig, err := loadDNSAdBlock()
+	if err != nil {
+		return fmt.Errorf("ad-block config (retaining previous rules): %w", err)
+	}
+	fresh.mu.RLock()
+	copyRules := &dnsHookRules{
+		proxied: fresh.proxied, direct: fresh.direct, customIPs: fresh.customIPs,
+		foreign: fresh.foreign, domestic: fresh.domestic, signature: fresh.signature,
+	}
+	fresh.mu.RUnlock()
+	fresh = copyRules
+	fresh.block, fresh.blockSignature = block, sig
+	s.gate.Lock()
+	defer s.gate.Unlock()
+	changed := fresh.blockSignature != s.rules.blockSignature || fresh.signature != s.rules.signature || !reflect.DeepEqual(fresh.foreign, s.rules.foreign) || !reflect.DeepEqual(fresh.domestic, s.rules.domestic)
+	if changed {
+		// 上游/规则变化时，旧应答不能再为新规则授权。域名租约在同一临界区清理。
+		s.cache = newDNSRespCache()
+		if !reflect.DeepEqual(fresh.foreign, s.rules.foreign) {
+			s.pins.mu.Lock()
+			s.pins.Domains = map[string]map[string]time.Time{}
+			s.pins.mu.Unlock()
+		}
+		s.rules = fresh
+	}
+	return s.pins.sync(s.rules, s.tun(), now)
+}
+
 func runDNSHookServer(listen string, done <-chan struct{}) error {
 	rules := newHookRulesFromPolicy()
-	pins := &dnsHookPinState{IPs: map[string]time.Time{}, rules: rules}
-	cache := newDNSRespCache()
-
-	// 规则热刷新（intent 可能被 localapi 改）
-	go func() {
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				fresh := newHookRulesFromPolicy()
-				rules.mu.Lock()
-				rules.proxied = fresh.proxied
-				rules.clean = fresh.clean
-				rules.foreign = fresh.foreign
-				rules.domestic = fresh.domestic
-				rules.mu.Unlock()
-			}
-		}
-	}()
-
+	if rules.upstreamError != nil {
+		return fmt.Errorf("DNS config: %w", rules.upstreamError)
+	}
+	block, blockSignature, err := loadDNSAdBlock()
+	if err != nil {
+		return fmt.Errorf("ad-block config: %w", err)
+	}
+	rules.block, rules.blockSignature = block, blockSignature
+	pins := newPCProxySession()
+	if err := pins.load(hookTunDevice()); err != nil {
+		return err
+	}
+	server := &dnsHookServer{rules: rules, pins: pins, cache: newDNSRespCache(), forward: forwardDNSQuery, tun: liveHookTunDevice}
 	pc, err := net.ListenPacket("udp", listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listen, err)
 	}
 	defer pc.Close()
-	hookLogf("listening %s foreign=%v domestic=%v", listen, rules.foreign, rules.domestic)
-
-	// 启动即预解析上游主机名（dns.dsplat.com / dns.mynet.club）→ IP，
-	// 进 bootstrap 缓存。不预热的话第一次查询要现场解析，且若此时
-	// 系统 DNS 已指向本 hook，会自己查自己（死锁）。
-	// PlatformDNS 主机名也预热：foreign 可能只有出口 VIP，兜底路径还要用它。
-	// **必须放后台**：bootstrap 每个主机名最长 3s，同步跑会卡住 ReadFrom，
-	// 父进程 2s 探活窗口一到就 SIGKILL（2026-10-17 实测「端口未就绪」）。
-	go warmUpstreamIPs(rules.foreign, rules.domestic,
-		[]string{domain.PlatformDNSDefault, domain.PlatformDNSDomestic})
-
-	// 持久化已加载；路由是运行时事实，启动时重放（清单在 ≠ FIB 在）。
-	// **必须放后台**：几百条 host 路由要几秒，同步跑会卡住 ReadFrom，
-	// 父进程 2s 探活窗口一到就 SIGKILL（「端口未就绪」）。
-	pins.load()
-	go replayPinRoutes()
-
-	go func() {
-		<-done
-		_ = pc.Close()
+	var workers sync.WaitGroup
+	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		close(stop)
+		workers.Wait() // 不允许在释放后有查询重新装路由。
+		if err := pins.release(time.Now()); err != nil {
+			hookLogf("release: %v", err)
+		}
 	}()
-
-	buf := make([]byte, 2048)
+	hookLogf("listening %s foreign=%v domestic=%v", listen, rules.foreign, rules.domestic)
+	host, port, _ := net.SplitHostPort(listen)
+	if port == "53" && (host == "127.0.0.1" || host == "localhost" || host == "") {
+		workers.Add(1)
+		events := hookDNSChangeEvents(ctx)
+		go func() {
+			defer workers.Done()
+			monitorHookDNS(ctx.Done(), events, func() (bool, error) {
+				if !hookDNSMonitorReady() || hookStopRequested() {
+					return true, nil
+				}
+				owned, err := hookDNSOwned(LoadDNSBackup(), hookSystemDNSOps(), effectiveHookDNSServers)
+				saveHookDNSObservation(owned, err)
+				return owned, err
+			}, func() error {
+				if hookStopRequested() {
+					return nil
+				}
+				return recordHookDNSInterruption()
+			}, func() { _ = pc.Close() })
+		}()
+	}
+	workers.Add(1)
+	go func() { defer workers.Done(); warmUpstreamIPs(rules.foreign, rules.domestic) }()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		s := server
+		s.updateBaseline(ctx)
+		tick := time.NewTicker(time.Hour)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				s.updateBaseline(ctx)
+			}
+		}
+	}()
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		if err := server.refresh(rules, time.Now()); err != nil {
+			hookLogf("restore: %v", err)
+		}
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				if liveHookTunDevice() == "" {
+					_ = pc.Close()
+					return
+				}
+				if err := server.refresh(newHookRulesFromPolicy(), time.Now()); err != nil {
+					hookLogf("reconcile: %v", err)
+				}
+			}
+		}
+	}()
+	go func() {
+		select {
+		case <-done:
+			_ = pc.Close()
+		case <-stop:
+		}
+	}()
+	buf := make([]byte, 65535)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
-			if done != nil {
-				select {
-				case <-done:
-					return nil
-				default:
-				}
+			select {
+			case <-done:
+				return nil
+			default:
+				return err
 			}
-			return err
 		}
 		query := append([]byte{}, buf[:n]...)
-		go handleHookQuery(pc, addr, query, rules, pins, cache)
+		workers.Add(1)
+		go func() { defer workers.Done(); _, _ = pc.WriteTo(server.answer(query), addr) }()
 	}
 }
 
-func handleHookQuery(pc net.PacketConn, addr net.Addr, query []byte, rules *dnsHookRules, pins *dnsHookPinState, cache *dnsRespCache) {
+func (s *dnsHookServer) answer(query []byte) []byte {
 	qname, err := parseDNSQuestion(query)
 	if err != nil {
-		return
+		return nil
 	}
-	// 缓存命中：改写事务 ID 后直接回，不打上游（DNS 客户端只认 ID 配对）。
-	qtype := queryType(query)
-	if len(query) >= 2 {
-		queryID := binary.BigEndian.Uint16(query[0:2])
-		if hit := cache.get(dnsCacheKey(qname, qtype), queryID); hit != nil {
-			_, _ = pc.WriteTo(hit, addr)
-			return
-		}
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.rules.block.blocked(qname) {
+		return dnsBlockedAnswer(query)
 	}
-	var answer []byte
-	for _, up := range rules.upstreamsFor(qname) {
-		if ans, err2 := forwardDNSQuery(up, query, 4*time.Second); err2 == nil && len(ans) >= 12 {
-			answer = ans
-			break
+	key := dnsCacheKey(qname, queryType(query))
+	answer, expires := s.cache.getWithExpiry(key, binary.BigEndian.Uint16(query[:2]))
+	cached := answer != nil
+	if answer == nil {
+		for _, up := range s.rules.upstreamsFor(qname) {
+			ans, err := s.forward(up, query, 4*time.Second)
+			if err == nil && len(ans) >= 12 && ans[2]&0x80 != 0 && binary.BigEndian.Uint16(ans[:2]) == binary.BigEndian.Uint16(query[:2]) {
+				// A reachable but unhealthy resolver must also fall back to the peer.
+				rcode := ans[3] & 15
+				if rcode == 2 || rcode == 5 {
+					continue
+				}
+				answer = ans
+				break
+			}
 		}
 	}
 	if answer == nil {
-		return // 无应答；客户端自行超时
+		return dnsFailure(query)
 	}
-	// 应答进缓存：TTL 吃 A 记录的最小值，无 A 记录用默认 30s（上限 300s）。
-	cache.put(dnsCacheKey(qname, qtype), answer, minAnswerTTL(answer))
-	// 增量钉扎：**只管加速域名**（proxied/clean），不碰国内域名（用户裁决 2026-10-17）。
-	// 流程：干净 DNS 解析 → CIDR 感知查表 → 已覆盖则不做任何操作，
-	// 未覆盖才补装路由（随后客户端请求自然进隧道）。
-	if rules.shouldPin(qname) {
-		for _, ip := range extractDNSAnswerAIDs(answer) {
-			if net.ParseIP(ip) == nil {
-				continue
+	if s.rules.block.blockedAlias(answer) {
+		return dnsBlockedAnswer(query)
+	}
+	// 返回给系统的 TTL 同样受上限约束，避免 OS 缓存比路由租约更长。
+	ttl := limitDNSResponseTTL(answer, uint32(dnsCacheMaxTTL/time.Second))
+	if s.rules.shouldPin(qname) {
+		ips := extractDNSAnswerAIDs(answer)
+		if len(ips) > 0 {
+			tun := s.tun()
+			if tun == "" {
+				return dnsFailure(query)
 			}
-			// 已被现有前缀覆盖 或 FIB 已走隧道 → 不进清单、不碰路由
-			// 清单有、FIB 无（重启丢路由）时仍要补装 —— 只看 FIB，不看清单
-			if ipRoutedViaTun(ip, hookTunDevice()) {
-				continue
+			// TTL=0 的回答不缓存；用一秒短租约保证本次连接有机会使用路由。
+			leaseTTL := ttl
+			if leaseTTL <= 0 {
+				leaseTTL = time.Second
 			}
-			if ipCoveredByPinCIDRs(ip) {
-				// 在清单但未进 FIB：补装，不重复记日志
-				pinOneIP(ip)
-				continue
+			now := time.Now()
+			if !cached {
+				expires = now.Add(leaseTTL)
 			}
-			if pins.add(ip) {
-				hookLogf("pin %s ← %s", ip, qname)
-				pinOneIP(ip)
+			if err := s.pins.observe(qname, ips, expires, now, s.rules, tun); err != nil {
+				hookLogf("query %s: %v", qname, err)
+				return dnsFailure(query)
 			}
+			remaining := time.Until(expires) / time.Second
+			if remaining < 0 {
+				remaining = 0
+			}
+			ttl = limitDNSResponseTTL(answer, uint32(remaining))
 		}
 	}
-	_, _ = pc.WriteTo(answer, addr)
+	if !cached && ttl > 0 && answer[3]&15 == 0 && answer[2]&2 == 0 {
+		s.cache.put(key, answer, ttl)
+	}
+	return answer
 }
 
-// add 新 IP → true（需要装路由）；已存在 → false。
-func (s *dnsHookPinState) add(ip string) bool {
-	if net.ParseIP(ip) == nil {
-		return false
+func dnsFailure(query []byte) []byte {
+	if len(query) < 12 {
+		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.IPs[ip]; ok {
-		return false
+	out := append([]byte{}, query...)
+	out[2] = (out[2] & 1) | 0x80
+	out[3] = 0x82 // RA + SERVFAIL；明确失败，不静默放行代理域名。
+	for i := 6; i < 12; i++ {
+		out[i] = 0
 	}
-	s.IPs[ip] = time.Now()
-	s.persistLocked()
-	return true
-}
-
-func (s *dnsHookPinState) load() {
-	raw, err := os.ReadFile(dnsHookPinFile())
-	if err != nil {
-		return
-	}
-	var body struct {
-		IPs map[string]time.Time `json:"ips"`
-	}
-	if err := json.Unmarshal(raw, &body); err != nil || body.IPs == nil {
-		// 兼容 {"ips":["a","b"]} 形状
-		var alt struct {
-			IPs []string `json:"ips"`
-		}
-		if err2 := json.Unmarshal(raw, &alt); err2 == nil {
-			for _, ip := range alt.IPs {
-				s.IPs[ip] = time.Time{}
-			}
-		}
-		return
-	}
-	s.IPs = body.IPs
-}
-
-func (s *dnsHookPinState) persistLocked() {
-	p := dnsHookPinFile()
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	raw, _ := json.Marshal(map[string]any{"ips": s.IPs})
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err == nil {
-		_ = os.Rename(tmp, p)
-	}
+	return out
 }
 
 // LoadDNSHookPins 读钩子增量钉扎清单（IP 列表）。
@@ -1080,129 +1145,6 @@ func LoadDNSHookPins() []string {
 	return nil
 }
 
-// pinOneIP 把新 IP 并入钩子清单后，**重算最小合并集**再装/撤（失败只告警）。
-// 相邻 IP 会收成 /31 等，避免主表被 /32 刷满。
-//
-// 钉扎前先做 **CIDR 感知的路由表判定**（2026-10-17 用户裁决）：
-//   - IP 已被某条前缀覆盖且走隧道 → 不做任何操作，DNS 应答直接回；
-//   - 否则才补装路由（再发起请求时流量自然进隧道）。
-//
-// 这样主表不会被「/32 刷满」，也不会对已覆盖前缀重复写 route replace。
-func pinOneIP(ip string) {
-	if net.ParseIP(ip) == nil {
-		return
-	}
-	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
-	if err != nil || snap == nil || !isPCProxyForm(snap) {
-		return
-	}
-	tun := hookTunDevice()
-	if tun == "" {
-		return
-	}
-	// FIB 已进隧道 → 跳过。**不要**再用「清单已覆盖」短路：
-	// 重启后 pins.load() 只恢复清单、不恢复路由，清单在而 FIB 不在时必须补装
-	// （2026-10-18 实测：x.com 等 PIN 了却仍走 en0）。
-	if ipRoutedViaTun(ip, tun) {
-		return
-	}
-	// 未覆盖：并入清单后重算最小合并集再装（失败只告警）
-	all := LoadDNSHookPins()
-	merged := MergeIPsToCIDR(all)
-	cmds := PCProxyPinCmds(snap, merged, tun)
-	for _, c := range cmds {
-		_ = runOp(false, c.argv)
-	}
-}
-
-// replayPinRoutes 启动时把 pins 清单里的 IP 重新装进 FIB。
-// pins.load() 只读清单；路由是运行时事实，重启/隧道抖动后会丢。
-func replayPinRoutes() {
-	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
-	if err != nil || snap == nil || !isPCProxyForm(snap) {
-		return
-	}
-	tun := hookTunDevice()
-	if tun == "" {
-		return
-	}
-	all := LoadDNSHookPins()
-	if len(all) == 0 {
-		return
-	}
-	merged := MergeIPsToCIDR(all)
-	cmds := PCProxyPinCmds(snap, merged, tun)
-	for _, c := range cmds {
-		_ = runOp(false, c.argv)
-	}
-	hookLogf("replay pins=%d prefixes=%d → %s", len(all), len(merged), tun)
-}
-
-// ipCoveredByPinCIDRs IP 是否已落在本机已钉前缀（dns-hook-pins + pc-pin）内。
-// 钩子增量写 dns-hook-pins，apply 对账写 pc-pin；两份都要看。
-//
-// 判定来源两类：
-//  1. 清单里的 **CIDR 条目**（如 10.1.2.0/24）—— 直接 Contains；
-//  2. 清单里的 **裸 IP** —— 先 MergeIPsToCIDR 收成最小前缀，再 Contains
-//     （相邻 .4+.5 → /31，新来 .4 就不必再补装）。
-func ipCoveredByPinCIDRs(ip string) bool {
-	target := net.ParseIP(ip)
-	if target == nil {
-		return false
-	}
-	for _, src := range [][]string{LoadDNSHookPins(), LoadPCPinIPs()} {
-		var bare []string
-		for _, entry := range src {
-			if _, n, err := net.ParseCIDR(entry); err == nil {
-				if n.Contains(target) {
-					return true
-				}
-				continue
-			}
-			bare = append(bare, entry)
-		}
-		for _, c := range MergeIPsToCIDR(bare) {
-			_, n, err := net.ParseCIDR(c)
-			if err == nil && n.Contains(target) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ipRoutedViaTun FIB 查询：IP 的最长前缀匹配是否已走隧道口。
-// BSD 用 `route -n get`，Linux 用 `ip route get`；拿不准时返回 false（补装，保守）。
-func ipRoutedViaTun(ip, tun string) bool {
-	if tun == "" {
-		return false
-	}
-	var out []byte
-	if runtime.GOOS == "windows" {
-		// Windows 查 route print 开销大；先用 pin 集判定，FIB 留给 apply 对账。
-		return false
-	}
-	if runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
-		b, err := exec.Command("route", "-n", "get", ip).Output()
-		if err != nil {
-			return false
-		}
-		out = b
-	} else {
-		b, err := exec.Command("ip", "route", "get", ip).Output()
-		if err != nil {
-			return false
-		}
-		out = b
-	}
-	text := string(out)
-	// darwin: `interface: utun4`；linux: `dev utun4`
-	if strings.Contains(text, tun) {
-		return true
-	}
-	return false
-}
-
 // hookTunDevice 从 bundle 反推隧道口；失败返回空。
 func hookTunDevice() string {
 	env, err := loadBundleEnvelope()
@@ -1223,11 +1165,23 @@ func hookTunDevice() string {
 // ── CLI ────────────────────────────────────────────────────────
 
 func cmdProxyDNSHook(args []string) int {
+	internal := os.Getenv("MYNET_DNS_HOOK_CHILD") == "1" || os.Getenv("MYNET_DNS_HOOK_WATCH") == "1"
+	if !internal && len(args) > 0 && (args[0] == "start" || args[0] == "stop" || (args[0] == "ad-block" || args[0] == "dns") && len(args) > 1 && args[1] != "status") {
+		return withDNSHookControl(func() int { return cmdProxyDNSHookUnlocked(args) })
+	}
+	return cmdProxyDNSHookUnlocked(args)
+}
+
+func cmdProxyDNSHookUnlocked(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-hook start|stop|status [--listen ADDR]")
+		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-hook start|stop|status [--listen ADDR] | ad-block on|off|status")
 		return 2
 	}
 	switch args[0] {
+	case "dns":
+		return cmdHookDNSConfig(args[1:])
+	case "ad-block":
+		return cmdDNSAdBlock(args[1:])
 	case "start":
 		listen := DNSHookListenDefault
 		for i := 1; i < len(args); i++ {
@@ -1236,18 +1190,61 @@ func cmdProxyDNSHook(args []string) int {
 				i++
 			}
 		}
-		// 用户显式开启 → 记住偏好，隧道重启后 SyncSidecarsOnTunnelUp 会跟上。
-		if rc := dnsHookStart(listen); rc != 0 {
-			return rc
+		if os.Getenv("MYNET_DNS_HOOK_CHILD") == "1" || os.Getenv("MYNET_DNS_HOOK_WATCH") == "1" {
+			return dnsHookStartUnlocked(listen)
 		}
-		_ = SetDNSHookWanted(true)
-		return 0
+		if !isPCDNSPlatform() {
+			fmt.Fprintln(os.Stderr, "dns-hook requires pc runtime mode")
+			return 1
+		}
+		// 先保存统一偏好，watcher 在首次退出时也能读到用户选择。
+		// 外部改写只允许用户显式重新接管；先收掉旧 worker 再清中断标记。
+		if hookDNSInterrupted() {
+			if rc := dnsHookStopUnlocked(); rc != 0 {
+				return rc
+			}
+			if err := clearHookDNSInterruption(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		if err := SetDNSHookWanted(true); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if liveHookTunDevice() == "" {
+			fmt.Println("✓ 已记住加速偏好，等待隧道连接")
+			return 0
+		}
+		// 先更新驱动出口投影，再启动 DNS，避免仅启动了一个无策略的转发器。
+		if err := ApplyFromActive(false); err != nil {
+			fmt.Fprintln(os.Stderr, "加速策略准备失败:", err)
+			return 1
+		}
+		return dnsHookStartUnlocked(listen)
 	case "stop":
-		// 用户显式关闭 → 清偏好（与隧道联动停不同：联动停不改意图）。
-		if rc := dnsHookStop(); rc != 0 {
+		preserveIntent := len(args) > 1 && args[1] == "--preserve-intent"
+		if !preserveIntent {
+			if err := SetDNSHookWanted(false); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		if rc := dnsHookStopUnlocked(); rc != 0 {
 			return rc
 		}
-		_ = SetDNSHookWanted(false)
+		if !preserveIntent && liveHookTunDevice() != "" {
+			if err := ApplyFromActive(false); err != nil {
+				fmt.Fprintln(os.Stderr, "加速关闭投影失败:", err)
+				return 1
+			}
+		}
+		if !preserveIntent {
+			if err := clearHookDNSInterruption(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
 		return 0
 	case "status":
 		return dnsHookStatus()
@@ -1258,6 +1255,14 @@ func cmdProxyDNSHook(args []string) int {
 }
 
 func dnsHookStart(listen string) int {
+	return withDNSHookControl(func() int { return dnsHookStartUnlocked(listen) })
+}
+
+func dnsHookStartUnlocked(listen string) int {
+	if err := hookDNSResumeAllowed(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	if err := os.MkdirAll(filepath.Dir(dnsHookPIDFile()), 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -1266,11 +1271,28 @@ func dnsHookStart(listen string) int {
 	if os.Getenv("MYNET_DNS_HOOK_CHILD") == "1" {
 		_ = os.WriteFile(dnsHookPIDFile(), []byte(strconv.Itoa(os.Getpid())), 0o644)
 		done := make(chan struct{})
+		monitorDone := make(chan struct{})
+		defer close(monitorDone)
 		go func() {
 			ch := make(chan os.Signal, 1)
-			signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-			<-ch
-			close(done)
+			signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+			defer signal.Stop(ch)
+			tick := time.NewTicker(100 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-monitorDone:
+					return
+				case <-ch:
+					close(done)
+					return
+				case <-tick.C:
+					if hookStopRequested() {
+						close(done)
+						return
+					}
+				}
+			}
 		}()
 		if err := runDNSHookServer(listen, done); err != nil {
 			hookLogf("server exit: %v", err)
@@ -1278,12 +1300,24 @@ func dnsHookStart(listen string) int {
 		}
 		return 0
 	}
+	if os.Getenv("MYNET_DNS_HOOK_WATCH") == "1" {
+		return watchDNSHook(listen)
+	}
+	if !isPCDNSPlatform() {
+		fmt.Fprintln(os.Stderr, "dns-hook requires pc runtime mode")
+		return 1
+	}
 	// 父进程：已运行则提示
 	if pid := readHookPID(); pid > 0 && processAlive(pid) {
 		fmt.Printf("dns-hook 已在运行 pid=%d\n", pid)
 		return 0
 	}
-	// 清掉死 pid 文件
+	if hookWatcherAlive() {
+		fmt.Fprintln(os.Stderr, "dns-hook 正在恢复或退出，请稍后重试")
+		return 1
+	}
+	// 清掉已结束会话的 stop 请求
+	_ = os.Remove(dnsHookStopFile())
 	_ = os.Remove(dnsHookPIDFile())
 	// :53 被其他进程占用 → 拒绝启动（不劫持别人的 DNS）
 	if occupied := portOccupied(listen); occupied {
@@ -1307,8 +1341,11 @@ func dnsHookStart(listen string) int {
 	}
 	attr := &os.ProcAttr{
 		Files: files,
-		Env:   append(os.Environ(), "MYNET_DNS_HOOK_CHILD=1"),
-		Sys:   &syscall.SysProcAttr{Setsid: true},
+		Env:   append(os.Environ(), "MYNET_DNS_HOOK_WATCH=1"),
+		Sys:   hookDetachedAttr(),
+	}
+	if logf != nil {
+		defer logf.Close()
 	}
 	proc, err := os.StartProcess(exe, []string{exe, "proxy", "dns-hook", "start", "--listen", listen}, attr)
 	if err != nil {
@@ -1318,14 +1355,19 @@ func dnsHookStart(listen string) int {
 		}
 		return 1
 	}
+	defer proc.Release()
 	// 子进程自己写 pid；父进程稍候确认
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 		if pid := readHookPID(); pid > 0 && processAlive(pid) {
 			// 探活 :53
 			if probeLocalForwarder(listen) == nil {
-				return dnsHookAfterStart(listen, pid)
+				rc := dnsHookAfterStart(listen, pid)
+				if rc != 0 {
+					_ = dnsHookStopUnlocked()
+				}
+				return rc
 			}
 		}
 		if !processAlive(proc.Pid) {
@@ -1336,7 +1378,7 @@ func dnsHookStart(listen string) int {
 		_ = logf.Close()
 	}
 	fmt.Fprintln(os.Stderr, "dns-hook 启动失败或端口未就绪（查 var/proxy/dns-hook.log；:53 需 root）")
-	_ = syscall.Kill(proc.Pid, syscall.SIGKILL)
+	_ = os.WriteFile(dnsHookStopFile(), []byte("stop"), 0600)
 	return 1
 }
 
@@ -1378,43 +1420,179 @@ func probeLocalForwarder(listen string) error {
 
 func dnsHookAfterStart(listen string, pid int) int {
 	// 接管系统 DNS → 127.0.0.1（仅当监听 :53）
-	host, _, _ := net.SplitHostPort(listen)
-	if host == "127.0.0.1" || host == "localhost" || host == "" {
+	host, port, _ := net.SplitHostPort(listen)
+	if port == "53" && (host == "127.0.0.1" || host == "localhost" || host == "") {
 		if err := ApplySystemDNS("", "127.0.0.1"); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠ 系统 DNS 接管失败（forwarder 已起 pid=%d）: %v\n", pid, err)
-			fmt.Fprintln(os.Stderr, "  可手动: sudo mynet dns apply 127.0.0.1")
+			return 1
 		} else {
 			fmt.Println("✓ 系统 DNS → 127.0.0.1（forwarder 钩子）")
 		}
+	}
+	if err := os.WriteFile(hookDNSReadyFile(), []byte(strconv.Itoa(pid)), 0600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	fmt.Printf("✓ dns-hook 已启动 pid=%d listen=%s\n", pid, listen)
 	return 0
 }
 
-func dnsHookStop() int {
-	pid := readHookPID()
-	if pid <= 0 {
-		fmt.Println("dns-hook 未运行")
-		// 仍尝试还原 DNS
-		_ = RestoreSystemDNS()
-		return 0
+func dnsHookStop() int { return withDNSHookControl(dnsHookStopUnlocked) }
+
+func dnsHookStopUnlocked() int {
+	if err := os.MkdirAll(filepath.Dir(dnsHookStopFile()), 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	time.Sleep(200 * time.Millisecond)
-	if processAlive(pid) {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+	if err := os.WriteFile(dnsHookStopFile(), []byte("stop"), 0600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for (dnsHookRunning() || hookWatcherAlive()) && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if dnsHookRunning() {
+		pid := readHookPID()
+		if !hookWorkerOwned(pid) {
+			fmt.Fprintln(os.Stderr, "dns-hook pid 与执行器命令不匹配，拒绝终止其它进程")
+			return 1
+		}
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+		// watcher Wait 后负责释放；给它明确的退出窗口。
+		deadline = time.Now().Add(10 * time.Second)
+		for hookWatcherAlive() && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if hookWatcherAlive() {
+		fmt.Fprintln(os.Stderr, "dns-hook 清理尚未完成")
+		return 1
+	}
+	if err := cleanupDNSHook(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	_ = os.Remove(dnsHookPIDFile())
-	_ = RestoreSystemDNS()
-	fmt.Println("✓ dns-hook 已停止，系统 DNS 已还原")
+	_ = os.Remove(dnsHookStopFile())
+	fmt.Println("✓ dns-hook 已停止，路由已释放、系统 DNS 已还原")
 	return 0
+}
+
+func dnsHookStopFile() string  { return filepath.Join(varDir(), "proxy", "dns-hook.stop") }
+func dnsHookWatchFile() string { return filepath.Join(varDir(), "proxy", "dns-hook-watch.pid") }
+func hookStopRequested() bool  { _, err := os.Stat(dnsHookStopFile()); return err == nil }
+func hookWatcherAlive() bool {
+	raw, _ := os.ReadFile(dnsHookWatchFile())
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return pid > 0 && processAlive(pid)
+}
+
+func cleanupDNSHook() error {
+	_ = os.Remove(hookDNSReadyFile())
+	_ = os.Remove(hookDNSObservationFile())
+	// DNS 优先恢复，路由清理失败不能把系统解析留在死端口。
+	dnsErr := restoreHookDNS()
+	pins := newPCProxySession()
+	if err := pins.load(hookTunDevice()); err != nil {
+		return errors.Join(dnsErr, err)
+	}
+	return errors.Join(dnsErr, pins.release(time.Now()))
+}
+
+// watcher 仅监督这一个 worker：正常停、panic、强杀都先恢复 DNS/释放路由。
+// 意图仍开启且隧道存在时重启；用户停或隧道联动停通过 stop 文件明确终止。
+func watchDNSHook(listen string) int {
+	if err := os.WriteFile(dnsHookWatchFile(), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		return 1
+	}
+	defer os.Remove(dnsHookWatchFile())
+	exe, err := os.Executable()
+	if err != nil {
+		return 1
+	}
+	for attempt := 0; ; attempt++ {
+		worker := exec.Command(exe, "proxy", "dns-hook", "start", "--listen", listen)
+		worker.Env = append(os.Environ(), "MYNET_DNS_HOOK_CHILD=1")
+		worker.Stdout, worker.Stderr = os.Stdout, os.Stderr
+		if err := worker.Start(); err != nil {
+			hookLogf("worker start: %v", err)
+			return 1
+		}
+		waited := make(chan error, 1)
+		go func() { waited <- worker.Wait() }()
+		if attempt > 0 {
+			ready := false
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) && !hookStopRequested() {
+				if probeLocalForwarder(listen) == nil {
+					ready = true
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if !ready || hookStopRequested() || dnsHookAfterStart(listen, worker.Process.Pid) != 0 {
+				_ = worker.Process.Kill()
+				<-waited
+				if err := cleanupDNSHook(); err != nil {
+					hookLogf("restart cleanup: %v", err)
+				}
+				_ = os.Remove(dnsHookPIDFile())
+				return 1
+			}
+		}
+		err := <-waited
+		if raw, rerr := os.ReadFile(hookDNSReadyFile()); rerr == nil && strings.TrimSpace(string(raw)) == strconv.Itoa(worker.Process.Pid) && !hookStopRequested() {
+			owned, checkErr := hookDNSOwned(LoadDNSBackup(), hookSystemDNSOps(), effectiveHookDNSServers)
+			if checkErr == nil && !owned {
+				_ = recordHookDNSInterruption()
+			}
+		}
+		if err != nil {
+			hookLogf("worker exited: %v", err)
+		}
+		if err := cleanupDNSHook(); err != nil {
+			hookLogf("cleanup: %v", err)
+			return 1
+		}
+		_ = os.Remove(dnsHookPIDFile())
+		if hookStopRequested() || hookDNSInterrupted() || !DNSHookWanted() || liveHookTunDevice() == "" {
+			return 0
+		}
+		time.Sleep(time.Second)
+		if hookStopRequested() {
+			return 0
+		}
+	}
 }
 
 func dnsHookStatus() int {
 	pid := readHookPID()
 	alive := pid > 0 && processAlive(pid)
-	fmt.Printf("dns-hook: pid=%d alive=%v listen_default=%s pins=%d\n",
-		pid, alive, DNSHookListenDefault, len(LoadDNSHookPins()))
+	pins := newPCProxySession()
+	if err := pins.load(hookTunDevice()); err != nil {
+		return 1
+	}
+	state := accelerationState(DNSHookWanted(), alive, liveHookTunDevice() != "")
+	if alive {
+		switch hookDNSObservation(pid) {
+		case "unknown":
+			state = "dns_unknown"
+		case "overridden":
+			state = "dns_overridden"
+		}
+	}
+	if hookDNSInterrupted() && DNSHookWanted() {
+		state = "dns_overridden"
+	}
+	active := alive && state == "running"
+	fmt.Printf("dns-hook: pid=%d alive=%v wanted=%v state=%s active=%v listen_default=%s pins=%d domains=%d routes=%d\n",
+		pid, alive, DNSHookWanted(), state, active, DNSHookListenDefault, len(LoadDNSHookPins()), len(pins.Domains), len(pins.Routes))
+	if pins.LastError != "" {
+		fmt.Printf("last_error=%s\n", pins.LastError)
+	}
 	return 0
 }
 
@@ -1430,14 +1608,6 @@ func readHookPID() int {
 	return n
 }
 
-func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
-}
-
 // portOccupied 尝试绑定 UDP 端口判断是否被占；成功即释放。
 // 返回 true = 已有别人（或已死的残留）在听。
 func portOccupied(listen string) bool {
@@ -1447,4 +1617,38 @@ func portOccupied(listen string) bool {
 	}
 	_ = pc.Close()
 	return false
+}
+
+// 控制面只串行启停，不重试抢锁；防止两个 watcher 同时恢复/覆盖系统 DNS。
+func withDNSHookControl(action func() int) int {
+	p := filepath.Join(varDir(), "proxy", "dns-hook-control.lock")
+	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer f.Close()
+	if err := lockDNSHookControl(f); err != nil {
+		fmt.Fprintln(os.Stderr, "dns-hook 另一个启停操作正在执行:", err)
+		return 1
+	}
+	return action()
+}
+
+// accelerationState 区分等待连接和已连接却未启动，供托盘与 WebUI 共用。
+func accelerationState(wanted, alive, tunnel bool) string {
+	if alive {
+		return "running"
+	}
+	if !wanted {
+		return "disabled"
+	}
+	if !tunnel {
+		return "waiting_tunnel"
+	}
+	return "failed"
 }

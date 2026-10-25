@@ -1,37 +1,16 @@
 package mynet
 
-// 隧道启停联动 proxy / DNS 侧车 —— 依赖拓扑与启停编排。
-//
-// ── 依赖关系（谁靠谁）────────────────────────────────────────
-//
-//	tunnel（底座）
-//	  ├── proxy     平行侧车：出口选点 / 分流投影。只依赖 tunnel 数据面。
-//	  └── dns-plan  平行侧车：系统 DNS 三选一（peer VIP 走隧道）。只依赖 tunnel。
-//	        └── dns-hook  叠加层：本地加速钩子。
-//	                      依赖 tunnel（钉 /32）+ proxy.DomainRules（域名清单）。
-//
-// 结论：**proxy 与 DNS 是平行关系，不是链式依赖**。
-//   - DNS peer 模式只把系统 DNS 指到隧道 VIP，不需要 proxy 在跑。
-//   - proxy 按 IP/域名分流，也不要求系统 DNS 被接管。
-//   - 只有 dns-hook 同时吃两者（DomainRules 配置 + 隧道口）。
-//
-// ── 编排：启动分层顺序，停止栈式逆序 ─────────────────────────
-//
-//	up:    tunnel → [proxy ∥ dns-plan] → dns-hook
-//	down:  dns-hook → [dns-restore ∥ proxy-静默] → tunnel
-//
-// 为什么不用单链强依赖：proxy 失败不应挡住 DNS，反之亦然 ——
-// 侧车是增强不是隧道前提，单项失败只告警。为什么 dns-hook 必须最后起/
-// 最先停：它把解析结果钉进隧道，隧道口不在时钉扎无意义；停的时候先撤钩子
-// 才能把系统 DNS 干净交还 OS。
-//
-// D4/§14 仍然成立：mode=off/空 **绝不** 动系统 DNS；service start 不做默认劫持。
+// 隧道启停联动：GW 的 DNS 由 apply 写网关产物，PC 的系统 DNS 只由 hook 接管。
+// up: tunnel → apply(proxy / gateway DNS) → proxy projection → PC dns-hook
+// down: dns-hook → owned DNS restore → tunnel；用户加速偏好保留。
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 // ── 加速意图（用户偏好，与进程事实分离）────────────────────────
@@ -44,19 +23,63 @@ func dnsHookIntentFile() string {
 
 type dnsHookIntent struct {
 	Enabled bool `json:"enabled"`
+	Version int  `json:"version,omitempty"`
 }
 
 // SetDNSHookWanted 记住加速偏好（托盘/CLI 用户动作）。
 func SetDNSHookWanted(on bool) error {
-	b, _ := json.MarshalIndent(dnsHookIntent{Enabled: on}, "", "  ")
+	// PC 加速与客户端 proxy 共用一个持久开关；旧文件仅保留兼容。
+	if err := SetProxyEnabled(on); err != nil {
+		return err
+	}
+	return saveDNSHookIntent(on)
+}
+
+func saveDNSHookIntent(on bool) error {
+	b, _ := json.MarshalIndent(dnsHookIntent{Enabled: on, Version: 1}, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(dnsHookIntentFile()), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dnsHookIntentFile(), append(b, '\n'), 0o644)
+	path := dnsHookIntentFile()
+	if err := os.WriteFile(path+".tmp", append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
 }
 
-// DNSHookWanted 用户是否开过加速。文件缺失 = 未启用（默认不劫持）。
+// legacyDNSHookIntent 仅未收口的旧文件有独立开关语义。
+func legacyDNSHookIntent() *dnsHookIntent {
+	raw, err := os.ReadFile(dnsHookIntentFile())
+	var it dnsHookIntent
+	if err != nil || json.Unmarshal(raw, &it) != nil || it.Version != 0 {
+		return nil
+	}
+	return &it
+}
+
+// migratePCAcceleration 保留旧版最后一次加速选择，在隧道投影前归入 proxy 策略。
+func migratePCAcceleration() error {
+	if !isPCDNSPlatform() {
+		return nil
+	}
+	if it := legacyDNSHookIntent(); it != nil {
+		return SetDNSHookWanted(it.Enabled)
+	}
+	return nil
+}
+
+// DNSHookWanted 统一读取客户端 proxy 开关；旧版独立意图在迁移前保留优先级。
 func DNSHookWanted() bool {
+	if it := legacyDNSHookIntent(); it != nil {
+		return it.Enabled
+	}
+	st, err := LoadProxyState()
+	if err != nil {
+		return false
+	}
+	if st.Local != nil {
+		return st.Local.Policy.Enabled && st.Local.Policy.Role != domain.ProxyRoleServer
+	}
 	raw, err := os.ReadFile(dnsHookIntentFile())
 	if err != nil {
 		return false
@@ -97,30 +120,19 @@ func syncProxySidecar() sidecarResult {
 	if p == nil || !p.Enabled {
 		return sidecarResult{name: "proxy", err: nil} // 未启用 = 跳过，不是错误
 	}
-	EnsurePluginSynced()
+	if err := SyncPluginProxyFromPolicy(p); err != nil {
+		return sidecarResult{name: "proxy", err: err}
+	}
 	if err := ApplyPlugins(false); err != nil {
 		return sidecarResult{name: "proxy", err: err}
 	}
 	return sidecarResult{name: "proxy"}
 }
 
-// syncDNSPlanSidecar DNS 三选一侧：只在用户配了 peer/smart 时落地系统 DNS。
-// off/空不碰（D4/§14）。与 proxy 无依赖。
-func syncDNSPlanSidecar() sidecarResult {
-	p := EffectiveProxyPolicy()
-	if p == nil || p.DNS == nil || !p.DNS.Active() {
-		return sidecarResult{name: "dns-plan", err: nil} // 未启用 = 跳过
-	}
-	if err := ApplyProxyDNSPlan("", p.DNS); err != nil {
-		return sidecarResult{name: "dns-plan", err: err}
-	}
-	return sidecarResult{name: "dns-plan"}
-}
-
 // startDNSHookSidecar 加速钩子（叠加层）：意图开着且隧道已在，才拉起。
 // 依赖：tunnel（钉扎目标）+ DomainRules（清单，随 EffectiveProxyPolicy 读）。
 func startDNSHookSidecar() sidecarResult {
-	if !DNSHookWanted() {
+	if !isPCDNSPlatform() || !DNSHookWanted() {
 		return sidecarResult{name: "dns-hook", err: nil} // 用户没开 = 跳过
 	}
 	if dnsHookRunning() {
@@ -135,7 +147,7 @@ func startDNSHookSidecar() sidecarResult {
 // stopDNSHookSidecar 停钩子（还原它改过的系统 DNS）。
 // **不改**用户意图（DNSHookWanted 保持），下次隧道起来还能自动跟上。
 func stopDNSHookSidecar() sidecarResult {
-	if !dnsHookRunning() {
+	if !dnsHookRunning() && !hookWatcherAlive() && !DNSRestoreNeeded() && len(LoadDNSHookPins()) == 0 {
 		return sidecarResult{name: "dns-hook", err: nil}
 	}
 	if rc := dnsHookStop(); rc != 0 {
@@ -146,8 +158,8 @@ func stopDNSHookSidecar() sidecarResult {
 
 // restoreDNSSidecar 幂等还原系统 DNS（历史接管 / 三选一落地过的都收）。
 func restoreDNSSidecar() sidecarResult {
-	if !isPCDNSPlatform() {
-		return sidecarResult{name: "dns-restore", err: nil}
+	if !DNSRestoreNeeded() {
+		return sidecarResult{name: "dns-restore"}
 	}
 	if err := RestoreSystemDNS(); err != nil {
 		return sidecarResult{name: "dns-restore", err: err}
@@ -157,15 +169,13 @@ func restoreDNSSidecar() sidecarResult {
 
 // SyncSidecarsOnTunnelUp 隧道起来后的侧车编排。
 //
-//	第 1 层（平行，互不阻塞）：proxy ∥ dns-plan
+//	第 1 层：proxy 投影（GW DNS 已由 apply 落地）
 //	第 2 层（叠加）：dns-hook
 //
 // 单项失败只打 ⚠，不回滚隧道 —— 侧车是增强，不是隧道前提。
 func SyncSidecarsOnTunnelUp() {
-	// 层内平行：刻意先 proxy 后 dns-plan 只为日志顺序稳定；
-	// 二者无数据依赖，任一失败不影响另一个。
+	// 不再从旧 peer/smart 配置二次接管系统 DNS；PC 只认 hook 意图。
 	syncProxySidecar().log()
-	syncDNSPlanSidecar().log()
 	// 叠加层最后：需要隧道口 + DomainRules 都已就绪。
 	startDNSHookSidecar().log()
 }

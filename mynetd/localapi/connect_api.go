@@ -127,6 +127,13 @@ func isContextMutation(argv []string) bool {
 	switch argv[0] {
 	case "service", "setup", "apply", "install", "uninstall", "update", "refresh-config", "refresh-routes", "refresh-address", "plugin":
 		return true
+	case "proxy":
+		if len(argv) > 2 && argv[1] == "dns-hook" {
+			if argv[2] == "status" || len(argv) >= 4 && (argv[2] == "ad-block" || argv[2] == "dns") && argv[3] == "status" {
+				return false
+			}
+		}
+		return len(argv) > 1 && argv[1] != "status"
 	case "node":
 		return len(argv) > 1 && argv[1] == "claim"
 	case "config":
@@ -134,6 +141,8 @@ func isContextMutation(argv []string) bool {
 			return false
 		}
 		switch argv[1] {
+		case "form":
+			return len(argv) > 2 && argv[2] != "--json"
 		case "status", "identity", "runtime", "cloud", "plugins", "tenants", "parity":
 			return false
 		case "keys":

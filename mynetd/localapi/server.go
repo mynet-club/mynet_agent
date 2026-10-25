@@ -57,6 +57,10 @@ type Server struct {
 	ProxyLoad       ProxyIntentLoader
 	ProxySave       ProxyIntentSaver
 	ProxySyncPlugin func(p *domain.ProxyPolicy) error
+	// ProxyPluginExits 读插件壳里**实际生效**的出口（config.exits + max_exits）。
+	// 出口不进 intent 的 wire，SyncPluginProxyFromPolicy 在 intent 为空时会保留
+	// 插件已有值 —— 只读 intent 的界面会在有出口的节点上误报「尚未选择出口设备」。
+	ProxyPluginExits func() (exits []domain.ProxyExit, maxExits int, err error)
 	// 会话落盘 / 设备指纹（组合根注入，避免 localapi import mynet —— B2）
 	SaveLoginSession  func(sess LoginSession) error
 	DeviceFingerprint func() string

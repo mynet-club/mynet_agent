@@ -3,8 +3,11 @@ package mynet
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -54,7 +57,7 @@ func proxyExitSources(p *domain.ProxyPolicy) ([]string, bool, error) {
 }
 
 // 单一 nft batch 原子替换整张专表；失败时内核保留上一代。
-func proxyExitNftBatch(dev string, p *domain.ProxyPolicy, exists bool) (string, error) {
+func proxyExitNftBatch(dev string, scope proxyExitScope, p *domain.ProxyPolicy, exists bool) (string, error) {
 	if err := domain.ValidateTunDevice(dev); err != nil {
 		return "", err
 	}
@@ -67,25 +70,40 @@ func proxyExitNftBatch(dev string, p *domain.ProxyPolicy, exists bool) (string, 
 	if exists {
 		fmt.Fprintf(&b, "delete table inet %s\n", name)
 	}
-	if p == nil || !p.Enabled || !p.IsServerLike() {
-		return b.String(), nil
+	if err := scope.validate(dev); err != nil {
+		return "", err
 	}
 	fmt.Fprintf(&b, "add table inet %s\nadd chain inet %s forward { type filter hook forward priority -10; policy accept; }\n", name, name)
-	if restricted {
-		for _, cidr := range cidrs {
-			ip, _, _ := net.ParseCIDR(cidr)
-			family := "ip"
-			if ip.To4() == nil {
-				family = "ip6"
-			}
-			fmt.Fprintf(&b, "add rule inet %s forward iifname %q %s saddr %s accept\n", name, dev, family, cidr)
+	wan := scope.nftWAN()
+	match := fmt.Sprintf("iifname %q oifname %s", dev, wan)
+	for _, cidr := range scope.LAN {
+		family := "ip"
+		if ip, _, _ := net.ParseCIDR(cidr); ip.To4() == nil {
+			family = "ip6"
 		}
-		fmt.Fprintf(&b, "add rule inet %s forward iifname %q drop\n", name, dev)
-	} else {
-		fmt.Fprintf(&b, "add rule inet %s forward iifname %q accept\n", name, dev)
+		fmt.Fprintf(&b, "add rule inet %s forward %s %s daddr %s return\n", name, match, family, cidr)
 	}
-	fmt.Fprintf(&b, "add rule inet %s forward oifname %q ct state established,related accept\n", name, dev)
-	fmt.Fprintf(&b, "add chain inet %s postrouting { type nat hook postrouting priority 100; }\nadd rule inet %s postrouting iifname %q masquerade\n", name, name, dev)
+	enabled := p != nil && p.Enabled && p.IsServerLike()
+	if enabled {
+		if restricted {
+			for _, cidr := range cidrs {
+				ip, _, _ := net.ParseCIDR(cidr)
+				family := "ip"
+				if ip.To4() == nil {
+					family = "ip6"
+				}
+				fmt.Fprintf(&b, "add rule inet %s forward %s %s saddr %s accept\n", name, match, family, cidr)
+			}
+		} else {
+			fmt.Fprintf(&b, "add rule inet %s forward %s accept\n", name, match)
+		}
+	}
+	// 即使撤销许可也保留 WAN 拒绝；不允许平台 forwarding/NAT 绕过。
+	fmt.Fprintf(&b, "add rule inet %s forward %s drop\n", name, match)
+	if enabled {
+		fmt.Fprintf(&b, "add rule inet %s forward iifname %s oifname %q ct state established,related accept\n", name, wan, dev)
+		fmt.Fprintf(&b, "add chain inet %s postrouting { type nat hook postrouting priority 100; }\nadd rule inet %s postrouting %s masquerade\n", name, name, match)
+	}
 	return b.String(), nil
 }
 
@@ -98,13 +116,17 @@ func proxyFirewallMissing(out string, err error) bool {
 }
 
 func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, dev string, legacy bool, run proxyFirewallRun) error {
-	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" {
+	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" || snap.OS == "freebsd" || snap.OS == "openbsd" || snap.OS == "netbsd" {
 		if legacy || (p != nil && p.Enabled && p.IsServerLike()) {
 			return fmt.Errorf("当前平台不支持 Linux 出口规则管理")
 		}
 		return nil
 	}
 	if err := domain.ValidateTunDevice(dev); err != nil {
+		return err
+	}
+	scope, err := proxyExitScopeFromSnapshot(snap, dev)
+	if err != nil {
 		return err
 	}
 	if snap.Capabilities["nft"] {
@@ -114,7 +136,7 @@ func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, d
 		if err != nil && !proxyFirewallMissing(out, err) {
 			return fmt.Errorf("读取出口 nft 规则: %w", err)
 		}
-		batch, err := proxyExitNftBatch(dev, p, exists)
+		batch, err := proxyExitNftBatch(dev, scope, p, exists)
 		if err != nil {
 			return err
 		}
@@ -134,7 +156,7 @@ func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, d
 		return nil
 	}
 	if snap.Capabilities["iptables"] {
-		return syncProxyExitIPTables(p, dev, legacy, run)
+		return syncProxyExitIPTables(p, dev, scope, legacy, run)
 	}
 	if legacy || (p != nil && p.Enabled && p.IsServerLike()) {
 		return fmt.Errorf("出口无可用 nft/iptables，拒绝假成功")
@@ -184,7 +206,7 @@ func legacyNftExitDeletes(dev string, run proxyFirewallRun) (string, error) {
 // iptables 的出口使用专用 filter/mangle/nat 链。POSTROUTING 不支持 -i，
 // 所以在 FORWARD 标记入隧道的包，再在 NAT 按标记匹配。保留 mark 低 8 位；
 // 0x4dxxxx00/0xffffff00 是 MyNet 出口保留段，与 client fwmark 0xc8 分开。
-func proxyExitIPTDesired(dev string, p *domain.ProxyPolicy) (map[string][]string, error) {
+func proxyExitIPTDesired(dev string, scope proxyExitScope, p *domain.ProxyPolicy) (map[string][]string, error) {
 	if err := domain.ValidateTunDevice(dev); err != nil {
 		return nil, err
 	}
@@ -193,9 +215,10 @@ func proxyExitIPTDesired(dev string, p *domain.ProxyPolicy) (map[string][]string
 		return nil, err
 	}
 	out := map[string][]string{"filter": nil, "mangle": nil, "nat": nil}
-	if p == nil || !p.Enabled || !p.IsServerLike() {
-		return out, nil
+	if err := scope.validate(dev); err != nil {
+		return nil, err
 	}
+	enabled := p != nil && p.Enabled && p.IsServerLike()
 	name := proxyExitName(dev)
 	sum := sha256.Sum256([]byte(dev))
 	mark := fmt.Sprintf("0x4d%02x%02x00/0xffffff00", sum[0], sum[1])
@@ -206,17 +229,33 @@ func proxyExitIPTDesired(dev string, p *domain.ProxyPolicy) (map[string][]string
 		}
 	}
 	f := []string{":" + name + " - [0:0]"}
-	if restricted {
+	for _, cidr := range scope.LAN {
+		if ip, _, _ := net.ParseCIDR(cidr); ip.To4() != nil {
+			f = append(f, "-A "+name+" -d "+cidr+" -j RETURN")
+		}
+	}
+
+	if enabled && restricted {
 		for _, cidr := range cidrs {
 			f = append(f, "-A "+name+" -s "+cidr+" -j ACCEPT")
 		}
 		f = append(f, "-A "+name+" -j DROP")
-	} else {
+	} else if enabled {
 		f = append(f, "-A "+name+" -j ACCEPT")
+	} else {
+		f = append(f, "-A "+name+" -j DROP")
 	}
-	f = append(f, "-I FORWARD 1 -i "+dev+" -j "+name)
+	for _, wan := range scope.WAN {
+		f = append(f, "-I FORWARD 1 -i "+dev+" -o "+wan+" -j "+name)
+	}
 	out["filter"] = f
-	out["mangle"] = []string{":" + name + " - [0:0]", "-A " + name + " -j MARK --set-xmark " + mark, "-I FORWARD 1 -i " + dev + " -j " + name}
+	if !enabled {
+		return out, nil
+	}
+	out["mangle"] = []string{":" + name + " - [0:0]", "-A " + name + " -j MARK --set-xmark " + mark}
+	for _, wan := range scope.WAN {
+		out["mangle"] = append(out["mangle"], "-I FORWARD 1 -i "+dev+" -o "+wan+" -j "+name)
+	}
 	out["nat"] = []string{":" + name + " - [0:0]", "-A " + name + " -j MASQUERADE", "-I POSTROUTING 1 -m mark --mark " + mark + " -j " + name}
 	return out, nil
 }
@@ -283,8 +322,8 @@ func proxyExitIPTRestore(table, snapshot, name string, desired []string) string 
 	b.WriteString("COMMIT\n")
 	return b.String()
 }
-func syncProxyExitIPTables(p *domain.ProxyPolicy, dev string, legacy bool, run proxyFirewallRun) error {
-	desired, err := proxyExitIPTDesired(dev, p)
+func syncProxyExitIPTables(p *domain.ProxyPolicy, dev string, scope proxyExitScope, legacy bool, run proxyFirewallRun) error {
+	desired, err := proxyExitIPTDesired(dev, scope, p)
 	if err != nil {
 		return err
 	}
@@ -412,4 +451,123 @@ func proxyExitMarkConflict(snapshot, name string, desired []string) error {
 		}
 	}
 	return nil
+}
+
+// 重放产物不依赖内核现状：add + flush 专表，冷启动与重复加载同义。
+func writeProxyExitReplayArtifact(home, dev string, scope proxyExitScope, p *domain.ProxyPolicy) error {
+	batch, err := proxyExitNftBatch(dev, scope, p, false)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, "scripts", "firewall."+proxyExitName(dev)+".nft")
+
+	prefix := "add table inet " + proxyExitName(dev) + "\n"
+	batch = prefix + "flush table inet " + proxyExitName(dev) + "\n" + strings.TrimPrefix(batch, prefix)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return writeFirewallArtifact(path, []byte(batch), 0600)
+}
+
+// sync 本身也必须产生无授权 WAN 拒绝；不能只在 proxy apply 时才有边界。
+func ensureProxyExitReplay(home, dev string) error {
+	if dev == "" {
+		return nil
+	}
+	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
+	if err != nil {
+		return fmt.Errorf("出口重放需要 detector 快照: %w", err)
+	}
+	if snap.OS != "linux" || !snap.Capabilities["nft"] {
+		return nil
+	}
+	scope, err := proxyExitScopeFromSnapshot(snap, dev)
+	if err != nil {
+		return err
+	}
+	return writeProxyExitReplayArtifact(home, dev, scope, EffectiveProxyPolicy())
+}
+
+// WAN is every detected default egress. Directly attached networks remain local
+// even on a one-NIC bypass router where LAN and WAN share the same interface.
+type proxyExitScope struct{ WAN, LAN []string }
+
+func (s proxyExitScope) validate(dev string) error {
+	if len(s.WAN) == 0 {
+		return fmt.Errorf("出口防火墙需要 detector 的物理 WAN 路由快照")
+	}
+	for _, wan := range s.WAN {
+		if err := domain.ValidateTunDevice(wan); err != nil {
+			return err
+		}
+		if wan == dev {
+			return fmt.Errorf("WAN cannot be the tunnel")
+		}
+	}
+	for _, cidr := range s.LAN {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return err
+		}
+		bits, _ := n.Mask.Size()
+		if bits == 0 {
+			return fmt.Errorf("LAN exception cannot cover default route")
+		}
+	}
+	return nil
+}
+func (s proxyExitScope) nftWAN() string {
+	parts := make([]string, 0, len(s.WAN))
+	for _, wan := range s.WAN {
+		parts = append(parts, strconv.Quote(wan))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+func proxyExitScopeFromSnapshot(snap *shared.SystemSnapshot, dev string) (proxyExitScope, error) {
+	var facts struct {
+		DefaultIface string                                                              `json:"default_iface"`
+		Routes       []struct{ Destination, Gateway, Interface, Scope, Protocol string } `json:"routes"`
+	}
+	if raw := snap.Detail["routing"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &facts); err != nil {
+			return proxyExitScope{}, err
+		}
+	}
+	wans, lans := map[string]bool{}, map[string]bool{}
+	if facts.DefaultIface != "" && facts.DefaultIface != dev {
+		wans[facts.DefaultIface] = true
+	}
+	for _, r := range facts.Routes {
+		if r.Interface == "" || r.Interface == dev {
+			continue
+		}
+		if r.Destination == "default" || r.Destination == "0.0.0.0/0" || r.Destination == "::/0" {
+			wans[r.Interface] = true
+			continue
+		}
+		if r.Gateway != "" || (r.Scope != "link" && r.Protocol != "kernel") {
+			continue
+		}
+		_, network, err := net.ParseCIDR(r.Destination)
+		if err != nil {
+			continue
+		}
+		bits, total := network.Mask.Size()
+		if bits > 0 && bits < total {
+			lans[network.String()] = true
+		}
+	}
+	out := proxyExitScope{}
+	for wan := range wans {
+		out.WAN = append(out.WAN, wan)
+	}
+	sort.Strings(out.WAN)
+	for lan := range lans {
+		out.LAN = append(out.LAN, lan)
+	}
+	sort.Strings(out.LAN)
+	return out, out.validate(dev)
 }

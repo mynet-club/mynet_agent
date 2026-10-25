@@ -49,6 +49,11 @@ type proxyStatusBody struct {
 	Cloud     *domain.StampedProxyPolicy `json:"cloud,omitempty"`
 	Status    domain.ProxyWriteback      `json:"status"`
 	Describe  string                     `json:"describe"`
+	// PluginExits 插件壳里实际生效的出口。intent 的 Exits 允许为空
+	// （SyncPluginProxyFromPolicy 在 intent 空时保留插件已有值），
+	// 界面据此显示「已在用哪些出口」，而不是误报「尚未选择」。
+	PluginExits    []domain.ProxyExit `json:"plugin_exits,omitempty"`
+	PluginMaxExits int                `json:"plugin_max_exits,omitempty"`
 }
 
 func (s *Server) loadProxyState() (*domain.ProxyIntentState, string, error) {
@@ -80,13 +85,21 @@ func (s *Server) handlePluginProxy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"success": true, "data": proxyStatusBody{
+		body := proxyStatusBody{
 			Effective: st.Effective(),
 			Local:     st.Local,
 			Cloud:     st.Cloud,
 			Status:    st.Status,
 			Describe:  st.Describe(),
-		}})
+		}
+		// 读不到插件壳不算错误：没装插件时本来就没有出口可报。
+		if s.ProxyPluginExits != nil {
+			if exits, maxExits, xerr := s.ProxyPluginExits(); xerr == nil {
+				body.PluginExits = exits
+				body.PluginMaxExits = maxExits
+			}
+		}
+		writeJSON(w, 200, map[string]any{"success": true, "data": body})
 	case http.MethodPost:
 		s.postPluginProxy(w, r)
 	default:
@@ -119,9 +132,18 @@ func (s *Server) postPluginProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 执行器是另一个进程，必须先保存新意图，否则 proxy apply 读到上一版开关。
+	if err := s.saveProxyState(dir, st); err != nil {
+		writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+
 	// 双轨合一：策略写入后投影到 plugins/proxy.json
 	if st.Local != nil && s.ProxySyncPlugin != nil {
-		_ = s.ProxySyncPlugin(&st.Local.Policy)
+		if err := s.ProxySyncPlugin(&st.Local.Policy); err != nil {
+			writeJSON(w, 500, map[string]any{"success": false, "message": "策略已保存，插件投影失败: " + err.Error()})
+			return
+		}
 	}
 
 	// 1) 本地生效：执行器 plugin apply（mynetd 只派发，不自己动系统）

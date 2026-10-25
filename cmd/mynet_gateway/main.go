@@ -28,8 +28,8 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
-// DefaultListen 网关默认监听（AGENTS.md §1.5：gateway 默认 8710）。
-const DefaultListen = ":8710"
+// DefaultListen 网关默认监听（AGENTS.md §1.5：gateway 8097；对外 443 由 nginx 反代）。
+const DefaultListen = ":8097"
 
 // shutdownTimeout 优雅退出上限：给在途请求留时间，但不无限等。
 const shutdownTimeout = 15 * time.Second
@@ -160,7 +160,7 @@ func validateConfig(listen, internalToken string) error {
 		"空口令下 /v1/notify 完全不校验，任何人都能向节点推送事件", listen)
 }
 
-// isLoopback 判断监听地址是否只绑回环。空 host（":8710"、"0.0.0.0:8710"）视为对外。
+// isLoopback 判断监听地址是否只绑回环。空 host（":8097"、"0.0.0.0:8097"）视为对外。
 func isLoopback(listen string) bool {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {

@@ -5,6 +5,7 @@ package mynet
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
 
 // 未支持的 GOOS：明确 unsupported，禁止 error 桩后默认成功（playbook §4.1）。
@@ -21,5 +22,8 @@ func platformUninstall(_ string, _, _ bool) int {
 }
 
 func platformDescriptor() PlatformDescriptor {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" || runtime.GOOS == "netbsd" {
+		return PlatformDescriptor{Platform: runtime.GOOS, ServiceMgr: "manual", Capabilities: []string{"proxy-pc", "webui"}}
+	}
 	return PlatformDescriptor{Platform: "unsupported"}
 }

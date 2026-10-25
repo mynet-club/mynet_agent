@@ -54,11 +54,14 @@ const (
 	noticeTTL = 2 * pollInterval
 )
 
-// 本机 API 的两个写面。**信封不同**，不能共用一套解析：
+// 本机 API 的写面。**信封不同**，不能共用一套解析：
 //
 //	commandPath → {success, data:{argv,stdout,stderr,bin}}（handlers.go:164）
 //	connectPath → 顶层 {success, stage, message, retryable, code?, need_login?}
 //	                                              （connect_api.go:39-121）
+//
+// 托盘只用 commandPath。connectPath 是**接入编排**（会走云端 keys sync /
+// config pull），属于配置向导，不是启停——见 startTunnel 的注释。
 const (
 	commandPath = "/api/v1/command"
 	connectPath = "/api/v1/config/connect"
@@ -136,8 +139,9 @@ type App struct {
 	// **不直接 SetTooltip**：tooltip 每 3s 被探针重画，直接写会立刻被冲掉，
 	// 用户点了却什么都看不到（P3:114「点击失败可见」）。存进状态、由渲染路径
 	// 带上、到点自动消失，才留得住。
-	noticeText  string
-	noticeUntil time.Time
+	noticeText       string
+	noticeUntil      time.Time
+	accelInterrupted bool
 	// autoTitle 「登录时启动」菜单项的真实文案，由 syncAutoMenu 解析后写入。
 	// 存起来而不是渲染时现查：AutoStarter 会 shell out（launchctl / 注册表），
 	// 不能压在 mu 里。
@@ -290,43 +294,26 @@ func (a *App) bootSequence() {
 	}
 }
 
-// startTunnel 连接隧道 —— 打 daemon 的**专用编排端点**，不发 argv。
+// startTunnel 连接隧道 —— 发 `service start`，与 stopTunnel 对称。
 //
-// ⚠️ 旧版发的是 `apply --active`，而 cmd_apply.go:25/33 自己写着那是
-// 「投影：…（**不装 OS 路由**）」，cmdApply 全程不起隧道进程 —— 也就是说
-// 「连接」按钮从来没连接过（D19）。而且它不走 service 分支，
-// markTunnelWantDriver 从不触发 ⇒ var/tunnel-state.json 的 want_running
-// 永远不为真，开机恢复（cmd/mynetd/tunnel_restore.go:130-151）也不会拉起。
+// ⚠️ 这里刻意**不打** /api/v1/config/connect。那个端点是「接入编排」
+// （config keys ensure → keys sync --connect → config pull → apply --active →
+// service start → apply --auto），每一步都要过云端鉴权。把日常启停挂在它上面，
+// 等于让「点一下连接」依赖 access token 是否新鲜：实测 access token 过期后
+// `config keys sync --connect` 直接 HTTP 401，托盘连不上，而同一台机器上
+// WebUI 的「启动」按钮（就是 service start）照常可用 —— 用户看到的就是
+// 「托盘坏了、面板好的」。托盘的分工是**启停本机隧道**，接入/同步属于配置向导。
 //
-// 真正的编排在守护侧已经存在：apply --active → service start <driver> →
-// apply --auto，失败自动 cleanup（service stop），驱动名由服务端从配置解析，
-// 并顺手记账 want_running/driver。托盘只按端点，不把命令链搬进来。
-// 顺带继承：409 互斥锁、need_login→401、上游脱敏。
+// 关于 D19 那条教训：旧版发 `apply --active`，而它只做投影、不起隧道进程，
+// 所以「连接」从来没连接过。`service start` 才是启动点 —— cmdService 在没有
+// 驱动名时从 bundle 解析 driver，内部还包含 RequireLocalIdentity、
+// ApplyFromActive（运行投影）和 verifyTunAfterStart（TUN 验收），
+// 所以托盘既不需要知道驱动类型，也不会在 tun 没起来时报「已连接」。
+//
+// want_running 记账由守护侧 command 面负责（handlers.go:63-73），
+// 开机恢复照旧（cmd/mynetd/tunnel_restore.go）。
 func (a *App) startTunnel() error {
-	code, body, err := a.post(connectPath, nil)
-	if err != nil {
-		return err
-	}
-	if code == http.StatusConflict {
-		return errInProgress
-	}
-	var env struct {
-		Success   bool   `json:"success"`
-		Stage     string `json:"stage"`
-		Message   string `json:"message"`
-		Code      string `json:"code"`
-		NeedLogin bool   `json:"need_login"`
-	}
-	if uerr := json.Unmarshal(body, &env); uerr != nil {
-		return errors.New(msgUnparsable)
-	}
-	if env.Success {
-		return nil
-	}
-	if env.NeedLogin || env.Code == "need_login" {
-		return errors.New("登录已失效，请打开面板重新登录后再连接")
-	}
-	return apiFailure(env.Message, env.Stage)
+	return a.postCommand("service", "start")
 }
 
 // stopTunnel 断开隧道 —— `service stop`，**不写死驱动名**（D14）。
@@ -635,6 +622,10 @@ func (a *App) refreshOnce() {
 
 	a.fsm.On(ev)
 	a.mu.Unlock()
+	// 加速状态也跟随实际连接刷新，避免启动/断开后一直显示旧值。
+	if p.Up && a.mAccelOn != nil {
+		a.syncAccelMenu()
+	}
 	// 稳态也要刷：one_line 每轮都可能变（旧版这里 if/else 两支都调 render，
 	// 判据是假的，直接合并）。
 	a.render()
@@ -839,7 +830,16 @@ func (a *App) openPanel() { a.openURL(PanelURL(a.base)) }
 // 页面键改了这条就会静默退回概览页 —— TestDiagURLMatchesWebUIPage 盯着这件事。
 func (a *App) openDiag() { a.openURL(DiagURL(a.base)) }
 
-func (a *App) openURL(url string) {
+func (a *App) openURL(url string) { go openExternalURL(url) }
+
+// openExternalURL 交给系统默认浏览器/处理器打开。
+// 抽成包级函数是为了让 main 的单实例分支也能唤起面板（那时还没有 App）。
+func openExternalURL(url string) {
+	browserOpenMu.Lock()
+	defer browserOpenMu.Unlock()
+	if key, ok := panelTabKey(url); ok && reusePanelTab(url, key) {
+		return
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
@@ -849,7 +849,9 @@ func (a *App) openURL(url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
-	_ = cmd.Start()
+	if err := cmd.Start(); err == nil {
+		go func() { _ = cmd.Wait() }()
+	}
 }
 
 // validOverlayIP 校验并规范化虚拟 IP。非法/缺失返回 ""（消费方据此隐藏菜单项）。
@@ -1047,16 +1049,16 @@ func (a *App) toggleAccel() {
 			Stdout string `json:"stdout"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(body, &env)
-	op := "start"
-	if strings.Contains(env.Data.Stdout, "alive=true") {
-		op = "stop"
-	}
-	if err := a.postCommand("proxy", "dns-hook", op); err != nil {
-		a.notice("加速" + opText(op) + "失败")
+	if json.Unmarshal(body, &env) != nil || !env.Success {
+		a.notice("加速状态不可用")
 		return
 	}
-	a.notice("加速已" + opText(op))
+	op := accelToggleOp(env.Data.Stdout)
+	if err := a.postCommand("proxy", "dns-hook", op); err != nil {
+		a.notice("加速" + opText(op) + "失败：" + safeText(err.Error(), MaxMenuRunes))
+		return
+	}
+	a.notice("加速设置已更新")
 	a.syncAccelMenu()
 }
 
@@ -1076,9 +1078,7 @@ func (a *App) openProxyPanel() {
 // shell out / HTTP 在锁外；结果只写文案并 render。
 func (a *App) syncAccelMenu() {
 	_, body, err := a.postJSON(commandPath, map[string]any{"argv": []string{"proxy", "dns-hook", "status"}})
-	title := "加速状态未知"
-	dnsLine := "DNS：—"
-	onTitle := "开启加速"
+	title, action, dns := "加速：状态未知", "加速状态不可用", "DNS：状态未知"
 	if err == nil {
 		var env struct {
 			Success bool `json:"success"`
@@ -1087,37 +1087,57 @@ func (a *App) syncAccelMenu() {
 			} `json:"data"`
 		}
 		if json.Unmarshal(body, &env) == nil && env.Success {
-			out := env.Data.Stdout
-			alive := strings.Contains(out, "alive=true")
-			pins := ""
-			if i := strings.Index(out, "pins="); i >= 0 {
-				rest := out[i+len("pins="):]
-				j := 0
-				for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
-					j++
-				}
-				pins = rest[:j]
-			}
-			if alive {
-				onTitle = "关闭加速"
-				title = "加速：已开启"
-				dnsLine = "DNS：钩子运行中 · 钉扎 " + pins
-			} else {
-				onTitle = "开启加速"
-				title = "加速：未开启"
-				dnsLine = "DNS：未接管"
+			title, action, dns = accelMenuText(env.Data.Stdout)
+			interrupted := strings.Contains(env.Data.Stdout, "state=dns_overridden")
+			a.mu.Lock()
+			notify := interrupted && !a.accelInterrupted
+			a.accelInterrupted = interrupted
+			a.mu.Unlock()
+			if notify {
+				a.notice("加速已中断：系统 DNS 已被外部更改，自动接管已暂停")
 			}
 		}
 	}
-	// 直接改菜单（与 push 并发；systray 在 darwin 是 cgo——boot 后仅 clickLoop/sync 调，
-	// 轮询不碰这两项，可接受）。测试可构造 nil 菜单项，判空防崩。
+	if a.mAccel != nil {
+		a.mAccel.SetTitle(title)
+	}
 	if a.mAccelOn != nil {
-		a.mAccelOn.SetTitle(onTitle)
+		a.mAccelOn.SetTitle(action)
 	}
 	if a.mAccelDNS != nil {
-		a.mAccelDNS.SetTitle(dnsLine)
+		a.mAccelDNS.SetTitle(dns)
 	}
-	_ = title
+}
+
+// accelMenuText 将运行事实与恢复偏好分别表达：等待恢复不等于 hook 仍在运行。
+func accelMenuText(out string) (title, action, dns string) {
+	if strings.Contains(out, "state=dns_overridden") {
+		return "加速：已中断", "重新开启加速", "DNS：已被外部更改 · 自动接管已暂停"
+	}
+	if strings.Contains(out, "state=dns_unknown") {
+		return "加速：状态待确认", "关闭加速", "DNS：无法确认系统接管状态"
+	}
+	if strings.Contains(out, "alive=true") {
+		pins := "0"
+		if i := strings.Index(out, "pins="); i >= 0 {
+			rest := out[i+len("pins="):]
+			j := 0
+			for j < len(rest) && rest[j] >= '0' && rest[j] <= '9' {
+				j++
+			}
+			if j > 0 {
+				pins = rest[:j]
+			}
+		}
+		return "加速：运行中", "关闭加速", "DNS：钩子运行中 · 钉扎 " + pins
+	}
+	if strings.Contains(out, "state=failed") {
+		return "加速：启动异常", "关闭加速", "DNS：未运行，请重新开启加速或查看诊断"
+	}
+	if strings.Contains(out, "wanted=true") {
+		return "加速：已暂停", "取消自动恢复加速", "DNS：已停止 · 等待隧道连接"
+	}
+	return "加速：未开启", "开启加速", "DNS：已停止 · 未接管"
 }
 
 // postJSON POST 并返回 body（status 解析用；不走 postCommand 的 success 判定）。
@@ -1136,4 +1156,14 @@ func selfPath() string {
 		return ""
 	}
 	return p
+}
+
+func accelToggleOp(out string) string {
+	if strings.Contains(out, "state=dns_overridden") {
+		return "start"
+	}
+	if strings.Contains(out, "alive=true") || strings.Contains(out, "wanted=true") {
+		return "stop"
+	}
+	return "start"
 }

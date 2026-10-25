@@ -91,6 +91,10 @@ DIST_MATRIX := \
   linux:linux:arm64:arm64: \
   linux:linux:mipsle:mipsel: \
   openwrt:linux:mipsle:mipsel:openwrt \
+  freebsd:freebsd:amd64:amd64: \
+  freebsd:freebsd:arm64:arm64: \
+  openbsd:openbsd:amd64:amd64: \
+  openbsd:openbsd:arm64:arm64: \
   windows:windows:amd64:amd64:
 
 # 打包器：darwin/windows 用 zip，其余 tgz（对齐 ctl PLATFORMS 的 ext）

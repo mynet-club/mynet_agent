@@ -90,7 +90,7 @@ func TestOpenWrtUciStepsBindDeviceOnlyFromAuthority(t *testing.T) {
 		t.Fatalf("无 bundle 时不该写 device 绑定:\n%s", noName)
 	}
 	// 结构守恒：zone / forwarding / commit 仍然齐（别把修复做成少建 zone）
-	for _, want := range []string{"network.mynet=interface", "name=mynet", "masq=1", "src=lan", "dest=wan", "commit firewall"} {
+	for _, want := range []string{"network.mynet=interface", "name=mynet", "masq=1", "src=lan", "dest=lan", "commit firewall"} {
 		if !strings.Contains(noName, want) {
 			t.Fatalf("步骤缺了 %q:\n%s", want, noName)
 		}

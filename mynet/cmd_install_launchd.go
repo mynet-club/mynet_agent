@@ -145,9 +145,21 @@ func installTrayAgent(home, binDir string, enable bool) error {
 		fmt.Println("  （无 GUI 登录会话：plist 已就位，下次登录自动拉起托盘）")
 		return nil
 	}
+	// disabled override 压过 plist：job 一旦被 disable 过（历史卸载、手工
+	// bootout 都会留下这条记录），bootstrap 恒返回「5: Input/output error」，
+	// 而且 launchd 不会自愈。先清掉再装，否则装完菜单栏永远是空的 ——
+	// 这个形态在本机实测过：plist 就位、二进制就位、日志只有一行 ⚠。
+	if out, err := launchctl("asuser", uid, "launchctl", "enable", "gui/"+uid+"/"+LabelTray); err != nil {
+		fmt.Printf("⚠ 托盘 enable 失败（继续尝试 bootstrap）: %v %s\n", err, strings.TrimSpace(out))
+	}
 	_, _ = launchctl("asuser", uid, "launchctl", "bootout", "gui/"+uid+"/"+LabelTray)
 	if out, err := launchctl("asuser", uid, "launchctl", "bootstrap", "gui/"+uid, plist); err != nil {
-		fmt.Printf("⚠ 托盘 bootstrap 失败（下次登录仍会拉起）: %v %s\n", err, strings.TrimSpace(out))
+		// pkg 的 postinstall 跑在 package_script_service 域，asuser 换了 uid 也
+		// 进不去 gui 域的 bootstrap 上下文（恒 "5: Input/output error"）。这是
+		// 平台限制，不是配置错 —— 从用户自己的终端跑 `mynet install` 就能成功。
+		// plist 落在 /Library/LaunchAgents，下次登录 launchd 自动加载，所以不致命。
+		fmt.Printf("⚠ 托盘未立即拉起（安装器上下文进不了 gui 域）: %v %s\n", err, strings.TrimSpace(out))
+		fmt.Printf("  plist 已就位（%s）：下次登录自动出现；现在要用就从启动台打开 MyNet。\n", plist)
 	} else {
 		fmt.Println("tray bootstrapped: gui/" + uid + "/" + LabelTray)
 	}

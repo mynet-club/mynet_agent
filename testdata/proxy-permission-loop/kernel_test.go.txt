@@ -3,10 +3,18 @@
 package mynet
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
+	"github.com/godbus/dbus/v5"
 	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 仅由隔离容器脚本显式装入并执行，不把宿主机单测冒充内核验收。
@@ -23,7 +31,7 @@ func TestProxyExitKernel(t *testing.T) {
 	name := proxyExitName(dev)
 	must("ip", "link", "add", dev, "type", "dummy")
 	t.Run("nft", func(t *testing.T) {
-		snap := &shared.SystemSnapshot{OS: "linux", Capabilities: map[string]bool{"nft": true}}
+		snap := &shared.SystemSnapshot{OS: "linux", Detail: map[string]json.RawMessage{"routing": json.RawMessage(`{"default_iface":"eth0"}`)}, Capabilities: map[string]bool{"nft": true}}
 		if _, err := run([]string{"nft", "-f", "-"}, `add table ip nat
 add chain ip nat POSTROUTING { type nat hook postrouting priority 100; }
 add rule ip nat POSTROUTING iifname "wg_other" masquerade comment "sentinel"
@@ -77,8 +85,9 @@ add rule ip filter FORWARD iifname "gnb_tun" drop
 		if err := syncProxyExitFirewall(snap, nil, dev, true, run); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := run([]string{"nft", "list", "table", "inet", name}, ""); err == nil {
-			t.Fatal("撤销后专表仍在")
+		revoked := must("nft", "list", "table", "inet", name)
+		if !strings.Contains(revoked, `oifname "eth0" drop`) || strings.Contains(revoked, "masquerade") {
+			t.Fatal("revocation lost deny guard")
 		}
 		if !strings.Contains(must("nft", "list", "table", "ip", "nat"), "sentinel") {
 			t.Fatal("误删无关 NAT")
@@ -91,7 +100,7 @@ add rule ip filter FORWARD iifname "gnb_tun" drop
 		must("nft", "delete", "table", "ip", "filter")
 	})
 	t.Run("iptables", func(t *testing.T) {
-		snap := &shared.SystemSnapshot{OS: "linux", Capabilities: map[string]bool{"iptables": true}}
+		snap := &shared.SystemSnapshot{OS: "linux", Detail: map[string]json.RawMessage{"routing": json.RawMessage(`{"default_iface":"eth0"}`)}, Capabilities: map[string]bool{"iptables": true}}
 		must("iptables", "-A", "FORWARD", "-i", "wg_other", "-m", "comment", "--comment", "sentinel", "-j", "ACCEPT")
 		must("iptables", "-A", "FORWARD", "-i", dev, "-s", "10.30.0.3/32", "-j", "ACCEPT")
 		must("iptables", "-A", "FORWARD", "-i", dev, "-j", "DROP")
@@ -125,10 +134,13 @@ add rule ip filter FORWARD iifname "gnb_tun" drop
 		if err := syncProxyExitFirewall(snap, nil, dev, true, run); err != nil {
 			t.Fatal(err)
 		}
-		for _, table := range []string{"filter", "mangle", "nat"} {
+		for _, table := range []string{"mangle", "nat"} {
 			if strings.Contains(must("iptables", "-t", table, "-S"), name) {
 				t.Fatal("撤销残留：" + table)
 			}
+		}
+		if !strings.Contains(must("iptables", "-t", "filter", "-S", name), "-j DROP") {
+			t.Fatal("revocation lost WAN deny")
 		}
 		if !strings.Contains(must("iptables", "-t", "filter", "-S"), "sentinel") {
 			t.Fatal("误删其他规则")
@@ -137,4 +149,178 @@ add rule ip filter FORWARD iifname "gnb_tun" drop
 			t.Fatal(err)
 		}
 	})
+}
+
+// Actual packets cross a tunnel veth and distinct LAN/WAN veths. Broad platform
+// ACCEPT/NAT deliberately remain installed: only the MyNet WAN guard may deny.
+func TestProxyExitWANFlowKernel(t *testing.T) {
+	run := func(argv []string, input string) (string, error) { return runProxyFirewall(false, argv, input) }
+	must := func(args ...string) string {
+		out, err := run(args, "")
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		return out
+	}
+	must("sysctl", "-w", "net.ipv4.ip_forward=1")
+	for _, link := range []struct{ dev, ns, host, peer string }{
+		{"cpi_tun", "cpi-peer", "10.30.0.1/24", "10.30.0.3/24"},
+		{"cpi_wan", "cpi-wan", "198.18.0.1/24", "198.18.0.2/24"},
+		{"cpi_lan", "cpi-lan", "192.0.2.1/24", "192.0.2.2/24"},
+	} {
+		must("ip", "netns", "add", link.ns)
+		must("ip", "link", "add", link.dev, "type", "veth", "peer", "name", "remote0")
+		must("ip", "link", "set", "remote0", "netns", link.ns)
+		must("ip", "addr", "add", link.host, "dev", link.dev)
+		must("ip", "link", "set", link.dev, "up")
+		must("ip", "netns", "exec", link.ns, "ip", "addr", "add", link.peer, "dev", "remote0")
+		must("ip", "netns", "exec", link.ns, "ip", "link", "set", "remote0", "up")
+		must("ip", "netns", "exec", link.ns, "ip", "link", "set", "lo", "up")
+		must("ip", "netns", "exec", link.ns, "ip", "route", "add", "default", "via", strings.Split(link.host, "/")[0])
+	}
+	must("ip", "netns", "exec", "cpi-peer", "ip", "addr", "add", "10.30.0.4/24", "dev", "remote0")
+	must("ip", "netns", "exec", "cpi-wan", "ip", "addr", "add", "203.0.113.2/32", "dev", "lo")
+	must("ip", "route", "add", "203.0.113.2/32", "via", "198.18.0.2", "dev", "cpi_wan")
+
+	plumbing := `add table ip cpi_platform
+add chain ip cpi_platform forward { type filter hook forward priority 0; policy accept; }
+add rule ip cpi_platform forward ct state established,related accept
+add rule ip cpi_platform forward iifname "cpi_tun" accept
+add chain ip cpi_platform postrouting { type nat hook postrouting priority 100; }
+add rule ip cpi_platform postrouting iifname "cpi_tun" masquerade
+`
+	if _, err := run([]string{"nft", "-f", "-"}, plumbing); err != nil {
+		t.Fatal(err)
+	}
+	ping := func(dst, src string, want bool) {
+		_, err := run([]string{"ip", "netns", "exec", "cpi-peer", "ping", "-c", "1", "-W", "1", "-I", src, dst}, "")
+		if (err == nil) != want {
+			t.Fatalf("ping %s -> %s success=%v want=%v", src, dst, err == nil, want)
+		}
+	}
+	for _, backend := range []string{"nft", "iptables"} {
+		t.Run(backend, func(t *testing.T) {
+			snap := &shared.SystemSnapshot{OS: "linux", Capabilities: map[string]bool{backend: true}, Detail: map[string]json.RawMessage{"routing": json.RawMessage(`{"default_iface":"cpi_wan","routes":[{"destination":"198.18.0.0/24","interface":"cpi_wan","scope":"link"} ]}`)}}
+			apply := func(p *domain.ProxyPolicy) {
+				if err := syncProxyExitFirewall(snap, p, "cpi_tun", false, run); err != nil {
+					t.Fatal(err)
+				}
+			}
+			apply(nil)
+			ping("203.0.113.2", "10.30.0.3", false)
+			ping("192.0.2.2", "10.30.0.3", true)
+			open := exitTestPolicy()
+			open.ACL.Mode = domain.ProxyACLOpen
+			apply(open)
+			ping("203.0.113.2", "10.30.0.3", true)
+			apply(exitTestPolicy("10.30.0.3/32"))
+			ping("203.0.113.2", "10.30.0.3", true)
+			ping("203.0.113.2", "10.30.0.4", false)
+			ping("192.0.2.2", "10.30.0.4", true)
+			ping("198.18.0.2", "10.30.0.4", true) // LAN on the default-route interface (bypass router)
+			apply(nil)
+			ping("203.0.113.2", "10.30.0.3", false)
+			ping("192.0.2.2", "10.30.0.3", true)
+			if backend == "nft" {
+				home := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(home, "scripts"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeFirewallArtifact(FirewallNftPath(home), []byte(plumbing), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := writeProxyExitReplayArtifact(home, "cpi_tun", proxyExitScope{WAN: []string{"cpi_wan"}, LAN: []string{"198.18.0.0/24"}}, nil); err != nil {
+					t.Fatal(err)
+				}
+				body, err := firewallIncludeScript("cpi_tun", "cpi_wan")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(FirewallIncludePath(home), []byte(body), 0755); err != nil {
+					t.Fatal(err)
+				}
+				must("nft", "flush", "ruleset")
+				must("sh", FirewallIncludePath(home))
+				ping("203.0.113.2", "10.30.0.3", false)
+				ping("192.0.2.2", "10.30.0.3", true)
+				must("nft", "delete", "table", "inet", proxyExitName("cpi_tun"))
+			}
+		})
+	}
+}
+
+func TestFirewalldWatcherProcess(t *testing.T) {
+	if os.Getenv("MYNET_EVENT_WATCH_CHILD") != "1" {
+		t.Fatal("helper requires parent integration test")
+	}
+	if rc := cmdFirewallWatch(nil); rc != 0 {
+		t.Fatalf("watch exited: %d", rc)
+	}
+}
+
+func TestFirewalldReloadEventKernel(t *testing.T) {
+	bus := exec.Command("dbus-daemon", "--session", "--nofork", "--print-address=1")
+	stdout, err := bus.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bus.Process.Kill(); _ = bus.Wait() }()
+	reader := bufio.NewReader(stdout)
+	address, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := dbus.Connect(strings.TrimSpace(address))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reply, err := conn.RequestName("org.fedoraproject.FirewallD1", dbus.NameFlagDoNotQueue)
+	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		t.Fatalf("fake firewalld name: %v %v", reply, err)
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	artifact := "add table ip mynet_event_probe\nadd chain ip mynet_event_probe probe\nflush chain ip mynet_event_probe probe\n"
+	if err := os.WriteFile(FirewallNftPath(home), []byte(artifact), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	watcher := exec.Command(binary, "-test.run=^TestFirewalldWatcherProcess$")
+	watcher.Env = append(os.Environ(), "MYNET_EVENT_WATCH_CHILD=1", "MYNET_HOME="+home, "DBUS_SYSTEM_BUS_ADDRESS="+strings.TrimSpace(address))
+	if err := watcher.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watcher.Process.Kill(); _ = watcher.Wait() }()
+	exists := func() bool {
+		_, err := runProxyFirewall(false, []string{"nft", "list", "table", "ip", "mynet_event_probe"}, "")
+		return err == nil
+	}
+	await := func() {
+		t.Helper()
+		until := time.Now().Add(3 * time.Second)
+		for time.Now().Before(until) {
+			if exists() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("reload event did not restore nft artifact")
+	}
+	await() // initial subscription + replay has completed.
+	if _, err := runProxyFirewall(false, []string{"nft", "delete", "table", "ip", "mynet_event_probe"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Emit(dbus.ObjectPath("/org/fedoraproject/FirewallD1"), "org.fedoraproject.FirewallD1.Reloaded"); err != nil {
+		t.Fatal(err)
+	}
+	await()
 }

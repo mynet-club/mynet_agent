@@ -3,6 +3,7 @@ package mynet
 import (
 	"encoding/binary"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -48,7 +49,6 @@ func TestExtractDNSAnswerAIDs(t *testing.T) {
 func TestHookRulesSuffixMatch(t *testing.T) {
 	r := &dnsHookRules{
 		proxied: map[string]bool{"google.com": true},
-		clean:   map[string]bool{},
 	}
 	if !r.shouldPin("google.com") {
 		t.Fatal("exact should pin")
@@ -58,27 +58,6 @@ func TestHookRulesSuffixMatch(t *testing.T) {
 	}
 	if r.shouldPin("baidu.com") {
 		t.Fatal("unrelated should not pin")
-	}
-}
-
-func TestDNSHookPinStateAddPersists(t *testing.T) {
-	t.Setenv("MYNET_HOME", t.TempDir())
-	s := &dnsHookPinState{IPs: map[string]time.Time{}}
-	if !s.add("9.9.9.9") {
-		t.Fatal("first add should be new")
-	}
-	if s.add("9.9.9.9") {
-		t.Fatal("second add should be dup")
-	}
-	got := LoadDNSHookPins()
-	found := false
-	for _, ip := range got {
-		if ip == "9.9.9.9" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("persist/load miss: %v", got)
 	}
 }
 
@@ -244,48 +223,23 @@ func TestHookUpstreamsAreIPOnly(t *testing.T) {
 	}
 }
 
-// 出口 VIP 是 foreign 首选（proxy-split.md §13：foreign = 出口 VIP:53）。
-func TestForeignUpstreamsPreferExitVia(t *testing.T) {
-	p := &domain.ProxyPolicy{
-		Enabled: true,
-		Exits: []domain.ProxyExit{
-			{NodeID: "n1", Via: "10.182.236.180", Enabled: true},
-		},
-		DomainRules: &domain.ProxyDomainRules{
-			Proxied: []string{"github.com"},
-		},
-	}
+func TestForeignUpstreamsPreferCleanDNSWithPeerFallback(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	t.Setenv("MYNET_DATA_HOME", "")
+	p := &domain.ProxyPolicy{Enabled: true, Exits: []domain.ProxyExit{{NodeID: "n1", Via: "10.182.236.180", Enabled: true}}, DomainRules: &domain.ProxyDomainRules{TunnelServer: "10.0.0.1", ExitDNS: "10.0.0.2"}}
 	got := defaultForeignUpstreams(p, p.DomainRules)
-	if len(got) == 0 {
-		t.Fatal("有出口 VIP 时 foreign 不得为空")
-	}
-	if got[0] != "10.182.236.180" {
-		t.Fatalf("出口 VIP 应排最前, got %v", got)
-	}
-	for _, up := range got {
-		if net.ParseIP(up) == nil {
-			t.Fatalf("上游 %q 必须是 IP", up)
-		}
+	want := []string{"221.216.138.69", "10.0.0.1", "10.0.0.2", "10.182.236.180"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("clean primary/peer fallback order: %v", got)
 	}
 }
 
-// TunnelServer/出口 VIP 皆无、只剩平台 DNS 主机名时，不得滤成空表
-// （空表 = proxied 域名零上游、dig 超时 —— 2026-10-17 实测故障）。
-func TestForeignUpstreamsBootstrapWhenNoIP(t *testing.T) {
-	upstreamIPCachePut("dns.mynet.club", "203.0.113.9")
-	defer upstreamIPCache.Delete("dns.mynet.club")
-	p := &domain.ProxyPolicy{
-		Enabled: true,
-		DomainRules: &domain.ProxyDomainRules{
-			Proxied: []string{"github.com"},
-		},
-	}
-	got := defaultForeignUpstreams(p, p.DomainRules)
-	if len(got) == 0 {
-		t.Fatal("平台 DNS 主机名应 bootstrap 成 IP，不得滤成空")
-	}
-	if got[0] != "203.0.113.9" {
-		t.Fatalf("want bootstrap IP, got %v", got)
+func TestForeignUpstreamsWithoutPeerUseCleanDNSOnly(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	t.Setenv("MYNET_DATA_HOME", "")
+	got := defaultForeignUpstreams(nil, nil)
+	if len(got) != 1 || got[0] != "221.216.138.69" {
+		t.Fatalf("unexpected fallback: %v", got)
 	}
 }
 
@@ -294,8 +248,8 @@ func TestUpstreamsForProxiedNotEmpty(t *testing.T) {
 	upstreamIPCachePut("dns.mynet.club", "203.0.113.9")
 	defer upstreamIPCache.Delete("dns.mynet.club")
 	r := &dnsHookRules{
-		proxied:  map[string]bool{"github.com": true},
-		clean:    map[string]bool{},
+		proxied: map[string]bool{"github.com": true},
+
 		foreign:  nil,
 		domestic: []string{"223.5.5.5"},
 	}
@@ -307,5 +261,48 @@ func TestUpstreamsForProxiedNotEmpty(t *testing.T) {
 		if net.ParseIP(up) == nil {
 			t.Fatalf("上游 %q 必须是 IP", up)
 		}
+	}
+}
+
+func TestHookRuleConstructionDoesNotWaitForBootstrap(t *testing.T) {
+	upstreamIPCache.Delete("unresolved.test")
+	got := ipUpstreamsOrResolve([]string{"10.0.0.1", "unresolved.test"})
+	if len(got) != 2 || got[0] != "10.0.0.1" || got[1] != "unresolved.test" {
+		t.Fatalf("unresolved endpoint dropped: %v", got)
+	}
+}
+
+func TestCleanResolverFailureFallsBackToPeer(t *testing.T) {
+	for _, code := range []byte{2, 5} {
+		s, _, _ := newHookHarness(t)
+		s.rules.foreign = []string{dnsHookPreferredCleanDNS, "10.0.0.2"}
+		var seen []string
+		s.forward = func(up string, q []byte, _ time.Duration) ([]byte, error) {
+			seen = append(seen, up)
+			if up == dnsHookPreferredCleanDNS {
+				a := dnsFailure(q)
+				a[3] = 0x80 | code
+				return a, nil
+			}
+			return buildTestDNSAnswer(q, "192.0.2.9"), nil
+		}
+		ans := s.answer(buildDNSQueryMsg("a.test"))
+		if !reflect.DeepEqual(seen, s.rules.foreign) || ans[3]&15 != 0 {
+			t.Fatalf("failed fallback: %v %x", seen, ans)
+		}
+	}
+}
+
+func TestCleanResolverSuccessfulAnswerDoesNotQueryPeer(t *testing.T) {
+	s, _, _ := newHookHarness(t)
+	s.rules.foreign = []string{dnsHookPreferredCleanDNS, "10.0.0.2"}
+	var seen []string
+	s.forward = func(up string, q []byte, _ time.Duration) ([]byte, error) {
+		seen = append(seen, up)
+		return buildTestDNSAnswer(q, "192.0.2.9"), nil
+	}
+	s.answer(buildDNSQueryMsg("a.test"))
+	if !reflect.DeepEqual(seen, []string{dnsHookPreferredCleanDNS}) {
+		t.Fatal(seen)
 	}
 }

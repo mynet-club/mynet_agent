@@ -209,6 +209,10 @@ func uninstallSystemd(home string, keepBin, dry bool) int {
 		fmt.Fprintf(os.Stderr, "⚠️ systemctl daemon-reload: %v\n", err)
 	}
 
+	if err := removeLinuxFirewallRegistration(home); err != nil {
+		fmt.Fprintf(os.Stderr, "清理防火墙重放登记: %v\n", err)
+		return 1
+	}
 	removeOwnBinaries(home, keepBin)
 	uninstallTail(home)
 	return 0

@@ -163,6 +163,15 @@ func authLogin(args []string) int {
 	if tenant != "" {
 		cred.TenantID = tenant
 	}
+	// 上游缺陷：UserAuthController 登录响应的 tenant_id 取
+	// `$request->attributes->get('tenant_id')`（BuildsUserTokenResponse），
+	// 而登录时尚未解析用户租户 → 恒为空。这里登录成功后向
+	// `/api/v1/user/tenants/` 回填默认区，避免凭证落空 tenant_id。
+	if cred.TenantID == "" {
+		if tid := fetchDefaultTenantID(newBackClient(cred.Token)); tid != "" {
+			cred.TenantID = tid
+		}
+	}
 	if err := SaveCredential(cred); err != nil {
 		fmt.Fprintf(os.Stderr, "保存凭证失败: %v\n", err)
 		return 1
@@ -267,4 +276,45 @@ func fetchBackFacePub() (string, error) {
 	}
 
 	return data.PublicKeyHex, nil
+}
+
+
+// fetchDefaultTenantID 登录后回填默认网络区。
+// 列表端点 data 是数组 [{tenant_id,name},…]；取首个可用。
+// （上游登录响应 tenant_id 为空时的补偿，见 authLogin 注释。）
+func fetchDefaultTenantID(c *backClient) string {
+	if c == nil {
+		return ""
+	}
+	raw, code, err := c.doJSON("GET", "/api/v1/user/tenants/", nil)
+	if err != nil || code != 200 {
+		return ""
+	}
+	var env struct {
+		Success bool            `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(raw, &env) != nil || !env.Success {
+		return ""
+	}
+	var list []any
+	if json.Unmarshal(env.Data, &list) != nil {
+		var nested struct {
+			Data []any `json:"data"`
+		}
+		if json.Unmarshal(env.Data, &nested) != nil {
+			return ""
+		}
+		list = nested.Data
+	}
+	for _, it := range list {
+		m, _ := it.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if id := anyToStr(m["tenant_id"]); id != "" {
+			return id
+		}
+	}
+	return ""
 }

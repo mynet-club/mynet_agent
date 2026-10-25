@@ -108,7 +108,7 @@ func cmdApply(args []string) int {
 			fmt.Fprintf(os.Stderr, "apply --auto: %v\n", err)
 			return 1
 		}
-		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 {
+		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 && plan.ProxyExitDevice == "" {
 			// 不是错误：没有对端时本来就没有路由要装。但要**说出来**，
 			// 否则「apply 成功」和「apply 什么都没做」在日志里长得一样。
 			fmt.Println("apply --auto: bundle 里没有要应用的路由/防火墙/接口（无对端？）")
@@ -213,6 +213,10 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "start %s: %v\n", name, err)
 			return 1
 		}
+		if err := migratePCAcceleration(); err != nil {
+			fmt.Fprintln(os.Stderr, "加速偏好迁移失败:", err)
+			return 1
+		}
 		// 运行投影先行：/var/run/mynet/<nodeId> 是 gnb -c 打开处，
 		// 重启后 tmpfs 已空 —— 不先投影就 start，gnb 必缺 node.conf。
 		if err := ApplyFromActive(false); err != nil {
@@ -236,7 +240,7 @@ func cmdService(args []string) int {
 		// 隧道接口**已建立**，此刻落地防火墙持久化 —— 产物里的 DEV 要对上真实
 		// 接口名，早于这一步算出来的名字可能与实际投影不一致。放在这里而不是
 		// mynetd 启动时：mynetd 是纯通信层，不碰系统能力（AGENTS.md §1.2）。
-		syncFirewallAfterTunnelUp()
+		// applyAfterStart 先安装 WAN 授权边界，再同步重放钩子。
 		// D4/§14：DNS 是**用户三选一**（不劫持 / 指定上游 / 交我们），默认不劫持。
 		// 只有显式 mynet dns apply 或配置 dns.hijack=ours 才接管 ——
 		// service start 自动劫持曾把网络干死（多网卡/目标不稳），禁止默认劫持。

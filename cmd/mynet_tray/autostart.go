@@ -51,6 +51,17 @@ type launchAgentStarter struct {
 	// systemDir 安装器代写的系统级目录。做成字段只为可测 ——
 	// 测试不可能往 /Library/LaunchAgents 里写东西。
 	systemDir string
+	// run 执行平台命令；nil 走 runOK。测试必须注入 no-op：label 是固定的
+	// club.mynet.tray，真的跑 launchctl 会按 label 打到宿主 gui 域 ——
+	// 跑一次单测就把装机托盘的登录自启关掉（并且此后 bootstrap 恒 EIO）。
+	run func(name string, args ...string) error
+}
+
+func (s *launchAgentStarter) runCmd(name string, args ...string) error {
+	if s.run != nil {
+		return s.run(name, args...)
+	}
+	return runOK(name, args...)
 }
 
 func (s *launchAgentStarter) userPlistPath() string {
@@ -117,13 +128,20 @@ func (s *launchAgentStarter) Enable() error {
 		return err
 	}
 	// 当场 load，失败不致命（下次登录仍会拉）
-	_ = runOK("launchctl", "load", "-w", s.userPlistPath())
+	_ = s.runCmd("launchctl", "load", "-w", s.userPlistPath())
 	return nil
 }
 
 func (s *launchAgentStarter) Disable() error {
 	// 用户级那份**照删**：老版本可能已经写过，留着就是双托盘。
-	_ = runOK("launchctl", "unload", "-w", s.userPlistPath())
+	//
+	// 只在 plist 真在位时才 unload：对着不存在的路径跑 `launchctl unload -w`
+	// 会按文件名推断 label，把**系统级**那个同名 job 在 gui 域标成 disabled。
+	// 实测后果：跑一次单测就关掉装机托盘的登录自启，而且此后 bootstrap 恒
+	// 返回 "5: Input/output error"（disabled override 压过 plist）。
+	if _, err := os.Stat(s.userPlistPath()); err == nil {
+		_ = s.runCmd("launchctl", "unload", "-w", s.userPlistPath())
+	}
 	if err := os.Remove(s.userPlistPath()); err != nil && !os.IsNotExist(err) {
 		return err
 	}

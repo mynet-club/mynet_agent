@@ -81,7 +81,7 @@ func TestJourney_MenuStaysCoherent(t *testing.T) {
 	pr.set(down)
 	a.bootSequence()
 	check("冷启动服务离线", want{StateSvcDown, "连接隧道", false, iconFault, ""})
-	if n := len(stub.reqs); n != 0 {
+	if n := stub.reqCount(); n != 0 {
 		t.Fatalf("服务离线时冷启动打了 %d 个请求", n)
 	}
 
@@ -96,8 +96,8 @@ func TestJourney_MenuStaysCoherent(t *testing.T) {
 	a.onUserToggle()
 	waitWorkerLanded(t, a)
 	check("点连接后", want{StateStarting, "正在连接…", false, iconIdle, ip})
-	if n := len(stub.hits(connectPath)); n != 1 {
-		t.Fatalf("connect 打了 %d 次, want 1", n)
+	if n := stub.startHits(); n != 1 {
+		t.Fatalf("启动请求打了 %d 次, want 1", n)
 	}
 
 	// 4. 探针报在跑：三个面一起翻到「已连接」。
@@ -117,8 +117,8 @@ func TestJourney_MenuStaysCoherent(t *testing.T) {
 	a.onUserToggle()
 	waitWorkerLanded(t, a)
 	check("点断开后", want{StateStopping, "正在断开…", false, iconIdle, ip})
-	if n := len(stub.hits(commandPath)); n != 1 {
-		t.Fatalf("command 打了 %d 次, want 1", n)
+	if n := stub.stopHits(); n != 1 {
+		t.Fatalf("断开请求打了 %d 次, want 1", n)
 	}
 
 	// 7. 探针报停了：IP 仍在（配置没动），复制仍可用 —— 用户断了隧道也常要
@@ -159,10 +159,10 @@ func TestJourney_MenuStaysCoherent(t *testing.T) {
 	// 11. 退出托盘：不停隧道、不停 mynetd —— 整条旅程的请求数到此为止。
 	a.onExit()
 	waitSettled(t, renders)
-	if got, want := len(stub.hits(connectPath)), 3; got != want {
-		t.Errorf("全程 connect %d 次, want %d", got, want)
+	if got, want := stub.startHits(), 3; got != want {
+		t.Errorf("全程启动 %d 次, want %d", got, want)
 	}
-	if got, want := len(stub.hits(commandPath)), 1; got != want {
-		t.Errorf("全程 command %d 次, want %d（退出不得停隧道）", got, want)
+	if got, want := stub.stopHits(), 1; got != want {
+		t.Errorf("全程断开 %d 次, want %d（退出不得停隧道）", got, want)
 	}
 }

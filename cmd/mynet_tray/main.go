@@ -62,7 +62,28 @@ func main() {
 	prob := NewHTTPProber(*api)
 	app := NewApp(prob, *api)
 
+	// 单实例（见 singleinstance.go）：启动台图标与登录自启是两个入口，
+	// 两个都点过就会出两个菜单栏图标。后到的那位不争图标，改为唤起面板。
+	var lock *os.File
+	if p, err := trayLockPath(); err == nil {
+		f, ok, lockErr := tryLock(p)
+		switch {
+		case lockErr != nil:
+			// 锁不可用不拦启动：托盘是 UI，不该因为用户目录权限而彻底不能用。
+			fmt.Fprintf(os.Stderr, "⚠ 单实例锁不可用（%v），继续启动\n", lockErr)
+		case !ok:
+			fmt.Println("MyNet 托盘已在运行，已打开面板")
+			openExternalURL(PanelURL(*api))
+			return
+		default:
+			lock = f
+		}
+	}
+
 	app.Run()
+	if lock != nil {
+		unlock(lock)
+	}
 	os.Exit(0)
 }
 

@@ -16,9 +16,14 @@ import (
 
 func runtimeOS() string { return runtime.GOOS }
 
-// listNetworkServices Windows：返回空（由 writeSystemDNS 走默认 iface）。
+// listNetworkServices 返回可用物理接口，隧道虚拟接口不接管。
 func listNetworkServices() ([]string, error) {
-	return nil, fmt.Errorf("listNetworkServices Windows 未实现")
+	out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"Get-NetAdapter -Physical | Where-Object {$_.Status -eq 'Up'} | ForEach-Object {$_.InterfaceIndex}").Output()
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
 }
 
 // readSystemDNS Windows：按接口（名或索引）读 DNS。
@@ -28,7 +33,7 @@ func readSystemDNS(iface string) ([]string, string, error) {
 		return nil, "", err
 	}
 	out, err := exec.Command("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("(Get-DnsClientServerAddress -InterfaceIndex %d -AddressFamily IPv4).ServerAddresses -join ','", idx)).Output()
+		fmt.Sprintf(`$guid=(Get-NetAdapter | Where-Object {$_.InterfaceIndex -eq %d}).InterfaceGuid; (Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\'+$guid)).NameServer`, idx)).Output()
 	if err != nil {
 		return nil, fmt.Sprintf("%d", idx), fmt.Errorf("Get-DnsClientServerAddress: %w", err)
 	}
@@ -36,7 +41,7 @@ func readSystemDNS(iface string) ([]string, string, error) {
 	if s == "" {
 		return nil, fmt.Sprintf("%d", idx), nil // DHCP
 	}
-	return strings.Split(s, ","), fmt.Sprintf("%d", idx), nil
+	return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }), fmt.Sprintf("%d", idx), nil
 }
 
 // writeSystemDNS Windows：设置或 Reset。

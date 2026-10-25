@@ -218,3 +218,96 @@ func TestPluginProxyPostSharesConfigMutationLock(t *testing.T) {
 		t.Fatalf("GET 不该被互斥挡，实际 %d", grr.Code)
 	}
 }
+
+// 出口只存在于插件壳时（intent 的 exits 允许为空），GET 必须把实际生效值
+// 一并返回 —— 否则界面会在明明配了出口的节点上显示「尚未选择出口设备」。
+func TestPluginProxyGetReportsPluginExits(t *testing.T) {
+	dir := t.TempDir()
+	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: dir})
+	wireProxyStore(s)
+	s.ProxyPluginExits = func() ([]domain.ProxyExit, int, error) {
+		return []domain.ProxyExit{{NodeID: "4997342800601732", Via: "10.182.236.180", Enabled: true}}, 1, nil
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugin/proxy", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("code=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			PluginExits    []domain.ProxyExit `json:"plugin_exits"`
+			PluginMaxExits int                `json:"plugin_max_exits"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data.PluginExits) != 1 {
+		t.Fatalf("plugin_exits = %+v，应返回插件壳里那 1 个出口", resp.Data.PluginExits)
+	}
+	if got := resp.Data.PluginExits[0]; got.NodeID != "4997342800601732" || got.Via != "10.182.236.180" {
+		t.Errorf("出口 = %+v，want node_id 4997342800601732 / via 10.182.236.180", got)
+	}
+	if resp.Data.PluginMaxExits != 1 {
+		t.Errorf("plugin_max_exits = %d, want 1", resp.Data.PluginMaxExits)
+	}
+}
+
+// 插件壳读不到不算错：没装插件时本来就没有出口可报，整个 GET 仍要能用。
+func TestPluginProxyGetToleratesPluginExitsError(t *testing.T) {
+	dir := t.TempDir()
+	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: dir})
+	wireProxyStore(s)
+	s.ProxyPluginExits = func() ([]domain.ProxyExit, int, error) {
+		return nil, 0, errors.New("plugin 未安装")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugin/proxy", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("插件读不到不该让 GET 失败：code=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestProxyIntentSavedBeforeExecutorReads(t *testing.T) {
+	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: t.TempDir()})
+	var saved *domain.ProxyIntentState
+	s.ProxyLoad = func(string) (*domain.ProxyIntentState, error) { return &domain.ProxyIntentState{}, nil }
+	s.ProxySave = func(_ string, st *domain.ProxyIntentState) error { saved = st; return nil }
+	calls := 0
+	s.ProxySyncPlugin = func(p *domain.ProxyPolicy) error {
+		if saved == nil || saved.Local == nil || saved.Local.Policy.Enabled != p.Enabled {
+			t.Fatal("projection ran before saving policy")
+		}
+		return nil
+	}
+	s.Ops = func(argv []string) (any, error) {
+		calls++
+		if saved == nil || saved.Local == nil || !saved.Local.Policy.Enabled {
+			t.Fatal("executor read stale policy")
+		}
+		return nil, nil
+	}
+	body, _ := json.Marshal(map[string]any{"policy": samplePolicy()})
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/plugin/proxy", bytes.NewReader(body)))
+	if rr.Code != 200 || calls != 2 {
+		t.Fatalf("calls=%d response=%s", calls, rr.Body.String())
+	}
+}
+
+func TestProxySaveFailureDoesNotExecute(t *testing.T) {
+	s := NewServer(Config{Listen: "127.0.0.1:0", ProxyConfDir: t.TempDir()})
+	wireProxyStore(s)
+	s.ProxySave = func(string, *domain.ProxyIntentState) error { return errors.New("disk unavailable") }
+	s.Ops = func([]string) (any, error) { t.Fatal("must not execute unsaved policy"); return nil, nil }
+	body, _ := json.Marshal(map[string]any{"policy": samplePolicy()})
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/api/v1/plugin/proxy", bytes.NewReader(body)))
+	if rr.Code != 500 {
+		t.Fatalf("response=%s", rr.Body.String())
+	}
+}

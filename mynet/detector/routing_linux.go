@@ -3,6 +3,7 @@ package detector
 import (
 	"fmt"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -262,6 +263,23 @@ func (d *LinuxRoutingDetector) detectRoutes(info *RoutingInfo) error {
 	if output, err := sysExec("ip", "route", "show").Output(); err == nil {
 		routes := d.parseIPRouteOutput(string(output))
 		info.Routes = routes
+		// Keep IPv6 default egress and on-link networks in the same snapshot.
+		// Do not let an independent IPv6 uplink escape the exit boundary.
+		if disabled, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6"); err == nil && strings.TrimSpace(string(disabled)) != "1" {
+			output6, err := sysExec("ip", "-6", "route", "show").Output()
+			if err != nil {
+				return fmt.Errorf("IPv6 route detection: %w", err)
+			}
+			for _, line := range strings.Split(string(output6), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "default ") {
+					line = "::/0 " + strings.TrimPrefix(line, "default ")
+				}
+				if route := d.parseIPRouteLine(line); route != nil {
+					info.Routes = append(info.Routes, *route)
+				}
+			}
+		}
 		return nil
 	}
 

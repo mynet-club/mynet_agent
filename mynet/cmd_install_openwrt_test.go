@@ -180,6 +180,7 @@ func TestOpenWrtInstallSetsNetworkZone(t *testing.T) {
 // 真机才能跑真 uci；本 stub 验证**步骤序列的逻辑**：首装成功、重复执行幂等。
 const stubUci = `#!/bin/sh
 ST="${UCI_STATE:?}"
+[ "$1" != -q ] || shift
 case "$1" in
   show) if [ -n "$2" ]; then grep -F "$2." "$ST" 2>/dev/null; else cat "$ST" 2>/dev/null; fi ;;
   add)
@@ -199,6 +200,8 @@ case "$1" in
   get)
     key="$2"; cfg="${key%%.*}"; rest="${key#*.}"; sec="${rest%%.*}"; opt="${rest#*.}"
     awk -v k="$cfg.$sec.$opt" -F= '$1==k { v=$2; sub(/^./,"",v); sub(/.$/,"",v); print v; f=1 } END{ exit (f?0:1) }' "$ST" ;;
+  delete)
+    key="$2"; awk -v k="$key" -F= '$1!=k && index($1,k".")!=1' "$ST" > "$ST.t"; mv "$ST.t" "$ST" ;;
   commit) : ;;
   *) exit 1 ;;
 esac
@@ -233,7 +236,7 @@ func TestOpenWrtUciStepsFirstInstallThenIdempotent(t *testing.T) {
 	if n := strings.Count(read(), "=forwarding"); n != 2 {
 		t.Fatalf("首装应建 2 条 forwarding，实际 %d：\n%s", n, read())
 	}
-	for _, want := range []string{"name='mynet'", "masq='1'", "src='lan'", "dest='mynet'", "src='mynet'", "dest='wan'", "device='gnb_tun_16'"} {
+	for _, want := range []string{"name='mynet'", "masq='1'", "src='lan'", "dest='mynet'", "src='mynet'", "dest='lan'", "device='gnb_tun_16'"} {
 		if !strings.Contains(read(), want) {
 			t.Fatalf("首装后缺 %q：\n%s", want, read())
 		}
@@ -273,6 +276,42 @@ func TestOpenWrtInitGnbEsCleanupUsesVerifiableOwnership(t *testing.T) {
 	for _, want := range []string{"/cmdline", "skip gnb_es"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("gnb_es 清理缺可验证归属判据 %q（应为 exe + 父进程本实例 gnb）", want)
+		}
+	}
+}
+
+func TestOpenWrtWANForwardingFollowsGrant(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.WriteFile(state, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "uci"), []byte(stubUci), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UCI_STATE", state)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, c := range openWrtUciSteps("tun0") {
+		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("%s %v", out, err)
+		}
+	}
+	for _, enabled := range []bool{false, true, true, false, false} {
+		step := "set -e; changed=0; " + openWrtWANForwardingStep(enabled)
+		if out, err := exec.Command("sh", "-c", step).CombinedOutput(); err != nil {
+			t.Fatalf("enabled=%v: %s %v", enabled, out, err)
+		}
+		body, _ := os.ReadFile(state)
+		count := strings.Count(string(body), "dest='wan'")
+		want := 0
+		if enabled {
+			want = 1
+		}
+		if count != want {
+			t.Fatalf("WAN forwarding=%d want=%d: %s", count, want, body)
+		}
+		if !strings.Contains(string(body), "dest='lan'") || !strings.Contains(string(body), "dest='mynet'") {
+			t.Fatal("LAN mutual forwarding removed")
 		}
 	}
 }
