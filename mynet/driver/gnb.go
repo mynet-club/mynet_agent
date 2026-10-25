@@ -83,7 +83,7 @@ func (d *GNBDriver) GetDriverType() domain.VPNDriverType { return domain.DriverT
 // gnbCtlStatusArgs 返回读取状态所需的完整参数。
 //
 // ⚠️ 三个 flag 缺一不可，而且**不能只看退出码**：
-//   - 缺 `-b <conf>/gnb.map`：gnb_ctl 只打印 usage 就 **exit 0**（实测），
+//   - 缺 `-b <ctl block>`：gnb_ctl 只打印 usage 就 **exit 0**（实测），
 //     于是「可用」恒为真，而 GetAllPeers 会把那段 usage 文本当状态解析出 0 个 peer
 //   - 缺 `-c`：只输出头部（conf_dir / node_num / wan*_port），**没有任何 node 段**
 //   - map 是 0600 root:root（gnb 以 root 跑）：非 root 读到
@@ -92,7 +92,64 @@ func (d *GNBDriver) GetDriverType() domain.VPNDriverType { return domain.DriverT
 // 所以这里用「输出里必须有 node_num[ 这一行」作为真的读到了状态的判据 ——
 // 它是 gnb_ctl_dump_status 的头部字段（gnb_ctl_dump.c），usage 与错误信息里都没有。
 func (d *GNBDriver) gnbCtlStatusArgs() []string {
-	return []string{"-b", d.ConfDir + "/gnb.map", "-c", "-s"}
+	return []string{"-b", d.ctlBlockPath(), "-c", "-s"}
+}
+
+// ctlBlockPath 解析 gnb 的 ctl block（共享内存文件）落点。
+//
+// 同一版 gnb 的落点随启动方式/平台变化，实测三种形态：
+//  1. <conf>/gnb.map —— `gnb -c <conf>` 且 conf 可写（macOS / 通用 Linux）
+//  2. <run projection>/gnb.map —— mynet service start 的运行投影
+//  3. /tmp/gnb.<ctl_port>.map —— OpenWrt/procd（2026-10-25 .182 实测：conf 与投影都没有）
+//
+// 只认 1 会在 OpenWrt 上恒失败：metrics 的 gnb 项没有 peers 计数、
+// node-status 的链路列全是 unknown，心跳 connected_peers 恒 0，
+// 平台侧对端列表永远不刷新。
+func (d *GNBDriver) ctlBlockPath() string {
+	confMap := filepath.Join(d.ConfDir, "gnb.map")
+	if pathExists(confMap) {
+		return confMap
+	}
+	if nodeID := filepath.Base(d.ConfDir); nodeID != "" && nodeID != "." && nodeID != string(filepath.Separator) {
+		if run, err := utils.RunProjectionPath(nodeID); err == nil && run != "" {
+			if p := filepath.Join(run, "gnb.map"); pathExists(p) {
+				return p
+			}
+		}
+	}
+	cands, _ := filepath.Glob("/tmp/gnb.*.map")
+	if len(cands) == 1 {
+		return cands[0]
+	}
+	// 多 gnb 共存（设计支持）：每个 ctl block 头部的 conf->conf_dir 才是指纹。
+	for _, p := range cands {
+		if d.ctlBlockMatchesConf(p) {
+			return p
+		}
+	}
+	return confMap // 一个都认不出：保持原有报错口径，如实失败
+}
+
+// ctlBlockMatchesConf 判断一个 /tmp/gnb.*.map 是否属于本驱动的 confdir。
+func (d *GNBDriver) ctlBlockMatchesConf(path string) bool {
+	out, err := d.Exec("gnb_ctl", "-b", path, "-c", "-s")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "conf->conf_dir[") {
+			continue
+		}
+		got := strings.TrimSuffix(strings.TrimPrefix(line, "conf->conf_dir["), "]")
+		return filepath.Clean(got) == filepath.Clean(d.ConfDir)
+	}
+	return false
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func (d *GNBDriver) ctlStatus() (string, error) {
@@ -131,6 +188,10 @@ func (d *GNBDriver) IsAvailable() bool {
 // ⚠️ 此前是 `pgrep -f gnb_es` —— gnb_es 是上游的 endpoint scanner 工具，
 // **不是**主守护进程（主进程是 gnb）。用它会得到两种错：本机跑着 gnb 却报 not alive，
 // 以及别的节点上恰好有 gnb_es 时误报 alive。
+//
+// ⚠️ 不在这里按命令行兜底：Start() 的顺序是「先判活 → 再收敛孤儿」，
+// 把命令行也算作 alive 会让 Start 直接 return，同 confdir 的孤儿反而收不掉。
+// pid 文件缺失（procd）的场景由 FindGnbPID 单独服务显示面。
 func (d *GNBDriver) IsProcessAlive() bool {
 	if d.systemdManages() {
 		out, err := d.Exec("systemctl", "is-active", d.ServiceUnit)
@@ -142,6 +203,20 @@ func (d *GNBDriver) IsProcessAlive() bool {
 		return false
 	}
 	return d.pidAliveOS(pid)
+}
+
+// FindGnbPID 返回某 confdir 正在运行的 gnb pid；找不到返回 0。
+// 供 node-status 在 pid 文件缺失（procd 启动）时仍能显示 RUNNING 与 uptime。
+// 只读探测，不参与 Start/Stop 的生命周期判定。
+func FindGnbPID(confDir string) int {
+	d := NewGNBDriver(0)
+	d.ConfDir = confDir
+	for _, pid := range d.sameConfdirPidsOS() {
+		if d.pidAliveOS(pid) {
+			return pid
+		}
+	}
+	return 0
 }
 
 func (d *GNBDriver) Capabilities() domain.DriverCaps {
@@ -1216,12 +1291,10 @@ type PeerLink struct {
 func GnbPeerLinks(confDir string) map[int64]PeerLink {
 	d := NewGNBDriver(0)
 	d.ConfDir = confDir
-	// ctl 块是 gnb.map（不是 ctl），缺 -b 会打印 usage 却 exit 0
-	out, err := d.Exec("gnb_ctl", "-b", confDir+"/gnb.map", "-c", "-s")
+	// ctl block 落点由 ctlBlockPath 解析（conf / 运行投影 / /tmp/gnb.<port>.map）；
+	// 缺 -b 会打印 usage 却 exit 0，所以下面还要校验 node_num[。
+	out, err := d.ctlStatus()
 	if err != nil {
-		return nil
-	}
-	if !strings.Contains(string(out), "node_num[") {
 		return nil
 	}
 	peers := parseGNBStatus(string(out))

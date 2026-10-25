@@ -128,6 +128,10 @@ type statusProbe struct {
 	findIface func(ip string) string
 	// ifaceExists 按接口名查存在（tun 健康信号的「tun 在不在」事实；可空）
 	ifaceExists func(name string) bool
+	// findGnbPID pid 文件缺失时按命令行找同 confdir 的 gnb。
+	// procd 用 `gnb -c <conf>` 直接拉起时不写 gnb.pid（OpenWrt 实测）；
+	// 只认 pid 文件会把活着的隧道判成 STOPPED。可空。
+	findGnbPID func(confDir string) int
 	// gnbPeerLinks 读 gnb_ctl 的对端链路态；不可用时返回 nil
 	// （前端显示 unknown，不猜）。key = nodeID。
 	gnbPeerLinks func(confDir string) map[int64]PeerLinkInfo
@@ -152,6 +156,7 @@ func defaultProbe() statusProbe {
 		ifaceExists:      ifaceExistsByName,
 		ifaceStats:       ifaceStats,
 		procUptimeSec:    procUptimeSec,
+		findGnbPID:       driver.FindGnbPID,
 		gnbPeerLinks:     gnbPeerLinksOf,
 	}
 }
@@ -560,8 +565,16 @@ func computeNodeStatus(p statusProbe) NodeStatus {
 			}
 		}
 	}
+	alive := pid > 0 && p.pidAlive(pid)
+	// pid 文件不是唯一权威：procd 用 `gnb -c <conf>` 拉起时不写 pid 文件，
+	// 只认文件会把活着的隧道判成 STOPPED（2026-10-25 .182 实测）。
+	if !alive && p.findGnbPID != nil {
+		if found := p.findGnbPID(gnbConf); found > 0 {
+			pid, alive = found, true
+		}
+	}
 	st.ProcessPID = pid
-	st.ProcessUp = pid > 0 && p.pidAlive(pid)
+	st.ProcessUp = alive
 
 	// tun：按 overlay IP 反查真实接口（darwin 是 utunN，配置里写的是 gnb_tun）
 	if st.OverlayIP != "" {

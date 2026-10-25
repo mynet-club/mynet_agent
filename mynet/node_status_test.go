@@ -141,6 +141,36 @@ func TestNodeStatusRunning(t *testing.T) {
 	}
 }
 
+// procd 用 `gnb -c <conf>` 拉起时不写 pid 文件；node-status 必须按命令行补 pid，
+// 否则活着的隧道会被判成 STOPPED（2026-10-25 .182 实测）。
+func TestNodeStatusRunningWithoutPIDFile(t *testing.T) {
+	f := newFixture(t)
+	f.write("conf/mynet.conf", "NODE_ID=1001\n")
+	f.write("var/gnb/node.conf", "nodeid 1001\n")
+	f.write("var/bundle.json", `{"network":{
+		"addresses":["10.0.0.1/32"],
+		"routes":[{"prefix":"10.0.0.2/32","dev":"gnb_tun"}]
+	}}`)
+	p := f.probe()
+	p.gnbPath = "/usr/local/bin/gnb"
+	p.findGnbPID = func(string) int { return 4242 }
+	p.pidAlive = func(pid int) bool { return pid == 4242 }
+	p.findIface = func(ip string) string {
+		if ip == "10.0.0.1" {
+			return "utun4"
+		}
+		return ""
+	}
+	p.routeExists = func(dest string) bool { return dest == "10.0.0.2/32" || dest == "10.0.0.2" }
+	st := computeNodeStatus(p)
+	if st.State != StateRunning {
+		t.Fatalf("state=%s want %s (detail=%s)", st.State, StateRunning, st.Detail)
+	}
+	if st.ProcessPID != 4242 || !st.ProcessUp {
+		t.Fatalf("pid/up = %d/%v want 4242/true", st.ProcessPID, st.ProcessUp)
+	}
+}
+
 func TestNodeStatusDegradedMissingRoute(t *testing.T) {
 	f := newFixture(t)
 	f.write("conf/mynet.conf", "NODE_ID=1001\n")
