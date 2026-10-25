@@ -298,6 +298,8 @@ func runAgent(ctx context.Context) {
 		// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
 		// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
 		dispatcher.setConfigExclusive(api.TryRunExclusive)
+		// 拓扑落地后让心跳重采一次快照：否则 peers/vpn 数据冻结在进程启动时刻。
+		dispatcher.setOnTopologyChanged(hb.invalidateMetrics)
 
 		// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
 		// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
@@ -482,9 +484,22 @@ type heartbeatLoop struct {
 	nodeID   string
 	reporter func(ctx context.Context, sendBody, signBody []byte) error
 
-	// metricsCached / metricsReady：启动采集结果。ready 后 beat 不再碰 ops。
+	// metricsCached / metricsReady：最近一次采集结果。ready 后 beat 不再碰 ops，
+	// 直到拓扑变更触发 invalidateMetrics（否则新节点永远不会出现在平台对端列表里）。
 	metricsCached string
 	metricsReady  bool
+	// deviceInfoDone 设备信息只报一次（硬件不变）；重采快照时不重复。
+	deviceInfoDone bool
+}
+
+// invalidateMetrics 让下一拍重新采集 metrics。
+// 拓扑变化（bundle/route 变更）后必须调用：快照冻结在启动时刻的话，
+// 新加入的节点要等到进程重启才会出现在心跳与平台对端列表里。
+func (h *heartbeatLoop) invalidateMetrics() {
+	h.mu.Lock()
+	h.metricsReady = false
+	h.metricsCached = ""
+	h.mu.Unlock()
 }
 
 // setReporter 绑上上报通道。未绑时 beat 只采集不上报（纯本机模式）。
@@ -516,11 +531,14 @@ func (h *heartbeatLoop) run(ctx context.Context) {
 }
 
 func (h *heartbeatLoop) beat(ctx context.Context) {
-	// 启动采一次，之后纯存活：不再 exec mynet（用户裁定 2026-10-15）。
-	// 首采失败则本拍放弃、下一拍重试 —— 「启动时拿到必要信息」为止，之后冻结。
+	// 平时用快照，纯存活；拓扑变更后由 invalidateMetrics 触发重采。
+	// 首采失败则本拍放弃、下一拍重试。
 	h.mu.Lock()
 	ready, cached := h.metricsReady, h.metricsCached
 	h.mu.Unlock()
+	// 只有「刚重采」的这一拍才带逐对端快照 —— 否则 node_peer_connections
+	// 每 30s 写一批完全相同的行。
+	fresh := !ready
 
 	var stdout string
 	if !ready {
@@ -544,12 +562,18 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		h.metricsCached = stdout
 		h.metricsReady = true
 		h.mu.Unlock()
-		// 设备信息也是启动采一次（硬件不变）—— GUI 设备页的数据源。
+		// 设备信息只报一次（硬件不变）；拓扑变更导致的重采不重复。
 		// 失败不阻断心跳（后端未部署/未登录都可能），只记日志。
-		if _, stderr, err := h.ops([]string{"deviceinfo", "report"}); err != nil {
-			logger.Warn("deviceinfo 上报失败（GUI 设备页将为空）", "err", err, "stderr", strings.TrimSpace(stderr))
+		h.mu.Lock()
+		needDeviceInfo := !h.deviceInfoDone
+		h.deviceInfoDone = true
+		h.mu.Unlock()
+		if needDeviceInfo {
+			if _, stderr, err := h.ops([]string{"deviceinfo", "report"}); err != nil {
+				logger.Warn("deviceinfo 上报失败（GUI 设备页将为空）", "err", err, "stderr", strings.TrimSpace(stderr))
+			}
 		}
-		logger.Info("heartbeat 首次采集完成，后续拍只发存活心跳（不再调 mynet）")
+		logger.Info("heartbeat 采集完成，快照已刷新（拓扑变更后才重采）")
 	} else {
 		stdout = cached
 	}
@@ -566,8 +590,9 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		return
 	}
 	// heartbeatBodies 每次打新 timestamp / last_active_at —— 这就是「活着」信号；
-	// 必填字段与 vpn_interfaces 来自启动快照（后端契约要求，缺了会被判离线）。
-	sendBody, signBody, err := heartbeatBodies(nodeID, stdout)
+	// 必填字段与 vpn_interfaces 来自快照（后端契约要求，缺了会被判离线）。
+	// 逐对端 peers_status 只在 fresh（刚重采）这一拍带上，避免重复行。
+	sendBody, signBody, err := heartbeatBodies(nodeID, stdout, fresh)
 	if err != nil {
 		logger.Error("heartbeat 组装失败", "node_id", nodeID, "err", err)
 		return

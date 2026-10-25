@@ -31,7 +31,7 @@ const metricsFixture = `{
 
 func mustBodies(t *testing.T, nodeID, metrics string) (send, sign []byte) {
 	t.Helper()
-	s, g, err := heartbeatBodies(nodeID, metrics)
+	s, g, err := heartbeatBodies(nodeID, metrics, true)
 	if err != nil {
 		t.Fatalf("heartbeatBodies(%q): %v", nodeID, err)
 	}
@@ -212,7 +212,7 @@ func TestEmptyIfnameSkipsWholeSection(t *testing.T) {
 // 与其让后端返 422，不如在节点侧就拒 —— 那样错误信息才看得懂。
 func TestBadNodeIDRejected(t *testing.T) {
 	for _, bad := range []string{"", "abc", "0", "-1", "  "} {
-		if _, _, err := heartbeatBodies(bad, metricsFixture); err == nil {
+		if _, _, err := heartbeatBodies(bad, metricsFixture, true); err == nil {
 			t.Errorf("node_id=%q 应被拒", bad)
 		}
 	}
@@ -224,12 +224,12 @@ func TestBrokenMetricsRejected(t *testing.T) {
 	for _, bad := range []string{"", "not json", `{"system":{}}`} {
 		if bad == `{"system":{}}` {
 			// 形状对但全是零值：允许（可能是真的采不到），只要 node_id 合法
-			if _, _, err := heartbeatBodies("1", bad); err != nil {
+			if _, _, err := heartbeatBodies("1", bad, true); err != nil {
 				t.Errorf("形状合法的 JSON 不该被拒: %v", err)
 			}
 			continue
 		}
-		if _, _, err := heartbeatBodies("1", bad); err == nil {
+		if _, _, err := heartbeatBodies("1", bad, true); err == nil {
 			t.Errorf("metrics 输出 %q 应被拒", bad)
 		}
 	}
@@ -364,6 +364,22 @@ func TestHeartbeatCollectsMetricsOnlyOnce(t *testing.T) {
 	if _, ok := last["vpn_interfaces"]; !ok {
 		t.Fatalf("存活心跳必须带 vpn_interfaces（后端缺段判离线）: %v", last)
 	}
+
+	// 拓扑变更后失效快照 → 下一拍必须重采（否则新节点永远进不了平台列表）。
+	h.invalidateMetrics()
+	h.beat(ctx)
+	metricsCalls = 0
+	for _, c := range calls {
+		if strings.HasPrefix(c, "metrics") {
+			metricsCalls++
+		}
+	}
+	if metricsCalls != 2 {
+		t.Fatalf("失效后再采，metrics 应共 2 次，实际 %d: %v", metricsCalls, calls)
+	}
+	if len(sent) != 4 {
+		t.Fatalf("上报 %d 条，期望 4 条", len(sent))
+	}
 }
 
 // 首采失败则本拍不报、下一拍重试；成功后冻结，不再 exec。
@@ -448,5 +464,30 @@ func TestPeersStatusOnlyActiveDeduped(t *testing.T) {
 	}
 	if strings.Contains(string(sign), "peers_status") || strings.Contains(string(sign), "node_monitor") {
 		t.Fatal("签名体不得含 node_monitor/peers_status")
+	}
+}
+
+// 逐对端快照只在「刚重采」的那一拍发：每 30s 重发同一份会在
+// node_peer_connections 堆完全相同的行。
+func TestPeersStatusOnlyOnFreshSnapshot(t *testing.T) {
+	metrics := `{
+	  "system": {"cpu_percent": 1, "mem_used_mb": 1, "mem_total_mb": 2,
+	             "disk_used_percent": 1, "uptime_sec": 1, "interface_up": 1, "load1": 0.1},
+	  "vpn": [{"driver": "gnb", "up": true, "interface": "gnb_tun", "peers": 1,
+	           "peers_status": [{"peer_id": 42, "conn_type": "direct_ipv4", "latency": 3, "rx": 1, "tx": 2}]}]
+	}`
+	fresh, _, err := heartbeatBodies("1", metrics, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached, _, err := heartbeatBodies("1", metrics, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fresh), "peers_status") {
+		t.Fatal("fresh 拍必须带 peers_status")
+	}
+	if strings.Contains(string(cached), "peers_status") {
+		t.Fatal("cached 拍不得重复带 peers_status")
 	}
 }

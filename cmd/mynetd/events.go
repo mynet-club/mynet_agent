@@ -76,6 +76,22 @@ type eventDispatcher struct {
 	// pending 是「跑的时候又来事件」的补跑队列（按事件名合并，见 runExclusive）。
 	pendingMu sync.Mutex
 	pending   map[string]func()
+
+	// onTopologyChanged 拓扑落地后回调（组合根接到 heartbeatLoop.invalidateMetrics）。
+	// 心跳的 metrics 快照默认只在启动时采一次；若不在这里失效，新加入的节点
+	// 永远不会出现在心跳与平台对端列表里，直到进程重启。
+	onTopologyChanged func()
+}
+
+// setOnTopologyChanged 注入拓扑落地回调（未装配时为空操作）。
+func (d *eventDispatcher) setOnTopologyChanged(fn func()) {
+	d.onTopologyChanged = fn
+}
+
+func (d *eventDispatcher) notifyTopologyChanged() {
+	if d.onTopologyChanged != nil {
+		d.onTopologyChanged()
+	}
 }
 
 // setConfigExclusive 注入与 HTTP 写面共享的互斥（main.go 装配 api.TryRunExclusive）。
@@ -170,6 +186,7 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 		res := commands.Run(d.exec, commands.Request{Op: op}, d.nodeID)
 		if res.OK {
 			d.logf("event: %s → %s 执行成功", name, op)
+			d.notifyTopologyChanged()
 			return
 		}
 		d.logf("event: %s → %s 执行失败: %s%s", name, op, res.Error, stderrSuffix(res.Stderr))
@@ -211,6 +228,7 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		d.logf("event: bundle_changed → 驱动配置未变，跳过 reload（保留当前隧道）")
 		// 路由仍刷：bundle 可能只动了 OS 路由段。
 		d.runLifecycleStep("装内核路由", commands.OpRouteUpdate)
+		d.notifyTopologyChanged()
 		return
 	}
 
@@ -255,6 +273,7 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		return
 	}
 	_ = run()
+	d.notifyTopologyChanged()
 }
 
 // runLifecycleStep 单步执行（跳过 reload 时刷路由用）。

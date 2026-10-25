@@ -529,3 +529,23 @@ func TestStringifyParams(t *testing.T) {
 		}
 	}
 }
+
+// 拓扑落地后必须让心跳快照失效：否则 metrics 冻结在启动时刻，
+// 新加入的节点要等进程重启才会出现在平台对端列表里。
+func TestRouteChangedInvalidatesMetricsSnapshot(t *testing.T) {
+	ex := &recordingExec{}
+	d, _ := newTestDispatcher(ex.run)
+	called := make(chan struct{}, 1)
+	d.setOnTopologyChanged(func() {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+	})
+	d.Handle("route_changed", nil)
+	select {
+	case <-called:
+	case <-time.After(3 * time.Second):
+		t.Fatal("route_changed 成功后应触发快照失效回调")
+	}
+}

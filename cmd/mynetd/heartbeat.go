@@ -136,7 +136,9 @@ func validHeartbeatConnType(s string) bool {
 // 签名永远不等，症状是清一色 401 而不是「某个字段错了」。
 //
 // metricsJSON 是 `mynet metrics --json` 的 stdout 原文。
-func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err error) {
+// includePeers 只在**刚重采快照**的那一拍为 true：对端快照是「拓扑变更后的
+// 一次性事实」，每 30s 重发同一份只会在 node_peer_connections 里堆重复行。
+func heartbeatBodies(nodeID, metricsJSON string, includePeers bool) (sendBody, signBody []byte, err error) {
 	id, convErr := strconv.ParseInt(strings.TrimSpace(nodeID), 10, 64)
 	if convErr != nil || id <= 0 {
 		return nil, nil, fmt.Errorf("node_id 非法（后端要求 integer 且 ≥1）: %q", nodeID)
@@ -213,24 +215,26 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 
 	// 逐对端状态：只发活跃对端，且按 node_id 去重（gnb/wg 可能各报一份）。
 	// 后端按 conn_type 枚举校验，非法值会让整条心跳 422 —— 宁可不发这条。
-	seenPeer := make(map[int64]bool, len(snap.VPN))
-	for _, v := range snap.VPN {
-		for _, ps := range v.PeersStatus {
-			if ps.PeerID <= 0 || ps.PeerID == id || seenPeer[ps.PeerID] {
-				continue
+	if includePeers {
+		seenPeer := make(map[int64]bool, len(snap.VPN))
+		for _, v := range snap.VPN {
+			for _, ps := range v.PeersStatus {
+				if ps.PeerID <= 0 || ps.PeerID == id || seenPeer[ps.PeerID] {
+					continue
+				}
+				if !validHeartbeatConnType(ps.ConnType) {
+					continue
+				}
+				seenPeer[ps.PeerID] = true
+				p.NodeMonitor.PeersStatus = append(p.NodeMonitor.PeersStatus, peerStatusHB{
+					PeerID:   ps.PeerID,
+					ConnType: ps.ConnType,
+					Latency:  ps.Latency,
+					Rx:       ps.Rx,
+					Tx:       ps.Tx,
+					Seen:     p.Timestamp,
+				})
 			}
-			if !validHeartbeatConnType(ps.ConnType) {
-				continue
-			}
-			seenPeer[ps.PeerID] = true
-			p.NodeMonitor.PeersStatus = append(p.NodeMonitor.PeersStatus, peerStatusHB{
-				PeerID:   ps.PeerID,
-				ConnType: ps.ConnType,
-				Latency:  ps.Latency,
-				Rx:       ps.Rx,
-				Tx:       ps.Tx,
-				Seen:     p.Timestamp,
-			})
 		}
 	}
 
