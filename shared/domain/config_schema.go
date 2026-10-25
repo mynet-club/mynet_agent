@@ -275,8 +275,8 @@ func (p *PluginConfig) Validate() error {
 // gnb 的 proxy 开关（proxy on）就在这份 proxy.conf 里，**不进 node.conf**。
 type PluginProxyConfig struct {
 	// Role 明确节点角色：client、server 或 both。
-	Role   string              `json:"role,omitempty"`
-	Listen PluginProxyListen   `json:"listen"`
+	Role     string              `json:"role,omitempty"`
+	Listen   PluginProxyListen   `json:"listen"`
 	Outbound PluginProxyOutbound `json:"outbound"`
 	Rules    []string            `json:"rules,omitempty"`
 	// Exits 出站 peer 列表：选谁、几个、权重、顺序。
