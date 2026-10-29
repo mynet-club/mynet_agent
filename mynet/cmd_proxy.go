@@ -119,13 +119,17 @@ func applyPCAcceleration() int {
 		}
 		return 0
 	}
-	if liveHookTunDevice() == "" {
-		fmt.Println("加速：等待隧道连接")
+	if err := accelerationStartGate(); err != nil {
+		fmt.Println("加速：", err.Error())
 		return 0
 	}
 	if err := ApplyFromActive(false); err != nil {
 		fmt.Fprintln(os.Stderr, "加速策略准备失败:", err)
 		return 1
+	}
+	if err := dnsHookStartGate(); err != nil {
+		fmt.Println("加速：", err.Error())
+		return 0
 	}
 	return dnsHookStart(DNSHookListenDefault)
 }

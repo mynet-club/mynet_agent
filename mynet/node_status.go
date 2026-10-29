@@ -177,7 +177,9 @@ func gnbPeerLinksOf(confDir string) map[int64]PeerLinkInfo {
 	return m
 }
 
-// ifaceStats 读接口计数器。Linux 走 sysfs，darwin 解析 ifconfig。
+// ifaceStats 读接口计数器。Linux 走 sysfs，darwin 用 netstat -ibn（utun 的
+// ifconfig 不报 RX/TX bytes，会恒 0 —— 2026-10-28 本机 utun4 实测），
+// Windows 用 Get-NetAdapterStatistics。
 func ifaceStats(iface string) (rx, tx int64, mtu int, ok bool) {
 	// Linux：/sys/class/net/<if>/statistics/{rx,tx}_bytes
 	if b, err := os.ReadFile(filepath.Join("/sys/class/net", iface, "statistics", "rx_bytes")); err == nil {
@@ -190,7 +192,15 @@ func ifaceStats(iface string) (rx, tx int64, mtu int, ok bool) {
 		}
 		return rx, tx, mtu, true
 	}
-	// darwin：ifconfig <if> 里 "mtu 1450" / 无 RX/TX 行（utun 常不报计数器）
+	// Windows：Get-NetAdapterStatistics（node_status_iface_windows.go）
+	if rx, tx, mtu, ok := windowsIfaceBytes(iface); ok {
+		return rx, tx, mtu, true
+	}
+	// darwin/BSD：netstat -ibn 的 <Link#> 行才有 Ibytes/Obytes
+	if rx, tx, mtu, ok := netstatIfaceBytes(iface); ok {
+		return rx, tx, mtu, true
+	}
+	// 回退：ifconfig 只保证 mtu（utun 常不报计数器）
 	bin := lookPathAny("ifconfig")
 	if bin == "" {
 		return 0, 0, 0, false
@@ -209,11 +219,7 @@ func ifaceStats(iface string) (rx, tx int64, mtu int, ok bool) {
 			if f[i] == "mtu" {
 				mtu, _ = strconv.Atoi(f[i+1])
 			}
-			if f[i] == "RX" && i+2 < len(f) && f[i+1] == "packets" {
-				// macOS 的计数器是 "RX packets: 840  bytes: ..." 另一种排版
-			}
 		}
-		// "input packets 840, bytes 1234"（Linux netstat 风格）/ "RX packets: 840 bytes: N"
 		if n := parseCountAfter(ln, "bytes"); n > 0 && strings.Contains(ln, "RX") {
 			rx = n
 		}
@@ -222,6 +228,37 @@ func ifaceStats(iface string) (rx, tx int64, mtu int, ok bool) {
 		}
 	}
 	return rx, tx, mtu, true
+}
+
+// netstatIfaceBytes 解析 `netstat -ibn` 中接口的 <Link#> 行。
+// 形如：utun4  1400  <Link#25>  597606  0  571673514  318261  0  98392561  0
+// 列：Name Mtu Network Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll（Address 空）
+func netstatIfaceBytes(iface string) (rx, tx int64, mtu int, ok bool) {
+	bin := lookPathAny("netstat")
+	if bin == "" {
+		return 0, 0, 0, false
+	}
+	out, err := exec.Command(bin, "-ibn").Output()
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return parseNetstatIfaceBytes(string(out), iface)
+}
+
+// parseNetstatIfaceBytes 从 netstat -ibn 文本取 <Link> 行计数（可测）。
+func parseNetstatIfaceBytes(out, iface string) (rx, tx int64, mtu int, ok bool) {
+	for _, ln := range strings.Split(out, "\n") {
+		f := strings.Fields(ln)
+		if len(f) < 9 || f[0] != iface || !strings.HasPrefix(f[2], "<Link") {
+			continue
+		}
+		mtu, _ = strconv.Atoi(f[1])
+		// <Link> 行无 Address：Ipkts Ierrs Ibytes Opkts Oerrs Obytes = f[3..8]
+		rx, _ = strconv.ParseInt(f[5], 10, 64)
+		tx, _ = strconv.ParseInt(f[8], 10, 64)
+		return rx, tx, mtu, true
+	}
+	return 0, 0, 0, false
 }
 
 func parseCountAfter(s, key string) int64 {

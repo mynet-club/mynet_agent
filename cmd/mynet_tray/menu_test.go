@@ -304,66 +304,47 @@ func TestOverlayIPFollowsLatestProbe(t *testing.T) {
 	})
 }
 
-// TestDiagURLMatchesWebUIPage 「查看诊断」的深链必须真的对得上 WebUI 的页面键。
-//
-// 这条跨包读源文件是有意的：#diag 写错、或 WebUI 哪天改了页面键，都不会报错，
-// 只会静默退回概览页 —— 用户点了「查看诊断」却看不到诊断，且无从察觉。
+// TestDiagURLMatchesWebUIPage 「查看诊断」深链必须落在 SPA 的诊断路由上。
+// 旧 index.html 的 hash 深链已随 webui-spa-playbook 退役。
 func TestDiagURLMatchesWebUIPage(t *testing.T) {
-	const webui = "../../mynetd/localapi/webui/index.html"
-	raw, err := os.ReadFile(webui)
+	const routes = "../../../mynet_gui/src/router/routes.ts"
+	raw, err := os.ReadFile(routes)
 	if err != nil {
-		t.Fatalf("读 WebUI 源文件（%s）: %v", webui, err)
+		t.Fatalf("读 SPA 路由（%s）: %v", routes, err)
 	}
-	// 两件事缺一深链就不成立：PAGES 里有 diag 这一页，且启动时真的解析 hash。
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`diag:\s*\{\s*el:\s*'page-diag'`),
-		regexp.MustCompile(`\nparseHash\(\);`),
-	} {
-		if !re.Match(raw) {
-			t.Errorf("WebUI 里找不到 %s —— #diag 深链已失效，DiagURL 得跟着改", re)
-		}
+	if !regexp.MustCompile(`path: 'diagnostics'`).Match(raw) {
+		t.Error("SPA 路由缺 diagnostics —— DiagURL 得跟着改")
 	}
 
 	const base = "127.0.0.1:8096"
-	if got, want := DiagURL(base), "http://127.0.0.1:8096/ui/#diag"; got != want {
+	if got, want := DiagURL(base), "http://127.0.0.1:8096/gui/diagnostics"; got != want {
 		t.Errorf("DiagURL = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(DiagURL(base), PanelURL(base)) {
-		t.Error("DiagURL 必须基于 PanelURL 拼，否则两处地址会各自漂")
+	if !strings.HasPrefix(DiagURL(base), "http://"+base+"/gui/") {
+		t.Error("DiagURL 必须落在 /gui/ SPA 前缀下")
 	}
 }
 
-// TestProxyURLMatchesWebUIPage 「管理域名」的深链必须落在 config/proxy 页，
-// 且 hash 形状与 parseHash 的 `#page/tab` 对齐。只写 `config` 会停在默认
-// 「节点配置」tab，域名白名单看不见。
+// TestProxyURLMatchesWebUIPage 「管理域名」深链必须落在 SPA 加速页。
 func TestProxyURLMatchesWebUIPage(t *testing.T) {
-	const webui = "../../mynetd/localapi/webui/index.html"
-	raw, err := os.ReadFile(webui)
+	const routes = "../../../mynet_gui/src/router/routes.ts"
+	raw, err := os.ReadFile(routes)
 	if err != nil {
-		t.Fatalf("读 WebUI 源文件（%s）: %v", webui, err)
+		t.Fatalf("读 SPA 路由（%s）: %v", routes, err)
 	}
-	// parseHash 按 `/` 切 page/tab；config 页必须有 proxy 这个 tab，
-	// 且域名输入框确实在 config/proxy 面板里。
-	for _, re := range []*regexp.Regexp{
-		regexp.MustCompile(`parseHash`),
-		regexp.MustCompile(`data-panel="config/proxy"`),
-		regexp.MustCompile(`proxy-domains-proxied`),
-	} {
-		if !re.Match(raw) {
-			t.Errorf("WebUI 里找不到 %s —— #config/proxy 深链已失效，ProxyURL 得跟着改", re)
-		}
+	if !regexp.MustCompile(`path: 'acceleration'`).Match(raw) {
+		t.Error("SPA 路由缺 acceleration —— ProxyURL 得跟着改")
 	}
 
 	const base = "127.0.0.1:8096"
-	if got, want := ProxyURL(base), "http://127.0.0.1:8096/ui/#config/proxy"; got != want {
+	if got, want := ProxyURL(base), "http://127.0.0.1:8096/gui/acceleration"; got != want {
 		t.Errorf("ProxyURL = %q, want %q", got, want)
+	}
+	if strings.Contains(ProxyURL(base), "#") {
+		t.Error("ProxyURL 不得再用旧 hash 深链")
 	}
 	if !strings.HasPrefix(ProxyURL(base), PanelURL(base)) {
 		t.Error("ProxyURL 必须基于 PanelURL 拼，否则两处地址会各自漂")
-	}
-	// 只写 `config` 是老 bug 的形态，锁死不许回退
-	if strings.HasSuffix(ProxyURL(base), "#config") {
-		t.Error("ProxyURL 停在 #config 会落默认 keys tab，域名页看不见")
 	}
 }
 

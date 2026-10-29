@@ -78,6 +78,7 @@ type concStub struct {
 	// （断开必须立刻返回，否则测不出「陈旧完成」这类时序）。
 	startHits   int
 	stopHits    int
+	quitHits    int           // POST /api/v1/daemon/quit（退出应用收尾）
 	startGate   chan struct{} // 非 nil：启动请求阻塞等它关闭
 	startDelay  time.Duration
 	startCode   int
@@ -138,6 +139,10 @@ func (s *concStub) handle(w http.ResponseWriter, r *http.Request) {
 			gate, delay = s.startGate, s.startDelay
 			code, body = s.startCode, s.startBody
 		}
+	case "/api/v1/daemon/quit":
+		// 退出应用收尾（tray.go shutdownApp 第 2 发）：计数即可，立刻返回。
+		s.quitHits++
+		code, body = http.StatusOK, `{"success":true}`
 	default:
 		s.mu.Unlock()
 		http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
@@ -629,14 +634,14 @@ func TestConc_TimeoutInterleavesWithCompletion(t *testing.T) {
 	}
 }
 
-// ── 6. 退出不发 stop（回归锁，应为绿） ──────────────────────────
+// ── 6. 退出应用 = 停隧道 + 停 mynetd（2026-10-28 用户裁定） ──────
 
-// TestConc_QuitDoesNotStop 锁语义：托盘退出不停隧道、不停 mynetd。
-// onExit（即使与轮询并发）之后，stub 上不得出现任何请求。
-func TestConc_QuitDoesNotStop(t *testing.T) {
+// TestConc_QuitStopsTunnelAndDaemon 锁语义：退出应用（onExit，即使与轮询并发）
+// 恰好一发 stop（command 面）+ 一发 daemon/quit，且不得有启动。
+func TestConc_QuitStopsTunnelAndDaemon(t *testing.T) {
 	stub := newConcStub(t)
 	a, renders := newConcApp(t, stub.base(), &cycleProber{script: []Probe{concProbes.running}})
-	a.refreshOnce() // → Running：有隧道可停，才有「误停」的可能
+	a.refreshOnce() // → Running：有隧道可停
 
 	stop := make(chan struct{})
 	waitPoll := pollLoop(a, stop, time.Millisecond)
@@ -647,8 +652,14 @@ func TestConc_QuitDoesNotStop(t *testing.T) {
 	waitPoll()
 	waitSettled(t, renders)
 
-	if n := stub.hits(commandPath) + stub.hits(commandPath); n != 0 {
-		t.Errorf("退出路径打了 %d 个请求：托盘退出不得停隧道/停 mynetd", n)
+	if n := stub.stops(); n != 1 {
+		t.Errorf("退出路径发了 %d 次 stop, want 1：退出应用应恰好断一次隧道", n)
+	}
+	if n := stub.quitHits; n != 1 {
+		t.Errorf("daemon/quit 打了 %d 次, want 1：退出应用应停 mynetd", n)
+	}
+	if n := stub.starts(); n != 0 {
+		t.Errorf("退出路径发了 %d 次启动, want 0", n)
 	}
 }
 

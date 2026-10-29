@@ -156,13 +156,14 @@ func TestJourney_MenuStaysCoherent(t *testing.T) {
 		t.Errorf("IP 已消失却又写了一次剪贴板：%v", copied)
 	}
 
-	// 11. 退出托盘：不停隧道、不停 mynetd —— 整条旅程的请求数到此为止。
+	// 11. 退出应用：停隧道 + 停 mynetd（2026-10-28 用户裁定）——
+	//     旅程里此前只点过一次「断开」，退出会再断一次，全程 stop=2。
 	a.onExit()
 	waitSettled(t, renders)
 	if got, want := stub.startHits(), 3; got != want {
 		t.Errorf("全程启动 %d 次, want %d", got, want)
 	}
-	if got, want := stub.stopHits(), 1; got != want {
-		t.Errorf("全程断开 %d 次, want %d（退出不得停隧道）", got, want)
+	if got, want := stub.stopHits(), 2; got != want {
+		t.Errorf("全程断开 %d 次, want %d（退出应用=停隧道+停服务）", got, want)
 	}
 }

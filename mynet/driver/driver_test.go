@@ -207,11 +207,21 @@ func TestParseGNBStatusRealFormat(t *testing.T) {
 	if direct.LatencyMs != 1.5 {
 		t.Fatalf("延迟应为 1500usec → 1.5ms，得到 %v", direct.LatencyMs)
 	}
+	// lastping：ping_ts_sec:1699999999 → LastSeen / Addr4UpdateTsSec
+	if direct.LastSeen.Unix() != 1699999999 {
+		t.Fatalf("lastping 应为 1699999999，得到 %v", direct.LastSeen)
+	}
+	if direct.Addr4UpdateTsSec != 1699999999 {
+		t.Fatalf("Addr4UpdateTsSec=%d want 1699999999", direct.Addr4UpdateTsSec)
+	}
 	if direct.IsLocal {
 		t.Fatal("第一个节点不该被判为本机")
 	}
 
 	relay := peers[1]
+	if !relay.LastSeen.IsZero() {
+		t.Fatalf("ping_ts_sec:0 不应产生 lastping，得到 %v", relay.LastSeen)
+	}
 	if relay.ConnectionStatus != "relay" {
 		t.Fatalf("InDirect 应为 relay，得到 %q", relay.ConnectionStatus)
 	}

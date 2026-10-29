@@ -2,6 +2,7 @@ package localapi
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -295,5 +296,35 @@ func TestConfigPrepareSequence(t *testing.T) {
 	s.mux.ServeHTTP(rec, req)
 	if rec.Code != 405 || len(calls) != 3 {
 		t.Fatal("read request caused mutations")
+	}
+}
+
+func TestConfigCloudMarksAuthExpiredAsNeedLogin(t *testing.T) {
+	s := NewServer(Config{})
+	s.Ops = func(argv []string) (any, error) {
+		return nil, errors.New(`HTTP 401: {"message":"Unauthenticated."}；自动续期失败: HTTP 401: {"error_code":"REFRESH_TOKEN_INVALID"}`)
+	}
+	rec := httptest.NewRecorder()
+	s.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/config/cloud", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d want 401 body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"need_login":true`) {
+		t.Fatalf("need_login must be true: %s", rec.Body.String())
+	}
+}
+
+func TestIsAuthExpired(t *testing.T) {
+	for _, msg := range []string{
+		"need_login",
+		"HTTP 401: Unauthenticated",
+		"自动续期失败: REFRESH_TOKEN_INVALID",
+	} {
+		if !isAuthExpired(msg) {
+			t.Fatalf("should expire: %q", msg)
+		}
+	}
+	if isAuthExpired("connection refused") {
+		t.Fatal("network error is not auth expiry")
 	}
 }

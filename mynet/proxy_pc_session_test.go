@@ -24,6 +24,10 @@ func newSessionHarness(t *testing.T) *sessionHarness {
 	t.Helper()
 	t.Setenv("MYNET_HOME", t.TempDir())
 	t.Setenv("MYNET_DATA_HOME", "")
+	// 默认清空干净 DNS 钉扎，隔离单测；永久钉扎见 TestCleanDNSPermanentlyPinned
+	if err := saveCleanDNSList(nil); err != nil {
+		t.Fatal(err)
+	}
 	h := &sessionHarness{s: newPCProxySession(), fib: pcRouteView{"0.0.0.0/0": "en0"}}
 	h.s.inspect = func() (pcRouteView, error) {
 		out := pcRouteView{}
@@ -326,5 +330,40 @@ func TestPCSessionCustomIPsFollowIntentWithoutDNS(t *testing.T) {
 	}
 	if len(h.fib) != 1 || len(h.s.Routes) != 0 {
 		t.Fatal("removed custom IP routes remain")
+	}
+}
+
+// 干净 DNS（1.1.1.1/8.8.8.8…）必须永久钉入隧道：查询它们走隧道才不被 GFW 投毒。
+func TestCleanDNSPermanentlyPinned(t *testing.T) {
+	h := newSessionHarness(t)
+	if err := saveCleanDNSList([]string{"1.1.1.1", "8.8.8.8"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	r := sessionRules()
+	r.customIPs = []string{"192.0.2.4"}
+	if err := h.s.sync(r, "utun4", now); err != nil {
+		t.Fatal(err)
+	}
+	if h.fib["1.1.1.1/32"] != "utun4" || h.fib["8.8.8.8/32"] != "utun4" {
+		t.Fatalf("clean DNS not pinned: %v", h.fib)
+	}
+	if h.fib["192.0.2.4/32"] != "utun4" {
+		t.Fatal("custom IP missing")
+	}
+	// 共享 IP 解钉不得触碰干净 DNS
+	h.s.markSharedIfPinned([]string{"1.1.1.1", "8.8.8.8", "192.0.2.4"})
+	if isCleanDNSIP("1.1.1.1") != true {
+		t.Fatal("clean DNS must stay pinned")
+	}
+	// 清空列表后 sync 会撤掉永久钉扎
+	if err := saveCleanDNSList(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.sync(r, "utun4", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if h.fib["1.1.1.1/32"] == "utun4" || h.fib["8.8.8.8/32"] == "utun4" {
+		t.Fatalf("removed clean DNS still pinned: %v", h.fib)
 	}
 }

@@ -1,5 +1,9 @@
 # WebUI 信息架构（IA）— 三行壳层
 
+> ⚠️ **双层 Tab 壳层已由 [webui-spa-ux-spec.md](webui-spa-ux-spec.md) 取代**（2026-10-27）。
+> SPA 采用侧栏 + 信息/操作分离，不再使用页面 Tab；本文档仅作历史参考。
+
+
 > 更新：2026-09-27 · 适用：`mynet_agent` 本机 WebUI（`/ui/`）
 > 布局契约见 §2；与旧 Dashboard/Config/Monitor 草稿的关系见 §6。
 

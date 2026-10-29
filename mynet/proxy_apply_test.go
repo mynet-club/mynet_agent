@@ -184,6 +184,8 @@ func TestProxyServerCmds(t *testing.T) {
 }
 
 func TestProxyCleanupRemovesForeignDNSAndRule(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir()) // cleanDNSCleanupList 读本机状态，测试必须隔离
+	t.Setenv("MYNET_DATA_HOME", "")
 	p := mustPolicy(t, "domestic", "whitelist")
 	rt := ProxyRuntime{TunDevice: "gnb_tun"}
 	text := joinCmds(proxyCleanupCmds(snapNft(), p, rt))

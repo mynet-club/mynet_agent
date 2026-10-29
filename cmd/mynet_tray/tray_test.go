@@ -420,13 +420,10 @@ func TestStatusTextSvcDownVsStopped(t *testing.T) {
 // ── 面板地址 ───────────────────────────────────────────────────
 
 // TestPanelURLPointsAtUI 锁住「根路径是 JSON 壳」这个坑。
-//
-// 旧版 PanelURL 返回 http://base/（JSON 壳）且**无人调用**，openPanel 自己
-// 另拼一份 /ui/ —— 两份地址必然漂移，漂了也只是「点开看到一坨 JSON」，
-// 不报错、没人发现。现在 openPanel 走 PanelURL，这里锁住它的落点。
+// 面板落点是 SPA（/gui/），不是 JSON 壳，也不是旧 /ui/ hash 业务台。
 func TestPanelURLPointsAtUI(t *testing.T) {
 	const base = "127.0.0.1:8096"
-	if got, want := PanelURL(base), "http://"+base+"/ui/"; got != want {
+	if got, want := PanelURL(base), "http://"+base+"/gui/"; got != want {
 		t.Errorf("PanelURL(%q) = %q, want %q", base, got, want)
 	}
 }

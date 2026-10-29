@@ -15,8 +15,8 @@ import (
 	"strings"
 )
 
-// ForeignDNSServers 兜底公共 DNS（与 proxy_apply.DefaultForeignDNSServers 同源）。
-// split 模式的 dnsmasq `server=dns.mynet.club` 是最后一道兜底，不在此列表。
+// split 模式的 dnsmasq `server=dns.mynet.club` 是最后一道兜底；
+// 公共国外 DNS 清单统一在 proxy_clean_dns.go（ctl dns-clean.txt 同源）。
 
 // WriteResolvConf 写 /etc/resolv.conf（或调用方给的 path）。
 // 返回旧内容，便于 stop 时恢复。

@@ -52,11 +52,17 @@ func cmdCheck(_ []string) int {
 	} else {
 		fmt.Println("✓ system.json")
 	}
-	if !cmdExists("ip") {
-		fmt.Println("✗ ip 不可用")
-		fail = 1
+	// iproute2 仅 Linux 必需；桌面平台路由由 route/netstat 承担，
+	// 缺失不算失败（此前 mac/win 上必报「✗ ip 不可用」——平台误判）。
+	if goos() == "linux" {
+		if !cmdExists("ip") {
+			fmt.Println("✗ ip 不可用")
+			fail = 1
+		} else {
+			fmt.Println("✓ ip")
+		}
 	} else {
-		fmt.Println("✓ ip")
+		fmt.Println("· ip 跳过（" + goos() + " 平台路由不走 iproute2）")
 	}
 	if cmdExists("wg") {
 		fmt.Println("✓ wg")

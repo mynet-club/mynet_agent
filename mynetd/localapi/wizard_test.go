@@ -189,28 +189,38 @@ func TestRedactSecretsSparesPublicKeyMasksTokens(t *testing.T) {
 	}
 }
 
-// webui 的 id 必须唯一。此前「启动隧道」在步骤 3、4 各有一份 id="wiz-start"，
-// getElementById 只绑到第一份（步骤 3 那个）—— 用户落到步骤 4（已有配置、
-// 重开页面）时，看得见的按钮是**死的**，点了没反应，观感就是「向导没把
-// gnb 跑起来」。用 class/data-* 绑定后，这条钉住不再回潮。
-func TestWebUIHasNoDuplicateIDs(t *testing.T) {
+// webui 只剩 SPA 跳转，无业务面板、无 fallback 调试台。
+func TestWebUIIsPureSPARedirect(t *testing.T) {
 	raw, err := os.ReadFile("webui/index.html")
 	if err != nil {
 		t.Skip("webui 不在本包目录（构建布局变了）")
 	}
+	html := string(raw)
+	for _, want := range []string{`href="/gui/"`, `location.replace('/gui/')`, `experience.css`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("webui 缺 %s", want)
+		}
+	}
+	// 不得回潮业务面板或 API 调试台
+	for _, banned := range []string{
+		`data-api=`,
+		`id="page-config"`,
+		`id="wiz-start"`,
+		`id="desktop-acceleration-card"`,
+		`API 调试`,
+	} {
+		if strings.Contains(html, banned) {
+			t.Errorf("webui 不该再有 %s", banned)
+		}
+	}
+	// id 仍须唯一
 	counts := map[string]int{}
-	for _, m := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(string(raw), -1) {
+	for _, m := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(html, -1) {
 		counts[m[1]]++
 	}
 	for id, n := range counts {
 		if n > 1 {
-			t.Errorf("id=%q 出现 %d 次 —— 重复 id 让 getElementById 只绑到第一份，其余按钮是死的", id, n)
-		}
-	}
-	// 启动/退出用向导按钮 id 绑定（IA：向导低频，不占主导航）
-	for _, want := range []string{`id="wiz-start"`, `id="wiz-finish"`, `id="wiz-key-gen"`, `id="wiz-rt-make"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("webui 缺 %s", want)
+			t.Errorf("id=%q 出现 %d 次", id, n)
 		}
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -64,13 +63,18 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 	}
 	out := []src{}
-	for _, name := range []string{"mynetd.err", "mynetd.log", "gnb.err", "gnb.log"} {
-		p := filepath.Join("/var/log/mynet", name)
-		text := tailFile(p, lines)
+	candidates := []struct{ name, path string }{
+		{"mynetd.err", "/var/log/mynet/mynetd.err"},
+		{"mynetd.log", "/var/log/mynet/mynetd.log"},
+		{"gnb.log", "/var/log/mynet-gnb.log"},
+		{"gnb.err", "/var/log/mynet-gnb.err"},
+	}
+	for _, c := range candidates {
+		text := tailFile(c.path, lines)
 		if text == "" {
 			continue
 		}
-		out = append(out, src{Name: name, Text: redactSecrets(text)})
+		out = append(out, src{Name: c.name, Text: redactSecrets(text)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 

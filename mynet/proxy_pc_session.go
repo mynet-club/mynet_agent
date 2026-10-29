@@ -149,6 +149,35 @@ func (s *pcProxySession) activeLocked(rules *dnsHookRules, now time.Time) map[st
 	return active
 }
 
+// markSharedIfPinned —— 普通（非白名单）域名解析到「已被钉进隧道」的 IP 时，
+// 说明这是共享 CDN：同一个 IP 既服务白名单域名，也服务普通应用。
+// /32 路由按 IP 生效，无法区分应用，只能让该 IP 回直连，否则普通应用一起被劫持。
+func (s *pcProxySession) markSharedIfPinned(ips []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var added []string
+	for _, ip := range ips {
+		if isCleanDNSIP(ip) {
+			continue // 干净 DNS 永久钉扎，不因共享解钉
+		}
+		if _, ok := s.IPs[ip]; !ok {
+			continue
+		}
+		if directIPExempted(ip) {
+			continue
+		}
+		added = append(added, ip)
+	}
+	if len(added) == 0 {
+		return
+	}
+	list := loadHookDirectIPs()
+	list = append(list, added...)
+	if err := saveHookDirectIPs(list); err == nil {
+		hookLogf("shared IP -> direct: %v", added)
+	}
+}
+
 // observe 不因缓存命中延长租约；until 必须来自 DNS 应答的剩余 TTL。
 // 容量满时显式失败，不能驱逐仍被 OS 缓存使用的地址后让它意外直连。
 func (s *pcProxySession) observe(name string, ips []string, until, now time.Time, rules *dnsHookRules, tun string) (err error) {
@@ -165,6 +194,14 @@ func (s *pcProxySession) observe(name string, ips []string, until, now time.Time
 		return nil
 	}
 	active := s.activeLocked(rules, now)
+	// 直连 IP 豁免：共享 CDN 上，白名单域名与普通应用可能解析到同一 IP
+	// （实测 api.deepseek.com 与 MiMo 共用 123.125.246.121）。这类 IP 一旦钉进
+	// 隧道，普通应用就被一起劫持。豁免表命中的 IP 不装路由。
+	for ip := range active {
+		if directIPExempted(ip) {
+			delete(active, ip)
+		}
+	}
 	if len(s.Domains) >= pcPinMaxIPs && s.Domains[name] == nil {
 		return fmt.Errorf("active domain limit %d reached", pcPinMaxIPs)
 	}
@@ -209,6 +246,14 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 		}
 	}()
 	active := s.activeLocked(rules, now)
+	// 直连 IP 豁免：共享 CDN 上，白名单域名与普通应用可能解析到同一 IP
+	// （实测 api.deepseek.com 与 MiMo 共用 123.125.246.121）。这类 IP 一旦钉进
+	// 隧道，普通应用就被一起劫持。豁免表命中的 IP 不装路由。
+	for ip := range active {
+		if directIPExempted(ip) {
+			delete(active, ip)
+		}
+	}
 	if len(active) > pcPinMaxIPs {
 		return fmt.Errorf("active IP limit %d reached", pcPinMaxIPs)
 	}
@@ -229,6 +274,13 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 	if tun != "" {
 		for _, prefix := range MergeIPsToCIDR(ips) {
 			want[prefix] = true
+		}
+		// 干净 DNS（1.1.1.1/8.8.8.8…）**永久钉入**：查询它们必须走隧道，
+		// 否则 GFW 投毒；不参与租约过期，也不被共享 IP 解钉。
+		for _, c := range loadCleanDNSList() {
+			if ip := net.ParseIP(c); ip != nil {
+				want[ip.String()+"/32"] = true
+			}
 		}
 	}
 	// 先持久化新增租约；失败时不改系统路由。

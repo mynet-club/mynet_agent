@@ -43,6 +43,58 @@ type ApplyPlan struct {
 	// ProxyOnly 只跑 proxy 段（本地开/关代理用）：跳过 OS 路由/防火墙/接口与钉默认网关。
 	// 不是 plan 文件字段（json:"-"），只由 `mynet apply --proxy-only` 在内存里置位。
 	ProxyOnly bool `json:"-"`
+	// Skipped 因与本体直连网段冲突而未安装的路由。
+	// 典型：对端宣告 192.168.0.0/24，而本机 en0 也在 192.168.0.0/24 ——
+	// 装进隧道会把本机网关/DNS/局域网一起抢走（实测：MiMo agent 断网）。
+	Skipped []SkippedRoute `json:"skipped_routes,omitempty"`
+}
+
+type SkippedRoute struct {
+	Destination string `json:"destination"`
+	Reason      string `json:"reason"`
+}
+
+// localConnectedCIDRs 列出本机已连接（非隧道）的 IPv4 网段。
+func localConnectedCIDRs() []*net.IPNet {
+	var out []*net.IPNet
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		// 隧道口自己不算「本机 LAN」
+		if strings.HasPrefix(ifc.Name, "utun") || strings.HasPrefix(ifc.Name, "tun") ||
+			strings.HasPrefix(ifc.Name, "wg") || strings.HasPrefix(ifc.Name, "gnb") {
+			continue
+		}
+		addrs, aerr := ifc.Addrs()
+		if aerr != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil {
+				out = append(out, ipnet)
+			}
+		}
+	}
+	return out
+}
+
+// routeHitsLocalSubnet 目的地是否与本机直连网段重叠（含完全相同或包含关系）。
+func routeHitsLocalSubnet(dest string, locals []*net.IPNet) (string, bool) {
+	_, dnet, err := net.ParseCIDR(dest)
+	if err != nil {
+		return "", false
+	}
+	for _, ln := range locals {
+		if ln.Contains(dnet.IP) || dnet.Contains(ln.IP) {
+			return ln.String(), true
+		}
+	}
+	return "", false
 }
 
 type RouteOp struct {

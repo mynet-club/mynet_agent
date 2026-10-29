@@ -388,3 +388,38 @@ func TestNodeStatusPeerLinkUnknownWhenNoCtl(t *testing.T) {
 		t.Fatalf("gnb_ctl 不可用时必须 unknown，不能编，got %q", st.Peers[1].Link)
 	}
 }
+
+// macOS utun 的 ifconfig 无 RX/TX bytes，必须走 netstat -ibn <Link> 行（2026-10-28）。
+func TestParseNetstatIfaceBytesUTun(t *testing.T) {
+	const fixture = `Name       Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll
+lo0        16384 <Link#1>                      229402786     0 94554424154 229402786     0 94554424154     0
+utun4      1400  <Link#25>                       597606     0  571673514   318261     0   98392561     0
+utun4      1400  10.182.236.18 10.182.236.181    597606     -  571673514   318261     -   98392561     -
+`
+	rx, tx, mtu, ok := parseNetstatIfaceBytes(fixture, "utun4")
+	if !ok {
+		t.Fatal("应解析到 utun4")
+	}
+	if rx != 571673514 || tx != 98392561 {
+		t.Fatalf("rx=%d tx=%d want 571673514/98392561", rx, tx)
+	}
+	if mtu != 1400 {
+		t.Fatalf("mtu=%d want 1400", mtu)
+	}
+}
+
+func TestParseNetstatIfaceBytesMissing(t *testing.T) {
+	if _, _, _, ok := parseNetstatIfaceBytes("Name Mtu Network\n", "utun4"); ok {
+		t.Fatal("缺行不应 ok")
+	}
+}
+
+func TestParseWindowsIfaceBytes(t *testing.T) {
+	rx, tx, mtu, ok := parseWindowsIfaceBytes(`{"rx":123456,"tx":7890,"mtu":1400}`)
+	if !ok || rx != 123456 || tx != 7890 || mtu != 1400 {
+		t.Fatalf("got %d/%d/%d ok=%v", rx, tx, mtu, ok)
+	}
+	if _, _, _, ok := parseWindowsIfaceBytes("not json"); ok {
+		t.Fatal("坏 JSON 不应 ok")
+	}
+}

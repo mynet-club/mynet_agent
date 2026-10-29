@@ -17,7 +17,8 @@ package main
 // docs/TRAY_T0_BASELINE.md §6 D13。
 //
 // 轮询：每 3s 探一次本机 API，事件喂给 FSM；FSM 发出的 Action 再去打
-// mynetd 的 command 面（只控隧道，**不启停 mynetd**）。
+// mynetd 的 command 面（启停隧道）。「退出应用」会停隧道并退出 mynetd
+// （2026-10-28 用户裁定）。
 // UI 不自己判状态（判据只在 fsm.go）。
 
 import (
@@ -108,14 +109,15 @@ type App struct {
 	mCopyIP *systray.MenuItem
 	// 加速子菜单：开启加速（dns-hook）/ DNS 状态 / 管理域名（→ 面板）。
 	// 域名白名单在 WebUI 管理（支持 `*.example.com` 通配）；托盘只负责开关与入口。
-	mAccel    *systray.MenuItem
-	mAccelOn  *systray.MenuItem
-	mAccelDNS *systray.MenuItem
-	mAccelDom *systray.MenuItem
-	mPanel    *systray.MenuItem
-	mDiag     *systray.MenuItem
-	mAuto     *systray.MenuItem
-	mQuit     *systray.MenuItem
+	mAccel     *systray.MenuItem
+	mAccelOn   *systray.MenuItem
+	mAccelDNS  *systray.MenuItem
+	mAccelDom  *systray.MenuItem
+	mAccelNode *systray.MenuItem
+	mPanel     *systray.MenuItem
+	mDiag      *systray.MenuItem
+	mAuto      *systray.MenuItem
+	mQuit      *systray.MenuItem
 
 	autoStart AutoStarter
 
@@ -234,6 +236,8 @@ func (a *App) onReady() {
 	// 域名编辑在 WebUI（支持 *.example.com）；托盘不收集域名文本（systray 无输入框）。
 	a.mAccel = systray.AddMenuItem("加速", "代理加速：本地 DNS 钩子 + 域名白名单钉扎")
 	a.mAccelOn = a.mAccel.AddSubMenuItem("开启加速", "启动 dns-hook：劫持本机 DNS，白名单域名解析后钉进隧道")
+	a.mAccelNode = a.mAccel.AddSubMenuItem("加速节点：—", "出口节点探测（15s，驱动探活）")
+	a.mAccelNode.Disable()
 	a.mAccelDNS = a.mAccel.AddSubMenuItem("DNS：—", "当前 DNS 加速状态")
 	a.mAccelDNS.Disable()
 	a.mAccelDom = a.mAccel.AddSubMenuItem("管理域名", "打开面板「代理分流」编辑域名白名单（支持 *.example.com）")
@@ -242,8 +246,8 @@ func (a *App) onReady() {
 	// 是个未经验证的结论（D10）。bootSequence 的 syncAutoMenu 会立刻替换。
 	a.mAuto = systray.AddMenuItem(autoTitleUnknown, "登录后自动拉起托盘")
 	systray.AddSeparator()
-	// 「退出托盘」而不是「退出」：用户要能一眼看出这一项不会断开隧道（P4 文案明确）。
-	a.mQuit = systray.AddMenuItem("退出托盘", "只关掉托盘图标；隧道保持现状，本机服务不受影响")
+	// 「退出应用」= 断隧道 + 停本机服务（2026-10-28 用户裁定：普通用户退出=退出应用）。
+	a.mQuit = systray.AddMenuItem("退出应用", "断开隧道并退出本机服务（mynetd）")
 
 	// 启动序：先 mynetd（本机 API），再按上次意图决定是否起节点
 	go a.bootSequence()
@@ -254,15 +258,19 @@ func (a *App) onReady() {
 
 // bootSequence 托盘冷启动：
 //
-//	只探测本机 API，不主动 bootstrap（mynetd 由系统服务保证常驻）。
+//	先确保本机 API 在；不在则尝试拉起 mynetd。
 //	隧道是否起，看上次意图；启停一律经本机 API。
 //
-// 权限边界：托盘**不停 mynetd**，只停隧道。
+// 产品语义（2026-10-28）：退出应用 = 停隧道 + 停 mynetd；再打开应恢复服务。
 func (a *App) bootSequence() {
 	p, _ := a.prob.Probe()
+	if !p.Up {
+		// 服务没在跑（可能被上一次「退出应用」停掉）→ 尝试拉起。
+		a.ensureDaemon()
+		p, _ = a.prob.Probe()
+	}
 	// 服务没在跑不单独写文案：下面的 fsm.On(eventFromProbe(p)) 会落 msgSvcDown。
 	// 两处各写一句必然漂（§3「同义文案多份」）。
-	// 也不默默提权拉起系统服务 —— 那是安装器的活。
 	intent := loadIntent()
 
 	a.mu.Lock()
@@ -397,7 +405,44 @@ func apiFailure(message, stage string) error {
 }
 
 func (a *App) onExit() {
-	// 托盘退出**不停**节点 —— 用户点的是「退出」，不是「卸载」。
+	// 退出应用：停隧道 + 停 mynetd（幂等；菜单 Quit 也会走这里收尾）。
+	a.shutdownApp()
+}
+
+// shutdownApp 断隧道并退出本机服务。可重入。
+func (a *App) shutdownApp() {
+	// 1) 隧道
+	_ = a.stopTunnel()
+	// 2) 本机服务（mynetd bootout + 自退）
+	code, _, err := a.post("/api/v1/daemon/quit", []byte("{}"))
+	if err != nil || code >= 400 {
+		// 服务已不在时当作成功；其它错误只记菜单，不挡退出。
+		if err == nil {
+			_ = code
+		}
+	}
+}
+
+// ensureDaemon 本机 API 不在时尝试拉起 mynetd（上一次退出应用会停服务）。
+func (a *App) ensureDaemon() {
+	name := "mynetd"
+	switch runtime.GOOS {
+	case "darwin":
+		// 优先 kickstart（plist 仍在时有效）；失败再 bootstrap。
+		_ = exec.Command("launchctl", "kickstart", "system/com.mynet.mynetd").Run()
+		if out, err := exec.Command("launchctl", "bootstrap", "system", "/Library/LaunchDaemons/com.mynet.mynetd.plist").CombinedOutput(); err != nil {
+			_ = out
+			// 无 root 时用系统授权对话框（普通用户唯一可靠路径）。
+			script := `do shell script "launchctl bootstrap system /Library/LaunchDaemons/com.mynet.mynetd.plist" with administrator privileges`
+			_ = exec.Command("osascript", "-e", script).Run()
+		}
+	case "linux":
+		_ = exec.Command("systemctl", "start", name).Run()
+		// 无 systemd（OpenWrt）：尝试 init 脚本
+		_ = exec.Command("/etc/init.d/mynetd", "start").Run()
+	case "windows":
+		_ = exec.Command("sc.exe", "start", name).Run()
+	}
 }
 
 func (a *App) clickLoop() {
@@ -426,6 +471,7 @@ func (a *App) clickLoop() {
 		case <-accelDom:
 			a.openProxyPanel()
 		case <-a.mQuit.ClickedCh:
+			a.shutdownApp()
 			systray.Quit()
 			return
 		}
@@ -1011,34 +1057,26 @@ type AutoStarter interface {
 	Disable() error
 }
 
-// PanelURL 拼面板地址。**必须是 /ui/**：根路径返回的是 JSON 壳，
-// 浏览器打开只会看到一坨 JSON。面板在 /ui/（embed）或 /gui/（Quasar 控制台）。
+// PanelURL 拼面板地址。**必须是 /gui/**：根路径返回 JSON 壳，/ui/ 只做跳转。
+// 业务面板在 Quasar SPA（webui-spa-playbook：无 fallback 业务台）。
 func PanelURL(base string) string {
-	return "http://" + base + "/ui/"
+	return "http://" + base + "/gui/"
 }
 
-// diagHash 诊断页在 WebUI hash 路由里的页面键（index.html:1433 PAGES.diag）。
-const diagHash = "diag"
-
-// DiagURL 面板的「诊断与日志」页。基于 PanelURL 拼，不另写一份地址（§3）。
+// DiagURL 面板「诊断与日志」页。基于 SPA 路由，不写旧 hash。
 func DiagURL(base string) string {
-	return PanelURL(base) + "#" + diagHash
+	return "http://" + base + "/gui/diagnostics"
 }
 
-// proxyHash 代理分流页在 WebUI hash 路由里的键。
-// hash 格式是 `#page/tab`（index.html parseHash 按 / 切两段），
-// 只写 `config` 会停在默认的「节点配置」tab，域名白名单看不见 —— 必须带 /proxy。
-const proxyHash = "config/proxy"
-
-// ProxyURL 面板「代理分流」页（含域名白名单，支持 *.example.com）。
-// 基于 PanelURL 拼，不另写一份地址（§3）。
+// ProxyURL 面板「加速 / 域名清单」页（桌面三卡片；网关为 /gui/split）。
 func ProxyURL(base string) string {
-	return PanelURL(base) + "#" + proxyHash
+	return "http://" + base + "/gui/acceleration"
 }
 
-// toggleAccel 开启/关闭 dns-hook（经 localapi command 面派发给 root 的 mynet）。
+// toggleAccel 通过桌面加速 API 开启/关闭 DNS hook；托盘不再直接拼命令，
+// 状态、配置和 WebUI 共用同一个窄接口。
 func (a *App) toggleAccel() {
-	_, body, err := a.postJSON(commandPath, map[string]any{"argv": []string{"proxy", "dns-hook", "status"}})
+	_, body, err := a.getJSON("/api/v1/acceleration/status")
 	if err != nil {
 		a.notice("加速状态不可用")
 		return
@@ -1046,16 +1084,42 @@ func (a *App) toggleAccel() {
 	var env struct {
 		Success bool `json:"success"`
 		Data    struct {
-			Stdout string `json:"stdout"`
+			Config struct {
+				Enabled       bool     `json:"enabled"`
+				DNSSources    []string `json:"dns_sources"`
+				CustomDNS     []string `json:"custom_dns"`
+				CustomDomains []string `json:"custom_domains"`
+			} `json:"config"`
+			Runtime struct {
+				Active bool `json:"active"`
+			} `json:"runtime"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &env) != nil || !env.Success {
 		a.notice("加速状态不可用")
 		return
 	}
-	op := accelToggleOp(env.Data.Stdout)
-	if err := a.postCommand("proxy", "dns-hook", op); err != nil {
-		a.notice("加速" + opText(op) + "失败：" + safeText(err.Error(), MaxMenuRunes))
+	cfg := env.Data.Config
+	// 菜单动作与运行态对齐：
+	//   运行中（active）→ 关闭（关偏好）
+	//   已暂停（enabled 但未 active）→ 启动（重试拉起，不关偏好）
+	//   未开启 → 开启
+	wantStart := !cfg.Enabled || !env.Data.Runtime.Active
+	cfg.Enabled = wantStart
+	if wantStart {
+		if _, _, err := a.postJSON("/api/v1/acceleration/install", map[string]any{}); err != nil {
+			a.notice("安装本机加速失败：" + safeText(err.Error(), MaxMenuRunes))
+			return
+		}
+	}
+	// dns_enabled 必须随 enabled 一起发：PUT 不带该字段时 Go 反序列化为 false，
+	// apply 侧 `enabled && dns_enabled` 会把 hook 停掉，表现为「已启用但未生效」。
+	if _, _, err := a.postJSON("/api/v1/acceleration", map[string]any{"enabled": cfg.Enabled, "dns_enabled": cfg.Enabled, "dns_sources": cfg.DNSSources, "custom_dns": cfg.CustomDNS, "custom_domains": cfg.CustomDomains}); err != nil {
+		a.notice("保存加速设置失败：" + safeText(err.Error(), MaxMenuRunes))
+		return
+	}
+	if _, _, err := a.postJSON("/api/v1/acceleration/apply", map[string]any{}); err != nil {
+		a.notice("加速" + opText(map[bool]string{true: "开启", false: "关闭"}[cfg.Enabled]) + "失败：" + safeText(err.Error(), MaxMenuRunes))
 		return
 	}
 	a.notice("加速设置已更新")
@@ -1077,18 +1141,31 @@ func (a *App) openProxyPanel() {
 // syncAccelMenu 拉 dns-hook status，更新子菜单文案（开关项 + DNS 状态行）。
 // shell out / HTTP 在锁外；结果只写文案并 render。
 func (a *App) syncAccelMenu() {
-	_, body, err := a.postJSON(commandPath, map[string]any{"argv": []string{"proxy", "dns-hook", "status"}})
+	_, body, err := a.getJSON("/api/v1/acceleration/status")
 	title, action, dns := "加速：状态未知", "加速状态不可用", "DNS：状态未知"
 	if err == nil {
 		var env struct {
 			Success bool `json:"success"`
 			Data    struct {
-				Stdout string `json:"stdout"`
+				Config struct {
+					Enabled bool `json:"enabled"`
+				} `json:"config"`
+				Runtime struct {
+					State   string `json:"state"`
+					Active  bool   `json:"active"`
+					Domains int    `json:"domains"`
+					// ExitProbe 加速出口 15s 探测（PC 单出口）。
+					ExitProbe exitProbeBrief `json:"exit_probe"`
+				} `json:"runtime"`
 			} `json:"data"`
 		}
 		if json.Unmarshal(body, &env) == nil && env.Success {
-			title, action, dns = accelMenuText(env.Data.Stdout)
-			interrupted := strings.Contains(env.Data.Stdout, "state=dns_overridden")
+			r := env.Data.Runtime
+			title, action, dns = accelMenuTextStructured(env.Data.Config.Enabled, r.State, r.Active, r.Domains)
+			if a.mAccelNode != nil {
+				a.mAccelNode.SetTitle("加速节点：" + accelNodeMenuText(r.ExitProbe))
+			}
+			interrupted := r.State == "dns_overridden"
 			a.mu.Lock()
 			notify := interrupted && !a.accelInterrupted
 			a.accelInterrupted = interrupted
@@ -1107,6 +1184,75 @@ func (a *App) syncAccelMenu() {
 	if a.mAccelDNS != nil {
 		a.mAccelDNS.SetTitle(dns)
 	}
+}
+
+func accelMenuTextStructured(wanted bool, state string, active bool, domains int) (title, action, dns string) {
+	if state == "dns_overridden" {
+		return "加速：已中断", "重新开启加速", "DNS：已被外部更改"
+	}
+	if active {
+		return "加速：运行中", "关闭加速", fmt.Sprintf("DNS：钉扎 %d 个域名", domains)
+	}
+	if wanted {
+		// 已暂停（等待隧道/节点/DNS）：动作是「启动」而不是「关闭」——
+		// 偏好仍开着，点一下应重试拉起，不能把等待误当成运行中去停。
+		switch state {
+		case "waiting_node":
+			return "加速：已暂停", "启动加速", "DNS：等待加速节点可达"
+		case "waiting_dns":
+			return "加速：已暂停", "启动加速", "DNS：等待解析可用"
+		case "failed":
+			return "加速：启动异常", "启动加速", "DNS：未运行，请重试或查看诊断"
+		default:
+			return "加速：已暂停", "启动加速", "DNS：等待隧道连接"
+		}
+	}
+	return "加速：未开启", "开启加速", "DNS：已停止"
+}
+
+// exitProbeBrief 与 acceleration/status 的 runtime.exit_probe 对齐（驱动探活）。
+type exitProbeBrief struct {
+	Target     string  `json:"target"`
+	NodeID     string  `json:"node_id"`
+	Driver     string  `json:"driver"`
+	Link       string  `json:"link"`
+	Reachable  bool    `json:"reachable"`
+	RTTMs      float64 `json:"rtt_ms"`
+	Monitoring bool    `json:"monitoring"`
+}
+
+// formatExitProbeLine 加速节点探测摘要。未监测且无结果返回空串。
+func formatExitProbeLine(p exitProbeBrief) string {
+	if !p.Monitoring && !p.Reachable {
+		return ""
+	}
+	if !p.Monitoring {
+		return "节点未监测"
+	}
+	if p.Reachable {
+		if p.RTTMs > 0 {
+			return fmt.Sprintf("节点可达 %.0fms", p.RTTMs)
+		}
+		return "节点可达"
+	}
+	return "节点不可达"
+}
+
+// accelNodeMenuText 「加速节点：」后半段文案。不展示 node_id（用户看不懂）。
+func accelNodeMenuText(p exitProbeBrief) string {
+	if !p.Monitoring && !p.Reachable {
+		return "未监测"
+	}
+	if !p.Monitoring {
+		return "未监测"
+	}
+	if p.Reachable {
+		if p.RTTMs > 0 {
+			return fmt.Sprintf("可达 %.0fms", p.RTTMs)
+		}
+		return "可达"
+	}
+	return "不可达"
 }
 
 // accelMenuText 将运行事实与恢复偏好分别表达：等待恢复不等于 hook 仍在运行。
@@ -1131,11 +1277,17 @@ func accelMenuText(out string) (title, action, dns string) {
 		}
 		return "加速：运行中", "关闭加速", "DNS：钩子运行中 · 钉扎 " + pins
 	}
+	if strings.Contains(out, "state=waiting_node") {
+		return "加速：已暂停", "启动加速", "DNS：已停止 · 等待加速节点可达"
+	}
+	if strings.Contains(out, "state=waiting_dns") {
+		return "加速：已暂停", "启动加速", "DNS：已停止 · 等待解析可用"
+	}
 	if strings.Contains(out, "state=failed") {
-		return "加速：启动异常", "关闭加速", "DNS：未运行，请重新开启加速或查看诊断"
+		return "加速：启动异常", "启动加速", "DNS：未运行，请重试或查看诊断"
 	}
 	if strings.Contains(out, "wanted=true") {
-		return "加速：已暂停", "取消自动恢复加速", "DNS：已停止 · 等待隧道连接"
+		return "加速：已暂停", "启动加速", "DNS：已停止 · 等待隧道连接"
 	}
 	return "加速：未开启", "开启加速", "DNS：已停止 · 未接管"
 }
@@ -1147,6 +1299,21 @@ func (a *App) postJSON(path string, payload map[string]any) (int, []byte, error)
 		return 0, nil, err
 	}
 	return a.post(path, raw)
+}
+
+func (a *App) getJSON(path string) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodGet, "http://"+a.base+path, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Origin", "http://"+a.base)
+	resp, err := a.hc.Do(req)
+	if err != nil {
+		return 0, nil, errors.New(msgSvcDown)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxCmdBody))
+	return resp.StatusCode, body, nil
 }
 
 // selfPath 自身可执行文件路径（写自启用）。
@@ -1162,7 +1329,8 @@ func accelToggleOp(out string) string {
 	if strings.Contains(out, "state=dns_overridden") {
 		return "start"
 	}
-	if strings.Contains(out, "alive=true") || strings.Contains(out, "wanted=true") {
+	// 已暂停（wanted 但未 alive）→ 启动重试，不是关闭偏好。
+	if strings.Contains(out, "alive=true") {
 		return "stop"
 	}
 	return "start"

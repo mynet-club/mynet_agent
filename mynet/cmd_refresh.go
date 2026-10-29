@@ -222,9 +222,19 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 		return plan, err
 	}
 
+	locals := localConnectedCIDRs()
 	for _, r := range env.Network.Routes {
 		if err := env.DeviceForRoute(r.Dev); err != nil {
 			return plan, fmt.Errorf("路由 %s: %w", r.Prefix, err)
+		}
+		// 不抢本机已连接网段：对端宣告的 LAN 与本机 LAN 同段时，装进隧道会
+		// 连本机网关/DNS 一起改道（实测导致本机其它 agent 断网）。
+		if ln, hit := routeHitsLocalSubnet(r.Prefix, locals); hit {
+			plan.Skipped = append(plan.Skipped, SkippedRoute{
+				Destination: r.Prefix,
+				Reason:      "与本机直连网段 " + ln + " 重叠，保持直连",
+			})
+			continue
 		}
 		plan.Routes = append(plan.Routes, RouteOp{
 			Action:      "replace",
@@ -287,6 +297,9 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	return plan, nil
 }
 
+// firstEnabledExit 策略路由只认**第一个**启用出口。
+// PC 形态（2026-10-28 用户裁定）只支持单出口；GW 多出口走 gnb proxy.conf w=/order=，
+// 这里的 via 只是把流量推进隧道的下一跳，不做 OS 加权 ECMP（mac/win 无此能力）。
 func firstEnabledExit(p *domain.ProxyPolicy) *domain.ProxyExit {
 	for i := range p.Exits {
 		if p.Exits[i].Enabled && p.Exits[i].NodeID != "" {

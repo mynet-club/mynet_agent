@@ -357,7 +357,9 @@ func proxyExitVias(p *domain.ProxyPolicy) []string {
 }
 
 // Fallback only when neither local nor tenant/policy DNS is configured.
-const dnsHookPreferredCleanDNS = "221.216.138.69"
+// 兜底 = 公共干净 DNS 内置清单（与 ctl dns-clean.txt 同源的一份两用清单）。
+// 2026-10-28：原 dnsHookPreferredCleanDNS=221.216.138.69（天津 ISP）实测投毒
+// （t66y.com → 104.244.4x.x 假 IP），已整链摘除，兜底改走 builtinCleanDNSList。
 
 func defaultForeignUpstreams(p *domain.ProxyPolicy, rules *domain.ProxyDomainRules) []string {
 	upstreams, _ := hookForeignUpstreams(p, rules)
@@ -370,8 +372,9 @@ func defaultDomesticUpstreams(rules *domain.ProxyDomainRules) []string {
 	if rules != nil && len(rules.UpstreamDirect) > 0 {
 		out = append(out, rules.UpstreamDirect...)
 	}
-	// 平台大陆智能 DNS + 公共国内
-	out = append(out, domain.PlatformDNSDomestic)
+	// 公共国内 DNS。2026-10-28 摘除 PlatformDNSDomestic（dns.dsplat.com）：
+	// 实测 CNAME→home.luoyueliang.com→221.216.138.69（投毒 ISP DNS），
+	// 待平台侧修正指向后再评估恢复。
 	out = append(out, domain.DefaultDomesticDNS...)
 	// IP 优先；主机名 bootstrap 成 IP 作后备（不能滤成空）
 	return ipUpstreamsOrResolve(out)
@@ -379,15 +382,19 @@ func defaultDomesticUpstreams(rules *domain.ProxyDomainRules) []string {
 
 func newHookRulesFromPolicy() *dnsHookRules {
 	r := &dnsHookRules{proxied: map[string]bool{}, direct: map[string]bool{}}
+	// 拦截名单必须进规则快照：优先级 拦截>直连>加速>放行（shouldPin 顺序）。
+	if b, sig, err := loadDNSAdBlock(); err == nil && b != nil {
+		r.block, r.blockSignature = b, sig
+	}
 	p := EffectiveProxyPolicy()
 	raw, _ := json.Marshal(p)
 	r.signature = string(raw)
 	var dr *domain.ProxyDomainRules
 	if p != nil && p.Role != domain.ProxyRoleServer && p.DomainRules != nil {
 		pcRules := *p.DomainRules
-		// 兼容旧配置，但基础直连名单不再覆盖 PC 加速白名单。
-		// CustomDirect 保留为本机显式的白名单排除项。
-		pcRules.Direct = nil
+		// 三名单优先级（钉死）：拦截 > 直连 > 加速 > 放行。
+		// 云端 direct-domains.txt 与本机 CustomDirect 合并为「直连」，
+		// 均可排除加速白名单；冲突时直连压加速，拦截压一切（shouldPin 顺序）。
 		dr = &pcRules
 		r.customIPs = append([]string{}, dr.CustomIPs...)
 		for _, d := range dr.EffectiveDirect() {
@@ -439,7 +446,7 @@ func (r *dnsHookRules) upstreamsFor(qname string) []string {
 	if r.shouldPinLocked(qname) {
 		if len(r.foreign) == 0 {
 			// Keep the same clean primary even for an incomplete rule snapshot.
-			return []string{dnsHookPreferredCleanDNS}
+			return append([]string{}, builtinCleanDNSList...)
 		}
 		return append([]string{}, r.foreign...)
 	}
@@ -952,6 +959,8 @@ func runDNSHookServer(listen string, done <-chan struct{}) error {
 			hookLogf("release: %v", err)
 		}
 	}()
+	// 加速运行期间每 15s 探测出口（PC 单出口），状态落盘供 status/API 读取。
+	startExitProbeLoop(stop)
 	hookLogf("listening %s foreign=%v domestic=%v", listen, rules.foreign, rules.domestic)
 	host, port, _ := net.SplitHostPort(listen)
 	if port == "53" && (host == "127.0.0.1" || host == "localhost" || host == "") {
@@ -1074,8 +1083,15 @@ func (s *dnsHookServer) answer(query []byte) []byte {
 	}
 	// 返回给系统的 TTL 同样受上限约束，避免 OS 缓存比路由租约更长。
 	ttl := limitDNSResponseTTL(answer, uint32(dnsCacheMaxTTL/time.Second))
+	ips := extractDNSAnswerAIDs(answer)
+	if !s.rules.shouldPin(qname) {
+		// 普通域名解析到已被钉的 IP → 共享 CDN，改直连（避免劫持普通应用）
+		if len(ips) > 0 {
+			s.pins.markSharedIfPinned(ips)
+		}
+		return answer
+	}
 	if s.rules.shouldPin(qname) {
-		ips := extractDNSAnswerAIDs(answer)
 		if len(ips) > 0 {
 			tun := s.tun()
 			if tun == "" {
@@ -1174,12 +1190,16 @@ func cmdProxyDNSHook(args []string) int {
 
 func cmdProxyDNSHookUnlocked(args []string) int {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-hook start|stop|status [--listen ADDR] | ad-block on|off|status")
+		fmt.Fprintln(os.Stderr, "用法: mynet proxy dns-hook start|stop|status [--listen ADDR] | domains status|refresh | direct-ip add|del|list | ad-block on|off|status")
 		return 2
 	}
 	switch args[0] {
 	case "dns":
 		return cmdHookDNSConfig(args[1:])
+	case "domains":
+		return cmdProxyDNSHookDomains(args[1:])
+	case "direct-ip":
+		return cmdProxyDNSHookDirectIPs(args[1:])
 	case "ad-block":
 		return cmdDNSAdBlock(args[1:])
 	case "start":
@@ -1212,14 +1232,18 @@ func cmdProxyDNSHookUnlocked(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		if liveHookTunDevice() == "" {
-			fmt.Println("✓ 已记住加速偏好，等待隧道连接")
+		if err := accelerationStartGate(); err != nil {
+			fmt.Println("✓ 已记住加速偏好，" + err.Error())
 			return 0
 		}
 		// 先更新驱动出口投影，再启动 DNS，避免仅启动了一个无策略的转发器。
 		if err := ApplyFromActive(false); err != nil {
 			fmt.Fprintln(os.Stderr, "加速策略准备失败:", err)
 			return 1
+		}
+		if err := dnsHookStartGate(); err != nil {
+			fmt.Println("✓ 加速节点已就绪，" + err.Error())
+			return 0
 		}
 		return dnsHookStartUnlocked(listen)
 	case "stop":
@@ -1493,6 +1517,7 @@ func hookWatcherAlive() bool {
 func cleanupDNSHook() error {
 	_ = os.Remove(hookDNSReadyFile())
 	_ = os.Remove(hookDNSObservationFile())
+	ClearExitProbeResult()
 	// DNS 优先恢复，路由清理失败不能把系统解析留在死端口。
 	dnsErr := restoreHookDNS()
 	pins := newPCProxySession()
@@ -1561,6 +1586,15 @@ func watchDNSHook(listen string) int {
 		if hookStopRequested() || hookDNSInterrupted() || !DNSHookWanted() || liveHookTunDevice() == "" {
 			return 0
 		}
+		// 重启也走启动门禁：节点不可达 / DNS 不可用时不拉起，等下次侧车或用户重试。
+		if err := accelerationStartGate(); err != nil {
+			hookLogf("restart deferred: %v", err)
+			return 0
+		}
+		if err := dnsHookStartGate(); err != nil {
+			hookLogf("restart deferred: %v", err)
+			return 0
+		}
 		time.Sleep(time.Second)
 		if hookStopRequested() {
 			return 0
@@ -1575,7 +1609,8 @@ func dnsHookStatus() int {
 	if err := pins.load(hookTunDevice()); err != nil {
 		return 1
 	}
-	state := accelerationState(DNSHookWanted(), alive, liveHookTunDevice() != "")
+	state := accelerationStateReady(DNSHookWanted(), alive, liveHookTunDevice() != "",
+		accelerationNodeReady(), dnsResolutionReady())
 	if alive {
 		switch hookDNSObservation(pid) {
 		case "unknown":
@@ -1590,6 +1625,12 @@ func dnsHookStatus() int {
 	active := alive && state == "running"
 	fmt.Printf("dns-hook: pid=%d alive=%v wanted=%v state=%s active=%v listen_default=%s pins=%d domains=%d routes=%d\n",
 		pid, alive, DNSHookWanted(), state, active, DNSHookListenDefault, len(LoadDNSHookPins()), len(pins.Domains), len(pins.Routes))
+	// 出口探测（加速启用时每 15s）；未启用/无出口时输出空目标行。
+	probe, probeOK := LoadExitProbeResult()
+	if !alive || !DNSHookWanted() {
+		probeOK = false
+	}
+	fmt.Println(FormatExitProbeStatus(probe, probeOK))
 	if pins.LastError != "" {
 		fmt.Printf("last_error=%s\n", pins.LastError)
 	}
@@ -1639,8 +1680,14 @@ func withDNSHookControl(action func() int) int {
 	return action()
 }
 
-// accelerationState 区分等待连接和已连接却未启动，供托盘与 WebUI 共用。
+// accelerationState 区分等待连接、等待加速节点、等待 DNS 和已就绪却未启动。
 func accelerationState(wanted, alive, tunnel bool) string {
+	return accelerationStateReady(wanted, alive, tunnel, true, true)
+}
+
+// accelerationStateReady 在 accelerationState 基础上区分启动门禁：
+// 隧道已在但加速节点未达 → waiting_node；节点已达但 DNS 不可用 → waiting_dns。
+func accelerationStateReady(wanted, alive, tunnel, nodeReady, dnsReady bool) string {
 	if alive {
 		return "running"
 	}
@@ -1649,6 +1696,12 @@ func accelerationState(wanted, alive, tunnel bool) string {
 	}
 	if !tunnel {
 		return "waiting_tunnel"
+	}
+	if !nodeReady {
+		return "waiting_node"
+	}
+	if !dnsReady {
+		return "waiting_dns"
 	}
 	return "failed"
 }

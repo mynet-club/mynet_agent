@@ -164,11 +164,15 @@ func TestBootstrapResolveACaches(t *testing.T) {
 }
 
 // forwardDNSQuery 对 IP 上游不应触发 bootstrap 解析（直接 dial）。
+// 坏上游必须返回 err 且不 panic。用**语法非法地址**而不是保留段 ——
+// 本机 dns-hook/VPN 可能把 240.0.0.1:53 拦截并应答，保留段用例会变成环境依赖。
 func TestForwardUDPRejectsBadServer(t *testing.T) {
-	// 240.0.0.0/4 是保留段，dial 必失败 —— 验证 forwardUDP 不 panic、会返回 err
-	_, err := forwardUDP("240.0.0.1", buildDNSQueryMsg("example.com"), 200*time.Millisecond)
-	if err == nil {
-		t.Fatal("保留段 dial 应失败")
+	// 注意：空 host 会变成 ":53" → 连本机 53；本机常有 dns-hook 在听。
+	for _, server := range []string{"300.300.300.300", "not-an-ip", "[::bad]"} {
+		_, err := forwardUDP(server, buildDNSQueryMsg("example.com"), 200*time.Millisecond)
+		if err == nil {
+			t.Fatalf("server=%q dial/forward 应失败", server)
+		}
 	}
 }
 
@@ -223,22 +227,46 @@ func TestHookUpstreamsAreIPOnly(t *testing.T) {
 	}
 }
 
+// 国内链不得出现被投毒的平台智能 DNS 解析结果（221.216.138.69）。
+// 2026-10-28：dns.dsplat.com CNAME→home.luoyueliang.com→221.216.138.69 实测投毒，
+// 已从 defaultDomesticUpstreams 摘除；本测试防回归。
+func TestDomesticUpstreamsExcludePoisonedPlatformDNS(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
+	t.Setenv("MYNET_DATA_HOME", "")
+	upstreamIPCachePut("dns.dsplat.com", "221.216.138.69")
+	defer upstreamIPCache.Delete("dns.dsplat.com")
+	r := newHookRulesFromPolicy()
+	for _, up := range append(append([]string{}, r.foreign...), r.domestic...) {
+		if up == "221.216.138.69" {
+			t.Fatalf("投毒 DNS 221.216.138.69 不得进上游链: foreign=%v domestic=%v", r.foreign, r.domestic)
+		}
+	}
+	for _, up := range r.upstreamsFor("baidu.com") {
+		if up == "221.216.138.69" {
+			t.Fatalf("domestic 路径不得出现投毒 DNS: %v", up)
+		}
+	}
+}
+
 func TestForeignUpstreamsPreferCleanDNSWithPeerFallback(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	t.Setenv("MYNET_DATA_HOME", "")
 	p := &domain.ProxyPolicy{Enabled: true, Exits: []domain.ProxyExit{{NodeID: "n1", Via: "10.182.236.180", Enabled: true}}, DomainRules: &domain.ProxyDomainRules{TunnelServer: "10.0.0.1", ExitDNS: "10.0.0.2"}}
 	got := defaultForeignUpstreams(p, p.DomainRules)
-	want := []string{"221.216.138.69", "10.0.0.1", "10.0.0.2", "10.182.236.180"}
+	// 四源序（无 custom/tenant 值）：peer → clean_public
+	want := []string{"10.182.236.180", "10.0.0.1", "10.0.0.2"}
+	want = append(want, builtinCleanDNSList...)
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("clean primary/peer fallback order: %v", got)
+		t.Fatalf("four-source order: %v", got)
 	}
 }
 
-func TestForeignUpstreamsWithoutPeerUseCleanDNSOnly(t *testing.T) {
+func TestForeignUpstreamsWithoutPeerUseCleanPublic(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	t.Setenv("MYNET_DATA_HOME", "")
+	// 无 peer / custom / tenant 时，clean_public 源（有值）生效
 	got := defaultForeignUpstreams(nil, nil)
-	if len(got) != 1 || got[0] != "221.216.138.69" {
+	if !reflect.DeepEqual(got, builtinCleanDNSList) {
 		t.Fatalf("unexpected fallback: %v", got)
 	}
 }
@@ -275,11 +303,11 @@ func TestHookRuleConstructionDoesNotWaitForBootstrap(t *testing.T) {
 func TestCleanResolverFailureFallsBackToPeer(t *testing.T) {
 	for _, code := range []byte{2, 5} {
 		s, _, _ := newHookHarness(t)
-		s.rules.foreign = []string{dnsHookPreferredCleanDNS, "10.0.0.2"}
+		s.rules.foreign = []string{"8.8.8.8", "10.0.0.2"}
 		var seen []string
 		s.forward = func(up string, q []byte, _ time.Duration) ([]byte, error) {
 			seen = append(seen, up)
-			if up == dnsHookPreferredCleanDNS {
+			if up == "8.8.8.8" {
 				a := dnsFailure(q)
 				a[3] = 0x80 | code
 				return a, nil
@@ -295,14 +323,14 @@ func TestCleanResolverFailureFallsBackToPeer(t *testing.T) {
 
 func TestCleanResolverSuccessfulAnswerDoesNotQueryPeer(t *testing.T) {
 	s, _, _ := newHookHarness(t)
-	s.rules.foreign = []string{dnsHookPreferredCleanDNS, "10.0.0.2"}
+	s.rules.foreign = []string{"8.8.8.8", "10.0.0.2"}
 	var seen []string
 	s.forward = func(up string, q []byte, _ time.Duration) ([]byte, error) {
 		seen = append(seen, up)
 		return buildTestDNSAnswer(q, "192.0.2.9"), nil
 	}
 	s.answer(buildDNSQueryMsg("a.test"))
-	if !reflect.DeepEqual(seen, []string{dnsHookPreferredCleanDNS}) {
+	if !reflect.DeepEqual(seen, []string{"8.8.8.8"}) {
 		t.Fatal(seen)
 	}
 }

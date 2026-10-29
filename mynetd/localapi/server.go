@@ -61,6 +61,11 @@ type Server struct {
 	// 出口不进 intent 的 wire，SyncPluginProxyFromPolicy 在 intent 为空时会保留
 	// 插件已有值 —— 只读 intent 的界面会在有出口的节点上误报「尚未选择出口设备」。
 	ProxyPluginExits func() (exits []domain.ProxyExit, maxExits int, err error)
+	// ExitProbe 内存态加速节点探测（mynetd 侧 15s 循环）。nil 时 status 回退解析 stdout。
+	ExitProbe func() map[string]any
+	// DaemonQuit 退出本机服务（停隧道 + 让 mynetd 自身退出/注销）。
+	// 由组合根注入；托盘「退出应用」调用。nil 时端点回 503。
+	DaemonQuit func() error
 	// 会话落盘 / 设备指纹（组合根注入，避免 localapi import mynet —— B2）
 	SaveLoginSession  func(sess LoginSession) error
 	DeviceFingerprint func() string
@@ -96,6 +101,9 @@ func (s *Server) routes() {
 	s.registerWizardRoutes()
 	s.registerConfigRoutes()
 	s.registerProxyRoutes()
+	s.registerAccelerationRoutes()
+	// 退出不占 configMutation：用户要关应用时必须能出去，不能被在途配置操作 409。
+	s.mux.HandleFunc("/api/v1/daemon/quit", s.handleDaemonQuit)
 	if hasWebUI {
 		uiFiles := http.StripPrefix("/ui/", http.FileServer(http.FS(webUIFS())))
 		s.mux.Handle("/ui/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

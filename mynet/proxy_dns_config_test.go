@@ -11,26 +11,36 @@ import (
 )
 
 func TestHookDNSLocalTenantPeerPriorityAndHostnameOrder(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir()) // loadCleanDNSList 读本机状态，测试必须隔离
+	t.Setenv("MYNET_DATA_HOME", "")
 	upstreamIPCache.Delete("tenant-dns.example")
 	r := &domain.ProxyDomainRules{PlatformDNS: "tenant-dns.example", TunnelServer: "10.0.0.1", ExitDNS: "10.0.0.2"}
-	c := hookDNSConfig{CleanDNS: []string{"221.216.138.69", "custom-dns.example"}}
-	s := selectHookDNS(c, "tenant-dns.example", r, []string{"10.0.0.1", "10.0.0.3"})
-	want := []string{"221.216.138.69", "custom-dns.example", "tenant-dns.example", "10.0.0.1", "10.0.0.2", "10.0.0.3"}
-	if s.Source != "custom" || !reflect.DeepEqual(s.Upstreams, want) {
+	sources := []string{domain.DesktopDNSCustom, domain.DesktopDNSTenant, domain.DesktopDNSPeer, domain.DesktopDNSCleanPublic}
+	custom := []string{"4.2.2.2", "custom-dns.example"}
+	// 四源优先级：custom → tenant → peer → clean_public；有值的源才参与
+	s := selectHookDNS(sources, custom, "tenant-dns.example", r, []string{"10.0.0.1", "10.0.0.3"})
+	want := []string{
+		"4.2.2.2", "custom-dns.example",
+		"tenant-dns.example",
+		"10.0.0.1", "10.0.0.3", "10.0.0.2",
+	}
+	want = append(want, builtinCleanDNSList...)
+	if s.Source != domain.DesktopDNSCustom || !reflect.DeepEqual(s.Upstreams, want) {
 		t.Fatal(s)
 	}
-	s = selectHookDNS(hookDNSConfig{}, "tenant-dns.example", r, []string{"10.0.0.3"})
-	if s.Source != "tenant" || s.Upstreams[0] != "tenant-dns.example" {
-		t.Fatal("peer IP outranked tenant hostname", s)
+	// custom 无值 → 跳过该源
+	s = selectHookDNS(sources, nil, "tenant-dns.example", r, []string{"10.0.0.3"})
+	if s.Upstreams[0] != "tenant-dns.example" {
+		t.Fatal("empty custom must be skipped", s)
 	}
-	upstreamIPCachePut("tenant-dns.example", "203.0.113.9")
-	defer upstreamIPCache.Delete("tenant-dns.example")
-	s = selectHookDNS(hookDNSConfig{}, "tenant-dns.example", r, nil)
-	if s.Upstreams[0] != "203.0.113.9" {
-		t.Fatal("bootstrap changed priority", s)
-	}
-	if s = selectHookDNS(hookDNSConfig{}, "", nil, nil); s.Source != "default" || !reflect.DeepEqual(s.Upstreams, []string{dnsHookPreferredCleanDNS}) {
+	// 默认源含 clean_public（有值）→ 生效；全空源才走兜底
+	s = selectHookDNS(nil, nil, "", nil, nil)
+	if s.Source != domain.DesktopDNSCleanPublic || !reflect.DeepEqual(s.Upstreams, builtinCleanDNSList) {
 		t.Fatal(s)
+	}
+	s = selectHookDNS([]string{domain.DesktopDNSCustom}, nil, "", nil, nil)
+	if s.Source != "default" || !reflect.DeepEqual(s.Upstreams, builtinCleanDNSList) {
+		t.Fatal("empty sources must fall back", s)
 	}
 }
 
@@ -45,7 +55,7 @@ func TestHookDNSConfigPersistsLocallyAndClearFollowsNewTenant(t *testing.T) {
 	if _, err := store.UseOnline("t1", "1001"); err != nil {
 		t.Fatal(err)
 	}
-	if cmdHookDNSConfig([]string{"set", "221.216.138.69, 221.216.138.69", "custom-dns.example"}) != 0 {
+	if cmdHookDNSConfig([]string{"set", "4.2.2.2, 4.2.2.2", "custom-dns.example"}) != 0 {
 		t.Fatal("save failed")
 	}
 	c, err := loadHookDNSConfig()
@@ -60,7 +70,7 @@ func TestHookDNSConfigPersistsLocallyAndClearFollowsNewTenant(t *testing.T) {
 	if tenant := configuredHookTenantDNS(); tenant != "198.51.100.2" {
 		t.Fatal(tenant)
 	}
-	if got := selectHookDNS(c, configuredHookTenantDNS(), nil, nil); got.Upstreams[0] != "221.216.138.69" || got.Upstreams[2] != "198.51.100.2" {
+	if got := selectHookDNS(nil, c.CleanDNS, configuredHookTenantDNS(), nil, nil); got.Upstreams[0] != "4.2.2.2" || got.Upstreams[2] != "198.51.100.2" {
 		t.Fatal(got)
 	}
 	after, _ := os.ReadFile(hookDNSConfigPath())
@@ -74,7 +84,7 @@ func TestHookDNSConfigPersistsLocallyAndClearFollowsNewTenant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := selectHookDNS(c, configuredHookTenantDNS(), nil, nil); got.Source != "tenant" || got.Upstreams[0] != "198.51.100.2" {
+	if got := selectHookDNS(nil, c.CleanDNS, configuredHookTenantDNS(), nil, nil); got.Source != "tenant" || got.Upstreams[0] != "198.51.100.2" {
 		t.Fatal(got)
 	}
 	localMode, err := domain.NewModeFile(domain.ModeLocal, domain.ActiveTarget{Driver: domain.DriverTypeGNB, Source: "conf/local"})
@@ -92,7 +102,7 @@ func TestHookDNSConfigPersistsLocallyAndClearFollowsNewTenant(t *testing.T) {
 func TestHookDNSRejectsInvalidSettingsWithoutReplacingConfig(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	t.Setenv("MYNET_DATA_HOME", "")
-	if cmdHookDNSConfig([]string{"set", "221.216.138.69"}) != 0 {
+	if cmdHookDNSConfig([]string{"set", "4.2.2.2"}) != 0 {
 		t.Fatal("save")
 	}
 	old, _ := os.ReadFile(hookDNSConfigPath())
@@ -114,7 +124,7 @@ func TestHookDNSRefreshChangesUpstreamAndBadConfigKeepsWorkingRules(t *testing.T
 	if len(h.s.Routes) == 0 {
 		t.Fatal("missing initial route")
 	}
-	if err := saveHookDNSConfig(hookDNSConfig{CleanDNS: []string{"221.216.138.69"}}); err != nil {
+	if err := saveHookDNSConfig(hookDNSConfig{CleanDNS: []string{"4.2.2.2"}}); err != nil {
 		t.Fatal(err)
 	}
 	fresh := sessionRules("a.test")
@@ -122,14 +132,14 @@ func TestHookDNSRefreshChangesUpstreamAndBadConfigKeepsWorkingRules(t *testing.T
 	if err := s.refresh(fresh, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if s.rules.foreign[0] != "221.216.138.69" || len(h.s.Routes) != 0 || len(s.cache.entries) != 0 {
+	if s.rules.foreign[0] != "4.2.2.2" || len(h.s.Routes) != 0 || len(s.cache.entries) != 0 {
 		t.Fatal("changed upstream did not clear old addresses")
 	}
 	if err := os.WriteFile(hookDNSConfigPath(), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	fresh.foreign, fresh.upstreamError = hookForeignUpstreams(nil, nil)
-	if err := s.refresh(fresh, time.Now()); err == nil || s.rules.foreign[0] != "221.216.138.69" {
+	if err := s.refresh(fresh, time.Now()); err == nil || s.rules.foreign[0] != "4.2.2.2" {
 		t.Fatal("bad config replaced working resolver")
 	}
 }

@@ -22,6 +22,7 @@ import (
 )
 
 func (s *Server) registerConfigRoutes() {
+	s.registerNodeNameRoutes()
 	s.mux.HandleFunc("/api/v1/config/mode", s.withConfigMutation(s.handleConfigMode))
 	s.mux.HandleFunc("/api/v1/config/tenants", getOnly(s.handleConfigTenants))
 	s.mux.HandleFunc("/api/v1/config/active", s.withConfigMutation(s.handleConfigActive))
@@ -40,14 +41,38 @@ func (s *Server) registerConfigRoutes() {
 func (s *Server) handleConfigCloud(w http.ResponseWriter, r *http.Request) {
 	data, err := s.opsJSON([]string{"config", "cloud", "--json"})
 	if err != nil {
+		// 云端会话失效必须 need_login=true，UI 才能引导重新登录（不能吞成 502）。
 		status := http.StatusBadGateway
-		if strings.Contains(err.Error(), "need_login") {
+		if isAuthExpired(err.Error()) {
 			status = http.StatusUnauthorized
 		}
 		writeJSON(w, status, map[string]any{"success": false, "message": err.Error(), "need_login": status == http.StatusUnauthorized})
 		return
 	}
+	// 名称本地永久缓存：成功拉到清单就刷新 id→名称（断网/掉登录仍可显示）
+	mergeNodeNames(data)
 	writeJSON(w, 200, map[string]any{"success": true, "data": data})
+}
+
+// isAuthExpired 判定云端登录/续期是否失效。覆盖 CLI 文本嗅探的历史形态
+// （B2：分类靠文本，见 spec/local-api.md），避免 401 被回成 need_login=false。
+func isAuthExpired(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, n := range []string{
+		"need_login",
+		"http 401",
+		"unauthenticated",
+		"refresh_token_invalid",
+		"refresh token",
+		"自动续期失败",
+		"登录已失效",
+		"未登录",
+	} {
+		if strings.Contains(m, n) {
+			return true
+		}
+	}
+	return false
 }
 
 // GET /api/v1/config/identity — 空间名/用户名/节点名
@@ -60,12 +85,18 @@ func (s *Server) handleConfigIdentity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"success": true, "data": data})
 }
 
-// GET /api/v1/config/runtime — node/route/address 原文 + 对端/网段计数
+// GET /api/v1/config/runtime — node/route/address 原文 + 对端/网段计数；
+// wireguard 形态补 wg_conf 原文（有则给，无则不造）。
 func (s *Server) handleConfigRuntime(w http.ResponseWriter, r *http.Request) {
 	data, err := s.opsJSON([]string{"config", "runtime", "--json"})
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
 		return
+	}
+	if dir, _ := data["gnb_conf"].(string); dir != "" {
+		if b, rerr := os.ReadFile(filepath.Join(dir, "wg.conf")); rerr == nil {
+			data["wg_conf"] = string(b)
+		}
 	}
 	writeJSON(w, 200, map[string]any{"success": true, "data": data})
 }

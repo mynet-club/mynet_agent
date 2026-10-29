@@ -99,7 +99,10 @@ func setRuntimeMode(mode string) error {
 			return fmt.Errorf("runtime %s saved; proxy apply failed", mode)
 		}
 		if mode == config.RuntimePC && DNSHookWanted() {
-			if rc := dnsHookStart(DNSHookListenDefault); rc != 0 {
+			// 门禁未过只推迟 hook，不把已保存的 runtime 形态算失败。
+			if err := dnsHookStartGate(); err != nil {
+				fmt.Printf("DNS hook 暂不启动：%v\n", err)
+			} else if rc := dnsHookStart(DNSHookListenDefault); rc != 0 {
 				return fmt.Errorf("runtime pc saved; DNS hook start failed")
 			}
 		}

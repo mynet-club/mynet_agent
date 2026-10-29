@@ -104,6 +104,59 @@ func (s *Server) registerWizardRoutes() {
 	// P1 状态机：六态 + 一言之 + 按钮面。与 wizard/state 分开是刻意的 ——
 	// wizard/state 回答「向导走到哪」，node-status 回答「这台机器的节点能不能用」。
 	s.mux.HandleFunc("/api/v1/node-status", s.handleNodeStatus)
+	s.mux.HandleFunc("/api/v1/experience/state", s.handleExperienceState)
+	s.mux.HandleFunc("/api/v1/experience/capabilities", getOnly(s.handleExperienceCapabilities))
+}
+
+// handleExperienceState 提供桌面初始化流程唯一需要的聚合状态。
+// 它把磁盘向导产物与节点状态机放在同一个响应里，避免前端自行拼状态。
+func (s *Server) handleExperienceState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "GET only"})
+		return
+	}
+	wizard := s.wizardStateData()
+	data := map[string]any{"wizard": wizard}
+	if node, err := s.opsJSON([]string{"node-status", "--json"}); err == nil {
+		data["node"] = node
+	} else {
+		data["node"] = map[string]any{"state": "UNAVAILABLE", "detail": err.Error()}
+	}
+	data["state"], data["primary_action"] = experienceState(wizard, data["node"])
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": data})
+}
+
+func experienceState(wizard, node any) (string, string) {
+	w, _ := wizard.(map[string]any)
+	n, _ := node.(map[string]any)
+	if logged, _ := w["logged_in"].(bool); !logged {
+		return "NEEDS_LOGIN", "login"
+	}
+	nodeState := fmt.Sprint(n["state"])
+	// 节点事实优先于向导产物：隧道已在跑就不能再说「未配置」。
+	// （D4-E 后 conf/mynet.conf 不再存在，旧判据会恒报 NEEDS_CONFIGURATION。）
+	running := nodeState == "RUNNING" || nodeState == "DEGRADED" ||
+		nodeState == "STOPPED" || nodeState == "CONFIGURED" || nodeState == "INSTALLED"
+	if !running {
+		if configured, _ := w["node_configured"].(bool); !configured {
+			return "NEEDS_CONFIGURATION", "configure"
+		}
+	}
+	switch nodeState {
+	case "RUNNING":
+		return "READY", ""
+	case "DEGRADED":
+		return "DEGRADED", "fix-routes"
+	case "INSTALLED", "CONFIGURED", "STOPPED":
+		return "READY_OFFLINE", "start"
+	case "UNINSTALLED":
+		return "NEEDS_INSTALL", "install"
+	default:
+		if running {
+			return "READY_OFFLINE", "start"
+		}
+		return "INITIALIZING", "retry"
+	}
 }
 
 // handleWizardLogin —— 本机 WebUI 登录。
@@ -230,6 +283,10 @@ func (s *Server) handleWizardLogout(w http.ResponseWriter, r *http.Request) {
 // 重开浏览器、重启 mynetd，状态都要一致。这正是「落盘结果比命令退出码可信」
 // （CPI-68 的教训）在 UI 侧的体现。
 func (s *Server) handleWizardState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"success": true, "data": s.wizardStateData()})
+}
+
+func (s *Server) wizardStateData() map[string]any {
 	home := os.Getenv("MYNET_HOME")
 	if home == "" {
 		home = "."
@@ -239,7 +296,7 @@ func (s *Server) handleWizardState(w http.ResponseWriter, r *http.Request) {
 	st := map[string]any{
 		"home":              home,
 		"logged_in":         fileNonEmpty(filepath.Join(conf, "credential.json")),
-		"node_configured":   fileNonEmpty(filepath.Join(conf, "mynet.conf")),
+		"node_configured":   nodeConfigured(conf),
 		"bundle_downloaded": fileNonEmpty(filepath.Join(home, "var", "bundle.json")),
 		"system_detected":   fileNonEmpty(filepath.Join(home, "var", "system.json")),
 	}
@@ -272,7 +329,7 @@ func (s *Server) handleWizardState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]any{"success": true, "data": st})
+	return st
 }
 
 // execWithStdin 跑 mynet <argv> 并把 stdinText 喂给它。
@@ -553,6 +610,31 @@ func fileNonEmpty(p string) bool {
 	st, err := os.Stat(p)
 
 	return err == nil && st.Size() > 0
+}
+
+// nodeConfigured —— 节点是否已配置。
+// 旧布局是 conf/mynet.conf；D4-E 后为 conf/<form>/<nodeId>/node.conf。
+// 两处任一命中即认为已配置，避免迁移现场误报「未配置」。
+func nodeConfigured(conf string) bool {
+	if fileNonEmpty(filepath.Join(conf, "mynet.conf")) {
+		return true
+	}
+	for _, form := range []string{"local", "online"} {
+		dir := filepath.Join(conf, form)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if fileNonEmpty(filepath.Join(dir, e.Name(), "node.conf")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // readKV 读 KEY=VALUE 文件（mynet.conf 的形状）。

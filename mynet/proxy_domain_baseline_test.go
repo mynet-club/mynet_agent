@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"testing"
 
@@ -16,18 +17,22 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 	t.Setenv("MYNET_DATA_HOME", "")
 	t.Setenv("MYNET_CONFIG_HOME", "")
 	proxy := "a.test\n*.b.test\na.test\n"
+	direct := "cn-only.test\n"
 	fail := false
 	ctl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/d/plugins/mp/proxy-domains.txt" {
+		switch r.URL.Path {
+		case "/d/plugins/mp/proxy-domains.txt":
+			if fail {
+				http.Error(w, "offline", 503)
+				return
+			}
+			w.Write([]byte(proxy))
+		case "/d/plugins/mp/direct-domains.txt":
+			w.Write([]byte(direct))
+		default:
 			t.Errorf("unexpected list dependency: %s", r.URL.Path)
 			http.NotFound(w, r)
-			return
 		}
-		if fail {
-			http.Error(w, "offline", 503)
-			return
-		}
-		w.Write([]byte(proxy))
 	}))
 	defer ctl.Close()
 	t.Setenv("MYNET_APPS_INDEX", ctl.URL)
@@ -43,6 +48,9 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 	}
 	if !reflect.DeepEqual(first.Proxied, []string{"a.test", "b.test"}) {
 		t.Fatal(first)
+	}
+	if !reflect.DeepEqual(first.Direct, []string{"cn-only.test"}) {
+		t.Fatal("direct list not merged", first.Direct)
 	}
 	proxy = "new.test\n"
 	fail = true
@@ -62,6 +70,7 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 		t.Fatal("old baseline not replaced")
 	}
 	proxy = ""
+	direct = ""
 	if err := refresh(); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +106,9 @@ func TestCtlDirectListAcceptsTLDSuffixes(t *testing.T) {
 	}
 }
 
-func TestPCWhitelistDoesNotDependOnLegacyDirectOrCleanLists(t *testing.T) {
+// 三名单优先级（钉死）：拦截 > 直连 > 加速 > 放行。
+// 同域冲突按此顺序：入直连即不加速；入拦截则两者都不生效。
+func TestPCListPriorityBlockDirectAccelPass(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	t.Setenv("MYNET_DATA_HOME", "")
 	t.Setenv("MYNET_CONFIG_HOME", "")
@@ -109,14 +120,30 @@ func TestPCWhitelistDoesNotDependOnLegacyDirectOrCleanLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Local.Policy.DomainRules = &domain.ProxyDomainRules{
-		Proxied: []string{"google.com"}, Direct: []string{"google.com"},
-		CustomDirect: []string{"private.google.com"}, UpstreamClean: []string{"clean-only.test"},
+		Proxied:       []string{"google.com", "blocked-and-proxied.test"},
+		Direct:        []string{"google.com"},
+		CustomDirect:  []string{"private.google.com"},
+		CustomDomains: []string{"accel-only.test"},
+		UpstreamClean: []string{"clean-only.test"},
 	}
 	if err := SaveProxyState(st); err != nil {
 		t.Fatal(err)
 	}
+	// 云端/本机拦截
+	if err := os.WriteFile(dnsAdBlockPath(), []byte(`{"block":["blocked-and-proxied.test"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rules := newHookRulesFromPolicy()
-	for name, want := range map[string]bool{"google.com": true, "www.google.com": true, "ordinary.test": false, "clean-only.test": false, "private.google.com": false} {
+	for name, want := range map[string]bool{
+		// 直连压加速：google.com 同时在 Proxied+Direct → 不钉
+		"google.com": false, "www.google.com": false,
+		// 拦截压加速：block 命中 → 不钉（且 answer 会拒）
+		"blocked-and-proxied.test": false,
+		// 仅加速
+		"accel-only.test": true,
+		// 放行
+		"ordinary.test": false, "clean-only.test": false, "private.google.com": false,
+	} {
 		if got := rules.shouldPin(name); got != want {
 			t.Errorf("%s pin=%v want=%v", name, got, want)
 		}

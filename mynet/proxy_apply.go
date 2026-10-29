@@ -17,15 +17,6 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// DefaultForeignDNSServers 公共国外 DNS（spec/proxy.md 的 SSOT 列表）。
-// 无条件钉 /32 进隧道，防 ISP 污染。
-var DefaultForeignDNSServers = []string{
-	"8.8.8.8", "8.8.4.4",
-	"1.1.1.1", "1.0.0.1",
-	"9.9.9.9",
-	"208.67.222.222", "208.67.220.220",
-}
-
 // ProxyRuntime 代理落地所需的运行时上下文（接口名等）。
 // Device 用逻辑名，执行期由 resolveDevice 纠正（utunN / P2PNet）。
 //
@@ -378,9 +369,10 @@ func proxyCleanupCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Pro
 		return nil
 	}
 	var cmds []routeCmd
-	// 国外 DNS /32：与 proxyClientCmds 第 6 步同一构造器，方言对称
-	// （历史上这里是 linux-only 死代码，禁用后 mac/win 的钉扎永久残留）。
-	for _, ip := range DefaultForeignDNSServers {
+	// 干净 DNS /32 摘除（历史主表钉扎已下线，存量必须清干净）：用清理超集
+	// （内置 ∪ 缓存），清单缩小也不留残钉；与钉入路径同一清单来源（合一）。
+	// 方言对称（历史上这里是 linux-only 死代码，禁用后 mac/win 的钉扎永久残留）。
+	for _, ip := range cleanDNSCleanupList() {
 		for _, c := range routeCmds(snap, RouteOp{
 			Action: "del", Destination: ip + "/32", Device: rt.TunDevice,
 		}) {
@@ -530,7 +522,7 @@ func ProxyAllBypassCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt P
 		return nil
 	}
 	var cmds []routeCmd
-	// 国外 DNS /32（已有主路径在 proxyClientCmds；此处不重复）
+	// 干净 DNS /32 主表钉扎已下线（见 proxyClientCmds 第 6 步裁决），此处无涉
 	cmds = append(cmds, DoHBypassCmds(snap, p.DoHMode, rt)...)
 	if p.FullTunnel {
 		cmds = append(cmds, FullTunnelCmds(snap, rt, p.EffectiveTable())...)

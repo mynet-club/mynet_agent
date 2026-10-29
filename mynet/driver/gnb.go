@@ -761,6 +761,12 @@ func parseGNBStatus(out string) []*domain.VPNPeer {
 			if cur.LatencyMs == 0 {
 				cur.LatencyMs = float64(firstUint(afterKey(line))) / 1000
 			}
+		case strings.HasPrefix(line, "ping_ts_sec"):
+			// lastping：`ping_ts_sec:1699999999(...)`（gnb_ctl_dump.c）。0 = 从未 ping 通。
+			if ts := int64(firstUint(afterKey(line))); ts > 0 {
+				cur.LastSeen = time.Unix(ts, 0)
+				cur.Addr4UpdateTsSec = ts
+			}
 		}
 	}
 	flush()
@@ -1201,6 +1207,8 @@ type PeerLink struct {
 	Overlay   string
 	Link      string
 	LatencyMs float64
+	// LastPing gnb 的 lastping（ping_ts_sec）。零值 = 从未 ping 通。
+	LastPing time.Time
 }
 
 // GnbPeerLinks 读 gnb_ctl 的对端链路表。key = nodeID。
@@ -1236,6 +1244,7 @@ func GnbPeerLinks(confDir string) map[int64]PeerLink {
 			Overlay:   p.VirtualIP,
 			Link:      link,
 			LatencyMs: p.LatencyMs,
+			LastPing:  p.LastSeen,
 		}
 	}
 	return m

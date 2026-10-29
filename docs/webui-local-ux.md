@@ -1,5 +1,10 @@
 # 本机 WebUI 可用性设计
 
+> ⚠️ **布局与壳层已由 [webui-spa-ux-spec.md](webui-spa-ux-spec.md) 取代**（2026-10-27）。
+> 本文档仍有效的部分（§0 route.conf 约定、§1 状态机判据、§3 按钮矩阵、§6 多实例钩子）
+> 已并入新 SSOT；此处保留原文作历史参考。
+
+
 > 对象：`mynetd` 内嵌 webui（`mynetd/localapi/webui/`），本机桌面 / Mac / 调试场景。
 > 参照：LuCI 的 `index.htm`（健康检查聚合 + 分区表格）与 `service.htm`（状态/网络/对端/日志/诊断 五页签）。
 > 约束（用户 2026-09-25）：交互在**本机 web 页面**；OpenWrt 走 LuCI；**绝不做进 TUI**。

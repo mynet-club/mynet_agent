@@ -52,6 +52,9 @@ type ProxyIntentState struct {
 	Local  *StampedProxyPolicy `json:"local,omitempty"`
 	Cloud  *StampedProxyPolicy `json:"cloud,omitempty"`
 	Status ProxyWriteback      `json:"status"`
+	// Desktop is the narrow desktop UX projection. It is local-only state and
+	// deliberately does not enter the cloud ProxyPolicy wire contract.
+	Desktop *DesktopAccelerationConfig `json:"desktop_acceleration,omitempty"`
 }
 
 // Effective 合成唯一生效策略：client 侧取 Local 轨，server 侧（出口许可）取 Cloud 轨。

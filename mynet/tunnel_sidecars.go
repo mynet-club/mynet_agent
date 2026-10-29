@@ -129,14 +129,23 @@ func syncProxySidecar() sidecarResult {
 	return sidecarResult{name: "proxy"}
 }
 
-// startDNSHookSidecar 加速钩子（叠加层）：意图开着且隧道已在，才拉起。
-// 依赖：tunnel（钉扎目标）+ DomainRules（清单，随 EffectiveProxyPolicy 读）。
+// startDNSHookSidecar 加速钩子（叠加层）：意图开着、隧道已在、加速节点可达、
+// DNS 解析可用，才拉起。依赖：tunnel（钉扎目标）+ DomainRules（清单）。
+// 门禁未过 = 跳过（不是错误）；状态面报 waiting_node / waiting_dns。
 func startDNSHookSidecar() sidecarResult {
 	if !isPCDNSPlatform() || !DNSHookWanted() {
 		return sidecarResult{name: "dns-hook", err: nil} // 用户没开 = 跳过
 	}
 	if dnsHookRunning() {
 		return sidecarResult{name: "dns-hook"} // 已在跑 = 幂等成功
+	}
+	if err := accelerationStartGate(); err != nil {
+		fmt.Printf("dns-hook: 跳过启动 —— %v\n", err)
+		return sidecarResult{name: "dns-hook", err: nil} // 等节点/隧道，不报错
+	}
+	if err := dnsHookStartGate(); err != nil {
+		fmt.Printf("dns-hook: 跳过启动 —— %v\n", err)
+		return sidecarResult{name: "dns-hook", err: nil} // 等 DNS，不报错
 	}
 	if rc := dnsHookStart(DNSHookListenDefault); rc != 0 {
 		return sidecarResult{name: "dns-hook", err: fmt.Errorf("exit %d", rc)}

@@ -153,6 +153,10 @@ func runAgent(ctx context.Context) {
 		}
 		return pc.Exits, pc.MaxExits, nil
 	}
+	// 托盘「退出应用」：停隧道 + 注销并退出 mynetd（2026-10-28 用户裁定）。
+	api.DaemonQuit = newDaemonQuit(func() {
+		_, _ = execMynet([]string{"service", "stop"})
+	})
 	// B2：会话落盘 / 设备指纹经注入，localapi 不 import mynet
 	api.DeviceFingerprint = creds.DeviceFingerprint
 	api.SaveLoginSession = func(sess localapi.LoginSession) error {
