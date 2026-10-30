@@ -143,6 +143,9 @@ type backClient struct {
 	base  string
 	token string
 	hc    *http.Client
+	// tenant 显式租户上下文（S2 合同）：登录与后续请求都随 X-Tenant-ID 上行。
+	// 框架 3.10 的 EnforcesLoginPolicy 缺租户即 403「无法识别租户上下文」。
+	tenant string
 	// cred 非 nil 时启用 401 自动续期；续期后会回调 onRefresh 让调用方落盘
 	cred      *Credential
 	onRefresh func(*Credential) error
@@ -161,6 +164,7 @@ func newBackClientQuick(cred *Credential) *backClient {
 func newBackClientFor(cred *Credential) *backClient {
 	c := newBackClient(cred.Token)
 	c.cred = cred
+	c.tenant = cred.TenantID
 	c.onRefresh = SaveCredential // 续期后立即落盘新 refresh token
 
 	return c
@@ -257,6 +261,10 @@ func (c *backClient) raw(method, path string, body any) ([]byte, int, error) {
 	req.Header.Set("Accept", "application/json")
 	// Token Binding：指纹随请求带上；与登录时绑定值不一致则后端应拒绝
 	req.Header.Set("X-Device-Fingerprint", DeviceFingerprint())
+	if c.tenant != "" {
+		// S2 显式租户上下文（框架 3.10 EnforcesLoginPolicy fail-closed）
+		req.Header.Set("X-Tenant-ID", c.tenant)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

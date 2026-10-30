@@ -101,6 +101,7 @@ func authLogin(args []string) int {
 	}
 
 	c := newBackClient("")
+	c.tenant = tenant // S2 显式租户：登录请求随 X-Tenant-ID 上行（框架 3.10 缺则 403）
 	raw, code, err := c.doJSON("POST", "/api/v1/auth/login", map[string]string{
 		"email":    email,
 		"password": password,
