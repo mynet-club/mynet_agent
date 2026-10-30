@@ -170,6 +170,7 @@ func TestProbeGNBProxyNoBinary(t *testing.T) {
 	//（本机可能装了真 gnb，findGnbBin 会找到它）。
 	dir := t.TempDir()
 	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	t.Setenv("MYNET_PREFIX", filepath.Join(dir, "prefix")) // 隔离标准位，别让本机 /opt/mynet/bin 的真 gnb 顶掉桩
 	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
 	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -191,6 +192,7 @@ func TestProbeGNBProxyParsesFeaturesLine(t *testing.T) {
 	// 假 gnb 放在 MYNET_HOME/driver/gnb/bin（探测优先路径），避免系统 gnb 干扰
 	dir := t.TempDir()
 	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	t.Setenv("MYNET_PREFIX", filepath.Join(dir, "prefix")) // 隔离标准位，别让本机 /opt/mynet/bin 的真 gnb 顶掉桩
 	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
 	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -231,6 +233,7 @@ func TestProbeGNBProxyParsesFeaturesLine(t *testing.T) {
 func TestProbeGNBProxyFallbackMarker(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	t.Setenv("MYNET_PREFIX", filepath.Join(dir, "prefix")) // 隔离标准位，别让本机 /opt/mynet/bin 的真 gnb 顶掉桩
 	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
 	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -251,6 +254,7 @@ func TestProbeGNBProxyFallbackMarker(t *testing.T) {
 func TestProbeGNBProxyFeaturesLineDenies(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MYNET_HOME", filepath.Join(dir, "home"))
+	t.Setenv("MYNET_PREFIX", filepath.Join(dir, "prefix")) // 隔离标准位，别让本机 /opt/mynet/bin 的真 gnb 顶掉桩
 	gnbDir := filepath.Join(dir, "home", "driver", "gnb", "bin")
 	if err := os.MkdirAll(gnbDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -303,5 +307,29 @@ func TestDisabledProxyProjectionOverwritesEnabledConfig(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "proxy on") || !strings.Contains(string(raw), "proxy off") || !strings.Contains(string(raw), "ingress_open off") {
 		t.Fatalf("disabled projection retains enabled data plane: %s", raw)
+	}
+}
+
+func TestFindGnbBinPrefersPrefixBinDir(t *testing.T) {
+	// D4-E：标准位 <prefix>/bin 优先于旧 <home>/driver/gnb/bin。
+	// findGnbBin 曾漏掉标准位（只认退役的 driver/gnb/bin 布局），
+	// 表现为标准安装下「找不到 gnb 二进制」而跳过 proxy.conf。
+	pref := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("MYNET_PREFIX", pref)
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_GNB_BIN", "")
+	standard := filepath.Join(pref, "bin", "gnb")
+	legacy := filepath.Join(home, "driver", "gnb", "bin", "gnb")
+	for _, p := range []string{standard, legacy} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := findGnbBin(); got != standard {
+		t.Fatalf("findGnbBin=%q want 标准位 %q（旧位 %q 只是回退）", got, standard, legacy)
 	}
 }

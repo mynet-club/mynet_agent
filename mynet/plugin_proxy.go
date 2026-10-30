@@ -110,15 +110,25 @@ func provisionProxyPlugin(home string) (bool, error) {
 }
 
 func findGnbBin() string {
-	// 与 driver.resolveGNBBinary 同一优先级：MYNET_HOME/driver/gnb/bin 优先，
-	// 不要一上来就 LookPath —— 系统 PATH 里可能是旧 gnb。
+	// 与 driver.resolveGNBBinary / node_status.lookGnb 同一优先级：
+	// 标准位是 <prefix>/bin（D4-E：driver/ 安装层退役），旧 home 树只作回退。
 	name := utils.ExeName("gnb")
+	if v := os.Getenv("MYNET_GNB_BIN"); v != "" {
+		if st, err := os.Stat(v); err == nil && !st.IsDir() {
+			return v
+		}
+	}
 	home := utils.GetMyNetHome()
 	candidates := []string{
+		filepath.Join(utils.PrefixBinDir(), name),
+		filepath.Join(utils.PrefixBinDir(), "gnb"),
+		filepath.Join(home, "bin", name),
+		filepath.Join(home, "bin", "gnb"),
+		// 旧标准位（存量节点未迁移，只作查找回退）
 		filepath.Join(home, "driver", "gnb", "bin", name),
 		filepath.Join(home, "driver", "gnb", "bin", "gnb"),
 		"/usr/local/opt/mynet/driver/gnb/bin/gnb",
-		"/opt/mynet/driver/gnb/bin/gnb", // pkg 落地位，与 driver.resolveGNBBinary 同序
+		"/opt/mynet/driver/gnb/bin/gnb",
 		"/usr/local/bin/gnb",
 		"/usr/bin/gnb",
 	}
