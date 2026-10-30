@@ -238,140 +238,156 @@ func runAgent(ctx context.Context) {
 		logger.Info("网关已解析", "source", gwSrc, "gateways", gateways)
 		nodeID := os.Getenv("MYNET_NODE_ID")
 
+		// tryNodeFace —— 节点面装配 + transport 启动。mynetd 可能**先于
+		// mynet node claim** 启动（服务开机自启 vs 之后装机）：一次性放弃会让
+		// transport 永久死（2026-10-30 L3 实测），失败时由外层后台重试到身份就绪。
+		//
 		// 节点面身份（C-2）：命令结果要签名后才能上报后端，
 		// 拉取待执行命令也要签名。读不到 keys/ 时**明确告警**而不是静默降级——
 		// 否则症状是「命令下发了但节点毫无反应」，比直接报错难查得多。
-		var (
-			onResult func(context.Context, commands.Result) ([]byte, error)
-			pull     func(context.Context) ([]pendingCommand, error)
-			bc       *backClient
-		)
-		id, idErr := loadNodeIdentity("")
-		if idErr != nil {
-			logger.Warn("节点面未就绪，命令拉取与结果上报都不可用", "err", idErr)
-		} else {
-			if nodeID == "" {
-				nodeID = id.nodeID
-			}
-			onResult = func(_ context.Context, res commands.Result) ([]byte, error) {
-				return id.encodeResult(res)
-			}
-			// 节点面 HTTP 走 gateway 的 /v1/relay（后端对节点不可达）
-			if c, err := newBackClient(gateways[0], id); err != nil {
-				logger.Warn("节点面 HTTP 客户端不可用", "err", err)
+		tryNodeFace := func() bool {
+			var (
+				onResult func(context.Context, commands.Result) ([]byte, error)
+				pull     func(context.Context) ([]pendingCommand, error)
+				bc       *backClient
+			)
+			id, idErr := loadNodeIdentity("")
+			if idErr != nil {
+				logger.Warn("节点面未就绪，命令拉取与结果上报都不可用", "err", idErr)
+				if nodeID == "" {
+					return false // 无 NodeID 起不了 transport —— 交给外层重试
+				}
 			} else {
-				bc = c
-				pull = func(ctx context.Context) ([]pendingCommand, error) {
-					resp, err := bc.pullPendingCommands(ctx)
-					if err != nil {
-						return nil, err
-					}
-					return resp.Commands, nil
+				if nodeID == "" {
+					nodeID = id.nodeID
 				}
-				// V4-2：心跳走**同一条**节点面通路（签名 + gateway /v1/relay）。
-				// relay 白名单含 /api/v1/node（节点面业务），不需要给 gateway 加新面。
-				hb.setReporter(id.nodeID, c.reportHeartbeat)
-				// T8：WebUI 改 proxy 后回写云端权威（同一签名通路）
-				api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
-					raw, err := json.Marshal(policy)
+				onResult = func(_ context.Context, res commands.Result) ([]byte, error) {
+					return id.encodeResult(res)
+				}
+				// 节点面 HTTP 走 gateway 的 /v1/relay（后端对节点不可达）
+				if c, err := newBackClient(gateways[0], id); err != nil {
+					logger.Warn("节点面 HTTP 客户端不可用", "err", err)
+				} else {
+					bc = c
+					pull = func(ctx context.Context) ([]pendingCommand, error) {
+						resp, err := bc.pullPendingCommands(ctx)
+						if err != nil {
+							return nil, err
+						}
+						return resp.Commands, nil
+					}
+					// V4-2：心跳走**同一条**节点面通路（签名 + gateway /v1/relay）。
+					// relay 白名单含 /api/v1/node（节点面业务），不需要给 gateway 加新面。
+					hb.setReporter(id.nodeID, c.reportHeartbeat)
+					// T8：WebUI 改 proxy 后回写云端权威（同一签名通路）
+					api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
+						raw, err := json.Marshal(policy)
+						if err != nil {
+							return 0, err
+						}
+						var m map[string]any
+						if err := json.Unmarshal(raw, &m); err != nil {
+							return 0, err
+						}
+						return c.writeProxyConfig(context.Background(), m, revision)
+					}
+				}
+				logger.Info("节点面签名就绪", "node_id", id.nodeID, "keys", "conf/**/keys")
+			}
+
+			// report 需要 cli.Send，而 cli 的 Handlers 又需要 dispatcher.Handle——
+			// 用后绑闭包解开这个环：闭包只在事件真正到达时才求值，那时 cli 已就绪。
+			var cli *transport.Client
+			var report func(context.Context, commands.Result) error
+			if id != nil {
+				nodeIdent := id
+				report = func(_ context.Context, res commands.Result) error {
+					frame, err := nodeIdent.encodeResult(res)
 					if err != nil {
-						return 0, err
+						return err
 					}
-					var m map[string]any
-					if err := json.Unmarshal(raw, &m); err != nil {
-						return 0, err
+					if cli == nil {
+						return fmt.Errorf("transport 尚未装配，无法上行结果")
 					}
-					return c.writeProxyConfig(context.Background(), m, revision)
+					return cli.Send(frame)
 				}
 			}
-			logger.Info("节点面签名就绪", "node_id", id.nodeID, "keys", "conf/**/keys")
-		}
 
-		// report 需要 cli.Send，而 cli 的 Handlers 又需要 dispatcher.Handle——
-		// 用后绑闭包解开这个环：闭包只在事件真正到达时才求值，那时 cli 已就绪。
-		var cli *transport.Client
-		var report func(context.Context, commands.Result) error
-		if id != nil {
-			nodeIdent := id
-			report = func(_ context.Context, res commands.Result) error {
-				frame, err := nodeIdent.encodeResult(res)
-				if err != nil {
-					return err
-				}
-				if cli == nil {
-					return fmt.Errorf("transport 尚未装配，无法上行结果")
-				}
-				return cli.Send(frame)
+			dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
+			// bundle_changed 的 service.reload 必须与 connect/config 写面互斥：
+			// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
+			// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
+			dispatcher.setConfigExclusive(api.TryRunExclusive)
+
+			// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
+			// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
+			api.OnResult = localResultReporter(report)
+
+			// bundle 拉取（V1-10①）：mynetd 负责**拉并落盘**，执行器 mynet 只负责读。
+			// 两边路径口径都是 shared.VarDir()，见 bundle.go 的注释。
+			if bc != nil {
+				store := newBundleStore()
+				client := bc
+				dispatcher.setBundleSyncer(func(ctx context.Context) (string, error) {
+					return store.Sync(ctx, client.fetchBundle)
+				})
+				// 启动即拉一次。否则新装节点要等后端广播 bundle_changed 才有配置，
+				// 在那之前跑任何 refresh-* 都是「读 bundle 失败: no such file」。
+				// 放 goroutine：拉取失败不该拖住 daemon 启动（后端暂时不可达是常态）。
+				bundlePullDone = make(chan struct{})
+				go func() {
+					defer close(bundlePullDone)
+					ctx, cancel := context.WithTimeout(context.Background(), bundleSyncTimeout)
+					defer cancel()
+					status, err := store.Sync(ctx, client.fetchBundle)
+					if err != nil {
+						logger.Warn("启动拉取 bundle 失败（bundle_changed 事件与下次启动会重试）",
+							"err", err, "path", store.path)
+						return
+					}
+					logger.Info("启动拉取 bundle 完成", "status", status, "path", store.path)
+					// 启动时也要走一遍完整生命周期，不能只在 bundle_changed 时走。
+					//
+					// 实测（Phase 6 装成 systemd 服务后）：重启后 gnb 由它自己的单元拉起、
+					// tun 接口也在，但 **/32 主机路由丢了** —— tun 重建时内核不会自动
+					// 恢复此前 `ip route replace` 加进去的路由。症状与 CPI-62 同形：
+					// 接口在、隧道在、ping 100% 丢包。
+					//
+					// `-once` 时跳过：那是验收用的一次性探针（只验「拉取 + 心跳」），
+					// 让它顺手起隧道/改内核路由会污染被测机器的状态。
+					if !*flagOnce {
+						dispatcher.runBundleLifecycle()
+					}
+				}()
 			}
-		}
 
-		dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
-		// bundle_changed 的 service.reload 必须与 connect/config 写面互斥：
-		// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
-		// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
-		dispatcher.setConfigExclusive(api.TryRunExclusive)
-
-		// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
-		// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
-		api.OnResult = localResultReporter(report)
-
-		// bundle 拉取（V1-10①）：mynetd 负责**拉并落盘**，执行器 mynet 只负责读。
-		// 两边路径口径都是 shared.VarDir()，见 bundle.go 的注释。
-		if bc != nil {
-			store := newBundleStore()
-			client := bc
-			dispatcher.setBundleSyncer(func(ctx context.Context) (string, error) {
-				return store.Sync(ctx, client.fetchBundle)
-			})
-			// 启动即拉一次。否则新装节点要等后端广播 bundle_changed 才有配置，
-			// 在那之前跑任何 refresh-* 都是「读 bundle 失败: no such file」。
-			// 放 goroutine：拉取失败不该拖住 daemon 启动（后端暂时不可达是常态）。
-			bundlePullDone = make(chan struct{})
-			go func() {
-				defer close(bundlePullDone)
-				ctx, cancel := context.WithTimeout(context.Background(), bundleSyncTimeout)
-				defer cancel()
-				status, err := store.Sync(ctx, client.fetchBundle)
-				if err != nil {
-					logger.Warn("启动拉取 bundle 失败（bundle_changed 事件与下次启动会重试）",
-						"err", err, "path", store.path)
-					return
-				}
-				logger.Info("启动拉取 bundle 完成", "status", status, "path", store.path)
-				// 启动时也要走一遍完整生命周期，不能只在 bundle_changed 时走。
-				//
-				// 实测（Phase 6 装成 systemd 服务后）：重启后 gnb 由它自己的单元拉起、
-				// tun 接口也在，但 **/32 主机路由丢了** —— tun 重建时内核不会自动
-				// 恢复此前 `ip route replace` 加进去的路由。症状与 CPI-62 同形：
-				// 接口在、隧道在、ping 100% 丢包。
-				//
-				// `-once` 时跳过：那是验收用的一次性探针（只验「拉取 + 心跳」），
-				// 让它顺手起隧道/改内核路由会污染被测机器的状态。
-				if !*flagOnce {
-					dispatcher.runBundleLifecycle()
-				}
-			}()
-		}
-
-		var err error
-		cli, err = transport.New(transport.Config{
-			Gateways: gateways,
-			NodeID:   nodeID,
-		}, transport.Handlers{
-			OnCommand: func(_ context.Context, req commands.Request) commands.Result {
-				return commands.Run(execStd, req, nodeID)
-			},
-			// 每次连上（含重连）补拉一次 bundle：断线窗口里后端推的事件不会补发，
-			// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
-			OnConnect: func(context.Context) { dispatcher.catchUpBundle() },
-			OnEvent:   dispatcher.Handle,
-			OnResult:  onResult,
-		}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })
-		if err != nil {
-			logger.Error("transport 启动失败", "err", err)
-		} else {
+			var err error
+			cli, err = transport.New(transport.Config{
+				Gateways: gateways,
+				NodeID:   nodeID,
+			}, transport.Handlers{
+				OnCommand: func(_ context.Context, req commands.Request) commands.Result {
+					return commands.Run(execStd, req, nodeID)
+				},
+				// 每次连上（含重连）补拉一次 bundle：断线窗口里后端推的事件不会补发，
+				// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
+				OnConnect: func(context.Context) { dispatcher.catchUpBundle() },
+				OnEvent:   dispatcher.Handle,
+				OnResult:  onResult,
+			}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })
+			if err != nil {
+				logger.Error("transport 启动失败", "err", err)
+				return false
+			}
 			cli.SetDialer(transport.WebSocketDialer)
 			go func() { _ = cli.Run(ctx) }()
+			return true
+		}
+		if !tryNodeFace() && !*flagOnce {
+			// 身份稍后才出现（claim 在启动后执行）——后台重试直到装配成功。
+			go retryNodeFace(ctx, 15*time.Second, tryNodeFace, func(f string, a ...any) {
+				logger.Info(fmt.Sprintf(f, a...))
+			})
 		}
 	} else {
 		// U3：回退链也没有网关 —— 指因，禁止静默（session-pitfalls #16）
