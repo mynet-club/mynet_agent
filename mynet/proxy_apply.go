@@ -242,14 +242,16 @@ func proxyMarkCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt ProxyR
 	if snap.Capabilities["iptables"] {
 		// 集合同理兜一次（见 nft 分支注释）：--match-set 引用不存在的集合会整条失败
 		cmds := []routeCmd{{argv: []string{"ipset", "create", "mynet_proxy", "hash:net", "-exist"}}}
-		setMatch := []string{"-m", "set", "--match-set", "mynet_proxy", "dst"}
-		jump := []string{"-j", "MARK", "--set-mark", fwHex}
-		var neg []string
+		// ⚠️ 否定词 `!` 必须紧贴 `--match-set`（`-m set ! --match-set …`）。
+		// 放在 `-m set` 之前（`! -m set …`）被 iptables-legacy 1.8.9 直接拒：
+		// "unexpected ! flag before --match"（2026-10-30 L3 legacy 实测）。
+		setMatch := []string{"-m", "set"}
 		if inverted {
-			neg = []string{"!"}
+			setMatch = append(setMatch, "!")
 		}
+		setMatch = append(setMatch, "--match-set", "mynet_proxy", "dst")
+		jump := []string{"-j", "MARK", "--set-mark", fwHex}
 		argv := []string{"iptables", "-t", "mangle", "-A", "PREROUTING"}
-		argv = append(argv, neg...)
 		argv = append(argv, setMatch...)
 		argv = append(argv, jump...)
 		return append(cmds, routeCmd{argv: argv})

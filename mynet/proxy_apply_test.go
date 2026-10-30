@@ -574,3 +574,20 @@ func TestProxyClientNftBatchEnsuresBeforeFlush(t *testing.T) {
 		t.Fatalf("add chain 必须在 flush chain 之前（首跑批原子加载）:\n%s", text)
 	}
 }
+
+func TestProxyIPTablesInvertedNegationPlacement(t *testing.T) {
+	// legacy 回归（2026-10-30 L3 实测）：inverted 的 `!` 必须紧贴 --match-set。
+	// `! -m set …` 被 iptables-legacy 1.8.9 拒："unexpected ! flag before --match"。
+	p := mustPolicy(t, "domestic", "blacklist")
+	if p.Split.MatchMode != domain.ProxyMatchInverted {
+		t.Fatalf("match=%s", p.Split.MatchMode)
+	}
+	rt := ProxyRuntime{TunDevice: "wg0", ExitVia: "10.0.0.1", IPSetFile: "/tmp/x"}
+	text := joinCmds(proxyClientCmds(snapIpt(), p, rt))
+	if !strings.Contains(text, "-m set ! --match-set mynet_proxy dst") {
+		t.Fatalf("inverted 应为 -m set ! --match-set（! 紧贴 --match-set）:\n%s", text)
+	}
+	if strings.Contains(text, "! -m set") {
+		t.Fatalf("禁止 ! -m set 形态（iptables-legacy 拒收）:\n%s", text)
+	}
+}
