@@ -399,8 +399,11 @@ func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 405, map[string]any{"success": false, "message": "POST only"})
 		return
 	}
-	// 内部运维口令（非节点鉴权）
-	if s.InternalToken != "" && r.Header.Get("X-Internal-Token") != s.InternalToken {
+	// 内部运维口令（非节点鉴权）。兼容两种传递形态：
+	// X-Internal-Token（本网关原生头）与 Authorization: Bearer（mynet_api
+	// GatewayNotifier 走 Laravel Http::withToken 的实际形态）。此前只认前者，
+	// 与 API 对接时通知恒 401（生产网关绑回环不设口令所以从未暴露）。
+	if s.InternalToken != "" && !internalTokenOK(r, s.InternalToken) {
 		writeJSON(w, 401, map[string]any{"success": false, "message": "internal token required"})
 		return
 	}
@@ -424,4 +427,14 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// internalTokenOK 后端 ↔ gateway 运维口令校验：X-Internal-Token 或 Authorization: Bearer。
+func internalTokenOK(r *http.Request, want string) bool {
+	if r.Header.Get("X-Internal-Token") == want {
+		return true
+	}
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	return len(auth) > len(prefix) && strings.HasPrefix(auth, prefix) && auth[len(prefix):] == want
 }

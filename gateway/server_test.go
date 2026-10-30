@@ -293,3 +293,34 @@ func TestRelayWithoutUpstreamIs502(t *testing.T) {
 		t.Fatalf("上游未配置应 502，实际 %d", rec.Code)
 	}
 }
+
+// 运维口令兼容两种传递：X-Internal-Token 与 Authorization: Bearer。
+// mynet_api GatewayNotifier 实际发的是 Bearer（Laravel Http::withToken）；
+// 此前 gateway 只认 X-Internal-Token → 与 API 对接通知恒 401
+// （生产网关绑回环不设口令，从未暴露）。错误口令/缺口令必须仍拒。
+func TestNotifyAcceptsBearerInternalToken(t *testing.T) {
+	s := NewServer("", "tok")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	post := func(auth string) int {
+		req := httptest.NewRequest("POST", "/v1/notify",
+			strings.NewReader(`{"node_id":"n-x","event":"bundle_changed"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := post("Bearer tok"); got == 401 {
+		t.Fatalf("Authorization: Bearer 应被接受（API 端实际形态），got 401")
+	}
+	if got := post("Bearer wrong"); got != 401 {
+		t.Fatalf("错误 Bearer 口令应 401, got %d", got)
+	}
+	if got := post(""); got != 401 {
+		t.Fatalf("缺口令应 401, got %d", got)
+	}
+}
