@@ -558,3 +558,19 @@ func TestProxyNftRulesStayInOwnedTable(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyClientNftBatchEnsuresBeforeFlush(t *testing.T) {
+	// 首跑回归：`nft -f` 批是原子加载的，flush 先于 add table/chain 会让新节点
+	// 首次 apply 整批失败（flush 一条还不存在的链）。顺序必须是 ensure → flush → rules。
+	p := mustPolicy(t, "domestic", "whitelist")
+	rt := ProxyRuntime{TunDevice: "gnb_tun", ExitVia: "10.20.0.250", IPSetFile: "/tmp/x"}
+	text := joinCmds(proxyClientCmds(snapNft(), p, rt))
+	iAdd := strings.Index(text, "nft add chain ip mynet_proxy PREROUTING")
+	iFlush := strings.Index(text, "nft flush chain ip mynet_proxy PREROUTING")
+	if iAdd < 0 || iFlush < 0 {
+		t.Fatalf("应有 add chain 与 flush chain:\n%s", text)
+	}
+	if iAdd > iFlush {
+		t.Fatalf("add chain 必须在 flush chain 之前（首跑批原子加载）:\n%s", text)
+	}
+}

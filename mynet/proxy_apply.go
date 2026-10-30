@@ -64,13 +64,20 @@ func proxyClientCmds(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, rt Prox
 	dev := rt.TunDevice
 	var cmds []routeCmd
 
-	// 0) 先把本表两条链的规则清掉再按序重加 —— 幂等的地基：`nft add rule` 允许同规则多份，
+	// 0) ensure 表/链 → 再 flush 链上规则 —— 幂等的地基：`nft add rule` 允许同规则多份，
 	//    只 add 不删则重复 apply 会堆积；而本机 nft 不支持按 spec 删规则（只认 handle），
 	//    所以整链 flush 是干净的收敛法。表是**自建**的，不会碰到别人的规则。
 	//    ⚠️ 只能 `flush chain`，**不能 `flush table`** —— 后者会把本表的 **set 元素一起清掉**
 	//    （2026-10-11 .182 实测：集合 17789 → 0），而集合由列表步骤灌好，必须留着。
-	//    optional：链还没建时（首跑）容错。
+	//    ⚠️ ensure 必须在 flush 之前：`nft -f` 批是原子的，flush 一条还不存在的链会让
+	//    整批失败（首跑实测：flush 先于 add table → 批加载 exit 1）。add table/chain
+	//    幂等（重复 add 退出码 0），首跑/重跑同序安全。
 	if snap.Capabilities["nft"] {
+		cmds = append(cmds,
+			routeCmd{argv: []string{"nft", "add", "table", FirewallNatFamily, FirewallProxyTable}, optional: true},
+			routeCmd{argv: []string{"nft", "add", "chain", FirewallNatFamily, FirewallProxyTable, ProxyChainMark,
+				"{ type filter hook prerouting priority -150; }"}, optional: true},
+		)
 		for _, ch := range []string{"PREROUTING"} {
 			cmds = append(cmds, routeCmd{
 				argv: []string{"nft", "flush", "chain", FirewallNatFamily, FirewallProxyTable, ch}, optional: true})
