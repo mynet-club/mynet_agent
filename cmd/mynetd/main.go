@@ -31,6 +31,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
 	"github.com/mynet-club/mynet_agent/shared/proxysync"
+	"github.com/mynet-club/mynet_agent/shared/tipskb"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
@@ -179,6 +180,27 @@ func runAgent(ctx context.Context) {
 		os.Exit(1)
 	}
 	logger.Info("localapi 已启动", "addr", api.Addr())
+
+	// tips-kb 知识库基线：后台周期刷新（同域名基线模式），缓存缺失由 localapi 端点按需拉。
+	// 拉取/校验/合并/缓存在 shared/tipskb；这里只起刷新循环。
+	go func() {
+		refresh := func() {
+			if err := tipskb.Refresh(ctx, nil, tipskb.CTLBaseURL(), utils.LocalConfDir()); err != nil {
+				logger.Warn("ctl tips-kb 刷新失败（保留既有缓存，下轮重拉）", "err", err)
+			}
+		}
+		refresh()
+		tick := time.NewTicker(time.Hour)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				refresh()
+			}
+		}
+	}()
 
 	// 双轨/回写：即使未设 MYNET_GATEWAYS，也按 conf/agent.json 装配 ProxyWriteback，
 	// 否则 WebUI 改 proxy 永远 dirty（回写回调为 nil）。

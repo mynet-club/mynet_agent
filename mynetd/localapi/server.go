@@ -102,6 +102,7 @@ func (s *Server) routes() {
 	s.registerConfigRoutes()
 	s.registerProxyRoutes()
 	s.registerAccelerationRoutes()
+	s.registerKBRoutes() // tips-kb 知识库只读透出（/api/v1/kb/tips-kb.json）
 	// 退出不占 configMutation：用户要关应用时必须能出去，不能被在途配置操作 409。
 	s.mux.HandleFunc("/api/v1/daemon/quit", s.handleDaemonQuit)
 	if hasWebUI {
