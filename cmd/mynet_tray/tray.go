@@ -366,11 +366,17 @@ func (a *App) postCommand(argv ...string) error {
 
 // post 发一次本机 API 请求，返回状态码与**有界**读取的 body。
 func (a *App) post(path string, payload []byte) (int, []byte, error) {
+	return a.doJSON(http.MethodPost, path, payload)
+}
+
+// doJSON 按指定方法发本机 API 请求。方法必须与 localapi 路由约定一致——
+// /api/v1/acceleration 只收 GET|PUT，POST 会被 405 拒掉。
+func (a *App) doJSON(method, path string, payload []byte) (int, []byte, error) {
 	var rdr io.Reader
 	if payload != nil {
 		rdr = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://"+a.base+path, rdr)
+	req, err := http.NewRequest(method, "http://"+a.base+path, rdr)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1107,18 +1113,20 @@ func (a *App) toggleAccel() {
 	wantStart := !cfg.Enabled || !env.Data.Runtime.Active
 	cfg.Enabled = wantStart
 	if wantStart {
-		if _, _, err := a.postJSON("/api/v1/acceleration/install", map[string]any{}); err != nil {
+		if err := apiErr(a.postJSON("/api/v1/acceleration/install", map[string]any{})); err != nil {
 			a.notice("安装本机加速失败：" + safeText(err.Error(), MaxMenuRunes))
 			return
 		}
 	}
 	// dns_enabled 必须随 enabled 一起发：PUT 不带该字段时 Go 反序列化为 false，
 	// apply 侧 `enabled && dns_enabled` 会把 hook 停掉，表现为「已启用但未生效」。
-	if _, _, err := a.postJSON("/api/v1/acceleration", map[string]any{"enabled": cfg.Enabled, "dns_enabled": cfg.Enabled, "dns_sources": cfg.DNSSources, "custom_dns": cfg.CustomDNS, "custom_domains": cfg.CustomDomains}); err != nil {
+	// 配置保存是 PUT（/api/v1/acceleration 只收 GET|PUT；POST 405 会被当成功吞掉，
+	// 表现为「托盘启动加速没用」）。
+	if err := apiErr(a.putJSON("/api/v1/acceleration", map[string]any{"enabled": cfg.Enabled, "dns_enabled": cfg.Enabled, "dns_sources": cfg.DNSSources, "custom_dns": cfg.CustomDNS, "custom_domains": cfg.CustomDomains})); err != nil {
 		a.notice("保存加速设置失败：" + safeText(err.Error(), MaxMenuRunes))
 		return
 	}
-	if _, _, err := a.postJSON("/api/v1/acceleration/apply", map[string]any{}); err != nil {
+	if err := apiErr(a.postJSON("/api/v1/acceleration/apply", map[string]any{})); err != nil {
 		a.notice("加速" + opText(map[bool]string{true: "开启", false: "关闭"}[cfg.Enabled]) + "失败：" + safeText(err.Error(), MaxMenuRunes))
 		return
 	}
@@ -1299,6 +1307,39 @@ func (a *App) postJSON(path string, payload map[string]any) (int, []byte, error)
 		return 0, nil, err
 	}
 	return a.post(path, raw)
+}
+
+// putJSON PUT 并返回 body。/api/v1/acceleration 只收 GET|PUT，
+// 托盘保存加速配置必须走这里（POST 会被 405 拒掉且旧代码当成功吞掉）。
+func (a *App) putJSON(path string, payload map[string]any) (int, []byte, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	return a.doJSON(http.MethodPut, path, raw)
+}
+
+// apiErr 校验本机 API 写调用的两层结果：HTTP 状态码 + success 信封。
+//
+// postJSON/putJSON 只把网络故障当 err，405/409/502 这类应用失败必须在这里
+// 挡住——否则「保存加速设置失败」永远不出现，按钮点了没反应还没有提示。
+// 不拼 body 原文（D7）；只取信封里的 message，再过 apiFailure 清洗。
+func apiErr(code int, body []byte, err error) error {
+	if err != nil {
+		return err
+	}
+	var env struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(body, &env)
+	if code >= 200 && code < 300 && env.Success {
+		return nil
+	}
+	if env.Message != "" {
+		return apiFailure(env.Message, "")
+	}
+	return fmt.Errorf("本机服务返回 HTTP %d", code)
 }
 
 func (a *App) getJSON(path string) (int, []byte, error) {
