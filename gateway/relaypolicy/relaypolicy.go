@@ -35,6 +35,9 @@ var AllowedPathPrefixes = []string{
 	"/api/v1/dashboard",
 	"/api/v1/config",
 	"/api/v1/system",
+	// 框架用户面（邀请码 myCode/myUsages 走 /api/v1/app/invite-code*）——
+	// 缺了就是邀请管理页一串 403「path 不在中继白名单内」（2026-11-02 实测）
+	"/api/v1/app",
 	// 通知与头像（gui 主布局启动即调，缺了就一片 403）
 	"/api/v1/notifications",
 	"/api/v1/files",

@@ -42,3 +42,12 @@ func TestSimplifiedDeviceFlowPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestAppInviteCodePaths(t *testing.T) {
+	// 邀请管理页打框架 /api/v1/app/invite-code*；缺前缀会 403 白名单
+	for _, path := range []string{"/api/v1/app/invite-code", "/api/v1/app/invite-code/usages"} {
+		if !IsAllowed(path) {
+			t.Fatalf("invite-code blocked: %s", path)
+		}
+	}
+}

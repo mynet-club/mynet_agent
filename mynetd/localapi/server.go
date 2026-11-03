@@ -5,6 +5,7 @@
 package localapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -226,6 +227,22 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack / Flush 透传：包装 ResponseWriter 时不能吞掉底层能力，
+// 否则将来若要升级连接会得到 501 Not Implemented。
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Flush 透传，便于 SSE/流式响应。
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // withSecurity — D-2 Origin/Host 校验 + D-1 cookie 种入
