@@ -176,6 +176,7 @@ func (f *fakeGnb) driver(conf string) *GNBDriver {
 // 复现/回归：**并发**的 Reload（等价于 bundle_changed 事件链在启动瞬间连跑）不得在
 // 同一 confdir 留下多于一个 gnb。锁之前这里会剩 2–3 个。
 func TestConcurrentReloadLeavesExactlyOneGnb(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	conf := t.TempDir()
 	f := newFakeGnb()
 	d := f.driver(conf)
@@ -199,6 +200,7 @@ func TestConcurrentReloadLeavesExactlyOneGnb(t *testing.T) {
 // 收敛：启动前把「命令行指向本 confdir 的其它 gnb」收掉（OpenWrt init 那条 converge 的
 // Go 侧等价物，跨平台生效）。
 func TestStartConvergesStaleSameConfdir(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	conf := t.TempDir()
 	f := newFakeGnb()
 	// 预置一个「孤儿」：活着、命令行指向本 confdir，但不在 pid 文件里
@@ -226,6 +228,7 @@ func TestStartConvergesStaleSameConfdir(t *testing.T) {
 
 // Stop 也要收残留：只认 pid 文件会漏掉「pid 文件指错 / 被覆盖」的那个。
 func TestStopReapsLeftoverSameConfdir(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	conf := t.TempDir()
 	f := newFakeGnb()
 	d := f.driver(conf)
@@ -250,6 +253,7 @@ func TestStopReapsLeftoverSameConfdir(t *testing.T) {
 
 // 同机多 confdir 互不干扰（多 zone 共存是设计支持的）。
 func TestConvergeIgnoresOtherConfdir(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	confA, confB := t.TempDir(), t.TempDir()
 	f := newFakeGnb()
 	d := f.driver(confA)
@@ -278,6 +282,7 @@ func TestConvergeIgnoresOtherConfdir(t *testing.T) {
 // busybox（OpenWrt）的 ps 不认 -A/-o → 必须回落到 pidof + /proc 口径，否则收敛在
 // OpenWrt 上静默失效（2026-10-11 `.182` 实测：`ps: unrecognized option: A`）。
 func TestConvergeFallsBackWhenPsUnsupported(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	conf := t.TempDir()
 	f := newFakeGnb()
 	f.busyboxPS = true

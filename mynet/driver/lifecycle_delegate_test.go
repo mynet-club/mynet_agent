@@ -11,6 +11,7 @@ import (
 // 平台服务管理器在（OpenWrt/procd）时，两个驱动都必须**交给它**，不得自建
 // （gnb 自建 spawn 绕过 procd → 双 gnb 温床；wg exec wg-quick → OpenWrt 上根本没这个命令）。
 func TestLifecycleDelegatesToPlatformOwner(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	old := platformServiceOwnerFn
 	defer func() { platformServiceOwnerFn = old }()
 	platformServiceOwnerFn = func() string { return "/etc/init.d/mynet" }

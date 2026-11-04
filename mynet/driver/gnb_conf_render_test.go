@@ -420,6 +420,7 @@ func recordingSpawn(d *GNBDriver, calls *[]string, pidFile string) {
 }
 
 func TestGnbStartExecsGnbNotGnbCtl(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
@@ -446,6 +447,7 @@ func TestGnbStartExecsGnbNotGnbCtl(t *testing.T) {
 }
 
 func TestGnbStartReportsFailureWhenProcessNeverAppears(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
@@ -467,6 +469,7 @@ func TestGnbStartReportsFailureWhenProcessNeverAppears(t *testing.T) {
 }
 
 func TestGnbStartIsIdempotentWhenAlreadyRunning(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "gnb.pid"), []byte("4242\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -569,6 +572,7 @@ func fakeSystemd(d *GNBDriver, calls *[]string, loaded, active bool) {
 // Start() 会 spawn **第二个 gnb**，两个进程抢同一个 tun 与 UDP 端口，
 // 症状是隧道时通时断、而两边日志都"正常"。
 func TestGnbDelegatesToSystemdWhenUnitLoaded(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
 	var calls []string
@@ -601,6 +605,7 @@ func TestGnbDelegatesToSystemdWhenUnitLoaded(t *testing.T) {
 }
 
 func TestGnbStartsUnitWhenLoadedButInactive(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
 	d.StartProbes, d.StartProbeDelay = 2, time.Millisecond
@@ -643,6 +648,7 @@ func TestGnbStartsUnitWhenLoadedButInactive(t *testing.T) {
 // TestGnbFallsBackToSpawnWithoutSystemd 反向钉住：单元不存在（not-found）时
 // 必须走直接 spawn 那条路 —— 否则容器内 / macOS / 手工调试就起不来了。
 func TestGnbFallsBackToSpawnWithoutSystemd(t *testing.T) {
+	t.Setenv("MYNET_HOME", t.TempDir())
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir

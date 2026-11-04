@@ -145,7 +145,7 @@ func installSystemd(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		return 1
 	}
 	fmt.Println("installed", filepath.Join(home, "conf", "gateways.json"))
-	if err := writeSystemdUnits(unitDir, gnbBin, home); err != nil {
+	if err := writeSystemdUnits(unitDir, gnbBin, home, mynetPath); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -226,7 +226,11 @@ func uninstallSystemd(home string, keepBin, dry bool) int {
 //
 // __GNB_CONF__ 是 gnb -c 的绝对目标（unix=运行投影 /var/run/mynet/<nodeId>，
 // Windows=conf 节点目录；form+nodeId 由 install 时的 mode.json 决定）。
-func writeSystemdUnits(unitDir, gnbBin, home string) error {
+func writeSystemdUnits(unitDir, gnbBin, home string, launcher ...string) error {
+	mynetBin := "/opt/mynet/bin/mynet"
+	if len(launcher) > 0 {
+		mynetBin = launcher[0]
+	}
 	if err := os.MkdirAll(unitDir, 0o755); err != nil {
 		return err
 	}
@@ -235,6 +239,7 @@ func writeSystemdUnits(unitDir, gnbBin, home string) error {
 		if u == "mynet_gnb" {
 			body = strings.ReplaceAll(body, "/usr/local/bin/gnb", gnbBin)
 			body = strings.ReplaceAll(body, "__GNB_CONF__", gnbConfPath(home))
+			body = strings.ReplaceAll(body, "__MYNET_BIN__", mynetBin)
 			// 缺口⑦：home 尚无 mode.json 时 gnbConfPath 回退 /var/run/mynet/default，
 			// 单元天生指向错目录（188 实测 crash-loop 50 次）。单元照写
 			// （install 的职责是装服务），但把「待归位」明说 ——

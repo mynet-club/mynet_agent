@@ -377,6 +377,16 @@ func (d *GNBDriver) Start() error { return d.withLifecycle(d.startLocked) }
 
 func (d *GNBDriver) startLocked() error {
 	log := logger.Comp("driver")
+	managed, utcErr := d.utcManaged()
+	if utcErr != nil {
+		return fmt.Errorf("UTC RECOVERY_REQUIRED: %w", utcErr)
+	}
+	// Legacy service templates must not bypass the guarded launch path.
+	if managed {
+		if err := d.utcCheckDelegation(); err != nil {
+			return err
+		}
+	}
 	// 平台服务管理器在（OpenWrt/procd）→ 交给它：绕过它自己 spawn 出的 gnb 它不认，
 	// 两份争 tun 就是双 gnb 的来源（与 Lua 执行器委托 /etc/init.d/mynet 同一规则）。
 	if handled, err := delegatePlatformService(d.Exec, "start"); handled {
@@ -574,6 +584,15 @@ func (d *GNBDriver) readPidFile() (int, error) {
 // 也把「停完再起」这个原子语义拆开（那正是重叠 reload 留下两个 gnb 的形态）。
 func (d *GNBDriver) Reload() error {
 	return d.withLifecycle(func() error {
+		managed, err := d.utcManaged()
+		if err != nil {
+			return fmt.Errorf("UTC RECOVERY_REQUIRED: %w", err)
+		}
+		if managed {
+			if err := d.utcCheckDelegation(); err != nil {
+				return err
+			}
+		}
 		// 平台服务管理器在 → 让它 restart（procd 自己串行化，且它才是实例的权威）。
 		if handled, err := delegatePlatformService(d.Exec, "restart"); handled {
 			return err

@@ -82,7 +82,7 @@ func TestWriteSystemdUnitsSubstitutesGnbPath(t *testing.T) {
 		}
 		body := string(b)
 		if name == "mynet_gnb" {
-			if !strings.Contains(body, "ExecStart="+custom) {
+			if !strings.Contains(body, "ExecStart=/opt/mynet/bin/mynet utc driver-run --binary "+custom) {
 				t.Errorf("mynet_gnb 的 ExecStart 未替换为 %s:\n%s", custom, body)
 			}
 			if strings.Contains(body, "/usr/local/bin/gnb") {

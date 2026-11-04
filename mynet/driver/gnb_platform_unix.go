@@ -38,7 +38,11 @@ func (d *GNBDriver) pidKillOS(pid int) error {
 
 // spawnGnb 拉起 gnb。Unix：Spawn（等父进程 daemon 化退出），返回 0（pid 由 gnb.pid 记）。
 func (d *GNBDriver) spawnGnb(bin string) (int, error) {
-	if err := d.Spawn(bin, "-c", d.ConfDir); err != nil {
+	args, err := d.utcStartArgs()
+	if err != nil {
+		return 0, err
+	}
+	if err := d.Spawn(bin, args...); err != nil {
 		return 0, err
 	}
 	return 0, nil

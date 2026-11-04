@@ -39,7 +39,11 @@ func (d *GNBDriver) pidKillOS(pid int) error {
 
 // spawnGnb Windows：gnb 不写 gnb.pid 且前台不退 —— 我们记下 PID 再靠它判活。
 func (d *GNBDriver) spawnGnb(bin string) (int, error) {
-	return spawnDetachedPID(bin, "-c", d.ConfDir)
+	args, err := d.utcStartArgs()
+	if err != nil {
+		return 0, err
+	}
+	return spawnDetachedPID(bin, args...)
 }
 
 // writePidAfterSpawn Windows 上由我们补 gnb.pid。

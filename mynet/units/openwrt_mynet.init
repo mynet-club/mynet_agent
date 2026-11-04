@@ -206,7 +206,7 @@ converge_stale_gnb() {
 }
 
 start_gnb_instance() {
-	local nid confdir bin
+	local nid confdir bin launcher
 	nid=$(get_node_id_from_conf)
 	# D4-E：节点唯一存放位优先（gnb_confdir 含 mode.json 解析），旧 driver 位只回退
 	confdir=$(gnb_confdir)
@@ -223,9 +223,13 @@ start_gnb_instance() {
 	if [ -f "$confdir/node.conf" ]; then
 		sed -i 's/^daemon on$/daemon off/' "$confdir/node.conf" 2>/dev/null || true
 	fi
-	log "procd gnb: $bin -c $confdir"
+	launcher="$(command -v mynet)"
+	[ -n "$launcher" ] || { log "ERROR: mynet UTC-aware launcher missing"; return 1; }
+	log "procd gnb: guarded launch $bin -c $confdir"
 	procd_open_instance gnb
-	procd_set_param command "$bin" -c "$confdir"
+	# MYNET_UTC_LAUNCH_V1
+	procd_set_param command "$launcher" utc driver-run --binary "$bin" -c "$confdir"
+	procd_set_param env MYNET_HOME="$MYNET_HOME"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
