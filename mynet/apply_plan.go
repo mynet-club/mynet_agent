@@ -978,57 +978,62 @@ func routeTouched(owner, ourDev string) bool {
 	return ourDev != "" && owner == ourDev
 }
 
-// clearTunnelRoutes 清掉隧道口上的路由（`mynet apply --clear`）。
+// clearTunnelRoutes 清掉**本节点受管隧道口**上的路由（`mynet apply --clear`）。
 //
-// 对齐 openwrt node.lua:clear_routes：`ip route show dev <tun>` 后逐条 del，
-// **只动本隧道设备上的**，绝不按目的地删 —— 别的口的静态路由碰都不碰。
-// stop 服务 / 换代时调用。
+// 口径见 spec/route-apply-unification.md §2：只清 `dev <tun>`，绝不按目的地盲删；
+// `<tun>` 的唯一来源是 bundle 的 node.interface（TunDevice），执行期再解析成
+// 真实设备（darwin 的 gnb 实际落在 utunN）。
+//
+// ⚠️ 不能按 utun/tun/gnb/wg 名字前缀枚举：同机并存的手工隧道不是我们的。
+// 实测 .178：mynet 的 gnb_tun 与手工 wg_arthur（10.66.66.12）并存，前缀枚举
+// 会在 stop 时删掉 wg_arthur 上的 `10.66.66.0/24` 回程路由，该隧道随即单向断。
+// 解析不出受管口时跳过并报错，不猜设备。
 func clearTunnelRoutes(snap *shared.SystemSnapshot, dry bool) int {
-	devs := tunnelDevices()
-	if len(devs) == 0 {
-		fmt.Println("apply --clear: 未发现隧道口，无路由可清")
+	env, err := loadBundleEnvelope()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "apply --clear: 读 bundle 失败，无法确定受管隧道口，跳过清理（不猜设备）: %v\n", err)
+		return 1
+	}
+	dev, err := managedTunnelDevice(env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "apply --clear: 无法确定受管隧道口，跳过清理（不猜设备）: %v\n", err)
+		return 1
+	}
+	dests := routesOnDevice(dev)
+	if len(dests) == 0 {
+		fmt.Printf("clear %s: 无路由可清（设备不在或表为空）\n", dev)
 		return 0
 	}
+	fmt.Printf("clear %s: %d 条\n", dev, len(dests))
 	fail := 0
-	for _, dev := range devs {
-		dests := routesOnDevice(dev)
-		if len(dests) == 0 {
-			continue
-		}
-		fmt.Printf("clear %s: %d 条\n", dev, len(dests))
-		for _, dest := range dests {
-			r := RouteOp{Destination: dest, Device: dev, Action: "del"}
-			for _, c := range routeCmds(snap, r) {
-				if err := runOp(dry, c.argv); err != nil {
-					if c.optional {
-						continue
-					}
-					fmt.Fprintf(os.Stderr, "clear %s %s: %v\n", dev, dest, err)
-					fail = 1
+	for _, dest := range dests {
+		r := RouteOp{Destination: dest, Device: dev, Action: "del"}
+		for _, c := range routeCmds(snap, r) {
+			if err := runOp(dry, c.argv); err != nil {
+				if c.optional {
+					continue
 				}
+				fmt.Fprintf(os.Stderr, "clear %s %s: %v\n", dev, dest, err)
+				fail = 1
 			}
 		}
 	}
 	return fail
 }
 
-// tunnelDevices 本机隧道接口名（gnb/wg/utun/tun 前缀）。
-func tunnelDevices() []string {
-	ifaces, err := net.Interfaces()
+// managedTunnelDevice 受管隧道口的**真实**接口名。
+// 权威名来自 bundle（node.interface）；resolveDevice 负责 darwin 的 utunN 反查
+// （用 bundle 的本机 overlay 地址，与 apply 装路由同一套解析）。
+func managedTunnelDevice(env *domain.BundleEnvelope) (string, error) {
+	logical, err := env.TunDevice()
 	if err != nil {
-		return nil
+		return "", err
 	}
-	var out []string
-	for _, iface := range ifaces {
-		name := iface.Name
-		if strings.HasPrefix(name, "utun") ||
-			strings.HasPrefix(name, "tun") ||
-			strings.HasPrefix(name, "gnb") ||
-			strings.HasPrefix(name, "wg") {
-			out = append(out, name)
-		}
+	dev := resolveDevice(logical, env.Network.Addresses)
+	if dev == "" {
+		return "", fmt.Errorf("bundle 接口名 %q 解析不到真实设备", logical)
 	}
-	return out
+	return dev, nil
 }
 
 // normalizeBSDDest netstat 的 192.168.8 这种缩写 → 192.168.8.0/24。
