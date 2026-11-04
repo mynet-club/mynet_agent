@@ -26,12 +26,14 @@ func (a *testAuthority) Validate(ctx context.Context, p Plan) error {
 }
 
 type testNode struct {
-	now        uint64
-	fail       string
-	applyCalls int
-	blockCalls int
-	lastBlock  uint64
-	store      Store
+	now          uint64
+	fail         string
+	applyCalls   int
+	blockCalls   int
+	lastBlock    uint64
+	store        Store
+	afterPrepare func()
+	afterVerify  func()
 }
 
 func (n *testNode) evidence(p Plan, i int, state string) Receipt {
@@ -40,6 +42,9 @@ func (n *testNode) evidence(p Plan, i int, state string) Receipt {
 func (n *testNode) Prepare(ctx context.Context, p Plan, i int) (Receipt, error) {
 	if n.fail == "prepare" {
 		return Receipt{}, errors.New("prepare failed")
+	}
+	if n.afterPrepare != nil {
+		n.afterPrepare()
 	}
 	return n.evidence(p, i, "PREPARED"), nil
 }
@@ -64,6 +69,9 @@ func (n *testNode) Apply(ctx context.Context, p Plan, i int, prepared Receipt) (
 	return r, nil
 }
 func (n *testNode) Verify(ctx context.Context, p Plan, i int, applied [2]Receipt) (Receipt, error) {
+	if n.afterVerify != nil {
+		n.afterVerify()
+	}
 	r := n.evidence(p, i, "VERIFIED")
 	r.PeerBootID = applied[1-i].BootID
 	r.Sent = 1
@@ -219,10 +227,10 @@ func TestCoordinatorRechecksRevocationBeforeForwarding(t *testing.T) {
 	c, a, b := testCoordinator(t)
 	c.Authority = &testAuthority{revokeAfter: 2}
 	record, err := c.Run(context.Background(), testPlan())
-	if err == nil || record.Phase != "BLOCKED" {
+	if err == nil || record.Phase != "FAILED" {
 		t.Fatalf("revocation missed %+v %v", record, err)
 	}
-	if a.applyCalls+b.applyCalls != 0 {
+	if a.applyCalls+b.applyCalls+a.blockCalls+b.blockCalls != 0 {
 		t.Fatal("forwarding changed after revocation")
 	}
 }
@@ -285,5 +293,75 @@ func TestCoordinatorReservesGenerationForCompensation(t *testing.T) {
 	}
 	if a.applyCalls+b.applyCalls != 0 {
 		t.Fatal("exhausted generation changed forwarding")
+	}
+}
+
+func TestCoordinatorLatePrepareCannotStartMutationAfterCancellation(t *testing.T) {
+	c, a, b := testCoordinator(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.afterPrepare = cancel
+	record, err := c.Run(ctx, testPlan())
+	if err == nil || record.Phase != "FAILED" {
+		t.Fatalf("late prepare accepted %+v %v", record, err)
+	}
+	if a.applyCalls+b.applyCalls+a.blockCalls+b.blockCalls != 0 {
+		t.Fatal("cancelled read-only preparation mutated path")
+	}
+}
+func TestCoordinatorLateProbeCannotConfirmAfterCancellation(t *testing.T) {
+	c, a, b := testCoordinator(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.afterVerify = cancel
+	record, err := c.Run(ctx, testPlan())
+	if err == nil || record.Phase != "BLOCKED" || record.EffectiveUntil != 0 {
+		t.Fatalf("late confirmation accepted %+v %v", record, err)
+	}
+	if a.applyCalls+b.applyCalls != 2 || a.blockCalls+b.blockCalls != 2 {
+		t.Fatal("cancelled data mutation was not compensated")
+	}
+}
+func TestCoordinatorRevocationAfterFirstApplyCompensatesBothNodes(t *testing.T) {
+	c, a, b := testCoordinator(t)
+	c.Authority = &testAuthority{revokeAfter: 4}
+	record, err := c.Run(context.Background(), testPlan())
+	if err == nil || record.Phase != "BLOCKED" {
+		t.Fatalf("mid-apply revocation missed %+v %v", record, err)
+	}
+	if a.applyCalls+b.applyCalls != 1 || a.blockCalls+b.blockCalls != 2 {
+		t.Fatal("mid-apply failure did not fence both sides")
+	}
+}
+
+type cancelOnConfirmStore struct {
+	Store
+	cancel context.CancelFunc
+}
+
+func (s cancelOnConfirmStore) Save(record Record) error {
+	if err := s.Store.Save(record); err != nil {
+		return err
+	}
+	if record.Phase == "EFFECTIVE" {
+		s.cancel()
+	}
+	return nil
+}
+func TestCoordinatorCancellationDuringDurableConfirmationDoesNotEscape(t *testing.T) {
+	c, a, b := testCoordinator(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Store = cancelOnConfirmStore{Store: c.Store, cancel: cancel}
+	record, err := c.Run(ctx, testPlan())
+	if err == nil || record.Phase != "BLOCKED" || record.EffectiveUntil != 0 {
+		t.Fatalf("late disk confirmation escaped %+v %v", record, err)
+	}
+	if a.blockCalls+b.blockCalls != 2 {
+		t.Fatal("late confirmation was not fenced")
+	}
+	persisted, err := c.Store.Load(testPlan().Scope, testPlan().PairID)
+	if err != nil || persisted.Phase != "BLOCKED" {
+		t.Fatalf("old effective record survived %+v %v", persisted, err)
 	}
 }

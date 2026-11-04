@@ -136,16 +136,28 @@ func (c *Coordinator) now() uint64 {
 	return uint64(t.Unix())
 }
 func (c *Coordinator) authorized(ctx context.Context, p Plan) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.now() == 0 {
 		return errors.New("UTC trusted clock unavailable")
 	}
 	if c.now() >= p.ValidUntil {
 		return errors.New("UTC authorization expired")
 	}
-	return c.Authority.Validate(ctx, p)
+	if err := c.Authority.Validate(ctx, p); err != nil {
+		return err
+	}
+	if c.now() == 0 || c.now() >= p.ValidUntil {
+		return errors.New("UTC authorization expired during validation")
+	}
+	return ctx.Err()
 }
 func (c *Coordinator) receipt(p Plan, side int, r Receipt, state string) error {
 	now := c.now()
+	if state != "BLOCKED" && (now == 0 || now >= p.ValidUntil) {
+		return errors.New("UTC executor evidence authorization expired")
+	}
 	boot, err := hex.DecodeString(r.BootID)
 	if err != nil || len(boot) != 16 || hex.EncodeToString(boot) != r.BootID || r.PID == 0 || r.OperationID != p.OperationID || r.Scope != p.Scope || r.PairID != p.PairID || r.Generation != p.Generation || r.Manifest != p.Manifest || r.NodeID != p.Sides[side].NodeID || r.State != state || r.ObservedAt > now || now-r.ObservedAt > 5 || r.ValidUntil != p.ValidUntil {
 		return errors.New("UTC stale or mismatched executor evidence")
@@ -226,6 +238,11 @@ func (c *Coordinator) Run(ctx context.Context, p Plan) (Record, error) {
 	if err := c.Store.Save(record); err != nil {
 		return record, err
 	}
+	// Preparation is read-only. A cancelled/revoked prepare must not mutate
+	// the previous path merely because its acknowledgements arrived late.
+	if err := c.authorized(ctx, p); err != nil {
+		return c.fail(record, "PREPARE_AUTHORIZATION_EXPIRED")
+	}
 	record.Phase = "APPLYING"
 	if err := c.Store.Save(record); err != nil {
 		return record, err
@@ -289,6 +306,16 @@ func (c *Coordinator) Run(ctx context.Context, p Plan) (Record, error) {
 		record.Phase = "UNCONFIRMED"
 		record.EffectiveUntil = 0
 		return record, err
+	}
+	// Disk confirmation can itself cross the operation deadline or evidence
+	// window. Do not return a success that became invalid during fsync.
+	if err := c.authorized(ctx, p); err != nil {
+		return c.beginCompensation(ctx, record, "CONFIRMATION_INVALIDATED")
+	}
+	for i := range p.Sides {
+		if c.receipt(p, i, record.Applied[i], "APPLIED") != nil || c.receipt(p, i, record.Verified[i], "VERIFIED") != nil {
+			return c.beginCompensation(ctx, record, "CONFIRMATION_EVIDENCE_EXPIRED")
+		}
 	}
 	return record, nil
 }
