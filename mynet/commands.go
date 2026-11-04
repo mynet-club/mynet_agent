@@ -25,7 +25,7 @@ const usage = `mynet — MyNet 执行器（配置工具 + 管理员系统能力�
   apply             应用配置：--active 写驱动投影 · --auto 装 OS 路由/防火墙 · --clear 清理
   service           进程生命周期（start|stop|reload|status <gnb|wireguard>）
   driver            驱动管理（列/装/升）
-  utc               本地 UTC 执行：publish | verify（APPLIED）| driver-run
+  utc               本地 UTC 执行：authority | publish | verify（APPLIED）| driver-run
 
 配置工具:
   setup            --local | --online --tenant T（配置树 v2）

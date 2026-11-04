@@ -16,11 +16,14 @@ import (
 // The launcher replaces itself with GNB: service managers retain the same PID,
 // cgroup, signal delivery and restart ownership. It never calls driver.Start.
 func cmdUTC(args []string) int {
+	if len(args) > 0 && args[0] == "authority" {
+		return cmdUTCAuthority(args[1:])
+	}
 	if len(args) > 0 && (args[0] == "publish" || args[0] == "publish-peer" || args[0] == "history" || args[0] == "verify") {
 		return cmdUTCProjection(args)
 	}
 	if len(args) == 0 || args[0] != "driver-run" {
-		fmt.Fprintln(os.Stderr, "usage: mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
+		fmt.Fprintln(os.Stderr, "usage: mynet utc authority verify|install-floor [options]\n       mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
 		return 2
 	}
 	flags := flag.NewFlagSet("utc driver-run", flag.ContinueOnError)

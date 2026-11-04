@@ -88,7 +88,15 @@ func (s DiskStore) Save(record Record) error {
 	if len(raw) > 131072 {
 		return fmt.Errorf("UTC coordinator journal capacity exceeded")
 	}
-	file, err := os.CreateTemp(s.Directory, ".utc-coordinator-*")
+	return writePrivate(pathForRecord(s, record), raw)
+}
+
+func pathForRecord(s DiskStore, record Record) string {
+	return s.path(record.Plan.Scope, record.Plan.PairID, ".json")
+}
+
+func writePrivate(path string, raw []byte) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".utc-private-*")
 	if err != nil {
 		return err
 	}
@@ -107,10 +115,10 @@ func (s DiskStore) Save(record Record) error {
 	if closeErr != nil {
 		return closeErr
 	}
-	if err := os.Rename(temp, s.path(record.Plan.Scope, record.Plan.PairID, ".json")); err != nil {
+	if err := os.Rename(temp, path); err != nil {
 		return err
 	}
-	for dir := s.Directory; ; dir = filepath.Dir(dir) {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
 		directory, err := os.Open(dir)
 		if err != nil {
 			return err
