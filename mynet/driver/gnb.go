@@ -1,6 +1,7 @@
 package driver
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -614,7 +615,12 @@ const lifecycleLockTimeout = 60 * time.Second
 // 1 次），重叠的 Stop/Start 在同一 confdir 留下两个 gnb —— 一个持 tun、一个 tunless，
 // 且 gnb.pid 记的恰是 tunless 那个。锁跨进程，正是为这一类。
 func (d *GNBDriver) withLifecycle(fn func() error) error {
-	rel, err := d.lockLifecycle()
+	return d.withLifecycleCtx(context.Background(), fn)
+}
+
+// withLifecycleCtx 同 withLifecycle，但锁等待服从调用方预算（截止/取消）。
+func (d *GNBDriver) withLifecycleCtx(ctx context.Context, fn func() error) error {
+	rel, err := d.lockLifecycleCtx(ctx)
 	if err != nil {
 		return err
 	}

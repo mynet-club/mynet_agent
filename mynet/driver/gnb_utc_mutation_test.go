@@ -3,6 +3,7 @@
 package driver
 
 import (
+	"context"
 	"sync"
 	"testing"
 )
@@ -19,7 +20,7 @@ func TestUTCConcurrentPairsMergeWithoutLostNodeUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(peer UTCPeerPolicy) {
 			defer wg.Done()
-			_, err := d.PublishUTCPeer("lab", "node7", 7, peer)
+			_, err := d.PublishUTCPeer(context.Background(), "lab", "node7", 7, peer)
 			errors <- err
 		}(peer)
 	}
@@ -30,7 +31,7 @@ func TestUTCConcurrentPairsMergeWithoutLostNodeUpdates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	projection, err := d.ReadUTCProjection()
+	projection, err := d.ReadUTCProjection(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func TestUTCConcurrentPairsMergeWithoutLostNodeUpdates(t *testing.T) {
 	first.Mode = 0
 	first.ExpiresAt = 0
 	first.Export = ""
-	projectionValue, err := d.PublishUTCPeer("lab", "node7", 7, first)
+	projectionValue, err := d.PublishUTCPeer(context.Background(), "lab", "node7", 7, first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +55,7 @@ func TestUTCConcurrentPairsMergeWithoutLostNodeUpdates(t *testing.T) {
 			t.Fatal("unrelated pair changed")
 		}
 	}
-	retry, err := d.PublishUTCPeer("lab", "node7", 7, first)
+	retry, err := d.PublishUTCPeer(context.Background(), "lab", "node7", 7, first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,20 @@ func TestUTCConcurrentPairsMergeWithoutLostNodeUpdates(t *testing.T) {
 		t.Fatal("idempotent retry minted new generation")
 	}
 	stale := utcProjection().Peers[0]
-	if _, err := d.PublishUTCPeer("lab", "node7", 7, stale); err == nil {
+	if _, err := d.PublishUTCPeer(context.Background(), "lab", "node7", 7, stale); err == nil {
 		t.Fatal("pair rollback accepted")
+	}
+}
+
+func TestPublishUTCPeerSeedsConfigGenerationFromAuthorization(t *testing.T) {
+	d := utcTestDriver(t)
+	peer := utcProjection().Peers[0]
+	peer.PairGen = 2
+	published, err := d.PublishUTCPeer(context.Background(), "lab", "node7", 7, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.ConfigGen != 2 {
+		t.Fatalf("fresh ledger config generation = %d, want 2 from the pair authorization", published.ConfigGen)
 	}
 }

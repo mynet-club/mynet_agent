@@ -45,6 +45,11 @@ type Receipt struct {
 	State       string `json:"state"`
 	Sent        uint64 `json:"sent"`
 	Received    uint64 `json:"received"`
+	// Session-attributed evidence: this operation's own live session advancing,
+	// never instance-cumulative totals claimed as-is.
+	SessionEpoch    uint64 `json:"session_epoch"`
+	SessionSent     uint64 `json:"session_sent"`
+	SessionReceived uint64 `json:"session_received"`
 }
 type Record struct {
 	Plan           Plan       `json:"plan"`
@@ -230,7 +235,7 @@ func (c *Coordinator) Run(ctx context.Context, p Plan) (Record, error) {
 			err = c.receipt(p, i, receipt, "PREPARED")
 		}
 		if err != nil {
-			return c.fail(record, fmt.Sprintf("PREPARE_FAILED_%d", side.NodeID))
+			return c.fail(record, fmt.Sprintf("PREPARE_FAILED_%d: %v", side.NodeID, err))
 		}
 		record.Prepared[i] = receipt
 	}
@@ -259,7 +264,7 @@ func (c *Coordinator) Run(ctx context.Context, p Plan) (Record, error) {
 			err = errors.New("UTC process changed")
 		}
 		if err != nil {
-			return c.beginCompensation(ctx, record, fmt.Sprintf("APPLY_FAILED_%d", side.NodeID))
+			return c.beginCompensation(ctx, record, fmt.Sprintf("APPLY_FAILED_%d: %v", side.NodeID, err))
 		}
 		record.Applied[i] = receipt
 		if err := c.Store.Save(record); err != nil {
@@ -282,7 +287,7 @@ func (c *Coordinator) Run(ctx context.Context, p Plan) (Record, error) {
 			err = errors.New("UTC path verification mismatch")
 		}
 		if err != nil {
-			return c.beginCompensation(ctx, record, fmt.Sprintf("VERIFY_FAILED_%d", side.NodeID))
+			return c.beginCompensation(ctx, record, fmt.Sprintf("VERIFY_FAILED_%d: %v", side.NodeID, err))
 		}
 		record.Verified[i] = receipt
 	}

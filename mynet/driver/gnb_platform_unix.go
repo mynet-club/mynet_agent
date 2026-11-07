@@ -3,6 +3,7 @@
 package driver
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,11 @@ func (d *GNBDriver) pidKill9OS(pid int) error {
 // 用 flock 而不是锁文件存在性：进程被 kill -9 时内核自动释放，不会留下永久死锁。
 // 非阻塞轮询 + 截止时间 —— 等不到就报错，绝不硬闯（重叠正是要防的）。
 func (d *GNBDriver) lockLifecycle() (func(), error) {
+	return d.lockLifecycleCtx(context.Background())
+}
+
+// lockLifecycleCtx 同 lockLifecycle，但锁等待服从调用方预算（截止/取消）。
+func (d *GNBDriver) lockLifecycleCtx(ctx context.Context) (func(), error) {
 	if d.ConfDir == "" {
 		return func() {}, nil
 	}
@@ -71,12 +77,23 @@ func (d *GNBDriver) lockLifecycle() (func(), error) {
 		return nil, fmt.Errorf("gnb 生命周期锁: %w", err)
 	}
 	deadline := time.Now().Add(lifecycleLockTimeout)
+	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+		deadline = end
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("gnb 生命周期锁: %w", err)
+		}
 		if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err == nil {
 			return func() {
 				_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
 				_ = f.Close()
 			}, nil
+		}
+		if ctx.Err() != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("gnb 生命周期锁: %w", ctx.Err())
 		}
 		if time.Now().After(deadline) {
 			_ = f.Close()

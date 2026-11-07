@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -32,6 +33,16 @@ type UTCPeerPolicy struct {
 	Export    string `json:"export"` // numeric IP:port, no hostname/zone lookup
 	ScopeID   uint32 `json:"scope_id"`
 	Manifest  string `json:"manifest"` // common manifest SHA-256, canonical hex
+}
+
+// Peer returns the current policy for a peer id when the projection carries it.
+func (p *UTCProjection) Peer(peerID uint64) (UTCPeerPolicy, bool) {
+	for _, entry := range p.Peers {
+		if entry.PeerID == peerID {
+			return entry, true
+		}
+	}
+	return UTCPeerPolicy{}, false
 }
 
 func utcToken(s string) bool {
@@ -59,40 +70,155 @@ func (p UTCProjection) canonical() ([]byte, error) {
 			return nil, fmt.Errorf("invalid or duplicate UTC peer/pair")
 		}
 		pairs[peer.PairID] = true
-		digest, err := hex.DecodeString(peer.Manifest)
-		if err != nil || len(digest) != 32 || hex.EncodeToString(digest) != peer.Manifest {
-			return nil, fmt.Errorf("invalid UTC manifest digest")
+		row, err := peer.row()
+		if err != nil {
+			return nil, err
 		}
-		family, port := 0, uint16(0)
-		var address [16]byte
-		switch peer.Mode {
-		case 0:
-			if peer.Export != "" || peer.ExpiresAt != 0 || peer.ScopeID != 0 {
-				return nil, fmt.Errorf("direct projection has export fields")
-			}
-		case 1:
-			endpoint, err := netip.ParseAddrPort(peer.Export)
-			if err != nil || endpoint.Port() == 0 || endpoint.Addr().Zone() != "" || endpoint.Addr().Is4In6() || peer.ExpiresAt == 0 {
-				return nil, fmt.Errorf("invalid UTC export")
-			}
-			port = endpoint.Port()
-			if endpoint.Addr().Is4() {
-				family = 4
-				v := endpoint.Addr().As4()
-				copy(address[:4], v[:])
-				if peer.ScopeID != 0 {
-					return nil, fmt.Errorf("IPv4 export has IPv6 scope")
-				}
-			} else {
-				family = 6
-				address = endpoint.Addr().As16()
-			}
-		default:
-			return nil, fmt.Errorf("unsupported UTC mode")
-		}
-		fmt.Fprintf(&b, "peer %d %d %d %d %d %d %x %d %d %s\n", peer.PeerID, peer.PairID, peer.PairGen, peer.Mode, peer.ExpiresAt, family, address, port, peer.ScopeID, peer.Manifest)
+		b.WriteString(row)
+		b.WriteByte('\n')
 	}
 	return []byte(b.String()), nil
+}
+
+// row serializes one peer exactly as canonical() does, validating its fields.
+// It is also the lossless-import baseline: an imported utc.conf row must
+// re-serialize byte-identically.
+func (peer UTCPeerPolicy) row() (string, error) {
+	digest, err := hex.DecodeString(peer.Manifest)
+	if err != nil || len(digest) != 32 || hex.EncodeToString(digest) != peer.Manifest {
+		return "", fmt.Errorf("invalid UTC manifest digest")
+	}
+	family, port := 0, uint16(0)
+	var address [16]byte
+	switch peer.Mode {
+	case 0:
+		if peer.Export != "" || peer.ExpiresAt != 0 || peer.ScopeID != 0 {
+			return "", fmt.Errorf("direct projection has export fields")
+		}
+	case 1:
+		endpoint, err := netip.ParseAddrPort(peer.Export)
+		if err != nil || endpoint.Port() == 0 || endpoint.Addr().Zone() != "" || endpoint.Addr().Is4In6() || peer.ExpiresAt == 0 {
+			return "", fmt.Errorf("invalid UTC export")
+		}
+		port = endpoint.Port()
+		if endpoint.Addr().Is4() {
+			family = 4
+			v := endpoint.Addr().As4()
+			copy(address[:4], v[:])
+			if peer.ScopeID != 0 {
+				return "", fmt.Errorf("IPv4 export has IPv6 scope")
+			}
+		} else {
+			family = 6
+			address = endpoint.Addr().As16()
+		}
+	default:
+		return "", fmt.Errorf("unsupported UTC mode")
+	}
+	return fmt.Sprintf("peer %d %d %d %d %d %d %x %d %d %s",
+		peer.PeerID, peer.PairID, peer.PairGen, peer.Mode, peer.ExpiresAt,
+		family, address, port, peer.ScopeID, peer.Manifest), nil
+}
+
+func parseUTCPeerRow(fields []string) (UTCPeerPolicy, error) {
+	var entry UTCPeerPolicy
+	var err error
+	if entry.PeerID, err = strconv.ParseUint(fields[1], 10, 64); err != nil {
+		return entry, err
+	}
+	if entry.PairID, err = strconv.ParseUint(fields[2], 10, 64); err != nil {
+		return entry, err
+	}
+	if entry.PairGen, err = strconv.ParseUint(fields[3], 10, 64); err != nil {
+		return entry, err
+	}
+	mode, err := strconv.ParseUint(fields[4], 10, 8)
+	if err != nil {
+		return entry, err
+	}
+	entry.Mode = uint8(mode)
+	if entry.ExpiresAt, err = strconv.ParseUint(fields[5], 10, 64); err != nil {
+		return entry, err
+	}
+	family, err := strconv.ParseUint(fields[6], 10, 8)
+	if err != nil {
+		return entry, err
+	}
+	address, err := hex.DecodeString(fields[7])
+	if err != nil || len(address) != 16 {
+		return entry, fmt.Errorf("invalid UTC export address")
+	}
+	port, err := strconv.ParseUint(fields[8], 10, 16)
+	if err != nil {
+		return entry, err
+	}
+	scopeID, err := strconv.ParseUint(fields[9], 10, 32)
+	if err != nil {
+		return entry, err
+	}
+	entry.ScopeID = uint32(scopeID)
+	entry.Manifest = fields[10]
+	switch {
+	case entry.Mode == 0 && family == 0 && port == 0 && entry.ExpiresAt == 0 && entry.ScopeID == 0 &&
+		fields[7] == strings.Repeat("0", 32):
+	case entry.Mode == 1 && (family == 4 || family == 6) && port != 0 && entry.ExpiresAt != 0:
+		var raw [16]byte
+		copy(raw[:], address)
+		addr := netip.AddrFrom16(raw)
+		if family == 4 {
+			addr = netip.AddrFrom4([4]byte{raw[0], raw[1], raw[2], raw[3]})
+		}
+		entry.Export = netip.AddrPortFrom(addr, uint16(port)).String()
+	default:
+		return entry, fmt.Errorf("unsupported UTC mode")
+	}
+	return entry, nil
+}
+
+// parseUTCConf strictly imports an existing utc.conf so a first publish can
+// carry every peer it does not own. Each row must round-trip byte-identically
+// through the canonical formatter; anything unrecognised makes the whole file
+// unadoptable and the publish must refuse instead of dropping rows.
+func parseUTCConf(text string) (UTCProjection, error) {
+	var projection UTCProjection
+	lines := strings.Split(text, "\n")
+	header := strings.Fields(lines[0])
+	if len(header) != 5 || header[0] != "utc-v1" {
+		return projection, fmt.Errorf("invalid UTC header")
+	}
+	var err error
+	if projection.LocalID, err = strconv.ParseUint(header[3], 10, 64); err != nil {
+		return projection, err
+	}
+	if projection.ConfigGen, err = strconv.ParseUint(header[4], 10, 64); err != nil {
+		return projection, err
+	}
+	projection.Scope, projection.Instance = header[1], header[2]
+	seenPeer, seenPair := map[uint64]bool{}, map[uint64]bool{}
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 11 || fields[0] != "peer" {
+			return projection, fmt.Errorf("unrecognised UTC peer row")
+		}
+		entry, err := parseUTCPeerRow(fields)
+		if err != nil {
+			return projection, err
+		}
+		if entry.PeerID == 0 || entry.PeerID == projection.LocalID || entry.PairID == 0 || entry.PairGen == 0 ||
+			seenPeer[entry.PeerID] || seenPair[entry.PairID] {
+			return projection, fmt.Errorf("invalid or duplicate UTC peer/pair")
+		}
+		seenPeer[entry.PeerID], seenPair[entry.PairID] = true, true
+		row, err := entry.row()
+		if err != nil || row != line {
+			return projection, fmt.Errorf("UTC peer row does not round-trip")
+		}
+		projection.Peers = append(projection.Peers, entry)
+	}
+	return projection, nil
 }
 
 // durableUTCWrite publishes only after file+directory fsync. A failed rename

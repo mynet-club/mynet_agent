@@ -1,6 +1,7 @@
 package mynet
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,9 @@ import (
 func cmdUTC(args []string) int {
 	if len(args) > 0 && args[0] == "authority" {
 		return cmdUTCAuthority(args[1:])
+	}
+	if len(args) > 0 && args[0] == "coordinate" {
+		return cmdUTCCoordinate(args[1:])
 	}
 	if len(args) > 0 && (args[0] == "publish" || args[0] == "publish-peer" || args[0] == "history" || args[0] == "verify") {
 		return cmdUTCProjection(args)
@@ -72,7 +76,7 @@ func cmdUTCProjection(args []string) int {
 	d.ConfDir = *conf
 	d.Binary = *binary
 	if args[0] == "history" {
-		projection, err := d.ReadUTCProjection()
+		projection, err := d.ReadUTCProjection(context.Background())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -110,7 +114,7 @@ func cmdUTCProjection(args []string) int {
 			fmt.Fprintln(os.Stderr, "publish-peer needs one peer and config_gen=0")
 			return 2
 		}
-		projection, err = d.PublishUTCPeer(projection.Scope, projection.Instance, projection.LocalID, projection.Peers[0])
+		projection, err = d.PublishUTCPeer(context.Background(), projection.Scope, projection.Instance, projection.LocalID, projection.Peers[0])
 	} else if args[0] == "publish" {
 		err = d.ApplyUTCProjection(projection)
 	} else {

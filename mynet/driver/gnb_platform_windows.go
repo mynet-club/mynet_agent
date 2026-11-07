@@ -3,6 +3,7 @@
 package driver
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,12 +62,23 @@ func (d *GNBDriver) pidKill9OS(pid int) error { return d.pidKillOS(pid) }
 // ⚠️ 与 unix 的 flock 不同，O_EXCL 锁文件在**持有者被强杀时不会自动消失** —— 所以必须
 // 按内容判陈旧（持有者 pid 已死/内容坏就抢过来），否则一次崩溃就永久卡住后续启停。
 func (d *GNBDriver) lockLifecycle() (func(), error) {
+	return d.lockLifecycleCtx(context.Background())
+}
+
+// lockLifecycleCtx 同 lockLifecycle，但锁等待服从调用方预算（截止/取消）。
+func (d *GNBDriver) lockLifecycleCtx(ctx context.Context) (func(), error) {
 	if d.ConfDir == "" {
 		return func() {}, nil
 	}
 	lockPath := filepath.Join(d.ConfDir, ".gnb-lifecycle.lock")
 	deadline := time.Now().Add(lifecycleLockTimeout)
+	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+		deadline = end
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("gnb 生命周期锁: %w", err)
+		}
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
 			_, _ = fmt.Fprintf(f, "%d", os.Getpid())
@@ -79,6 +91,9 @@ func (d *GNBDriver) lockLifecycle() (func(), error) {
 				_ = os.Remove(lockPath)
 				continue
 			}
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("gnb 生命周期锁: %w", ctx.Err())
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("gnb 生命周期锁等待超时（%s）：另一个启停/重载仍在进行", lockPath)

@@ -55,6 +55,11 @@ const (
 	OpServiceStart      = "service.start"
 	OpServiceStop       = "service.stop"
 	OpServiceReload     = "service.reload"
+
+	// utc.coordinate — restricted UTC pair coordination. The request selects only
+	// action/scope/pair and plan content. Installed binaries, configuration
+	// directories and trust roots are resolved by the executor, never by args.
+	OpUTCCoordinate = "utc.coordinate"
 )
 
 // plugin.proxy.* —— 新线代理插件（取代已下架的 mynet_proxy CLI）。
@@ -107,6 +112,8 @@ func Plan(req Request, nodeID string) ([]string, bool) {
 			argv = append(argv, "--auto")
 		}
 		return argv, true
+	case OpUTCCoordinate:
+		return planUTCCoordinate(req)
 	case OpNodeRefresh, OpNodeUpdate:
 		// ⚠️ 是 refresh-**config**，不是 refresh-nodes。执行器的 refresh 域只有
 		// routes|address|config|keys（mynet/cmd_refresh.go:43-55），此前这里写的
@@ -172,4 +179,28 @@ func Run(ex Executor, req Request, nodeID string) Result {
 		res.Error = err.Error()
 	}
 	return res
+}
+
+// planUTCCoordinate translates the restricted UTC op. Only action, scope, pair
+// and plan content are accepted; install/trust/binary args are never read.
+func planUTCCoordinate(req Request) ([]string, bool) {
+	action := req.Args["action"]
+	argv := []string{"utc", "coordinate", action}
+	switch action {
+	case "run":
+		plan := req.Args["plan_json"]
+		if plan == "" || len(plan) > 131072 {
+			return nil, false
+		}
+		argv = append(argv, "--plan-json", plan)
+	case "resume", "status":
+		scope, pair := req.Args["scope"], req.Args["pair"]
+		if scope == "" || pair == "" {
+			return nil, false
+		}
+		argv = append(argv, "--scope", scope, "--pair", pair)
+	default:
+		return nil, false
+	}
+	return argv, true
 }
