@@ -44,8 +44,7 @@ func sampleReceipt(plan Plan, node uint64, state string) Receipt {
 	}
 }
 
-func TestPlanAndRecord(t *testing.T) {
-	plan := samplePlan(t)
+func TestPlanAndRecord(t *testing.T) {	plan := samplePlan(t)
 	if err := plan.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -134,5 +133,35 @@ func TestRecordReceiptBinding(t *testing.T) {
 	record.EffectiveUntil = plan.ValidUntil + 1
 	if err := record.Validate(); err == nil {
 		t.Fatal("accepted effective window beyond plan validity")
+	}
+}
+
+func TestPlanRejectsNonUnicastExport(t *testing.T) {
+	for _, export := range []string{
+		"0.0.0.0:14001",
+		"[::]:14001",
+		"224.0.0.1:14001",
+		"[ff02::1]:14001",
+	} {
+		plan := Plan{
+			OperationID:    "op-1",
+			Scope:          "scope.test",
+			PairID:         30,
+			PairGen:        2,
+			LeaseEpoch:     7,
+			PlacementEpoch: 3,
+			ValidUntil:     200,
+			Sides: [2]Side{
+				{NodeID: 10, Instance: "a", Export: export},
+				{NodeID: 20, Instance: "b", Export: "127.0.0.1:14002"},
+			},
+		}
+		digested, err := plan.WithDigest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := digested.Validate(); err == nil {
+			t.Fatalf("export %q was accepted", export)
+		}
 	}
 }

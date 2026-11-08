@@ -99,6 +99,7 @@ func (p Plan) Validate() error {
 		endpoint, err := netip.ParseAddrPort(side.Export)
 		if !token(side.Instance) || err != nil || endpoint.Port() == 0 ||
 			endpoint.Addr().Zone() != "" || endpoint.Addr().Is4In6() ||
+			endpoint.Addr().IsUnspecified() || endpoint.Addr().IsMulticast() ||
 			endpoint.Addr().Is4() && side.ScopeID != 0 {
 			return fmt.Errorf("invalid Hub plan side")
 		}
