@@ -97,7 +97,12 @@ func (peer Peer) validate(localID uint64) error {
 					return fmt.Errorf("IPv4 export address is not zero-padded")
 				}
 			}
-		} else if address.Zone() != "" || address.Is4In6() {
+			v4 := address.Unmap()
+			if v4.IsUnspecified() || v4.IsMulticast() {
+				return fmt.Errorf("IPv4 export address is not unicast")
+			}
+		} else if address.Zone() != "" || address.Is4In6() ||
+			address.IsUnspecified() || address.IsMulticast() {
 			return fmt.Errorf("invalid IPv6 export address")
 		}
 	default:

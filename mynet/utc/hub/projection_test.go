@@ -3,9 +3,27 @@ package hub
 import (
 	"bytes"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func hubFixture(env, name string) string {
+	if path := os.Getenv(env); path != "" {
+		return path
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return ""
+	}
+	candidate := filepath.Join(filepath.Dir(file), "..", "..", "..", "..",
+		"mynet_utc", "tests", "fixtures", "hub_v2", name)
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	return ""
+}
 
 func sampleProjection() Projection {
 	address := [16]byte{}
@@ -55,7 +73,7 @@ func TestProjectionCanonicalRoundTrip(t *testing.T) {
 }
 
 func TestProjectionGoldenFixture(t *testing.T) {
-	path := os.Getenv("HUB_V2_FIXTURE")
+	path := hubFixture("HUB_V2_FIXTURE", "projection.txt")
 	if path == "" {
 		t.Skip("HUB_V2_FIXTURE not set")
 	}
@@ -77,7 +95,7 @@ func TestProjectionGoldenFixture(t *testing.T) {
 }
 
 func TestProjectionNegativeFixture(t *testing.T) {
-	path := os.Getenv("HUB_V2_NEGATIVES")
+	path := hubFixture("HUB_V2_NEGATIVES", "negatives.txt")
 	if path == "" {
 		t.Skip("HUB_V2_NEGATIVES not set")
 	}
@@ -86,7 +104,7 @@ func TestProjectionNegativeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := strings.Split(string(raw), "\n\n")
-	if len(cases) < 9 {
+	if len(cases) < 13 {
 		t.Fatalf("negative fixture has %d cases", len(cases))
 	}
 	for index, text := range cases {
