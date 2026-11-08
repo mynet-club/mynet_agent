@@ -24,7 +24,7 @@ func samplePlan(t *testing.T) Plan {
 	return digested
 }
 
-func sampleReceipt(plan Plan, node uint64) Receipt {
+func sampleReceipt(plan Plan, node uint64, state string) Receipt {
 	return Receipt{
 		OperationID:    plan.OperationID,
 		Scope:          plan.Scope,
@@ -37,7 +37,7 @@ func sampleReceipt(plan Plan, node uint64) Receipt {
 		PID:            100,
 		ObservedAt:     150,
 		ValidUntil:     plan.ValidUntil,
-		State:          "VERIFIED",
+		State:          state,
 		ProbeDigest:    "probe",
 		Sent:           10,
 		Received:       10,
@@ -54,12 +54,12 @@ func TestPlanAndRecord(t *testing.T) {
 		Phase:     PhaseEffective,
 		Watermark: plan.PairGen,
 		Applied: [2]Receipt{
-			sampleReceipt(plan, 10),
-			sampleReceipt(plan, 20),
+			sampleReceipt(plan, 10, StateApplied),
+			sampleReceipt(plan, 20, StateApplied),
 		},
 		Verified: [2]Receipt{
-			sampleReceipt(plan, 10),
-			sampleReceipt(plan, 20),
+			sampleReceipt(plan, 10, StateVerified),
+			sampleReceipt(plan, 20, StateVerified),
 		},
 		EffectiveUntil: plan.ValidUntil,
 	}
@@ -79,5 +79,60 @@ func TestPlanAndRecord(t *testing.T) {
 	}
 	if err := (Record{Plan: plan, Phase: PhaseIntent, Watermark: 1}).Validate(); err == nil {
 		t.Fatal("accepted watermark regression")
+	}
+}
+
+func TestRecordReceiptBinding(t *testing.T) {
+	plan := samplePlan(t)
+	makeRecord := func() Record {
+		return Record{
+			Plan:      plan,
+			Phase:     PhaseEffective,
+			Watermark: plan.PairGen,
+			Applied: [2]Receipt{
+				sampleReceipt(plan, 10, StateApplied),
+				sampleReceipt(plan, 20, StateApplied),
+			},
+			Verified: [2]Receipt{
+				sampleReceipt(plan, 10, StateVerified),
+				sampleReceipt(plan, 20, StateVerified),
+			},
+			EffectiveUntil: plan.ValidUntil,
+		}
+	}
+	record := makeRecord()
+	record.Applied[0].NodeID = 99
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted receipt from a node outside the plan sides")
+	}
+	record = makeRecord()
+	record.Applied[0].NodeID = plan.Sides[1].NodeID
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted receipt bound to the wrong side")
+	}
+	record = makeRecord()
+	record.Applied[0].State = StateVerified
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted VERIFIED receipt in the APPLIED slot")
+	}
+	record = makeRecord()
+	record.Verified[0].State = StateApplied
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted APPLIED receipt in the VERIFIED slot")
+	}
+	record = makeRecord()
+	record.Verified[0].Sent = 0
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted VERIFIED receipt without sent counters")
+	}
+	record = makeRecord()
+	record.Verified[1].Received = 0
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted VERIFIED receipt without received counters")
+	}
+	record = makeRecord()
+	record.EffectiveUntil = plan.ValidUntil + 1
+	if err := record.Validate(); err == nil {
+		t.Fatal("accepted effective window beyond plan validity")
 	}
 }

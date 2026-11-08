@@ -20,6 +20,8 @@ const (
 	PhaseBlocked       = "BLOCKED"
 	PhaseBlockExpected = "BLOCK_EXPECTED"
 	PhaseDegraded      = "DEGRADED"
+	StateApplied       = "APPLIED"
+	StateVerified      = "VERIFIED"
 )
 
 type Side struct {
@@ -69,6 +71,11 @@ type Record struct {
 	Reason         string
 }
 
+// digest covers the actionable plan content: scope, pair identity, epochs,
+// validity window and sides. Manifest is excluded as the digest itself.
+// OperationID is excluded because it is the coordinator's operation label,
+// not pair content, and its encoding is a design-deferred item; binding it
+// into the digest would make plans unverifiable when that encoding lands.
 func (p Plan) digest() (string, error) {
 	copyPlan := p
 	copyPlan.Manifest = ""
@@ -126,15 +133,15 @@ func (r Record) Validate() error {
 	if r.Watermark < r.Plan.PairGen {
 		return fmt.Errorf("Hub watermark regresses below plan")
 	}
-	for _, receipt := range []Receipt{r.Applied[0], r.Applied[1], r.Verified[0], r.Verified[1]} {
-		if receipt.OperationID != "" &&
-			(receipt.OperationID != r.Plan.OperationID || receipt.Scope != r.Plan.Scope ||
-				receipt.PairID != r.Plan.PairID || receipt.PairGen != r.Plan.PairGen ||
-				receipt.LeaseEpoch != r.Plan.LeaseEpoch ||
-				receipt.PlacementEpoch != r.Plan.PlacementEpoch ||
-				receipt.BootID == "" || receipt.PID == 0 || receipt.ObservedAt == 0 ||
-				receipt.ValidUntil != r.Plan.ValidUntil || receipt.ProbeDigest == "") {
-			return fmt.Errorf("Hub receipt is not bound to the plan operation")
+	if r.EffectiveUntil != 0 && r.EffectiveUntil > r.Plan.ValidUntil {
+		return fmt.Errorf("Hub effective window exceeds plan validity")
+	}
+	for side := 0; side < 2; side++ {
+		if err := r.receipt(side, r.Applied[side], StateApplied, false); err != nil {
+			return err
+		}
+		if err := r.receipt(side, r.Verified[side], StateVerified, true); err != nil {
+			return err
 		}
 	}
 	if r.Phase == PhaseEffective &&
@@ -142,6 +149,23 @@ func (r Record) Validate() error {
 			r.Verified[0].OperationID == "" || r.Verified[1].OperationID == "" ||
 			r.EffectiveUntil == 0) {
 		return fmt.Errorf("EFFECTIVE requires both APPLIED and VERIFIED sides")
+	}
+	return nil
+}
+
+func (r Record) receipt(side int, receipt Receipt, state string, counters bool) error {
+	if receipt.OperationID == "" {
+		return nil
+	}
+	if receipt.OperationID != r.Plan.OperationID || receipt.Scope != r.Plan.Scope ||
+		receipt.PairID != r.Plan.PairID || receipt.PairGen != r.Plan.PairGen ||
+		receipt.LeaseEpoch != r.Plan.LeaseEpoch ||
+		receipt.PlacementEpoch != r.Plan.PlacementEpoch ||
+		receipt.NodeID != r.Plan.Sides[side].NodeID || receipt.State != state ||
+		receipt.BootID == "" || receipt.PID == 0 || receipt.ObservedAt == 0 ||
+		receipt.ValidUntil != r.Plan.ValidUntil || receipt.ProbeDigest == "" ||
+		counters && (receipt.Sent == 0 || receipt.Received == 0) {
+		return fmt.Errorf("Hub receipt is not bound to the plan operation")
 	}
 	return nil
 }

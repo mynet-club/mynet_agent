@@ -76,6 +76,29 @@ func TestProjectionGoldenFixture(t *testing.T) {
 	}
 }
 
+func TestProjectionNegativeFixture(t *testing.T) {
+	path := os.Getenv("HUB_V2_NEGATIVES")
+	if path == "" {
+		t.Skip("HUB_V2_NEGATIVES not set")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := strings.Split(string(raw), "\n\n")
+	if len(cases) < 9 {
+		t.Fatalf("negative fixture has %d cases", len(cases))
+	}
+	for index, text := range cases {
+		if text == "" {
+			t.Fatalf("negative fixture case %d is empty", index)
+		}
+		if _, err := Parse([]byte(text)); err == nil {
+			t.Fatalf("negative fixture case %d was accepted: %q", index, text)
+		}
+	}
+}
+
 func TestProjectionRejectsUnsafeRows(t *testing.T) {
 	projection := sampleProjection()
 	raw, err := projection.Canonical()
