@@ -97,8 +97,21 @@ func (peer Peer) validate(localID uint64) error {
 					return fmt.Errorf("IPv4 export address is not zero-padded")
 				}
 			}
+			// Same categories the plan validator refuses, so a projection can
+			// never carry an endpoint the plan itself would reject.
+			if peer.Address[12] == 0 && peer.Address[13] == 0 &&
+				peer.Address[14] == 0 && peer.Address[15] == 0 {
+				return fmt.Errorf("IPv4 export address is unspecified")
+			}
+			if peer.Address[12]&0xf0 == 0xe0 {
+				return fmt.Errorf("IPv4 export address is multicast")
+			}
 		} else if address.Zone() != "" || address.Is4In6() {
 			return fmt.Errorf("invalid IPv6 export address")
+		} else if peer.Address[0] == 0xff {
+			return fmt.Errorf("IPv6 export address is multicast")
+		} else if peer.Address == [16]byte{} {
+			return fmt.Errorf("IPv6 export address is unspecified")
 		}
 	default:
 		return fmt.Errorf("unsupported Hub mode")

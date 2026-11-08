@@ -3,9 +3,18 @@ package hub
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func fixturePath(env, name string) string {
+	if path := os.Getenv(env); path != "" {
+		return path
+	}
+	return filepath.Join("..", "..", "..", "..", "mynet_utc", "tests",
+		"fixtures", "hub_v2", name)
+}
 
 func sampleProjection() Projection {
 	address := [16]byte{}
@@ -55,13 +64,11 @@ func TestProjectionCanonicalRoundTrip(t *testing.T) {
 }
 
 func TestProjectionGoldenFixture(t *testing.T) {
-	path := os.Getenv("HUB_V2_FIXTURE")
-	if path == "" {
-		t.Skip("HUB_V2_FIXTURE not set")
-	}
+	path := fixturePath("HUB_V2_FIXTURE", "projection.txt")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("cross-language fixture is required at %s "+
+			"(set HUB_V2_FIXTURE or keep the sibling UTC worktree): %v", path, err)
 	}
 	projection, err := Parse(raw)
 	if err != nil {
@@ -77,16 +84,14 @@ func TestProjectionGoldenFixture(t *testing.T) {
 }
 
 func TestProjectionNegativeFixture(t *testing.T) {
-	path := os.Getenv("HUB_V2_NEGATIVES")
-	if path == "" {
-		t.Skip("HUB_V2_NEGATIVES not set")
-	}
+	path := fixturePath("HUB_V2_NEGATIVES", "negatives.txt")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("cross-language fixture is required at %s "+
+			"(set HUB_V2_NEGATIVES or keep the sibling UTC worktree): %v", path, err)
 	}
 	cases := strings.Split(string(raw), "\n\n")
-	if len(cases) < 9 {
+	if len(cases) < 13 {
 		t.Fatalf("negative fixture has %d cases", len(cases))
 	}
 	for index, text := range cases {
@@ -130,5 +135,25 @@ func TestProjectionRejectsUnsafeRows(t *testing.T) {
 	bad.Capabilities = 4
 	if _, err := bad.Canonical(); err == nil {
 		t.Fatal("accepted unknown capability")
+	}
+}
+
+func TestProjectionRejectsUnusableExportAddresses(t *testing.T) {
+	cases := map[string]struct {
+		family  uint8
+		address [16]byte
+	}{
+		"ipv4 unspecified": {4, [16]byte{10: 0xff, 11: 0xff}},
+		"ipv4 multicast":   {4, [16]byte{10: 0xff, 11: 0xff, 12: 224}},
+		"ipv6 unspecified": {6, [16]byte{}},
+		"ipv6 multicast":   {6, [16]byte{0: 0xff, 1: 0x02, 15: 1}},
+	}
+	for name, test := range cases {
+		projection := sampleProjection()
+		projection.Peers[0].Family = test.family
+		projection.Peers[0].Address = test.address
+		if _, err := projection.Canonical(); err == nil {
+			t.Fatalf("%s export address was accepted", name)
+		}
 	}
 }
