@@ -44,7 +44,8 @@ func sampleReceipt(plan Plan, node uint64, state string) Receipt {
 	}
 }
 
-func TestPlanAndRecord(t *testing.T) {	plan := samplePlan(t)
+func TestPlanAndRecord(t *testing.T) {
+	plan := samplePlan(t)
 	if err := plan.Validate(); err != nil {
 		t.Fatal(err)
 	}
