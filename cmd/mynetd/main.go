@@ -243,6 +243,13 @@ func runAgent(ctx context.Context) {
 		return
 	}
 
+	// UTC Hub 常驻运行时：仅当本地安装了 conf/utc/hub.json 时启动。
+	// 常驻续约不能放进 60s 执行器命令，也不另建守护进程；--once 是只读探针，
+	// 不在其中发布投影。
+	if !*flagOnce {
+		startUTCHub(ctx)
+	}
+
 	// S3-1：心跳组装 + 命令分派 + WS 长连接。
 	// ops 用 selectExecutor()（直接给 stdout 字符串），省掉在 beat 里再拆 map。
 	// ⚠️ 这里只**创建**不启动 —— 启动放在下面节点面客户端装配完之后，
