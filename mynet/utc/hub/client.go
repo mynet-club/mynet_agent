@@ -26,7 +26,23 @@ const (
 	controlShardTLV          = 5
 	controlReactorTLV        = 6
 	controlBindingTLV        = 7
+	controlDesiredEnabledTLV = 8
+	controlDesiredRevTLV     = 9
+	controlDesiredDigestTLV  = 10
+	controlAccelerateTLV     = 11
+	controlOperationIDTLV    = 12
 )
+
+// Desired is the optional Hub-issued acceleration state carried as trailing
+// TLVs 8..12 (ADR-0010). A nil pointer means the Hub did not send desired
+// state; callers must keep their current behavior rather than infer false.
+type Desired struct {
+	Enabled       bool
+	Revision      uint64
+	BindingDigest [32]byte
+	Accelerate    bool
+	OperationID   [16]byte
+}
 
 var reasonNames = map[uint16]string{
 	0: "OK", 1: "BUSY", 2: "ALREADY_ACTIVE", 3: "NO_PERMIT", 4: "NOT_BEFORE",
@@ -119,6 +135,7 @@ type Response struct {
 	Placement Placement
 	Grant     Grant
 	Binding   Binding
+	Desired   *Desired
 	Verified  bool
 }
 
@@ -319,8 +336,8 @@ func (c *Client) decodeResponse(payload []byte, request Request) (Response, erro
 		}
 		return response, &ReasonError{Reason: response.Reason}
 	}
-	if len(entries) != 7 {
-		return response, fmt.Errorf("utc-hub success reply has %d fields, want 7", len(entries))
+	if len(entries) != 7 && len(entries) != 12 {
+		return response, fmt.Errorf("utc-hub success reply has %d fields, want 7 or 12", len(entries))
 	}
 	want := []uint16{
 		controlGrantTLV, controlPlacementEpochTLV, controlEdgeTLV,
@@ -333,6 +350,45 @@ func (c *Client) decodeResponse(payload []byte, request Request) (Response, erro
 		entries[5].Type != want[4] || len(entries[5].Value) != 4 ||
 		entries[6].Type != want[5] || len(entries[6].Value) != bindingBytes {
 		return response, errors.New("utc-hub success reply layout is invalid")
+	}
+	optional := []struct {
+		typ  uint16
+		size int
+	}{
+		{controlDesiredEnabledTLV, 1},
+		{controlDesiredRevTLV, 8},
+		{controlDesiredDigestTLV, 32},
+		{controlAccelerateTLV, 1},
+		{controlOperationIDTLV, 16},
+	}
+	for index := 7; index < len(entries); index++ {
+		slot := optional[index-7]
+		if entries[index].Type != slot.typ || len(entries[index].Value) != slot.size {
+			return response, errors.New("utc-hub desired tail layout is invalid")
+		}
+	}
+	if len(entries) == 12 {
+		desired := &Desired{}
+		offset := 7
+		desired.Enabled = entries[offset].Value[0] == 1
+		if entries[offset].Value[0] > 1 {
+			return response, errors.New("utc-hub desired_enabled is not a boolean")
+		}
+		offset++
+		desired.Revision = binary.BigEndian.Uint64(entries[offset].Value)
+		if desired.Revision == 0 {
+			return response, errors.New("utc-hub desired_revision is zero")
+		}
+		offset++
+		copy(desired.BindingDigest[:], entries[offset].Value)
+		offset++
+		if entries[offset].Value[0] > 1 {
+			return response, errors.New("utc-hub accelerate is not a boolean")
+		}
+		desired.Accelerate = entries[offset].Value[0] == 1
+		offset++
+		copy(desired.OperationID[:], entries[offset].Value)
+		response.Desired = desired
 	}
 	response.Placement = Placement{
 		Epoch:     binary.BigEndian.Uint64(entries[2].Value),

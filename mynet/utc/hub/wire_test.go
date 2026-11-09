@@ -191,6 +191,72 @@ func TestDecodeResponseRejectsMalformedPayloads(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseAcceptsDesiredTail(t *testing.T) {
+	key, publicKey := testKey(t)
+	client := testClient(t, "127.0.0.1:1", publicKey)
+	request := Request{PairID: 30, Side: 0, Mode: controlModeAS, Nonce: 1}
+	reply := testReplyFor(t, key, 1, 1, 1, 1, "10.0.0.1", 19620)
+	valid := successPayload(t, key, reply)
+	entries, err := parseTLVs(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := bytes.Repeat([]byte{0xab}, 32)
+	operation := bytes.Repeat([]byte{0xcd}, 16)
+	build := func(t *testing.T, tail func(*tlvWriter) error) []byte {
+		t.Helper()
+		writer := newTLVWriter(4096)
+		for _, entry := range entries {
+			if err := writer.add(entry.Type, entry.Value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tail(writer); err != nil {
+			t.Fatal(err)
+		}
+		return writer.buffer
+	}
+	tail := func(writer *tlvWriter) error {
+		for _, err := range []error{
+			writer.addU8(controlDesiredEnabledTLV, 1),
+			writer.addU64(controlDesiredRevTLV, 7),
+			writer.add(controlDesiredDigestTLV, digest),
+			writer.addU8(controlAccelerateTLV, 1),
+			writer.add(controlOperationIDTLV, operation),
+		} {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	response, err := client.decodeResponse(build(t, tail), request)
+	if err != nil {
+		t.Fatalf("desired tail rejected: %v", err)
+	}
+	if response.Desired == nil || !response.Desired.Enabled ||
+		response.Desired.Revision != 7 || !response.Desired.Accelerate ||
+		!bytes.Equal(response.Desired.BindingDigest[:], digest) ||
+		!bytes.Equal(response.Desired.OperationID[:], operation) {
+		t.Fatalf("desired tail decoded incorrectly: %+v", response.Desired)
+	}
+
+	short := func(writer *tlvWriter) error {
+		for _, err := range []error{
+			writer.addU8(controlDesiredEnabledTLV, 1),
+			writer.addU64(controlDesiredRevTLV, 7),
+		} {
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if _, err := client.decodeResponse(build(t, short), request); err == nil {
+		t.Fatal("partial desired tail was accepted")
+	}
+}
+
 func TestRejectsWrongReplyStream(t *testing.T) {
 	key, publicKey := testKey(t)
 	payload := successPayload(t, key, testReplyFor(t, key, 1, 1, 1, 1, "10.0.0.1", 19620))
