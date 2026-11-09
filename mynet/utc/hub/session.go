@@ -247,19 +247,21 @@ func (outcome Outcome) Prior() Prior {
 // and the binding digest (equal to the grant's target_binding_digest) is the
 // per-peer manifest. Both generation values are taken from the grant.
 func BuildProjection(identity Identity, response Response) (Projection, []byte, error) {
-	var zero Projection
-	grant, binding := response.Grant, response.Binding
-	if grant.Scope != identity.Scope {
-		return zero, nil, errors.New("projection scope does not match the grant")
-	}
-	if binding.Kind != bindingKindAS {
-		return zero, nil, errors.New("projection requires an A-S export binding")
-	}
-	address, family, err := exportAddress(binding)
+	peer, err := buildASPeer(identity, identity.PeerID, response)
 	if err != nil {
-		return zero, nil, err
+		return Projection{}, nil, err
 	}
-	projection := Projection{
+	projection := projectionHeader(identity)
+	projection.Peers = []Peer{peer}
+	text, err := projection.Canonical()
+	if err != nil {
+		return Projection{}, nil, err
+	}
+	return projection, text, nil
+}
+
+func projectionHeader(identity Identity) Projection {
+	return Projection{
 		Scope:        identity.Scope,
 		Instance:     identity.Instance,
 		LocalID:      identity.LocalID,
@@ -267,26 +269,37 @@ func BuildProjection(identity Identity, response Response) (Projection, []byte, 
 		BootID:       identity.BootID,
 		PID:          identity.PID,
 		Capabilities: identity.Capabilities,
-		Peers: []Peer{{
-			PeerID:         identity.PeerID,
-			PairID:         grant.PairID,
-			PairGen:        grant.PairGen,
-			Mode:           1,
-			LeaseEpoch:     grant.LeaseEpoch,
-			PlacementEpoch: grant.PlacementEpoch,
-			ExpiresAt:      grant.ValidUntil,
-			Family:         family,
-			Address:        address,
-			Port:           binding.Port,
-			ScopeID:        binding.AddressScopeID,
-			Manifest:       hex.EncodeToString(grant.TargetBindingDigest[:]),
-		}},
 	}
-	text, err := projection.Canonical()
+}
+
+// buildASPeer maps one accepted reply onto a peer row. Every value comes from
+// the signed grant/binding; nothing is re-signed or invented.
+func buildASPeer(identity Identity, peerID uint64, response Response) (Peer, error) {
+	grant, binding := response.Grant, response.Binding
+	if grant.Scope != identity.Scope {
+		return Peer{}, errors.New("projection scope does not match the grant")
+	}
+	if binding.Kind != bindingKindAS {
+		return Peer{}, errors.New("projection requires an A-S export binding")
+	}
+	address, family, err := exportAddress(binding)
 	if err != nil {
-		return zero, nil, err
+		return Peer{}, err
 	}
-	return projection, text, nil
+	return Peer{
+		PeerID:         peerID,
+		PairID:         grant.PairID,
+		PairGen:        grant.PairGen,
+		Mode:           1,
+		LeaseEpoch:     grant.LeaseEpoch,
+		PlacementEpoch: grant.PlacementEpoch,
+		ExpiresAt:      grant.ValidUntil,
+		Family:         family,
+		Address:        address,
+		Port:           binding.Port,
+		ScopeID:        binding.AddressScopeID,
+		Manifest:       hex.EncodeToString(grant.TargetBindingDigest[:]),
+	}, nil
 }
 
 func exportAddress(binding Binding) ([16]byte, uint8, error) {

@@ -46,6 +46,29 @@ func TestLoadConfigAcceptsMinimalWiring(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsDeferredIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.json")
+	identity := []byte(`"boot_id": "` + testBoot + `", "pid": 123,`)
+	deferred := []byte(`"boot_id": "", "pid": 0,`)
+	if err := os.WriteFile(path, bytes.Replace(validConfigJSON(t), identity, deferred, 1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	config, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Identity.BootID != "" || config.Identity.PID != 0 {
+		t.Fatalf("deferred identity = %+v", config.Identity)
+	}
+	malformed := []byte(`"boot_id": "not-a-boot-id", "pid": 123,`)
+	if err := os.WriteFile(path, bytes.Replace(validConfigJSON(t), identity, malformed, 1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("malformed boot_id was accepted")
+	}
+}
+
 func TestLoadConfigRejectsUnknownFieldAndWritableGroup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hub.json")
 	body := append(validConfigJSON(t), []byte("\n")...)

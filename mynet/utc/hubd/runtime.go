@@ -34,7 +34,6 @@ type Runtime struct {
 	grantValidUntil    uint64
 	publishedExpiresAt uint64
 	configGen          uint64
-	managed            bool
 	verified           *Verified
 	file               projectionState
 }
@@ -163,7 +162,6 @@ func (r *Runtime) load() error {
 	r.prior = hub.Prior{}
 	r.grantValidUntil = 0
 	r.publishedExpiresAt = 0
-	r.managed = false
 	r.verified = nil
 	r.file = projectionState{}
 
@@ -180,6 +178,19 @@ func (r *Runtime) load() error {
 		}
 	}
 
+	// Prefer the GNB-written identity: hub.json may leave boot/PID empty
+	// because they change on every GNB start. A malformed or foreign file is
+	// never papered over with a stale status header.
+	identityFromFile := false
+	bootID, pid, err := readIdentityFile(r.identityPath(), r.cfg.Identity.LocalID)
+	switch {
+	case err == nil:
+		r.identity.BootID, r.identity.PID = bootID, pid
+		identityFromFile = true
+	case !os.IsNotExist(err):
+		return permanent(fmt.Errorf("utc.identity: %w", err))
+	}
+
 	statusRaw, statusErr := readStatusFile(r.cfg.StatusPath)
 	statusExists := statusErr == nil
 	if statusExists {
@@ -192,13 +203,18 @@ func (r *Runtime) load() error {
 			snapshot.Header.LocalID != r.identity.LocalID {
 			return permanent(errors.New("utc.status belongs to another scope/instance"))
 		}
-		r.identity.BootID = snapshot.Header.BootID
-		r.identity.PID = snapshot.Header.PID
+		if !identityFromFile {
+			r.identity.BootID = snapshot.Header.BootID
+			r.identity.PID = snapshot.Header.PID
+		}
 		if snapshot.Header.ConfigGen > r.configGen {
 			r.configGen = snapshot.Header.ConfigGen
 		}
 	} else if !os.IsNotExist(statusErr) {
 		return permanent(fmt.Errorf("utc.status: %w", statusErr))
+	}
+	if r.identity.BootID == "" || r.identity.PID == 0 {
+		return permanent(errors.New("utc hub identity has no boot id/pid and no utc.identity file"))
 	}
 
 	file, err := inspectProjection(r.confPath(), r.identity, r.cfg.PairID)
@@ -240,8 +256,6 @@ func (r *Runtime) load() error {
 		}
 	}
 
-	r.managed = statusExists || file.Exists || summaryExists
-
 	verified, err := loadVerified(r.cfg.VerifiedPath)
 	switch {
 	case err == nil:
@@ -271,29 +285,38 @@ func (r *Runtime) load() error {
 }
 
 // refreshIdentity re-binds boot/PID/config_gen to the current GNB process.
-// GNB restarts rotate boot/PID while the summary pair generation stays valid;
-// keeping the old header would make every APPLIED check fail.
-func (r *Runtime) refreshIdentity() {
-	raw, err := readStatusFile(r.cfg.StatusPath)
-	if err != nil {
-		return
+// utc.identity is authoritative when the GNB publishes it; utc.status remains
+// the fallback for GNB builds that predate the file. A malformed identity file
+// fails the cycle: publishing against a header the GNB never wrote would be a
+// silent no-op the dataplane never applies.
+func (r *Runtime) refreshIdentity() error {
+	bootID, pid, identityErr := readIdentityFile(r.identityPath(), r.cfg.Identity.LocalID)
+	haveIdentity := identityErr == nil
+	if haveIdentity {
+		r.identity.BootID, r.identity.PID = bootID, pid
+	} else if !os.IsNotExist(identityErr) {
+		return fmt.Errorf("utc.identity: %w", identityErr)
 	}
-	snapshot, err := parseStatus(raw)
-	if err != nil {
-		return
+	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
+		if snapshot, err := parseStatus(raw); err == nil &&
+			snapshot.Header.Scope == r.cfg.Scope &&
+			snapshot.Header.Instance == r.identity.Instance &&
+			snapshot.Header.LocalID == r.identity.LocalID {
+			if !haveIdentity {
+				r.identity.BootID = snapshot.Header.BootID
+				r.identity.PID = snapshot.Header.PID
+			}
+			if snapshot.Header.ConfigGen > r.configGen {
+				r.configGen = snapshot.Header.ConfigGen
+			}
+		}
 	}
-	if snapshot.Header.Scope != r.cfg.Scope ||
-		snapshot.Header.Instance != r.identity.Instance ||
-		snapshot.Header.LocalID != r.identity.LocalID {
-		return
-	}
-	r.identity.BootID = snapshot.Header.BootID
-	r.identity.PID = snapshot.Header.PID
-	if snapshot.Header.ConfigGen > r.configGen {
-		r.configGen = snapshot.Header.ConfigGen
+	if r.identity.BootID == "" || r.identity.PID == 0 {
+		return errors.New("utc hub identity has no usable boot id/pid")
 	}
 	r.identity.ConfigGen = r.configGen
 	r.session.Identity = r.identity
+	return nil
 }
 
 func (r *Runtime) validateSummary(summary hub.Summary) error {
@@ -311,7 +334,9 @@ func (r *Runtime) validateSummary(summary hub.Summary) error {
 // step performs exactly one control exchange plus its durable publish and
 // APPLIED verification. It is single-flight by construction.
 func (r *Runtime) step(ctx context.Context) error {
-	r.refreshIdentity()
+	if err := r.refreshIdentity(); err != nil {
+		return err
+	}
 	now := r.Now()
 	var outcome hub.Outcome
 	var err error
@@ -380,7 +405,13 @@ func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now time.Time) error {
 	verifiedPrior := r.verified != nil && r.verified.Prior() == r.prior &&
 		r.verified.ConfigGen == r.configGen
-	writeNeeded := outcome.Changed || !verifiedPrior || !r.file.Exists
+	// A same-generation renewal keeps pair_gen and both epochs, so Outcome
+	// reports Changed=false. The state-v2 consumer still accepts it when only
+	// the expiry moves forward; republish so the dataplane deadline tracks the
+	// renewed grant instead of waiting for the old deadline to force a rotate.
+	renewalExtended := !outcome.Changed && r.file.Exists &&
+		outcome.Summary.ValidUntil > r.publishedExpiresAt
+	writeNeeded := outcome.Changed || renewalExtended || !verifiedPrior || !r.file.Exists
 	if writeNeeded {
 		matches, err := r.fileMatches(outcome.Text)
 		if err != nil {
@@ -388,9 +419,10 @@ func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now t
 		}
 		if !matches {
 			nextGen := r.configGen
-			// A GNB that ever consumed a projection owns its config_gen
-			// high water; same-generation content changes need a bump.
-			if r.file.Exists || r.managed {
+			// The first projection may use the configured generation. Once a
+			// projection file exists the dataplane owns its high water, so
+			// every rewrite must strictly advance it.
+			if r.file.Exists {
 				nextGen++
 			}
 			if nextGen == 0 {
@@ -417,7 +449,6 @@ func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now t
 			return err
 		}
 		r.file = file
-		r.managed = true
 		r.publishedExpiresAt = outcome.Projection.Peers[0].ExpiresAt
 	} else if err := r.writeSummary(outcome); err != nil {
 		return err
@@ -533,8 +564,9 @@ func (r *Runtime) waitApplied(ctx context.Context, pairGen uint64) error {
 }
 
 // nextDelay targets the earlier of the grant renewal window and the expiry
-// actually published to GNB. The latter matters because same-generation
-// renewals do not republish a later deadline; at expiry the pair must rotate.
+// published to GNB. Renewals normally republish the later deadline; the
+// published expiry stays as a safety net so a renewal that cannot be published
+// falls back to rotating at the deadline already known to the dataplane.
 func (r *Runtime) nextDelay() time.Duration {
 	if r.grantValidUntil == 0 {
 		return r.cfg.RetryMin

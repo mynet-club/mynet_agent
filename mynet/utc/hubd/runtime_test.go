@@ -162,10 +162,9 @@ func TestRuntimeResumesFromSummary(t *testing.T) {
 
 func TestRuntimeSameGenerationRenewalDoesNotRewriteProjection(t *testing.T) {
 	key, _ := testKey(t)
-	config, _ := assignState(t, key)
+	config, assigned := assignState(t, key)
 	before := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
-	later := time.Now().Add(15 * time.Minute).Unix()
-	reply := baseReply(t, key, 1, 1, 1, 2, later)
+	reply := baseReply(t, key, 1, 1, 1, 2, int64(assigned.grant.validUntil))
 	server := newFakeHub(t, func(_ *fakeHub, _ int, request recordedRequest) []byte {
 		if request.u8(1) != 2 {
 			t.Errorf("renew op = %d", request.u8(1))
@@ -188,8 +187,8 @@ func TestRuntimeSameGenerationRenewalDoesNotRewriteProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.ValidUntil != uint64(later) {
-		t.Fatalf("summary valid_until = %d, want %d", summary.ValidUntil, later)
+	if summary.ValidUntil != assigned.grant.validUntil {
+		t.Fatalf("summary valid_until = %d, want %d", summary.ValidUntil, assigned.grant.validUntil)
 	}
 	verified, err := loadVerified(config.VerifiedPath)
 	if err != nil {
@@ -199,9 +198,117 @@ func TestRuntimeSameGenerationRenewalDoesNotRewriteProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified.ValidUntil != projection.Peers[0].ExpiresAt || verified.PairGen != 1 {
+	if verified.ConfigGen != projection.ConfigGen || verified.ValidUntil != projection.Peers[0].ExpiresAt ||
+		verified.PairGen != 1 {
 		t.Fatalf("verified = %+v, applied expiry = %d", verified, projection.Peers[0].ExpiresAt)
 	}
+	if projection.ConfigGen != 5 {
+		t.Fatalf("unchanged renewal bumped config_gen to %d", projection.ConfigGen)
+	}
+}
+
+func TestRuntimeSameGenerationRenewalRepublishesLaterExpiry(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	later := time.Now().Add(50 * time.Minute).Unix()
+	reply := baseReply(t, key, 1, 1, 1, 2, later)
+	server := newFakeHub(t, func(_ *fakeHub, _ int, request recordedRequest) []byte {
+		if request.u8(1) != 2 {
+			t.Errorf("renew op = %d", request.u8(1))
+		}
+		if _, rotated := request.fields[12]; rotated {
+			t.Error("renewal rotated without a block")
+		}
+		writeStatus(t, config.StatusPath, "RUNNING", 6, 1, "APPLIED", "POLICY_LOADED")
+		return successPayload(t, key, reply)
+	})
+	config.HubAddress = server.listener.Addr().String()
+	runtime := newRuntime(t, config)
+	if err := stepOnce(t, runtime); err != nil {
+		t.Fatal(err)
+	}
+	raw := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
+	projection, err := hub.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := projection.Peers[0]
+	if projection.ConfigGen != 6 || peer.PairGen != 1 || peer.LeaseEpoch != 1 ||
+		peer.ExpiresAt != uint64(later) {
+		t.Fatalf("renewed projection gen=%d peer=%+v", projection.ConfigGen, peer)
+	}
+	summary, err := hub.LoadSummary(config.SummaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ConfigGen != 6 || summary.ValidUntil != uint64(later) || summary.PairGen != 1 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	verified, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.ConfigGen != 6 || verified.ValidUntil != uint64(later) ||
+		verified.PairGen != 1 || verified.ProjectionDigest != projectionDigest(raw) {
+		t.Fatalf("verified = %+v", verified)
+	}
+}
+
+func TestRuntimeRepublishedRenewalWaitsForAPPLIED(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	before, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(50 * time.Minute).Unix()
+	reply := baseReply(t, key, 1, 1, 1, 2, later)
+	server := newFakeHub(t, func(_ *fakeHub, index int, _ recordedRequest) []byte {
+		// GNB has not consumed config_gen 6 yet: its status header stays at 5.
+		if index == 0 {
+			writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
+		} else {
+			writeStatus(t, config.StatusPath, "RUNNING", 6, 1, "APPLIED", "POLICY_LOADED")
+		}
+		return successPayload(t, key, reply)
+	})
+	config.HubAddress = server.listener.Addr().String()
+	runtime := newRuntime(t, config)
+	if err := runtime.load(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.step(context.Background()); err == nil {
+		t.Fatal("renewal was accepted without APPLIED for the new config_gen")
+	}
+	after, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("verified watermark advanced before APPLIED: %+v", after)
+	}
+	if raw := readFile(t, filepath.Join(config.ConfDir, "utc.conf")); projectionConfigGen(t, raw) != 6 {
+		t.Fatalf("renewed projection was not published: gen=%d", projectionConfigGen(t, raw))
+	}
+	if err := runtime.step(context.Background()); err != nil {
+		t.Fatalf("retry after GNB applied config_gen 6: %v", err)
+	}
+	applied, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.ConfigGen != 6 || applied.ValidUntil != uint64(later) || applied.PairGen != 1 {
+		t.Fatalf("verified after APPLIED = %+v", applied)
+	}
+}
+
+func projectionConfigGen(t *testing.T, raw []byte) uint64 {
+	t.Helper()
+	projection, err := hub.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projection.ConfigGen
 }
 
 func TestRuntimeRotatesOnRecoveredBlocked(t *testing.T) {

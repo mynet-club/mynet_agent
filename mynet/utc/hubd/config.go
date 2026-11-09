@@ -232,7 +232,17 @@ func (c *Config) validate() error {
 	if c.RenewLead >= c.LeaseTTL {
 		return errors.New("utc hub renew lead must be shorter than the lease TTL")
 	}
-	if err := c.Identity.Validate(); err != nil {
+	// boot_id/pid stay optional: the GNB publishes them to
+	// conf_dir/utc.identity at startup and the runtime binds to that file
+	// before its first exchange. Everything else must be usable now.
+	probe := c.Identity
+	if probe.BootID == "" {
+		probe.BootID = zeroBootID
+	}
+	if probe.PID == 0 {
+		probe.PID = 1
+	}
+	if err := probe.Validate(); err != nil {
 		return fmt.Errorf("utc hub identity: %w", err)
 	}
 	return nil
