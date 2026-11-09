@@ -75,7 +75,7 @@ func TestProjectionCanonicalRoundTrip(t *testing.T) {
 func TestProjectionGoldenFixture(t *testing.T) {
 	path := hubFixture("HUB_V2_FIXTURE", "projection.txt")
 	if path == "" {
-		t.Skip("HUB_V2_FIXTURE not set")
+		t.Fatal("cross-language fixture is required (set HUB_V2_FIXTURE or keep the sibling UTC worktree)")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -97,7 +97,7 @@ func TestProjectionGoldenFixture(t *testing.T) {
 func TestProjectionNegativeFixture(t *testing.T) {
 	path := hubFixture("HUB_V2_NEGATIVES", "negatives.txt")
 	if path == "" {
-		t.Skip("HUB_V2_NEGATIVES not set")
+		t.Fatal("cross-language fixture is required (set HUB_V2_NEGATIVES or keep the sibling UTC worktree)")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -148,5 +148,25 @@ func TestProjectionRejectsUnsafeRows(t *testing.T) {
 	bad.Capabilities = 4
 	if _, err := bad.Canonical(); err == nil {
 		t.Fatal("accepted unknown capability")
+	}
+}
+
+func TestProjectionRejectsUnusableExportAddresses(t *testing.T) {
+	cases := map[string]struct {
+		family  uint8
+		address [16]byte
+	}{
+		"ipv4 unspecified": {4, [16]byte{10: 0xff, 11: 0xff}},
+		"ipv4 multicast":   {4, [16]byte{10: 0xff, 11: 0xff, 12: 224}},
+		"ipv6 unspecified": {6, [16]byte{}},
+		"ipv6 multicast":   {6, [16]byte{0: 0xff, 1: 0x02, 15: 1}},
+	}
+	for name, test := range cases {
+		projection := sampleProjection()
+		projection.Peers[0].Family = test.family
+		projection.Peers[0].Address = test.address
+		if _, err := projection.Canonical(); err == nil {
+			t.Fatalf("%s export address was accepted", name)
+		}
 	}
 }
