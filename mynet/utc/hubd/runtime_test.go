@@ -22,16 +22,18 @@ func coreConfig(t *testing.T, address string, public ed25519.PublicKey) Config {
 		HubAddress: address, Scope: testScope, TransportID: testTransport,
 		AccountID: testAccount, IssuerPublicKey: public,
 		Identity: hub.Identity{
-			Scope: testScope, Instance: "instance-a", LocalID: testLocalID, PeerID: testPeerID,
+			Scope: testScope, Instance: "instance-a", LocalID: testLocalID,
 			BootID: testBoot, PID: 123,
 			Capabilities: hub.CapabilityEpoch | hub.CapabilityExplicitActivate,
 			ConfigGen:    5,
 		},
-		PairID: testPairID, Side: 0, Mode: 1,
+		Pairs: []PairConfig{{
+			PairID: testPairID, PeerID: testPeerID, Side: 0, Mode: hub.PeerModeAS,
+			SummaryPath:  filepath.Join(state, "utc.hub.json"),
+			VerifiedPath: filepath.Join(state, "utc.hub.json.verified"),
+		}},
 		ConfDir: conf, StatusPath: filepath.Join(conf, "utc.status"),
-		SummaryPath:  filepath.Join(state, "utc.hub.json"),
-		VerifiedPath: filepath.Join(state, "utc.hub.json.verified"),
-		LeaseTTL:     3600 * time.Second, RenewLead: 600 * time.Second,
+		LeaseTTL: 3600 * time.Second, RenewLead: 600 * time.Second,
 		JitterMax: 60 * time.Second, StatusPoll: 10 * time.Millisecond,
 		ApplyTimeout: 300 * time.Millisecond, RetryMin: 10 * time.Millisecond,
 		RetryMax: 50 * time.Millisecond, StatusMaxAge: 5 * time.Second,
@@ -113,14 +115,14 @@ func TestRuntimeAssignPublishesAndVerifies(t *testing.T) {
 		peer.PlacementEpoch != 1 || peer.Mode != 1 || peer.ExpiresAt != reply.grant.validUntil {
 		t.Fatalf("projection = %+v peer=%+v", projection, peer)
 	}
-	summary, err := hub.LoadSummary(config.SummaryPath)
+	summary, err := hub.LoadSummary(config.Pairs[0].SummaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summary.PairGen != 1 || summary.ConfigGen != 5 || !summary.SignatureVerified {
 		t.Fatalf("summary = %+v", summary)
 	}
-	verified, err := loadVerified(config.VerifiedPath)
+	verified, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,14 +185,14 @@ func TestRuntimeSameGenerationRenewalDoesNotRewriteProjection(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("same-generation renewal rewrote utc.conf")
 	}
-	summary, err := hub.LoadSummary(config.SummaryPath)
+	summary, err := hub.LoadSummary(config.Pairs[0].SummaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summary.ValidUntil != assigned.grant.validUntil {
 		t.Fatalf("summary valid_until = %d, want %d", summary.ValidUntil, assigned.grant.validUntil)
 	}
-	verified, err := loadVerified(config.VerifiedPath)
+	verified, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,14 +239,14 @@ func TestRuntimeSameGenerationRenewalRepublishesLaterExpiry(t *testing.T) {
 		peer.ExpiresAt != uint64(later) {
 		t.Fatalf("renewed projection gen=%d peer=%+v", projection.ConfigGen, peer)
 	}
-	summary, err := hub.LoadSummary(config.SummaryPath)
+	summary, err := hub.LoadSummary(config.Pairs[0].SummaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summary.ConfigGen != 6 || summary.ValidUntil != uint64(later) || summary.PairGen != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
-	verified, err := loadVerified(config.VerifiedPath)
+	verified, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +259,7 @@ func TestRuntimeSameGenerationRenewalRepublishesLaterExpiry(t *testing.T) {
 func TestRuntimeRepublishedRenewalWaitsForAPPLIED(t *testing.T) {
 	key, _ := testKey(t)
 	config, _ := assignState(t, key)
-	before, err := loadVerified(config.VerifiedPath)
+	before, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +282,7 @@ func TestRuntimeRepublishedRenewalWaitsForAPPLIED(t *testing.T) {
 	if err := runtime.step(context.Background()); err == nil {
 		t.Fatal("renewal was accepted without APPLIED for the new config_gen")
 	}
-	after, err := loadVerified(config.VerifiedPath)
+	after, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +295,7 @@ func TestRuntimeRepublishedRenewalWaitsForAPPLIED(t *testing.T) {
 	if err := runtime.step(context.Background()); err != nil {
 		t.Fatalf("retry after GNB applied config_gen 6: %v", err)
 	}
-	applied, err := loadVerified(config.VerifiedPath)
+	applied, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,14 +342,14 @@ func TestRuntimeRotatesOnRecoveredBlocked(t *testing.T) {
 	if projection.ConfigGen != 6 || peer.PairGen != 2 || peer.LeaseEpoch != 2 {
 		t.Fatalf("rotated projection gen=%d peer=%+v", projection.ConfigGen, peer)
 	}
-	summary, err := hub.LoadSummary(config.SummaryPath)
+	summary, err := hub.LoadSummary(config.Pairs[0].SummaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summary.PairGen != 2 || summary.ConfigGen != 6 || summary.RecoveryReason != "RECOVERED_BLOCKED" {
 		t.Fatalf("summary = %+v", summary)
 	}
-	verified, err := loadVerified(config.VerifiedPath)
+	verified, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,8 +398,8 @@ func TestRuntimeHubRefusalDoesNotPublish(t *testing.T) {
 	}
 	for _, path := range []string{
 		filepath.Join(config.ConfDir, "utc.conf"),
-		config.SummaryPath,
-		config.VerifiedPath,
+		config.Pairs[0].SummaryPath,
+		config.Pairs[0].VerifiedPath,
 	} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("refusal wrote %s", path)
@@ -420,10 +422,10 @@ func TestRuntimeStatusNotAppliedIsNotSuccess(t *testing.T) {
 	if err == nil {
 		t.Fatal("BLOCKED status was accepted as success")
 	}
-	if _, statErr := os.Stat(config.VerifiedPath); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(config.Pairs[0].VerifiedPath); !os.IsNotExist(statErr) {
 		t.Fatal("verified watermark written without APPLIED")
 	}
-	if runtime.verified != nil {
+	if runtime.pairs[0].verified != nil {
 		t.Fatal("runtime recorded a verified watermark without APPLIED")
 	}
 }
@@ -453,7 +455,7 @@ func TestRuntimeWriteFailureKeepsOldProjection(t *testing.T) {
 	if !bytes.Equal(old, readFile(t, filepath.Join(config.ConfDir, "utc.conf"))) {
 		t.Fatal("failed publish overwrote the old utc.conf")
 	}
-	if _, statErr := os.Stat(config.VerifiedPath); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(config.Pairs[0].VerifiedPath); !os.IsNotExist(statErr) {
 		t.Fatal("verified watermark written after a failed publish")
 	}
 }
@@ -461,7 +463,7 @@ func TestRuntimeWriteFailureKeepsOldProjection(t *testing.T) {
 func TestRuntimeFailsClosedOnCorruptSummary(t *testing.T) {
 	_, public := testKey(t)
 	config := coreConfig(t, "127.0.0.1:1", public)
-	if err := os.WriteFile(config.SummaryPath, []byte(`{"scope":`), 0600); err != nil {
+	if err := os.WriteFile(config.Pairs[0].SummaryPath, []byte(`{"scope":`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	server := newFakeHub(t, func(*fakeHub, int, recordedRequest) []byte { return nil })
@@ -498,25 +500,27 @@ func TestRuntimeRefreshesIdentityFromStatus(t *testing.T) {
 	runtime := newRuntime(t, config)
 	runtime.refreshIdentity()
 	if runtime.identity.BootID != testBoot || runtime.identity.PID != 123 ||
-		runtime.configGen != 5 || runtime.session.Identity.BootID != testBoot {
+		runtime.configGen != 5 || runtime.pairs[0].session.Identity.BootID != testBoot {
 		t.Fatalf("identity was not refreshed: %+v configGen=%d", runtime.identity, runtime.configGen)
 	}
 }
 
 func TestNextDelayWaitsForPublishedExpiryInsideRenewalWindow(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	runtime := &Runtime{
-		cfg:                Config{RenewLead: 600 * time.Second, RetryMin: time.Second, JitterMax: 60 * time.Second},
-		Now:                func() time.Time { return now },
-		Jitter:             func(time.Duration) time.Duration { return 0 },
+	pair := &pairState{
 		grantValidUntil:    uint64(now.Unix() + 300),
 		publishedExpiresAt: uint64(now.Unix() + 300),
 	}
-	if delay := runtime.nextDelay(); delay != 300*time.Second {
+	runtime := &Runtime{
+		cfg:    Config{RenewLead: 600 * time.Second, RetryMin: time.Second, JitterMax: 60 * time.Second},
+		Now:    func() time.Time { return now },
+		Jitter: func(time.Duration) time.Duration { return 0 },
+	}
+	if delay := runtime.nextDelay(pair); delay != 300*time.Second {
 		t.Fatalf("inside-window delay = %v, want published expiry", delay)
 	}
-	runtime.publishedExpiresAt = uint64(now.Unix() - 1)
-	if delay := runtime.nextDelay(); delay != time.Second {
+	pair.publishedExpiresAt = uint64(now.Unix() - 1)
+	if delay := runtime.nextDelay(pair); delay != time.Second {
 		t.Fatalf("expired delay = %v, want retry floor", delay)
 	}
 }
@@ -604,7 +608,7 @@ func writeProjectionState(t *testing.T, config Config, configGen, pairGen, lease
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(config.SummaryPath, raw, 0600); err != nil {
+	if err := os.WriteFile(config.Pairs[0].SummaryPath, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -625,7 +629,7 @@ func readFile(t *testing.T, path string) []byte {
 func TestRuntimeStaleVerifiedWatermarkSelfHeals(t *testing.T) {
 	key, _ := testKey(t)
 	config, _ := assignState(t, key)
-	stale, err := loadVerified(config.VerifiedPath)
+	stale, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +651,7 @@ func TestRuntimeStaleVerifiedWatermarkSelfHeals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hub.WriteFileAtomic(config.VerifiedPath, staleRaw); err != nil {
+	if err := hub.WriteFileAtomic(config.Pairs[0].VerifiedPath, staleRaw); err != nil {
 		t.Fatal(err)
 	}
 	runtime := newRuntime(t, config)
@@ -657,7 +661,7 @@ func TestRuntimeStaleVerifiedWatermarkSelfHeals(t *testing.T) {
 	if err := runtime.step(context.Background()); err != nil {
 		t.Fatalf("heal step: %v", err)
 	}
-	healed, err := loadVerified(config.VerifiedPath)
+	healed, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}

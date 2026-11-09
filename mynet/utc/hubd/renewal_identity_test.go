@@ -221,7 +221,7 @@ func TestRuntimeRenewalWriteFailureKeepsOldProjection(t *testing.T) {
 	key, _ := testKey(t)
 	config, _ := assignState(t, key)
 	old := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
-	before, err := loadVerified(config.VerifiedPath)
+	before, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestRuntimeRenewalWriteFailureKeepsOldProjection(t *testing.T) {
 	if !bytes.Equal(old, readFile(t, filepath.Join(config.ConfDir, "utc.conf"))) {
 		t.Fatal("failed renewal overwrote the old utc.conf")
 	}
-	after, err := loadVerified(config.VerifiedPath)
+	after, err := loadVerified(config.Pairs[0].VerifiedPath)
 	if err != nil {
 		t.Fatal(err)
 	}

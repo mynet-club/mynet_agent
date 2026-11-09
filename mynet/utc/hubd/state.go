@@ -85,11 +85,11 @@ type projectionState struct {
 	Exists    bool
 	Digest    string
 	ConfigGen uint64
-	PairGen   uint64
-	ExpiresAt uint64
+	// Peers is keyed by pair id. The file is shared by every configured pair.
+	Peers map[uint64]hub.Peer
 }
 
-func inspectProjection(path string, identity hub.Identity, pairID uint64) (projectionState, error) {
+func inspectProjection(path string, identity hub.Identity) (projectionState, error) {
 	var state projectionState
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -113,18 +113,14 @@ func inspectProjection(path string, identity hub.Identity, pairID uint64) (proje
 		projection.LocalID != identity.LocalID {
 		return state, errors.New("utc.conf belongs to another scope/instance")
 	}
-	if len(projection.Peers) != 1 {
-		return state, errors.New("utc.conf is not owned by this single-pair runtime")
-	}
-	peer := projection.Peers[0]
-	if peer.PeerID != identity.PeerID || peer.PairID != pairID {
-		return state, errors.New("utc.conf does not describe the configured pair")
+	peers := make(map[uint64]hub.Peer, len(projection.Peers))
+	for _, peer := range projection.Peers {
+		peers[peer.PairID] = peer
 	}
 	sum := sha256.Sum256(raw)
 	return projectionState{
 		Exists: true, Digest: hex.EncodeToString(sum[:]),
-		ConfigGen: projection.ConfigGen, PairGen: peer.PairGen,
-		ExpiresAt: peer.ExpiresAt,
+		ConfigGen: projection.ConfigGen, Peers: peers,
 	}, nil
 }
 

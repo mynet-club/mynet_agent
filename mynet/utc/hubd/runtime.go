@@ -15,31 +15,41 @@ import (
 	"github.com/mynet-club/mynet_agent/mynet/utc/hub"
 )
 
-// Runtime owns one pair/side. All control exchanges and projection publishes
-// run serially from Run; a second Run on the same state directory is an
-// operator error, not a supported concurrency mode.
+// Runtime owns the node's configured pairs. All control exchanges and
+// projection publishes run serially from Run; a second Run on the same state
+// directory is an operator error, not a supported concurrency mode. One pair
+// failing never rewrites or blocks another pair's accepted row.
 type Runtime struct {
 	cfg      Config
-	session  *hub.Session
 	identity hub.Identity
+	pairs    []*pairState
+
+	configGen  uint64
+	file       projectionState
+	hadSummary bool
 
 	// Now, Jitter and Logf are testability/observability seams. New installs
 	// production defaults.
 	Now    func() time.Time
 	Jitter func(time.Duration) time.Duration
 	Logf   func(format string, args ...any)
+}
+
+// pairState is the durable and in-memory state of one pair/side.
+type pairState struct {
+	cfg      PairConfig
+	identity hub.Identity
+	session  *hub.Session
 
 	started            bool
 	prior              hub.Prior
 	grantValidUntil    uint64
 	publishedExpiresAt uint64
-	configGen          uint64
 	verified           *Verified
-	file               projectionState
-	// hadSummary records that a summary reached disk at the current or an
-	// earlier generation: the GNB may already hold that config_gen as its
-	// high-water mark even when utc.conf is gone, so a rebuild must advance.
-	hadSummary bool
+	lastPeer           *hub.Peer
+
+	nextDue time.Time
+	backoff time.Duration
 }
 
 // New validates the local wiring and dials nothing. Run performs the first
@@ -57,17 +67,28 @@ func New(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{
-		cfg: cfg,
-		session: &hub.Session{
-			Client: client, Identity: cfg.Identity,
-			PairID: cfg.PairID, Side: cfg.Side, Mode: cfg.Mode,
-		},
+	runtime := &Runtime{
+		cfg:       cfg,
 		identity:  cfg.Identity,
 		configGen: cfg.Identity.ConfigGen,
 		Now:       time.Now,
 		Jitter:    defaultJitter,
-	}, nil
+	}
+	for _, pairConfig := range cfg.Pairs {
+		identity := cfg.Identity
+		identity.PeerID = pairConfig.PeerID
+		runtime.pairs = append(runtime.pairs, &pairState{
+			cfg:      pairConfig,
+			identity: identity,
+			session: &hub.Session{
+				Client: client, Identity: identity,
+				PairID: pairConfig.PairID, Side: pairConfig.Side, Mode: pairConfig.Mode,
+				LocalEndpoint: pairConfig.LocalEndpoint,
+			},
+			backoff: cfg.RetryMin,
+		})
+	}
+	return runtime, nil
 }
 
 func defaultJitter(max time.Duration) time.Duration {
@@ -81,9 +102,9 @@ func defaultJitter(max time.Duration) time.Duration {
 	return time.Duration(binary.BigEndian.Uint64(raw[:]) % uint64(max+1))
 }
 
-// Run loads durable state once, then renews before expiry until ctx is
-// cancelled. Corrupt or ambiguous state stops the runtime; transient control
-// or GNB failures are retried with bounded backoff.
+// Run loads durable state once, then renews every pair before expiry until ctx
+// is cancelled. Corrupt or ambiguous state stops the runtime; transient control
+// or GNB failures are retried per pair with bounded backoff.
 func (r *Runtime) Run(ctx context.Context) error {
 	backoff := r.cfg.RetryMin
 	for {
@@ -103,23 +124,38 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	backoff = r.cfg.RetryMin
 	for {
-		err := r.step(ctx)
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := r.refreshIdentity(); err != nil {
+			r.logf("utc hub identity refresh failed; retrying: %v", err)
+			if err := waitContext(ctx, backoff); err != nil {
+				return err
+			}
+			backoff = growBackoff(backoff, r.cfg.RetryMax)
+			continue
 		}
-		var wait time.Duration
-		if err != nil {
+		backoff = r.cfg.RetryMin
+		now := r.Now()
+		for _, pair := range r.pairs {
+			if pair.nextDue.After(now) {
+				continue
+			}
+			err := r.stepPair(ctx, pair)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			var state *stateError
 			if errors.As(err, &state) {
 				return err
 			}
-			r.logf("utc hub cycle failed; retrying: %v", err)
-			wait = backoff
-			backoff = growBackoff(backoff, r.cfg.RetryMax)
-		} else {
-			backoff = r.cfg.RetryMin
-			wait = r.nextDelay()
+			if err != nil {
+				r.logf("utc hub pair %d cycle failed; retrying: %v", pair.cfg.PairID, err)
+				pair.nextDue = r.Now().Add(pair.backoff)
+				pair.backoff = growBackoff(pair.backoff, r.cfg.RetryMax)
+			} else {
+				pair.backoff = r.cfg.RetryMin
+				pair.nextDue = r.Now().Add(r.nextDelay(pair))
+			}
 		}
+		wait := r.nextWait()
 		if wait < r.cfg.RetryMin {
 			wait = r.cfg.RetryMin
 		}
@@ -156,19 +192,44 @@ func (r *Runtime) logf(format string, args ...any) {
 
 func (r *Runtime) confPath() string { return filepath.Join(r.cfg.ConfDir, "utc.conf") }
 
-// load strictly reconstructs the durable control and dataplane state. A
-// missing summary with any surviving projection/status is refused: assigning
-// from generation 1 over history would be a silent rollback.
+// nextWait reports the delay until the earliest pair is due.
+func (r *Runtime) nextWait() time.Duration {
+	now := r.Now()
+	var wait time.Duration
+	for i, pair := range r.pairs {
+		delay := pair.nextDue.Sub(now)
+		if delay < 0 {
+			delay = 0
+		}
+		if i == 0 || delay < wait {
+			wait = delay
+		}
+	}
+	return wait
+}
+
+// load strictly reconstructs the durable control and dataplane state for every
+// pair. A pair whose summary is missing while its projection or status row
+// survives is refused: assigning from generation 1 over history would be a
+// silent rollback. A pair that was never managed (no summary, no row) is fresh.
 func (r *Runtime) load() error {
 	r.identity = r.cfg.Identity
 	r.configGen = r.cfg.Identity.ConfigGen
-	r.started = false
 	r.hadSummary = false
-	r.prior = hub.Prior{}
-	r.grantValidUntil = 0
-	r.publishedExpiresAt = 0
-	r.verified = nil
 	r.file = projectionState{}
+	for _, pair := range r.pairs {
+		pair.identity = r.cfg.Identity
+		pair.identity.PeerID = pair.cfg.PeerID
+		pair.started = false
+		pair.prior = hub.Prior{}
+		pair.grantValidUntil = 0
+		pair.publishedExpiresAt = 0
+		pair.verified = nil
+		pair.lastPeer = nil
+		pair.nextDue = time.Time{}
+		pair.backoff = r.cfg.RetryMin
+		pair.session.Identity = pair.identity
+	}
 
 	info, err := os.Stat(r.cfg.ConfDir)
 	if err != nil {
@@ -177,9 +238,11 @@ func (r *Runtime) load() error {
 	if !info.IsDir() {
 		return errors.New("utc hub conf_dir is not a directory")
 	}
-	for _, path := range []string{r.cfg.SummaryPath, r.cfg.VerifiedPath} {
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return permanent(err)
+	for _, pair := range r.pairs {
+		for _, path := range []string{pair.cfg.SummaryPath, pair.cfg.VerifiedPath} {
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				return permanent(err)
+			}
 		}
 	}
 
@@ -196,13 +259,15 @@ func (r *Runtime) load() error {
 		return permanent(fmt.Errorf("utc.identity: %w", err))
 	}
 
+	var snapshot statusSnapshot
+	statusExists := false
 	statusRaw, statusErr := readStatusFile(r.cfg.StatusPath)
-	statusExists := statusErr == nil
-	if statusExists {
-		snapshot, err := parseStatus(statusRaw)
+	if statusErr == nil {
+		snapshot, err = parseStatus(statusRaw)
 		if err != nil {
 			return permanent(fmt.Errorf("utc.status: %w", err))
 		}
+		statusExists = true
 		if snapshot.Header.Scope != r.cfg.Scope ||
 			snapshot.Header.Instance != r.identity.Instance ||
 			snapshot.Header.LocalID != r.identity.LocalID {
@@ -222,7 +287,7 @@ func (r *Runtime) load() error {
 		return permanent(errors.New("utc hub identity has no boot id/pid and no utc.identity file"))
 	}
 
-	file, err := inspectProjection(r.confPath(), r.identity, r.cfg.PairID)
+	file, err := inspectProjection(r.confPath(), r.identity)
 	if err != nil {
 		return permanent(fmt.Errorf("utc.conf: %w", err))
 	}
@@ -231,69 +296,102 @@ func (r *Runtime) load() error {
 		r.configGen = file.ConfigGen
 	}
 
-	summary, err := hub.LoadSummary(r.cfg.SummaryPath)
-	summaryExists := err == nil
-	if err != nil && !os.IsNotExist(err) {
-		return permanent(fmt.Errorf("utc-hub summary: %w", err))
-	}
-	if !summaryExists {
-		if file.Exists || statusExists {
-			return permanent(errors.New("utc-hub summary is missing while projection/status exists"))
+	for _, pair := range r.pairs {
+		summary, summaryErr := hub.LoadSummary(pair.cfg.SummaryPath)
+		summaryExists := summaryErr == nil
+		if summaryErr != nil && !os.IsNotExist(summaryErr) {
+			return permanent(fmt.Errorf("utc-hub summary: %w", summaryErr))
 		}
-		r.started = false
-	} else {
-		if err := r.validateSummary(summary); err != nil {
+		verified, verifiedErr := loadVerified(pair.cfg.VerifiedPath)
+		verifiedExists := verifiedErr == nil
+		if verifiedErr != nil && !os.IsNotExist(verifiedErr) {
+			return permanent(fmt.Errorf("utc-hub verified watermark: %w", verifiedErr))
+		}
+		if verifiedExists && !summaryExists {
+			return permanent(errors.New("utc-hub summary is missing while a verified watermark exists"))
+		}
+		peer, hasRow := file.Peers[pair.cfg.PairID]
+		if !summaryExists {
+			if hasRow || statusHasPair(snapshot, statusExists, pair) {
+				return permanent(fmt.Errorf(
+					"utc-hub summary is missing while pair %d projection/status exists",
+					pair.cfg.PairID))
+			}
+			continue
+		}
+		if err := r.validateSummary(pair, summary); err != nil {
 			return permanent(err)
 		}
 		if summary.ConfigGen > r.configGen {
 			r.configGen = summary.ConfigGen
 		}
-		if file.Exists && file.PairGen > summary.PairGen {
-			return permanent(errors.New("utc.conf is ahead of the persisted summary"))
+		if hasRow {
+			if peer.PeerID != pair.cfg.PeerID {
+				return permanent(fmt.Errorf(
+					"utc.conf peer %d does not match configured pair %d",
+					peer.PeerID, pair.cfg.PairID))
+			}
+			if peer.PairGen > summary.PairGen {
+				return permanent(errors.New("utc.conf is ahead of the persisted summary"))
+			}
+			published := peer
+			pair.lastPeer = &published
+			pair.publishedExpiresAt = peer.ExpiresAt
+		} else if file.Exists {
+			return permanent(fmt.Errorf(
+				"utc.conf is missing configured pair %d", pair.cfg.PairID))
 		}
-		r.started = true
+		pair.started = true
 		r.hadSummary = true
-		r.prior = summary.Prior()
-		r.grantValidUntil = summary.ValidUntil
-		if file.Exists {
-			r.publishedExpiresAt = file.ExpiresAt
-		} else {
-			r.publishedExpiresAt = summary.ValidUntil
+		pair.prior = summary.Prior()
+		pair.grantValidUntil = summary.ValidUntil
+		if !hasRow {
+			pair.publishedExpiresAt = summary.ValidUntil
+		}
+		if verifiedExists {
+			if verified.Scope != r.cfg.Scope || verified.PeerID != pair.cfg.PeerID ||
+				verified.PairID != pair.cfg.PairID || verified.Side != pair.cfg.Side ||
+				verified.Mode != pair.cfg.Mode {
+				return permanent(errors.New("utc-hub verified watermark belongs to another pair"))
+			}
+			// A verified watermark below the on-disk config_gen is a stale
+			// watermark: this process previously died between the utc.conf write
+			// and the watermark write of a same-generation renewal. That state is
+			// legitimate and self-heals through the rebuild path; only a digest
+			// mismatch at the watermark's own generation is tampering. Another
+			// pair republishing advances config_gen, so the generations differ
+			// and this pair's watermark is left untouched.
+			if hasRow && verified.Prior() == pair.prior &&
+				verified.ConfigGen == file.ConfigGen &&
+				verified.ProjectionDigest != file.Digest {
+				return permanent(errProjectionMismatch)
+			}
+			stored := verified
+			pair.verified = &stored
 		}
 	}
-
-	verified, err := loadVerified(r.cfg.VerifiedPath)
-	switch {
-	case err == nil:
-		r.verified = &verified
-	case os.IsNotExist(err):
-		r.verified = nil
-	default:
-		return permanent(fmt.Errorf("utc-hub verified watermark: %w", err))
-	}
-	if r.verified != nil {
-		if r.verified.Scope != r.cfg.Scope || r.verified.PeerID != r.identity.PeerID ||
-			r.verified.PairID != r.cfg.PairID || r.verified.Side != r.cfg.Side ||
-			r.verified.Mode != r.cfg.Mode {
-			return permanent(errors.New("utc-hub verified watermark belongs to another pair"))
-		}
-		if !summaryExists {
-			return permanent(errors.New("utc-hub summary is missing while a verified watermark exists"))
-		}
-		// A verified watermark below the on-disk config_gen is a stale
-		// watermark: this process previously died between the utc.conf write
-		// and the watermark write of a same-generation renewal. That state is
-		// legitimate and self-heals through the rebuild path; only a digest
-		// mismatch at the watermark's own generation is tampering.
-		if file.Exists && r.verified.Prior() == r.prior &&
-			r.verified.ConfigGen == r.configGen &&
-			r.verified.ProjectionDigest != file.Digest {
-			return permanent(errProjectionMismatch)
-		}
-	}
-	r.identity.ConfigGen = r.configGen
-	r.session.Identity = r.identity
+	r.syncIdentity()
 	return nil
+}
+
+// statusHasPair reports whether utc.status carries a row for this pair.
+func statusHasPair(snapshot statusSnapshot, exists bool, pair *pairState) bool {
+	if !exists {
+		return false
+	}
+	peer, ok := snapshot.Peers[pair.cfg.PeerID]
+	return ok && peer.PairID == pair.cfg.PairID
+}
+
+// syncIdentity copies the shared boot/PID/config_gen into every pair and
+// session.
+func (r *Runtime) syncIdentity() {
+	r.identity.ConfigGen = r.configGen
+	for _, pair := range r.pairs {
+		pair.identity = r.identity
+		pair.identity.PeerID = pair.cfg.PeerID
+		pair.session.Identity = pair.identity
+	}
 }
 
 // refreshIdentity re-binds boot/PID/config_gen to the current GNB process.
@@ -332,16 +430,15 @@ func (r *Runtime) refreshIdentity() error {
 	if r.identity.BootID == "" || r.identity.PID == 0 {
 		return errors.New("utc hub identity has no usable boot id/pid")
 	}
-	r.identity.ConfigGen = r.configGen
-	r.session.Identity = r.identity
+	r.syncIdentity()
 	return nil
 }
 
-func (r *Runtime) validateSummary(summary hub.Summary) error {
-	if summary.Scope != r.cfg.Scope || summary.Instance != r.identity.Instance ||
-		summary.PairID != r.cfg.PairID || summary.Side != r.cfg.Side ||
-		summary.Mode != r.cfg.Mode {
-		return errors.New("utc-hub summary does not match the configured pair")
+func (r *Runtime) validateSummary(pair *pairState, summary hub.Summary) error {
+	if summary.Scope != r.cfg.Scope || summary.Instance != pair.identity.Instance ||
+		summary.PairID != pair.cfg.PairID || summary.Side != pair.cfg.Side ||
+		summary.Mode != pair.cfg.Mode {
+		return fmt.Errorf("utc-hub summary does not match configured pair %d", pair.cfg.PairID)
 	}
 	if !summary.SignatureVerified || summary.ValidUntil == 0 {
 		return errors.New("utc-hub summary is not a verified grant")
@@ -349,17 +446,33 @@ func (r *Runtime) validateSummary(summary hub.Summary) error {
 	return nil
 }
 
-// step performs exactly one control exchange plus its durable publish and
-// APPLIED verification. It is single-flight by construction.
+// step performs one control cycle for every configured pair. It is the test and
+// direct entry point; Run applies per-pair scheduling around stepPair.
 func (r *Runtime) step(ctx context.Context) error {
 	if err := r.refreshIdentity(); err != nil {
 		return err
 	}
+	var errs []error
+	for _, pair := range r.pairs {
+		if err := r.stepPair(ctx, pair); err != nil {
+			var state *stateError
+			if errors.As(err, &state) {
+				return err
+			}
+			errs = append(errs, fmt.Errorf("pair %d: %w", pair.cfg.PairID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// stepPair performs exactly one control exchange plus its durable publish and
+// APPLIED verification for one pair. It is single-flight by construction.
+func (r *Runtime) stepPair(ctx context.Context, pair *pairState) error {
 	now := r.Now()
 	var outcome hub.Outcome
 	var err error
-	if !r.started {
-		outcome, err = r.session.Assign(ctx)
+	if !pair.started {
+		outcome, err = pair.session.Assign(ctx)
 	} else {
 		statusRaw, statusErr := readStatusFile(r.cfg.StatusPath)
 		statusExists := statusErr == nil
@@ -372,16 +485,18 @@ func (r *Runtime) step(ctx context.Context) error {
 				return parseErr
 			}
 			var rotateErr error
-			statusRotate, _, rotateErr = hub.RotationRequired(statusRaw, r.identity.PeerID, r.cfg.PairID)
+			statusRotate, _, rotateErr = hub.RotationRequired(
+				statusRaw, pair.identity.PeerID, pair.cfg.PairID)
 			if rotateErr != nil {
 				return rotateErr
 			}
 		}
-		timeRotate := r.publishedExpiresAt != 0 && uint64(now.Unix()) >= r.publishedExpiresAt
+		timeRotate := pair.publishedExpiresAt != 0 &&
+			uint64(now.Unix()) >= pair.publishedExpiresAt
 		if statusExists && (statusRotate || !timeRotate) {
-			outcome, _, err = r.session.Recover(ctx, r.prior, statusRaw)
+			outcome, _, err = pair.session.Recover(ctx, pair.prior, statusRaw)
 		} else {
-			outcome, err = r.session.Renew(ctx, r.prior, timeRotate)
+			outcome, err = pair.session.Renew(ctx, pair.prior, timeRotate)
 		}
 	}
 	if err != nil {
@@ -390,13 +505,13 @@ func (r *Runtime) step(ctx context.Context) error {
 	if !outcome.Response.Verified {
 		return errors.New("utc-hub accepted reply was not signature verified")
 	}
-	r.started = true
-	r.prior = outcome.Prior()
-	r.grantValidUntil = outcome.Summary.ValidUntil
+	pair.started = true
+	pair.prior = outcome.Prior()
+	pair.grantValidUntil = outcome.Summary.ValidUntil
 	if err := r.validateAccepted(outcome, now); err != nil {
 		return err
 	}
-	if err := r.publishOutcome(ctx, outcome, now); err != nil {
+	if err := r.publishOutcome(ctx, pair, outcome, now); err != nil {
 		return err
 	}
 	return nil
@@ -420,27 +535,36 @@ func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 	return nil
 }
 
-func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now time.Time) error {
-	verifiedPrior := r.verified != nil && r.verified.Prior() == r.prior &&
-		r.verified.ConfigGen == r.configGen
+func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome hub.Outcome, now time.Time) error {
+	verifiedPrior := pair.verified != nil && pair.verified.Prior() == pair.prior &&
+		pair.verified.ConfigGen == r.configGen
 	// A same-generation renewal keeps pair_gen and both epochs, so Outcome
 	// reports Changed=false. The state-v2 consumer still accepts it when only
 	// the expiry moves forward; republish so the dataplane deadline tracks the
 	// renewed grant instead of waiting for the old deadline to force a rotate.
 	renewalExtended := !outcome.Changed && r.file.Exists &&
-		outcome.Summary.ValidUntil > r.publishedExpiresAt
+		outcome.Summary.ValidUntil > pair.publishedExpiresAt
 	writeNeeded := outcome.Changed || renewalExtended || !verifiedPrior || !r.file.Exists
 	if writeNeeded {
-		matches, err := r.fileMatches(outcome.Text)
+		peer, err := r.buildPeer(pair, outcome)
+		if err != nil {
+			return err
+		}
+		gen := r.configGen
+		text, err := r.canonicalProjection(gen, pair.cfg.PairID, peer)
+		if err != nil {
+			return err
+		}
+		matches, err := r.fileMatches(text)
 		if err != nil {
 			return err
 		}
 		if !matches {
-			nextGen := r.configGen
+			nextGen := gen
 			// The first projection may use the configured generation. Once a
 			// projection reached disk at this generation — the file still
-			// exists or the summary proves a prior publish — the dataplane
-			// owns its high water, so every rewrite must strictly advance it.
+			// exists or a summary proves a prior publish — the dataplane owns
+			// its high water, so every rewrite must strictly advance it.
 			if r.file.Exists || r.hadSummary {
 				nextGen++
 			}
@@ -448,83 +572,121 @@ func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now t
 				nextGen = 1
 			}
 			r.setConfigGen(nextGen)
-			projection, text, err := hub.BuildProjection(r.identity, outcome.Response)
+			text, err = r.canonicalProjection(nextGen, pair.cfg.PairID, peer)
 			if err != nil {
 				return err
 			}
-			outcome.Projection = projection
-			outcome.Text = text
-			outcome.Summary.ConfigGen = nextGen
-		} else {
-			outcome.Summary.ConfigGen = r.configGen
 		}
-		if err := r.publish(outcome); err != nil {
+		outcome.Summary.ConfigGen = r.configGen
+		if err := r.publish(pair, outcome, text); err != nil {
 			return err
 		}
 		// The publish is durable; refresh the state so a status failure keeps
 		// the exact text/digest for the next idempotent verification.
-		file, err := inspectProjection(r.confPath(), r.identity, r.cfg.PairID)
+		file, err := inspectProjection(r.confPath(), r.identity)
 		if err != nil {
 			return err
 		}
 		r.file = file
-		r.publishedExpiresAt = outcome.Projection.Peers[0].ExpiresAt
-	} else if err := r.writeSummary(outcome); err != nil {
+		published := peer
+		pair.lastPeer = &published
+		pair.publishedExpiresAt = peer.ExpiresAt
+	} else if err := r.writeSummary(pair, outcome); err != nil {
 		return err
 	}
 
-	if err := r.waitApplied(ctx, outcome.Prior().PairGen); err != nil {
+	if err := r.waitApplied(ctx, pair, outcome.Prior().PairGen); err != nil {
 		return err
 	}
-	file, err := inspectProjection(r.confPath(), r.identity, r.cfg.PairID)
+	file, err := inspectProjection(r.confPath(), r.identity)
 	if err != nil {
 		return err
 	}
 	if !file.Exists {
 		return errors.New("utc.conf disappeared after APPLIED")
 	}
+	peer, ok := file.Peers[pair.cfg.PairID]
+	if !ok {
+		return fmt.Errorf("utc.conf does not describe managed pair %d", pair.cfg.PairID)
+	}
 	verified := Verified{
-		Scope: r.cfg.Scope, Instance: r.identity.Instance,
-		ConfigGen: r.configGen, PeerID: r.identity.PeerID, PairID: r.cfg.PairID,
-		Side: r.cfg.Side, Mode: r.cfg.Mode,
+		Scope: r.cfg.Scope, Instance: pair.identity.Instance,
+		ConfigGen: r.configGen, PeerID: pair.identity.PeerID, PairID: pair.cfg.PairID,
+		Side: pair.cfg.Side, Mode: pair.cfg.Mode,
 		PairGen: outcome.Summary.PairGen, LeaseEpoch: outcome.Summary.LeaseEpoch,
 		PlacementEpoch: outcome.Summary.PlacementEpoch,
 		EdgeID:         outcome.Summary.EdgeID, ShardID: outcome.Summary.ShardID,
-		ReactorID: outcome.Summary.ReactorID, ValidUntil: file.ExpiresAt,
+		ReactorID: outcome.Summary.ReactorID, ValidUntil: peer.ExpiresAt,
 		ObservedAt: uint64(now.Unix()), ProjectionDigest: file.Digest,
 	}
 	raw, err := json.Marshal(verified)
 	if err != nil {
 		return err
 	}
-	if err := hub.WriteFileAtomic(r.cfg.VerifiedPath, raw); err != nil {
+	if err := hub.WriteFileAtomic(pair.cfg.VerifiedPath, raw); err != nil {
 		return fmt.Errorf("utc-hub verified watermark: %w", err)
 	}
-	r.verified = &verified
-	r.file = file
-	if r.publishedExpiresAt == 0 {
-		r.publishedExpiresAt = file.ExpiresAt
+	pair.verified = &verified
+	published := peer
+	pair.lastPeer = &published
+	if pair.publishedExpiresAt == 0 {
+		pair.publishedExpiresAt = peer.ExpiresAt
 	}
 	return nil
 }
 
-func (r *Runtime) publish(outcome hub.Outcome) error {
-	if len(outcome.Text) == 0 {
+// buildPeer maps this pair's accepted reply onto its projection row.
+func (r *Runtime) buildPeer(pair *pairState, outcome hub.Outcome) (hub.Peer, error) {
+	projection, _, err := hub.BuildProjectionMulti(pair.identity,
+		[]hub.PeerResponse{{
+			PeerID: pair.cfg.PeerID, Response: outcome.Response,
+			LocalEndpoint: pair.cfg.LocalEndpoint,
+		}})
+	if err != nil {
+		return hub.Peer{}, err
+	}
+	return projection.Peers[0], nil
+}
+
+// canonicalProjection rebuilds the whole shared file with one pair replaced and
+// every other accepted row kept byte-identical.
+func (r *Runtime) canonicalProjection(configGen uint64, replacedPair uint64, peer hub.Peer) ([]byte, error) {
+	peers := make([]hub.Peer, 0, len(r.pairs))
+	for _, other := range r.pairs {
+		if other.cfg.PairID == replacedPair {
+			peers = append(peers, peer)
+			continue
+		}
+		if other.lastPeer != nil {
+			peers = append(peers, *other.lastPeer)
+		}
+	}
+	projection := hub.Projection{
+		Scope: r.identity.Scope, Instance: r.identity.Instance,
+		LocalID: r.identity.LocalID, ConfigGen: configGen,
+		BootID: r.identity.BootID, PID: r.identity.PID,
+		Capabilities: r.identity.Capabilities, Peers: peers,
+	}
+	return projection.Canonical()
+}
+
+func (r *Runtime) publish(pair *pairState, outcome hub.Outcome, text []byte) error {
+	if len(text) == 0 {
 		return errors.New("utc-hub outcome has no projection")
 	}
-	if err := r.writeSummary(outcome); err != nil {
+	if err := r.writeSummary(pair, outcome); err != nil {
 		return err
 	}
 	r.hadSummary = true
-	return hub.WriteFileAtomic(r.confPath(), outcome.Text)
+	return hub.WriteFileAtomic(r.confPath(), text)
 }
 
-func (r *Runtime) writeSummary(outcome hub.Outcome) error {
+func (r *Runtime) writeSummary(pair *pairState, outcome hub.Outcome) error {
 	raw, err := json.Marshal(outcome.Summary)
 	if err != nil {
 		return err
 	}
-	if err := hub.WriteFileAtomic(r.cfg.SummaryPath, raw); err != nil {
+	if err := hub.WriteFileAtomic(pair.cfg.SummaryPath, raw); err != nil {
 		return fmt.Errorf("utc-hub summary: %w", err)
 	}
 	return nil
@@ -543,14 +705,13 @@ func (r *Runtime) fileMatches(text []byte) (bool, error) {
 
 func (r *Runtime) setConfigGen(gen uint64) {
 	r.configGen = gen
-	r.identity.ConfigGen = gen
-	r.session.Identity = r.identity
+	r.syncIdentity()
 }
 
 // waitApplied polls utc.status until it bears this process identity and the
 // managed pair is APPLIED. A missing or non-matching status never advances the
 // verified watermark.
-func (r *Runtime) waitApplied(ctx context.Context, pairGen uint64) error {
+func (r *Runtime) waitApplied(ctx context.Context, pair *pairState, pairGen uint64) error {
 	deadline := time.Now().Add(r.cfg.ApplyTimeout)
 	last := errors.New("utc.status is not available")
 	for {
@@ -558,7 +719,7 @@ func (r *Runtime) waitApplied(ctx context.Context, pairGen uint64) error {
 		if err == nil {
 			snapshot, parseErr := parseStatus(raw)
 			if parseErr == nil {
-				if appliedErr := snapshot.applied(r.identity, r.cfg.PairID, pairGen,
+				if appliedErr := snapshot.applied(pair.identity, pair.cfg.PairID, pairGen,
 					r.Now(), r.cfg.StatusMaxAge); appliedErr == nil {
 					return nil
 				} else {
@@ -587,23 +748,23 @@ func (r *Runtime) waitApplied(ctx context.Context, pairGen uint64) error {
 // published to GNB. Renewals normally republish the later deadline; the
 // published expiry stays as a safety net so a renewal that cannot be published
 // falls back to rotating at the deadline already known to the dataplane.
-func (r *Runtime) nextDelay() time.Duration {
-	if r.grantValidUntil == 0 {
+func (r *Runtime) nextDelay(pair *pairState) time.Duration {
+	if pair.grantValidUntil == 0 {
 		return r.cfg.RetryMin
 	}
-	target := int64(r.grantValidUntil) - int64(r.cfg.RenewLead/time.Second) -
+	target := int64(pair.grantValidUntil) - int64(r.cfg.RenewLead/time.Second) -
 		int64(r.Jitter(r.cfg.JitterMax)/time.Second)
-	if r.publishedExpiresAt != 0 && int64(r.publishedExpiresAt) < target {
-		target = int64(r.publishedExpiresAt)
+	if pair.publishedExpiresAt != 0 && int64(pair.publishedExpiresAt) < target {
+		target = int64(pair.publishedExpiresAt)
 	}
 	// A successful renewal inside the window may not move valid_until (the
 	// frozen renew path keeps the epoch). Wait for the published deadline
 	// instead of retrying the same renewal every second.
 	if target <= r.Now().Unix() {
-		if r.publishedExpiresAt <= uint64(r.Now().Unix()) {
+		if pair.publishedExpiresAt <= uint64(r.Now().Unix()) {
 			return r.cfg.RetryMin
 		}
-		target = int64(r.publishedExpiresAt)
+		target = int64(pair.publishedExpiresAt)
 	}
 	delay := time.Unix(target, 0).Sub(r.Now())
 	if delay < r.cfg.RetryMin {

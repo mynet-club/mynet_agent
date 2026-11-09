@@ -38,7 +38,7 @@ func startUTCHub(ctx context.Context) {
 	runtime.Logf = func(format string, args ...any) {
 		logger.Info("UTC Hub: " + fmt.Sprintf(format, args...))
 	}
-	logger.Info("UTC Hub 运行时启动", "pair", config.PairID, "side", config.Side,
+	logger.Info("UTC Hub 运行时启动", "pairs", len(config.Pairs),
 		"conf_dir", config.ConfDir)
 	go func() {
 		if err := runtime.Run(ctx); err != nil && ctx.Err() == nil {
