@@ -136,8 +136,8 @@ func TestRuntimeAssignPublishesAndVerifies(t *testing.T) {
 
 func TestRuntimeResumesFromSummary(t *testing.T) {
 	key, _ := testKey(t)
-	config, _ := assignState(t, key)
-	reply := baseReply(t, key, 1, 1, 1, 2, time.Now().Add(5*time.Minute).Unix())
+	config, assigned := assignState(t, key)
+	reply := baseReply(t, key, 1, 1, 1, 2, int64(assigned.grant.validUntil))
 	server := newFakeHub(t, func(_ *fakeHub, _ int, request recordedRequest) []byte {
 		if request.u8(1) != 2 {
 			t.Errorf("restart op = %d, want renew", request.u8(1))
@@ -616,4 +616,101 @@ func readFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// A same-generation renewal that died between the utc.conf write and the
+// verified-watermark write leaves the watermark one generation behind. That
+// state is this runtime's own crash window, not corruption: a restart must
+// load it and heal instead of refusing to start forever.
+func TestRuntimeStaleVerifiedWatermarkSelfHeals(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	stale, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(50 * time.Minute).Unix()
+	reply := baseReply(t, key, 1, 1, 1, 2, later)
+	server := newFakeHub(t, func(_ *fakeHub, _ int, _ recordedRequest) []byte {
+		writeStatus(t, config.StatusPath, "RUNNING", 6, 1, "APPLIED", "POLICY_LOADED")
+		return successPayload(t, key, reply)
+	})
+	config.HubAddress = server.listener.Addr().String()
+	if err := stepOnce(t, newRuntime(t, config)); err != nil {
+		t.Fatalf("same-generation republish: %v", err)
+	}
+	republished := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
+	if projectionConfigGen(t, republished) != 6 {
+		t.Fatalf("renewed projection gen=%d", projectionConfigGen(t, republished))
+	}
+	staleRaw, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.WriteFileAtomic(config.VerifiedPath, staleRaw); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newRuntime(t, config)
+	if err := runtime.load(); err != nil {
+		t.Fatalf("stale verified watermark was refused as corruption: %v", err)
+	}
+	if err := runtime.step(context.Background()); err != nil {
+		t.Fatalf("heal step: %v", err)
+	}
+	healed, err := loadVerified(config.VerifiedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if healed.ConfigGen != 6 || healed.PairGen != 1 ||
+		healed.ProjectionDigest != projectionDigest(republished) {
+		t.Fatalf("healed watermark = %+v", healed)
+	}
+}
+
+// A utc.conf rewritten at the watermark's own generation with a different
+// digest is a projection that was never applied: refuse it permanently.
+func TestRuntimeFailsClosedOnProjectionMismatchAtWatermarkGeneration(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	raw := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
+	projection, err := hub.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection.Peers[0].Port++
+	text, err := projection.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hub.WriteFileAtomic(filepath.Join(config.ConfDir, "utc.conf"), text); err != nil {
+		t.Fatal(err)
+	}
+	err = newRuntime(t, config).load()
+	if !errors.Is(err, errState) || !errors.Is(err, errProjectionMismatch) {
+		t.Fatalf("tampered projection at the watermark generation was accepted: %v", err)
+	}
+}
+
+// utc.conf may be lost while the summary survives. The GNB still holds the
+// published config_gen as its high-water mark, so the rebuild must advance the
+// generation instead of reusing the deleted file's generation.
+func TestRuntimeRebuildAfterConfDeletionAdvancesGeneration(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	if err := os.Remove(filepath.Join(config.ConfDir, "utc.conf")); err != nil {
+		t.Fatal(err)
+	}
+	reply := baseReply(t, key, 1, 1, 1, 2, time.Now().Add(5*time.Minute).Unix())
+	server := newFakeHub(t, func(_ *fakeHub, _ int, _ recordedRequest) []byte {
+		writeStatus(t, config.StatusPath, "RUNNING", 6, 1, "APPLIED", "POLICY_LOADED")
+		return successPayload(t, key, reply)
+	})
+	config.HubAddress = server.listener.Addr().String()
+	if err := stepOnce(t, newRuntime(t, config)); err != nil {
+		t.Fatal(err)
+	}
+	raw := readFile(t, filepath.Join(config.ConfDir, "utc.conf"))
+	if gen := projectionConfigGen(t, raw); gen != 6 {
+		t.Fatalf("rebuilt projection reused config_gen %d", gen)
+	}
 }

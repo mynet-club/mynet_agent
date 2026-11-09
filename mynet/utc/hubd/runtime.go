@@ -36,6 +36,10 @@ type Runtime struct {
 	configGen          uint64
 	verified           *Verified
 	file               projectionState
+	// hadSummary records that a summary reached disk at the current or an
+	// earlier generation: the GNB may already hold that config_gen as its
+	// high-water mark even when utc.conf is gone, so a rebuild must advance.
+	hadSummary bool
 }
 
 // New validates the local wiring and dials nothing. Run performs the first
@@ -159,6 +163,7 @@ func (r *Runtime) load() error {
 	r.identity = r.cfg.Identity
 	r.configGen = r.cfg.Identity.ConfigGen
 	r.started = false
+	r.hadSummary = false
 	r.prior = hub.Prior{}
 	r.grantValidUntil = 0
 	r.publishedExpiresAt = 0
@@ -247,6 +252,7 @@ func (r *Runtime) load() error {
 			return permanent(errors.New("utc.conf is ahead of the persisted summary"))
 		}
 		r.started = true
+		r.hadSummary = true
 		r.prior = summary.Prior()
 		r.grantValidUntil = summary.ValidUntil
 		if file.Exists {
@@ -274,7 +280,13 @@ func (r *Runtime) load() error {
 		if !summaryExists {
 			return permanent(errors.New("utc-hub summary is missing while a verified watermark exists"))
 		}
+		// A verified watermark below the on-disk config_gen is a stale
+		// watermark: this process previously died between the utc.conf write
+		// and the watermark write of a same-generation renewal. That state is
+		// legitimate and self-heals through the rebuild path; only a digest
+		// mismatch at the watermark's own generation is tampering.
 		if file.Exists && r.verified.Prior() == r.prior &&
+			r.verified.ConfigGen == r.configGen &&
 			r.verified.ProjectionDigest != file.Digest {
 			return permanent(errProjectionMismatch)
 		}
@@ -309,7 +321,13 @@ func (r *Runtime) refreshIdentity() error {
 			if snapshot.Header.ConfigGen > r.configGen {
 				r.configGen = snapshot.Header.ConfigGen
 			}
+		} else if err == nil {
+			r.logf("utc hub: ignored utc.status for another scope/instance/local")
 		}
+	} else if !os.IsNotExist(err) {
+		// Not fatal: the identity file already bound this cycle, and a
+		// later poll will surface a persistent status problem.
+		r.logf("utc hub: reading utc.status failed: %v", err)
 	}
 	if r.identity.BootID == "" || r.identity.PID == 0 {
 		return errors.New("utc hub identity has no usable boot id/pid")
@@ -420,9 +438,10 @@ func (r *Runtime) publishOutcome(ctx context.Context, outcome hub.Outcome, now t
 		if !matches {
 			nextGen := r.configGen
 			// The first projection may use the configured generation. Once a
-			// projection file exists the dataplane owns its high water, so
-			// every rewrite must strictly advance it.
-			if r.file.Exists {
+			// projection reached disk at this generation — the file still
+			// exists or the summary proves a prior publish — the dataplane
+			// owns its high water, so every rewrite must strictly advance it.
+			if r.file.Exists || r.hadSummary {
 				nextGen++
 			}
 			if nextGen == 0 {
@@ -496,6 +515,7 @@ func (r *Runtime) publish(outcome hub.Outcome) error {
 	if err := r.writeSummary(outcome); err != nil {
 		return err
 	}
+	r.hadSummary = true
 	return hub.WriteFileAtomic(r.confPath(), outcome.Text)
 }
 
