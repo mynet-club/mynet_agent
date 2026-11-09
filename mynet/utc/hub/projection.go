@@ -18,6 +18,14 @@ const (
 	maxPeers                          = 128
 )
 
+// utc-v2 peer modes. 0/1 are the historical direct/A-S values; 2 is A-D,
+// which exports to the local utcd client's per-pair loopback listener.
+const (
+	PeerModeDirect uint8 = 0
+	PeerModeAS     uint8 = 1
+	PeerModeAD     uint8 = 2
+)
+
 type Peer struct {
 	PeerID         uint64
 	PairID         uint64
@@ -72,7 +80,7 @@ func (peer Peer) validate(localID uint64) error {
 		return fmt.Errorf("invalid Hub manifest digest")
 	}
 	switch peer.Mode {
-	case 0:
+	case PeerModeDirect:
 		if peer.Family != 0 || peer.Port != 0 || peer.ScopeID != 0 {
 			return fmt.Errorf("direct peer has export fields")
 		}
@@ -81,7 +89,7 @@ func (peer Peer) validate(localID uint64) error {
 				return fmt.Errorf("direct peer has export address")
 			}
 		}
-	case 1:
+	case PeerModeAS:
 		if peer.ExpiresAt == 0 || peer.Port == 0 ||
 			(peer.Family != 4 && peer.Family != 6) {
 			return fmt.Errorf("invalid export peer")
@@ -104,6 +112,30 @@ func (peer Peer) validate(localID uint64) error {
 		} else if address.Zone() != "" || address.Is4In6() ||
 			address.IsUnspecified() || address.IsMulticast() {
 			return fmt.Errorf("invalid IPv6 export address")
+		}
+	case PeerModeAD:
+		// A-D names the local utcd client, not a signed remote target: only a
+		// loopback listener is expressible, and it still carries a deadline.
+		if peer.ExpiresAt == 0 || peer.Port == 0 ||
+			(peer.Family != 4 && peer.Family != 6) || peer.ScopeID != 0 {
+			return fmt.Errorf("invalid A-D local export peer")
+		}
+		address := netip.AddrFrom16(peer.Address)
+		if peer.Family == 4 {
+			if !address.Is4In6() ||
+				peer.Address[10] != 0xff || peer.Address[11] != 0xff {
+				return fmt.Errorf("invalid IPv4 A-D loopback address")
+			}
+			for i := 0; i < 10; i++ {
+				if peer.Address[i] != 0 {
+					return fmt.Errorf("IPv4 A-D address is not zero-padded")
+				}
+			}
+			if !address.Unmap().IsLoopback() {
+				return fmt.Errorf("A-D endpoint is not loopback")
+			}
+		} else if address.Is4In6() || address != netip.IPv6Loopback() {
+			return fmt.Errorf("A-D endpoint is not loopback")
 		}
 	default:
 		return fmt.Errorf("unsupported Hub mode")

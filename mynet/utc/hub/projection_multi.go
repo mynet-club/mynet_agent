@@ -6,23 +6,21 @@ import (
 	"sort"
 )
 
-// ErrProjectionUnsupported reports a control reply the frozen utc-v2
-// projection cannot express without a schema change.
-var ErrProjectionUnsupported = errors.New("utc-v2 projection cannot express this mode")
-
 // PeerResponse binds one accepted control reply to the numeric peer id it
 // represents. Grant v2 carries no numeric peer id, so the local installation
 // supplies it for each pair.
 type PeerResponse struct {
 	PeerID   uint64
 	Response Response
+	// LocalEndpoint is required for an A-D reply and forbidden for A-S.
+	LocalEndpoint *LocalEndpoint
 }
 
-// BuildProjectionMulti builds one utc-v2 projection from several accepted A-S
+// BuildProjectionMulti builds one utc-v2 projection from several accepted
 // replies of the same installation. Peers are ordered by peer id; duplicate
 // peer or pair ids, more than maxPeers peers and a mismatched scope are
 // rejected. Manifests, epochs and expiry still come from each signed
-// grant/binding.
+// grant/binding; A-D takes its local client listener from PeerResponse.
 func BuildProjectionMulti(identity Identity, responses []PeerResponse) (Projection, []byte, error) {
 	if len(responses) == 0 {
 		return Projection{}, nil, errors.New("Hub projection requires at least one peer")
@@ -35,12 +33,7 @@ func BuildProjectionMulti(identity Identity, responses []PeerResponse) (Projecti
 		if item.Response.Grant.Scope != identity.Scope {
 			return Projection{}, nil, errors.New("projection scope does not match the grant")
 		}
-		if item.Response.Binding.Kind == bindingKindAD {
-			return Projection{}, nil, fmt.Errorf(
-				"%w: A-D TargetBinding has no endpoint and utc-v2 has no A-D mode",
-				ErrProjectionUnsupported)
-		}
-		peer, err := buildASPeer(identity, item.PeerID, item.Response)
+		peer, err := buildPeer(identity, item.PeerID, item.Response, item.LocalEndpoint)
 		if err != nil {
 			return Projection{}, nil, err
 		}

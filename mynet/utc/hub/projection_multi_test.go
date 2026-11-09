@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,12 +105,79 @@ func TestBuildProjectionMultiRejectsTooManyPeers(t *testing.T) {
 	}
 }
 
-func TestBuildProjectionMultiRejectsAD(t *testing.T) {
+func TestBuildProjectionMultiBuildsADLocalExport(t *testing.T) {
 	identity := testIdentity()
 	ad := multiResponse(30, 1, "", 0)
 	ad.Binding.Kind = bindingKindAD
-	if _, _, err := BuildProjectionMulti(identity, []PeerResponse{{PeerID: 20, Response: ad}}); !errors.Is(err, ErrProjectionUnsupported) {
-		t.Fatalf("A-D error = %v, want ErrProjectionUnsupported", err)
+	projection, text, err := BuildProjectionMulti(identity, []PeerResponse{{
+		PeerID: 20, Response: ad,
+		LocalEndpoint: &LocalEndpoint{Address: "127.0.0.1", Port: 14001},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := projection.Peers[0]
+	if peer.Mode != PeerModeAD || peer.Family != 4 || peer.Port != 14001 ||
+		peer.ExpiresAt != 201 || peer.ScopeID != 0 {
+		t.Fatalf("A-D peer did not use the local endpoint: %+v", peer)
+	}
+	want := [16]byte{10: 0xff, 11: 0xff, 12: 127, 15: 1}
+	if peer.Address != want {
+		t.Fatalf("A-D address = %x, want loopback mapping %x", peer.Address, want)
+	}
+	if peer.Manifest != hex.EncodeToString(ad.Grant.TargetBindingDigest[:]) {
+		t.Fatalf("A-D manifest = %s, want the grant digest", peer.Manifest)
+	}
+	parsed, err := Parse(text)
+	if err != nil || !reflect.DeepEqual(parsed.Peers, projection.Peers) {
+		t.Fatalf("A-D projection is not canonical: %v\n%s", err, text)
+	}
+}
+
+func TestBuildProjectionMultiADRequiresLoopbackLocalEndpoint(t *testing.T) {
+	identity := testIdentity()
+	ad := multiResponse(30, 1, "", 0)
+	ad.Binding.Kind = bindingKindAD
+	cases := map[string]*LocalEndpoint{
+		"missing endpoint": nil,
+		"remote address":   {Address: "203.0.113.7", Port: 14001},
+		"zero port":        {Address: "127.0.0.1"},
+		"mapped spelling":  {Address: "::ffff:127.0.0.1", Port: 14001},
+	}
+	for name, local := range cases {
+		_, _, err := BuildProjectionMulti(identity, []PeerResponse{{
+			PeerID: 20, Response: ad, LocalEndpoint: local,
+		}})
+		if err == nil {
+			t.Fatalf("accepted A-D %s", name)
+		}
+	}
+}
+
+func TestBuildProjectionMultiRejectsASWithLocalEndpoint(t *testing.T) {
+	identity := testIdentity()
+	_, _, err := BuildProjectionMulti(identity, []PeerResponse{{
+		PeerID:        20,
+		Response:      multiResponse(30, 1, "203.0.113.7", 9443),
+		LocalEndpoint: &LocalEndpoint{Address: "127.0.0.1", Port: 14001},
+	}})
+	if err == nil {
+		t.Fatal("accepted an A-S reply with a local client endpoint")
+	}
+}
+
+func TestSessionADRequiresLocalEndpoint(t *testing.T) {
+	session := &Session{Client: &Client{}, Identity: testIdentity(), PairID: 30, Mode: controlModeAD}
+	if err := session.validate(); err == nil {
+		t.Fatal("accepted an A-D session without a local endpoint")
+	}
+	session.LocalEndpoint = &LocalEndpoint{Address: "127.0.0.1", Port: 14001}
+	if err := session.validate(); err != nil {
+		t.Fatalf("A-D session with a loopback endpoint was rejected: %v", err)
+	}
+	session.Mode = controlModeAS
+	if err := session.validate(); err == nil {
+		t.Fatal("accepted an A-S session with a local endpoint")
 	}
 }
 

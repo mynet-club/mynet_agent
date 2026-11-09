@@ -35,6 +35,13 @@ type Identity struct {
 	ConfigGen    uint64
 }
 
+// LocalEndpoint is the local utcd client's UDP listener for one A-D pair.
+// A-S replies take their export target from the signed TargetBinding instead.
+type LocalEndpoint struct {
+	Address string
+	Port    uint16
+}
+
 // Session binds one pair/side to a control client and turns accepted control
 // replies into utc.conf content. It performs no background work: the caller
 // decides when to assign, renew, recover or fail over.
@@ -44,7 +51,9 @@ type Session struct {
 	PairID   uint64
 	Side     uint8
 	Mode     uint8
-	Nonce    func() (uint64, error)
+	// LocalEndpoint is required for A-D and forbidden for A-S.
+	LocalEndpoint *LocalEndpoint
+	Nonce         func() (uint64, error)
 }
 
 // Outcome is one accepted control reply plus the projection it produced.
@@ -97,6 +106,12 @@ func (s *Session) validate() error {
 	}
 	if s.PairID == 0 || s.Side > 1 || (s.Mode != controlModeAS && s.Mode != controlModeAD) {
 		return errors.New("utc-hub session pair identity is invalid")
+	}
+	if s.Mode == controlModeAD && s.LocalEndpoint == nil {
+		return errors.New("A-D session requires the local client endpoint")
+	}
+	if s.Mode != controlModeAD && s.LocalEndpoint != nil {
+		return errors.New("local client endpoint is only valid for A-D")
 	}
 	if err := s.Identity.Validate(); err != nil {
 		return err
@@ -212,7 +227,7 @@ func (s *Session) exchange(ctx context.Context, prior Prior, request Request) (O
 }
 
 func (s *Session) outcome(prior Prior, response Response) (Outcome, error) {
-	projection, text, err := BuildProjection(s.Identity, response)
+	projection, text, err := buildProjection(s.Identity, response, s.LocalEndpoint)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -242,12 +257,16 @@ func (outcome Outcome) Prior() Prior {
 	}
 }
 
-// BuildProjection converts one accepted control reply into the canonical
+// BuildProjection converts one accepted A-S control reply into the canonical
 // utc-v2 projection. The export endpoint comes from the signed TargetBinding,
 // and the binding digest (equal to the grant's target_binding_digest) is the
 // per-peer manifest. Both generation values are taken from the grant.
 func BuildProjection(identity Identity, response Response) (Projection, []byte, error) {
-	peer, err := buildASPeer(identity, identity.PeerID, response)
+	return buildProjection(identity, response, nil)
+}
+
+func buildProjection(identity Identity, response Response, local *LocalEndpoint) (Projection, []byte, error) {
+	peer, err := buildPeer(identity, identity.PeerID, response, local)
 	if err != nil {
 		return Projection{}, nil, err
 	}
@@ -272,6 +291,23 @@ func projectionHeader(identity Identity) Projection {
 	}
 }
 
+// buildPeer maps one accepted reply onto a peer row. A-S takes its target from
+// the signed binding; A-D takes the local utcd client listener, which the
+// binding deliberately does not carry.
+func buildPeer(identity Identity, peerID uint64, response Response, local *LocalEndpoint) (Peer, error) {
+	switch response.Binding.Kind {
+	case bindingKindAS:
+		if local != nil {
+			return Peer{}, errors.New("A-S projection must not carry a local client endpoint")
+		}
+		return buildASPeer(identity, peerID, response)
+	case bindingKindAD:
+		return buildADPeer(identity, peerID, response, local)
+	default:
+		return Peer{}, errors.New("projection requires a known TargetBinding kind")
+	}
+}
+
 // buildASPeer maps one accepted reply onto a peer row. Every value comes from
 // the signed grant/binding; nothing is re-signed or invented.
 func buildASPeer(identity Identity, peerID uint64, response Response) (Peer, error) {
@@ -290,7 +326,7 @@ func buildASPeer(identity Identity, peerID uint64, response Response) (Peer, err
 		PeerID:         peerID,
 		PairID:         grant.PairID,
 		PairGen:        grant.PairGen,
-		Mode:           1,
+		Mode:           PeerModeAS,
 		LeaseEpoch:     grant.LeaseEpoch,
 		PlacementEpoch: grant.PlacementEpoch,
 		ExpiresAt:      grant.ValidUntil,
@@ -300,6 +336,57 @@ func buildASPeer(identity Identity, peerID uint64, response Response) (Peer, err
 		ScopeID:        binding.AddressScopeID,
 		Manifest:       hex.EncodeToString(grant.TargetBindingDigest[:]),
 	}, nil
+}
+
+// buildADPeer maps one accepted A-D reply onto a peer row. The grant supplies
+// the deadline, epochs and binding digest; the local client listener supplies
+// the loopback export endpoint.
+func buildADPeer(identity Identity, peerID uint64, response Response, local *LocalEndpoint) (Peer, error) {
+	grant, binding := response.Grant, response.Binding
+	if grant.Scope != identity.Scope {
+		return Peer{}, errors.New("projection scope does not match the grant")
+	}
+	if binding.Kind != bindingKindAD {
+		return Peer{}, errors.New("projection requires an A-D binding")
+	}
+	if local == nil {
+		return Peer{}, errors.New("A-D projection requires the local client endpoint")
+	}
+	address, family, err := localEndpointAddress(*local)
+	if err != nil {
+		return Peer{}, err
+	}
+	return Peer{
+		PeerID:         peerID,
+		PairID:         grant.PairID,
+		PairGen:        grant.PairGen,
+		Mode:           PeerModeAD,
+		LeaseEpoch:     grant.LeaseEpoch,
+		PlacementEpoch: grant.PlacementEpoch,
+		ExpiresAt:      grant.ValidUntil,
+		Family:         family,
+		Address:        address,
+		Port:           local.Port,
+		Manifest:       hex.EncodeToString(grant.TargetBindingDigest[:]),
+	}, nil
+}
+
+func localEndpointAddress(local LocalEndpoint) ([16]byte, uint8, error) {
+	var raw [16]byte
+	if local.Port == 0 {
+		return raw, 0, errors.New("A-D local endpoint port is required")
+	}
+	address, err := netip.ParseAddr(local.Address)
+	if err != nil || address.Zone() != "" || address.Is4In6() || !address.IsLoopback() {
+		return raw, 0, errors.New("A-D local endpoint must be a loopback address")
+	}
+	if address.Is4() {
+		value := address.As4()
+		raw[10], raw[11] = 0xff, 0xff
+		copy(raw[12:], value[:])
+		return raw, 4, nil
+	}
+	return address.As16(), 6, nil
 }
 
 func exportAddress(binding Binding) ([16]byte, uint8, error) {

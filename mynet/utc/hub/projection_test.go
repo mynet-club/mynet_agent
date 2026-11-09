@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -167,6 +168,59 @@ func TestProjectionRejectsUnusableExportAddresses(t *testing.T) {
 		projection.Peers[0].Address = test.address
 		if _, err := projection.Canonical(); err == nil {
 			t.Fatalf("%s export address was accepted", name)
+		}
+	}
+}
+
+func loopbackPeer(family uint8) Peer {
+	peer := sampleProjection().Peers[0]
+	peer.Mode = PeerModeAD
+	peer.Port = 14001
+	peer.Family = family
+	if family == 4 {
+		peer.Address = [16]byte{10: 0xff, 11: 0xff, 12: 127, 15: 1}
+	} else {
+		peer.Address = [16]byte{15: 1}
+	}
+	return peer
+}
+
+func TestProjectionADLoopbackRoundTrip(t *testing.T) {
+	for _, family := range []uint8{4, 6} {
+		projection := sampleProjection()
+		projection.Peers[0] = loopbackPeer(family)
+		raw, err := projection.Canonical()
+		if err != nil {
+			t.Fatalf("family %d: %v", family, err)
+		}
+		parsed, err := Parse(raw)
+		if err != nil || !reflect.DeepEqual(parsed.Peers[0], projection.Peers[0]) {
+			t.Fatalf("family %d: A-D roundtrip mismatch: %v", family, err)
+		}
+	}
+}
+
+func TestProjectionRejectsInvalidADRows(t *testing.T) {
+	cases := map[string]func(*Peer){
+		"remote address": func(peer *Peer) {
+			peer.Address = sampleProjection().Peers[0].Address
+		},
+		"zero port":   func(peer *Peer) { peer.Port = 0 },
+		"zero expiry": func(peer *Peer) { peer.ExpiresAt = 0 },
+		"ipv6 scope":  func(peer *Peer) { peer.ScopeID = 1 },
+		"ipv6 remote": func(peer *Peer) {
+			peer.Family = 6
+			peer.Address = [16]byte{0: 0x20, 1: 0x01, 15: 1}
+		},
+		"unknown mode": func(peer *Peer) { peer.Mode = 3 },
+	}
+	for name, mutate := range cases {
+		peer := loopbackPeer(4)
+		mutate(&peer)
+		projection := sampleProjection()
+		projection.Peers[0] = peer
+		if _, err := projection.Canonical(); err == nil {
+			t.Fatalf("accepted A-D %s", name)
 		}
 	}
 }
