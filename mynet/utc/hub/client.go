@@ -148,6 +148,14 @@ func NewClient(config Config) (*Client, error) {
 	return &Client{config: config}, nil
 }
 
+// transportError marks a failure before any verified control reply was
+// decoded. Retrying the identical request is safe because the hub idempotency
+// key is stable; reply validation failures are never retried.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
+
 func (c *Client) exchangeRequest(ctx context.Context, request Request) (Response, error) {
 	var response Response
 	payload, err := c.encodeRequest(request)
@@ -161,7 +169,7 @@ func (c *Client) exchangeRequest(ctx context.Context, request Request) (Response
 	dialer := &net.Dialer{Timeout: c.config.Timeout}
 	connection, err := dialer.DialContext(ctx, "tcp", c.config.Address)
 	if err != nil {
-		return response, fmt.Errorf("utc-hub dial: %w", err)
+		return response, &transportError{fmt.Errorf("utc-hub dial: %w", err)}
 	}
 	defer connection.Close()
 	deadline := time.Now().Add(c.config.Timeout)
@@ -179,11 +187,11 @@ func (c *Client) exchangeRequest(ctx context.Context, request Request) (Response
 		}
 	}()
 	if _, err := connection.Write(frame); err != nil {
-		return response, fmt.Errorf("utc-hub write: %w", err)
+		return response, &transportError{fmt.Errorf("utc-hub write: %w", err)}
 	}
 	reply, err := readControlFrame(connection)
 	if err != nil {
-		return response, fmt.Errorf("utc-hub read: %w", err)
+		return response, &transportError{fmt.Errorf("utc-hub read: %w", err)}
 	}
 	if reply.StreamID != c.config.StreamID {
 		return response, fmt.Errorf("utc-hub reply stream %d does not match request", reply.StreamID)
@@ -397,6 +405,9 @@ func checkGrantAgainstRequest(grant Grant, placement Placement, request Request,
 	default:
 		if grant.PairGen != request.PairGen || grant.LeaseEpoch != request.LeaseEpoch {
 			return errors.New("utc-hub renewal changed epochs without rotate")
+		}
+		if request.Prior.Epoch != 0 && placement != request.Prior {
+			return errors.New("utc-hub renewal changed the placement without rotate")
 		}
 	}
 	if request.Failover && grant.PlacementEpoch <= request.Prior.Epoch {

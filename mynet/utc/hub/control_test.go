@@ -634,3 +634,41 @@ func TestRejectsIncompleteSuccessReply(t *testing.T) {
 		t.Fatal("accepted a success reply without grant/binding/placement")
 	}
 }
+
+func TestTransportRetryReusesNonce(t *testing.T) {
+	key, _ := testKey(t)
+	var hub *fakeHub
+	hub = newFakeHub(t, func(recordedRequest) []byte {
+		if hub.count() == 1 {
+			return nil
+		}
+		return successPayload(t, key, testReplyFor(t, key, 1, 1, 1, 1, "10.0.0.1", 19620))
+	})
+	session := newTestSession(t, hub, key)
+	if _, err := session.Assign(context.Background()); err != nil {
+		t.Fatalf("retry after a lost reply failed: %v", err)
+	}
+	if hub.count() != 2 {
+		t.Fatalf("hub saw %d requests, want 2", hub.count())
+	}
+	hub.mu.Lock()
+	first, second := hub.requests[0].u64(9), hub.requests[1].u64(9)
+	hub.mu.Unlock()
+	if first == 0 || first != second {
+		t.Fatalf("retry did not reuse the nonce: first=%d second=%d", first, second)
+	}
+}
+
+func TestRenewRejectsPlacementChangeWithoutRotate(t *testing.T) {
+	key, _ := testKey(t)
+	hub := newFakeHub(t, func(recordedRequest) []byte {
+		return successPayload(t, key, testReplyFor(t, key, 1, 1, 2, 1, "10.0.0.1", 19620))
+	})
+	session := newTestSession(t, hub, key)
+	prior := Prior{PairGen: 1, LeaseEpoch: 1,
+		Placement: Placement{Epoch: 1, EdgeID: 1, ShardID: 0, ReactorID: 0}}
+	if _, err := session.Renew(context.Background(), prior, false); err == nil ||
+		!strings.Contains(err.Error(), "placement") {
+		t.Fatalf("renewal moved the placement without rotate: %v", err)
+	}
+}

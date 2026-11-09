@@ -13,6 +13,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+)
+
+const (
+	exchangeAttempts = 3
+	exchangeBackoff  = 100 * time.Millisecond
 )
 
 // Identity is the local installation content written into the utc-v2 header.
@@ -130,6 +136,7 @@ func (s *Session) Renew(ctx context.Context, prior Prior, rotate bool) (Outcome,
 	return s.exchange(ctx, prior, Request{
 		Renew: true, PairID: s.PairID, Side: s.Side, Mode: s.Mode,
 		PairGen: prior.PairGen, LeaseEpoch: prior.LeaseEpoch, Rotate: rotate,
+		Prior: prior.Placement,
 	})
 }
 
@@ -165,20 +172,43 @@ func (s *Session) Failover(ctx context.Context, prior Prior, fence Fence) (Outco
 	})
 }
 
+// exchange sends one logical control request. Transport failures are retried
+// with the same nonce (and the same fence evidence) so a lost reply hits the
+// hub idempotency cache instead of failing on an already-consumed fence.
 func (s *Session) exchange(ctx context.Context, prior Prior, request Request) (Outcome, error) {
 	if err := s.validate(); err != nil {
 		return Outcome{}, err
 	}
-	nonce, err := s.nextNonce()
-	if err != nil {
-		return Outcome{}, err
+	if request.Nonce == 0 {
+		nonce, err := s.nextNonce()
+		if err != nil {
+			return Outcome{}, err
+		}
+		request.Nonce = nonce
 	}
-	request.Nonce = nonce
-	response, err := s.Client.exchangeRequest(ctx, request)
-	if err != nil {
-		return Outcome{}, err
+	var lastErr error
+	for attempt := 0; attempt < exchangeAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * exchangeBackoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return Outcome{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		response, err := s.Client.exchangeRequest(ctx, request)
+		if err == nil {
+			return s.outcome(prior, response)
+		}
+		lastErr = err
+		var refused *ReasonError
+		var transport *transportError
+		if errors.As(err, &refused) || !errors.As(err, &transport) || ctx.Err() != nil {
+			return Outcome{}, err
+		}
 	}
-	return s.outcome(prior, response)
+	return Outcome{}, lastErr
 }
 
 func (s *Session) outcome(prior Prior, response Response) (Outcome, error) {
