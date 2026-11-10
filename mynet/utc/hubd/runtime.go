@@ -102,6 +102,9 @@ func defaultJitter(max time.Duration) time.Duration {
 	return time.Duration(binary.BigEndian.Uint64(raw[:]) % uint64(max+1))
 }
 
+// identityPoll bounds how long Run may sleep before noticing a GNB restart.
+const identityPoll = 2 * time.Second
+
 // Run loads durable state once, then renews every pair before expiry until ctx
 // is cancelled. Corrupt or ambiguous state stops the runtime; transient control
 // or GNB failures are retried per pair with bounded backoff.
@@ -123,6 +126,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		backoff = growBackoff(backoff, r.cfg.RetryMax)
 	}
 	backoff = r.cfg.RetryMin
+	previousBoot, previousPID := "", uint64(0)
 	for {
 		if err := r.refreshIdentity(); err != nil {
 			r.logf("utc hub identity refresh failed; retrying: %v", err)
@@ -133,6 +137,8 @@ func (r *Runtime) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = r.cfg.RetryMin
+		r.identityMoved(previousBoot, previousPID)
+		previousBoot, previousPID = r.identity.BootID, r.identity.PID
 		now := r.Now()
 		for _, pair := range r.pairs {
 			if pair.nextDue.After(now) {
@@ -158,6 +164,9 @@ func (r *Runtime) Run(ctx context.Context) error {
 		wait := r.nextWait()
 		if wait < r.cfg.RetryMin {
 			wait = r.cfg.RetryMin
+		}
+		if wait > identityPoll {
+			wait = identityPoll
 		}
 		if err := waitContext(ctx, wait); err != nil {
 			return err
@@ -206,6 +215,21 @@ func (r *Runtime) nextWait() time.Duration {
 		}
 	}
 	return wait
+}
+
+// identityMoved forces an immediate cycle when the GNB process changed, so a
+// restart-only recovery does not wait for the next renewal window.
+func (r *Runtime) identityMoved(previousBoot string, previousPID uint64) bool {
+	if previousBoot == "" {
+		return false
+	}
+	if r.identity.BootID == previousBoot && r.identity.PID == previousPID {
+		return false
+	}
+	for _, pair := range r.pairs {
+		pair.nextDue = time.Time{}
+	}
+	return true
 }
 
 // load strictly reconstructs the durable control and dataplane state for every
@@ -268,9 +292,11 @@ func (r *Runtime) load() error {
 			return permanent(fmt.Errorf("utc.status: %w", err))
 		}
 		statusExists = true
-		if snapshot.Header.Scope != r.cfg.Scope ||
-			snapshot.Header.Instance != r.identity.Instance ||
-			snapshot.Header.LocalID != r.identity.LocalID {
+		discloseOnly := snapshot.Header.Scope == "none" && snapshot.Header.Instance == "none"
+		if !discloseOnly &&
+			(snapshot.Header.Scope != r.cfg.Scope ||
+				snapshot.Header.Instance != r.identity.Instance ||
+				snapshot.Header.LocalID != r.identity.LocalID) {
 			return permanent(errors.New("utc.status belongs to another scope/instance"))
 		}
 		if !identityFromFile {
@@ -408,19 +434,22 @@ func (r *Runtime) refreshIdentity() error {
 		return fmt.Errorf("utc.identity: %w", identityErr)
 	}
 	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
-		if snapshot, err := parseStatus(raw); err == nil &&
-			snapshot.Header.Scope == r.cfg.Scope &&
-			snapshot.Header.Instance == r.identity.Instance &&
-			snapshot.Header.LocalID == r.identity.LocalID {
-			if !haveIdentity {
-				r.identity.BootID = snapshot.Header.BootID
-				r.identity.PID = snapshot.Header.PID
+		if snapshot, err := parseStatus(raw); err == nil {
+			discloseOnly := snapshot.Header.Scope == "none" && snapshot.Header.Instance == "none"
+			matches := snapshot.Header.Scope == r.cfg.Scope &&
+				snapshot.Header.Instance == r.identity.Instance &&
+				snapshot.Header.LocalID == r.identity.LocalID
+			if !discloseOnly && !matches {
+				r.logf("utc hub: ignored utc.status for another scope/instance/local")
+			} else {
+				if !haveIdentity {
+					r.identity.BootID = snapshot.Header.BootID
+					r.identity.PID = snapshot.Header.PID
+				}
+				if snapshot.Header.ConfigGen > r.configGen {
+					r.configGen = snapshot.Header.ConfigGen
+				}
 			}
-			if snapshot.Header.ConfigGen > r.configGen {
-				r.configGen = snapshot.Header.ConfigGen
-			}
-		} else if err == nil {
-			r.logf("utc hub: ignored utc.status for another scope/instance/local")
 		}
 	} else if !os.IsNotExist(err) {
 		// Not fatal: the identity file already bound this cycle, and a
@@ -508,7 +537,9 @@ func (r *Runtime) stepPair(ctx context.Context, pair *pairState) error {
 	pair.started = true
 	pair.prior = outcome.Prior()
 	pair.grantValidUntil = outcome.Summary.ValidUntil
-	if err := r.validateAccepted(outcome, now); err != nil {
+	// Validate against the time after the Hub exchange: not_before is minted by
+	// the Hub, and a client clock a second behind must not reject forever.
+	if err := r.validateAccepted(outcome, r.Now()); err != nil {
 		return err
 	}
 	if err := r.publishOutcome(ctx, pair, outcome, now); err != nil {
@@ -517,9 +548,13 @@ func (r *Runtime) stepPair(ctx context.Context, pair *pairState) error {
 	return nil
 }
 
+// grantClockSkew tolerates a small Hub-ahead-of-client clock difference; the
+// Hub mints not_before from its own clock.
+const grantClockSkew = 2
+
 func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 	grant := outcome.Response.Grant
-	if grant.NotBefore > uint64(now.Unix()) {
+	if grant.NotBefore > uint64(now.Unix())+grantClockSkew {
 		return errors.New("utc-hub grant is not valid yet")
 	}
 	if grant.ValidUntil <= uint64(now.Unix()) {
@@ -544,7 +579,13 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 	// renewed grant instead of waiting for the old deadline to force a rotate.
 	renewalExtended := !outcome.Changed && r.file.Exists &&
 		outcome.Summary.ValidUntil > pair.publishedExpiresAt
-	writeNeeded := outcome.Changed || renewalExtended || !verifiedPrior || !r.file.Exists
+	// A GNB restart changes boot_id/PID; the old projection is bound to the
+	// previous process and must be republished at a higher generation or the
+	// dataplane refuses it as REQUIRES_NEW_GENERATION.
+	identityChanged := r.file.Exists &&
+		(r.file.BootID != r.identity.BootID || r.file.PID != r.identity.PID)
+	writeNeeded := outcome.Changed || renewalExtended || !verifiedPrior ||
+		!r.file.Exists || identityChanged
 	if writeNeeded {
 		peer, err := r.buildPeer(pair, outcome)
 		if err != nil {

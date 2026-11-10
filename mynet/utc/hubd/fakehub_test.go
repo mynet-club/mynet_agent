@@ -395,11 +395,17 @@ const testLocalDigest = "efefefefefefefefefefefefefefefefefefefefefefefefefefefe
 
 func writeStatus(t *testing.T, path, headerReason string, configGen, pairGen uint64, state, reason string) {
 	t.Helper()
+	writeStatusFor(t, path, headerReason, configGen, pairGen, state, reason, testBoot, 123)
+}
+
+func writeStatusFor(t *testing.T, path, headerReason string, configGen, pairGen uint64,
+	state, reason, bootID string, pid uint64) {
+	t.Helper()
 	now := uint64(time.Now().Unix())
 	text := fmt.Sprintf("status-v1 %s instance-a %d %s %d %d %s %d\n"+
 		"metrics 0 0 0 0\n"+
 		"peer %d %d %d %s %s %s %s\n",
-		testScope, testLocalID, testBoot, configGen, now, headerReason, 123,
+		testScope, testLocalID, bootID, configGen, now, headerReason, pid,
 		testPeerID, testPairID, pairGen, state, reason, testManifest, testLocalDigest)
 	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 		t.Fatal(err)

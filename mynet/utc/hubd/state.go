@@ -85,6 +85,8 @@ type projectionState struct {
 	Exists    bool
 	Digest    string
 	ConfigGen uint64
+	BootID    string
+	PID       uint64
 	// Peers is keyed by pair id. The file is shared by every configured pair.
 	Peers map[uint64]hub.Peer
 }
@@ -120,7 +122,8 @@ func inspectProjection(path string, identity hub.Identity) (projectionState, err
 	sum := sha256.Sum256(raw)
 	return projectionState{
 		Exists: true, Digest: hex.EncodeToString(sum[:]),
-		ConfigGen: projection.ConfigGen, Peers: peers,
+		ConfigGen: projection.ConfigGen, BootID: projection.BootID,
+		PID: projection.PID, Peers: peers,
 	}, nil
 }
 

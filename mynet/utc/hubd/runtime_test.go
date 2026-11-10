@@ -718,3 +718,86 @@ func TestRuntimeRebuildAfterConfDeletionAdvancesGeneration(t *testing.T) {
 		t.Fatalf("rebuilt projection reused config_gen %d", gen)
 	}
 }
+
+func TestRuntimeRepublishesAfterBootChange(t *testing.T) {
+	key, _ := testKey(t)
+	config, _ := assignState(t, key)
+	const newBoot = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	const newPID = 456
+	writeIdentity(t, config.ConfDir, testLocalID, newBoot, newPID, 0600)
+	reply := baseReply(t, key, 1, 1, 1, 2, time.Now().Add(5*time.Minute).Unix())
+	server := newFakeHub(t, func(_ *fakeHub, _ int, _ recordedRequest) []byte {
+		writeStatusFor(t, config.StatusPath, "RUNNING", 6, 1, "APPLIED", "POLICY_LOADED",
+			newBoot, newPID)
+		return successPayload(t, key, reply)
+	})
+	config.HubAddress = server.listener.Addr().String()
+	if err := stepOnce(t, newRuntime(t, config)); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := hub.Parse(readFile(t, filepath.Join(config.ConfDir, "utc.conf")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.ConfigGen != 6 || projection.BootID != newBoot || projection.PID != newPID {
+		t.Fatalf("projection not rebound to the new process: gen=%d boot=%s pid=%d",
+			projection.ConfigGen, projection.BootID, projection.PID)
+	}
+}
+
+func TestRuntimeAcceptsSmallGrantClockSkew(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	runtime := &Runtime{cfg: Config{LeaseTTL: 3600 * time.Second}}
+	accept := func(notBefore uint64) error {
+		return runtime.validateAccepted(hub.Outcome{
+			Response: hub.Response{Grant: hub.Grant{
+				IssuedAt:   uint64(now.Unix()) - 10,
+				NotBefore:  notBefore,
+				ValidUntil: uint64(now.Unix()) + 3500,
+			}},
+			Summary: hub.Summary{EdgeID: 1},
+		}, now)
+	}
+	if err := accept(uint64(now.Unix()) + grantClockSkew); err != nil {
+		t.Fatalf("skew within bound rejected: %v", err)
+	}
+	if err := accept(uint64(now.Unix()) + grantClockSkew + 1); err == nil {
+		t.Fatal("skew beyond bound was accepted")
+	}
+}
+
+func TestRuntimeForcesCycleWhenIdentityMoves(t *testing.T) {
+	runtime := &Runtime{
+		identity: hub.Identity{BootID: testBoot, PID: 123},
+		pairs:    []*pairState{{nextDue: time.Now().Add(time.Hour)}},
+	}
+	if !runtime.identityMoved("11111111111111111111111111111111", 1) {
+		t.Fatal("boot/pid change did not force a cycle")
+	}
+	if !runtime.pairs[0].nextDue.IsZero() {
+		t.Fatalf("pair nextDue = %v, want immediate", runtime.pairs[0].nextDue)
+	}
+	if runtime.identityMoved(testBoot, 123) {
+		t.Fatal("unchanged identity forced a cycle")
+	}
+}
+
+func TestRuntimeRefreshesIdentityFromDiscloseOnlyStatus(t *testing.T) {
+	_, public := testKey(t)
+	config := coreConfig(t, "127.0.0.1:1", public)
+	const newBoot = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	const newPID = 456
+	text := "status-v1 none none 10 " + newBoot + " 0 1800000000 NEVER_ENABLED " +
+		"456\nmetrics 0 0 0 0\n"
+	if err := os.WriteFile(config.StatusPath, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newRuntime(t, config)
+	if err := runtime.refreshIdentity(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.identity.BootID != newBoot || runtime.identity.PID != newPID ||
+		runtime.pairs[0].session.Identity.BootID != newBoot {
+		t.Fatalf("disclose-only identity was not adopted: %+v", runtime.identity)
+	}
+}
