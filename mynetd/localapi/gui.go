@@ -118,3 +118,14 @@ func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
 }
+
+// hasEmbeddedGUI reports whether the release embeds the integrated GUI.
+// The legacy /ui/ page only redirects there; root should go straight to it.
+func hasEmbeddedGUI() bool {
+	embedded, err := fs.Sub(webUIFS(), "gui")
+	if err != nil {
+		return false
+	}
+	_, err = fs.Stat(embedded, "index.html")
+	return err == nil
+}

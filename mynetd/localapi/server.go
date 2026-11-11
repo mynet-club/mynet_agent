@@ -347,11 +347,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// 浏览器要的是面板，不是 JSON 壳：有 WebUI 就进 /ui/。
+	// 浏览器要的是面板，不是 JSON 壳：优先直进融合后的 /gui/。
+	// /ui/ 只保留为离线兜底（其 index 也会跳 /gui/）。
 	// API 探针用 Accept: application/json 或直接打 /api/v1/status。
 	accept := r.Header.Get("Accept")
 	if hasWebUI && strings.Contains(accept, "text/html") {
-		http.Redirect(w, r, "/ui/", http.StatusFound)
+		target := "/ui/"
+		if hasEmbeddedGUI() {
+			target = "/gui/"
+		}
+		http.Redirect(w, r, target, http.StatusFound)
 		return
 	}
 	writeJSON(w, 200, map[string]any{
