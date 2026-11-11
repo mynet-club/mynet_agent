@@ -35,9 +35,15 @@ type statusPeer struct {
 	LocalDigest string
 }
 
+type statusUsage struct {
+	Tx uint64
+	Rx uint64
+}
+
 type statusSnapshot struct {
 	Header statusHeader
 	Peers  map[uint64]statusPeer
+	Usage  map[uint64]statusUsage
 }
 
 // readStatusFile enforces the GNB-written status file boundary: regular,
@@ -106,6 +112,7 @@ func parseStatus(raw []byte) (statusSnapshot, error) {
 		}
 	}
 	snapshot.Peers = make(map[uint64]statusPeer)
+	snapshot.Usage = make(map[uint64]statusUsage)
 	for _, line := range lines[2:] {
 		fields := strings.Fields(line)
 		switch {
@@ -122,6 +129,23 @@ func parseStatus(raw []byte) (statusSnapshot, error) {
 				return snapshot, errors.New("utc.status repeats a peer")
 			}
 			snapshot.Peers[peer.PeerID] = peer
+		case fields[0] == "usage" && len(fields) == 4:
+			peerID, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil || peerID == 0 {
+				return snapshot, errors.New("utc.status usage peer is invalid")
+			}
+			tx, err := strconv.ParseUint(fields[2], 10, 64)
+			if err != nil {
+				return snapshot, errors.New("utc.status usage tx is invalid")
+			}
+			rx, err := strconv.ParseUint(fields[3], 10, 64)
+			if err != nil {
+				return snapshot, errors.New("utc.status usage rx is invalid")
+			}
+			if _, duplicate := snapshot.Usage[peerID]; duplicate {
+				return snapshot, errors.New("utc.status repeats usage")
+			}
+			snapshot.Usage[peerID] = statusUsage{Tx: tx, Rx: rx}
 		default:
 			return snapshot, errors.New("utc.status has an unknown row")
 		}

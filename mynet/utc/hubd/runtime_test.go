@@ -8,6 +8,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +35,8 @@ func coreConfig(t *testing.T, address string, public ed25519.PublicKey) Config {
 			VerifiedPath: filepath.Join(state, "utc.hub.json.verified"),
 		}},
 		ConfDir: conf, StatusPath: filepath.Join(conf, "utc.status"),
-		LeaseTTL: 3600 * time.Second, RenewLead: 600 * time.Second,
+		MeterPath: filepath.Join(conf, "endpoint-counters"),
+		LeaseTTL:  3600 * time.Second, RenewLead: 600 * time.Second,
 		JitterMax: 60 * time.Second, StatusPoll: 10 * time.Millisecond,
 		ApplyTimeout: 300 * time.Millisecond, RetryMin: 10 * time.Millisecond,
 		RetryMax: 50 * time.Millisecond, StatusMaxAge: 5 * time.Second,
@@ -96,6 +99,14 @@ func TestRuntimeAssignPublishesAndVerifies(t *testing.T) {
 	runtime := newRuntime(t, config)
 	if err := stepOnce(t, runtime); err != nil {
 		t.Fatal(err)
+	}
+	if err := runtime.load(); err != nil {
+		t.Fatal(err)
+	}
+	meter := string(readFile(t, config.MeterPath))
+	if !strings.HasPrefix(meter, "# utc-endpoint-counters v1\n") ||
+		!strings.Contains(meter, strconv.FormatUint(testPairID, 10)+" 1 ") {
+		t.Fatalf("meter file = %q", meter)
 	}
 	if server.count() != 1 {
 		t.Fatalf("hub saw %d requests", server.count())

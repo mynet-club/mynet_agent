@@ -8,10 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
+	"github.com/mynet-club/mynet_agent/mynet/utc/material"
 )
 
 // The launcher replaces itself with GNB: service managers retain the same PID,
@@ -26,8 +29,11 @@ func cmdUTC(args []string) int {
 	if len(args) > 0 && (args[0] == "publish" || args[0] == "publish-peer" || args[0] == "history" || args[0] == "verify") {
 		return cmdUTCProjection(args)
 	}
+	if len(args) > 0 && args[0] == "material" {
+		return cmdUTCMaterial(args[1:])
+	}
 	if len(args) == 0 || args[0] != "driver-run" {
-		fmt.Fprintln(os.Stderr, "usage: mynet utc authority verify|install-floor [options]\n       mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
+		fmt.Fprintln(os.Stderr, "usage: mynet utc authority verify|install-floor [options]\n       mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc material -c CONFIG [--once]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
 		return 2
 	}
 	flags := flag.NewFlagSet("utc driver-run", flag.ContinueOnError)
@@ -57,6 +63,47 @@ func cmdUTC(args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "UTC driver launch:", err)
 	return 1
+}
+
+// cmdUTCMaterial runs the UTC material agent in the foreground: fetch/install
+// relay material from utc-materiald, restart utcd on a new revision and (unless
+// --once) keep polling. It shares mynet/utc/material with the standalone
+// utc-material-agent daemon; errors go to stderr with a non-zero exit code.
+func cmdUTCMaterial(args []string) int {
+	flags := flag.NewFlagSet("utc material", flag.ContinueOnError)
+	conf := flags.String("c", "", "material agent config path")
+	once := flags.Bool("once", false, "fetch once and exit")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if *conf == "" || flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: mynet utc material -c CONFIG [--once]")
+		return 2
+	}
+	cfg, err := material.LoadConfig(*conf)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	a, err := material.New(cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if *once {
+		if err := a.RunOnce(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "utc material: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if err := a.Run(ctx); err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "utc material: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func cmdUTCProjection(args []string) int {

@@ -309,6 +309,11 @@ func (r *Runtime) load() error {
 	} else if !os.IsNotExist(statusErr) {
 		return permanent(fmt.Errorf("utc.status: %w", statusErr))
 	}
+	if statusExists && r.cfg.MeterPath != "" {
+		if err := writeMeterFile(r.cfg.MeterPath, meterLines(r.cfg.Pairs, snapshot)); err != nil {
+			r.logf("utc hub: endpoint meter export failed: %v", err)
+		}
+	}
 	if r.identity.BootID == "" || r.identity.PID == 0 {
 		return permanent(errors.New("utc hub identity has no boot id/pid and no utc.identity file"))
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet/utc/hubd"
 	"github.com/mynet-club/mynet_agent/shared/logger"
@@ -29,6 +30,16 @@ func startUTCHub(ctx context.Context) {
 	if err != nil {
 		logger.Error("UTC Hub 配置无效，运行时未启动（fail-closed）", "path", path, "err", err)
 		return
+	}
+	if config.Bootstrap != nil {
+		bootstrapCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err = hubd.Bootstrap(bootstrapCtx, &config)
+		cancel()
+		if err != nil {
+			logger.Error("UTC Hub Gateway 引导失败，运行时未启动（fail-closed）",
+				"err", err)
+			return
+		}
 	}
 	runtime, err := hubd.New(config)
 	if err != nil {

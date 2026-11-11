@@ -72,6 +72,36 @@ func TestLoadConfigAcceptsADPairWithLocalEndpoint(t *testing.T) {
 	}
 }
 
+func TestLoadConfigValidatesMeterPath(t *testing.T) {
+	directory := t.TempDir()
+	body := bytes.Replace(validConfigJSON(t), []byte(`"conf_dir": "/tmp/gnb"`),
+		[]byte(`"conf_dir": "/tmp/gnb", "meter_path": "`+
+			filepath.Join(directory, "meter.txt")+`"`), 1)
+	path := filepath.Join(t.TempDir(), "hub.json")
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatal(err)
+	}
+	config, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MeterPath != filepath.Join(directory, "meter.txt") {
+		t.Fatalf("meter path = %q", config.MeterPath)
+	}
+	for _, bad := range []string{"relative.txt",
+		filepath.Join(directory, "missing", "meter.txt")} {
+		invalid := bytes.Replace(validConfigJSON(t),
+			[]byte(`"conf_dir": "/tmp/gnb"`),
+			[]byte(`"conf_dir": "/tmp/gnb", "meter_path": "`+bad+`"`), 1)
+		if err := os.WriteFile(path, invalid, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("meter_path %q must be rejected", bad)
+		}
+	}
+}
+
 func TestLoadConfigRejectsInvalidPairWiring(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
 	base := func(pairs string) []byte {

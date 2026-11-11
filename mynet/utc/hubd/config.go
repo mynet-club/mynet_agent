@@ -62,8 +62,14 @@ type Config struct {
 	Identity hub.Identity
 	Pairs    []PairConfig
 
+	// Bootstrap, when set, replaces a static HubAddress with the Core endpoint
+	// from a Core-signed NodeDescriptor; static address and bootstrap cannot
+	// be combined.
+	Bootstrap *BootstrapConfig
+
 	ConfDir    string
 	StatusPath string
+	MeterPath  string
 
 	LeaseTTL     time.Duration
 	RenewLead    time.Duration
@@ -97,25 +103,27 @@ type filePair struct {
 }
 
 type fileConfig struct {
-	Address         string       `json:"address"`
-	Scope           string       `json:"scope"`
-	TransportID     string       `json:"transport_id"`
-	AccountID       string       `json:"account_id"`
-	IssuerPublicKey string       `json:"issuer_public_key"`
-	StreamID        uint32       `json:"stream_id"`
-	ClientTimeout   int64        `json:"client_timeout_seconds"`
-	Identity        fileIdentity `json:"identity"`
-	Pairs           []filePair   `json:"pairs"`
-	ConfDir         string       `json:"conf_dir"`
-	StatusPath      string       `json:"status_path"`
-	LeaseTTL        int64        `json:"lease_ttl_seconds"`
-	RenewLead       int64        `json:"renew_lead_seconds"`
-	JitterMax       int64        `json:"jitter_seconds"`
-	StatusPollMS    int64        `json:"status_poll_millis"`
-	ApplyTimeout    int64        `json:"apply_timeout_seconds"`
-	RetryMin        int64        `json:"retry_min_seconds"`
-	RetryMax        int64        `json:"retry_max_seconds"`
-	StatusMaxAge    int64        `json:"status_max_age_seconds"`
+	Address         string          `json:"address"`
+	Scope           string          `json:"scope"`
+	TransportID     string          `json:"transport_id"`
+	AccountID       string          `json:"account_id"`
+	IssuerPublicKey string          `json:"issuer_public_key"`
+	StreamID        uint32          `json:"stream_id"`
+	ClientTimeout   int64           `json:"client_timeout_seconds"`
+	Identity        fileIdentity    `json:"identity"`
+	Pairs           []filePair      `json:"pairs"`
+	ConfDir         string          `json:"conf_dir"`
+	StatusPath      string          `json:"status_path"`
+	MeterPath       string          `json:"meter_path,omitempty"`
+	Bootstrap       json.RawMessage `json:"bootstrap,omitempty"`
+	LeaseTTL        int64           `json:"lease_ttl_seconds"`
+	RenewLead       int64           `json:"renew_lead_seconds"`
+	JitterMax       int64           `json:"jitter_seconds"`
+	StatusPollMS    int64           `json:"status_poll_millis"`
+	ApplyTimeout    int64           `json:"apply_timeout_seconds"`
+	RetryMin        int64           `json:"retry_min_seconds"`
+	RetryMax        int64           `json:"retry_max_seconds"`
+	StatusMaxAge    int64           `json:"status_max_age_seconds"`
 }
 
 // Load reads a strict JSON configuration file. Any unknown field, trailing
@@ -146,6 +154,13 @@ func Load(path string) (Config, error) {
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return config, errors.New("utc hub issuer_public_key must be 32-byte hex")
 	}
+	bootstrap, err := parseBootstrap(file.Bootstrap)
+	if err != nil {
+		return config, err
+	}
+	if bootstrap != nil && file.Address != "" {
+		return config, errors.New("utc hub static address and bootstrap are mutually exclusive")
+	}
 	identityScope := file.Identity.Scope
 	if identityScope == "" {
 		identityScope = file.Scope
@@ -163,6 +178,7 @@ func Load(path string) (Config, error) {
 			Capabilities: file.Identity.Capabilities, ConfigGen: file.Identity.ConfigGen,
 		},
 		ConfDir: file.ConfDir, StatusPath: file.StatusPath,
+		MeterPath:    file.MeterPath,
 		LeaseTTL:     time.Duration(file.LeaseTTL) * time.Second,
 		RenewLead:    time.Duration(file.RenewLead) * time.Second,
 		JitterMax:    time.Duration(file.JitterMax) * time.Second,
@@ -171,6 +187,7 @@ func Load(path string) (Config, error) {
 		RetryMin:     time.Duration(file.RetryMin) * time.Second,
 		RetryMax:     time.Duration(file.RetryMax) * time.Second,
 		StatusMaxAge: time.Duration(file.StatusMaxAge) * time.Second,
+		Bootstrap:    bootstrap,
 	}
 	for _, item := range file.Pairs {
 		pair := PairConfig{
@@ -227,13 +244,16 @@ func (c *Config) applyDefaults() {
 
 func (c *Config) validate() error {
 	c.applyDefaults()
-	if c.HubAddress == "" {
-		return errors.New("utc hub address is required")
+	if c.HubAddress == "" && c.Bootstrap == nil {
+		return errors.New("utc hub address or bootstrap is required")
 	}
-	if c.Scope == "" || c.TransportID == "" || c.AccountID == "" {
-		return errors.New("utc hub scope/transport/account are required")
+	if c.TransportID == "" || c.AccountID == "" {
+		return errors.New("utc hub transport/account are required")
 	}
-	if c.Identity.Scope != c.Scope {
+	if c.Scope == "" && c.Bootstrap == nil {
+		return errors.New("utc hub scope is required without bootstrap")
+	}
+	if c.Scope != "" && c.Identity.Scope != c.Scope {
 		return errors.New("utc hub identity scope does not match the configured scope")
 	}
 	if len(c.Pairs) == 0 {
@@ -285,6 +305,15 @@ func (c *Config) validate() error {
 	}
 	if c.ConfDir == "" {
 		return errors.New("utc hub conf_dir is required")
+	}
+	if c.MeterPath != "" {
+		if !filepath.IsAbs(c.MeterPath) {
+			return errors.New("utc hub meter_path must be absolute")
+		}
+		info, err := os.Stat(filepath.Dir(c.MeterPath))
+		if err != nil || !info.IsDir() {
+			return errors.New("utc hub meter_path parent must be an existing directory")
+		}
 	}
 	if c.RenewLead >= c.LeaseTTL {
 		return errors.New("utc hub renew lead must be shorter than the lease TTL")
