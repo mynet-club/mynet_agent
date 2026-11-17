@@ -61,9 +61,11 @@ func execLuaStd(argv []string) (string, string, error) {
 // `plugin`（proxy 投影/出口/域名的唯一入口）同理：Lua 侧无对应实现。
 // `proxy` 也归 Go：它的落地（client 分流的 nft/ip rule/table/DNS）是 L6，Lua 侧已退役
 // （2026-10-11）—— 走 Lua 桩会得到「不支持子命令: proxy」，第三段刷新就断在这。
+// `service` 也归 Go：它是**编排**（投影→起进程→装路由，lifecycle-contract D 层），
+// Lua 桩只摸 init.d 只有「持进程」半条链 —— GUI/面板起隧道会变成「起了没路由」。
 func goNativeInLua(cmd string) bool {
 	switch cmd {
-	case "config", "setup", "plugin", "proxy":
+	case "config", "setup", "plugin", "proxy", "service":
 		return true
 	}
 	return false
@@ -139,8 +141,8 @@ func planLuaScript(argv []string) (string, error) {
 	// 而不是假装成功（D1：桩不算实现）。
 	switch cmd {
 	case "apply", "refresh-routes", "refresh-address", "refresh-config",
-		"service", "metrics", "detector", "nodes", "config", "status":
-		// ok
+		"metrics", "detector", "nodes", "config", "status":
+		// ok（service 已整条交回 Go：编排不能只有「持进程」半条链）
 	default:
 		return "", fmt.Errorf("lua 执行器不支持子命令: %s", cmd)
 	}
@@ -221,24 +223,6 @@ if cmd == "apply" or cmd == "refresh-routes" then
   end
   local errs = (r and r.errors) or {}
   fail(table.concat(errs, "; "))
-elseif cmd == "service" then
-  -- E-1：进程生命周期归 procd。不再 Lua spawn/kill gnb。
-  -- 启停走 /etc/init.d/mynet（由 mynet install 写入的 procd 单元）。
-  local action = pos[1] or ""
-  local util = try_require("luci.model.mynet.util")
-  if action == "start" or action == "stop" or action == "reload" or action == "restart" then
-    if action == "restart" then action = "restart"
-    elseif action == "reload" then action = "reload" end
-    local so, code = util.exec_status("/etc/init.d/mynet " .. action .. " 2>&1")
-    so = tostring(so or "")
-    if code == 0 then
-      out("service " .. action)
-      os.exit(0)
-    end
-    fail(so ~= "" and so or ("init mynet " .. action .. " failed code=" .. tostring(code)))
-  else
-    fail("unknown service action: " .. tostring(action))
-  end
 elseif cmd == "metrics" then
   local sys = try_require("luci.model.mynet.system")
   local util = try_require("luci.model.mynet.util")

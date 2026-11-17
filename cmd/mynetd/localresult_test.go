@@ -70,7 +70,6 @@ func TestPlanLuaScript_AllowsKnownSubcommands(t *testing.T) {
 		{"refresh-routes", "--auto"},
 		{"refresh-config", "--auto"},
 		{"refresh-address", "--auto"},
-		{"service", "start"},
 		{"metrics", "--json"},
 		{"detector", "--json"},
 	} {
@@ -102,13 +101,14 @@ func TestSelectExecutor_DefaultIsMynet(t *testing.T) {
 
 // O1：config/setup/plugin 在 Lua 执行器下必须改走 Go 二进制；proxy 同理
 // （client 分流的落地是 L6，Lua 侧已退役，走 Lua 桩会报「不支持子命令: proxy」）。
+// service 同理：它是编排（投影→起进程→装路由），Lua 桩只有「持进程」半条链。
 func TestGoNativeInLua(t *testing.T) {
-	for _, cmd := range []string{"config", "setup", "plugin", "proxy"} {
+	for _, cmd := range []string{"config", "setup", "plugin", "proxy", "service"} {
 		if !goNativeInLua(cmd) {
 			t.Fatalf("%s 应走 Go", cmd)
 		}
 	}
-	for _, cmd := range []string{"apply", "service", "metrics", "detector", "nodes", ""} {
+	for _, cmd := range []string{"apply", "metrics", "detector", "nodes", ""} {
 		if goNativeInLua(cmd) {
 			t.Fatalf("%s 不应走 Go（Lua 有实现）", cmd)
 		}

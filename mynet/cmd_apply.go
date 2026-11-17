@@ -293,6 +293,12 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "stop %s: %v\n", name, err)
 			return 1
 		}
+		// 路由回收归编排（E 层唯一写入者 = mynet apply）：只清自己装的隧道路由，
+		// 所有权闸不盲删 —— 以前靠 init 的 apply --clear 兜，P1 上收后由 stop 自带。
+		if code := cmdApply([]string{"--clear"}); code != 0 {
+			fmt.Fprintf(os.Stderr, "stop %s: 隧道已停，但路由回收未全部成功（exit %d）\n", name, code)
+			return code
+		}
 		fmt.Printf("stopped %s\n", name)
 		return 0
 	case "reload", "restart":
