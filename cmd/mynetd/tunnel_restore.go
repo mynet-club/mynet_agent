@@ -77,15 +77,21 @@ func saveTunnelState(s tunnelState) error {
 	return os.WriteFile(tunnelStatePath(), append(b, '\n'), 0o600)
 }
 
-// gnbPidFile 当前投影目录的 gnb.pid。
-// D4-E：节点唯一存放位 conf/<form>/<nodeId>/；旧 driver/gnb/conf 只作读回退。
+// gnbPidFile 当前运行投影目录的 gnb.pid（gnb -c 打开处，pid/map 都落这）。
+// 回退顺序：运行投影 → D4-E 原生节点目录 → 旧 driver/gnb/conf → var/gnb。
 func gnbPidFile() string {
 	form, nodeID := utils.ActiveNodeInfo()
-	if nodeID != "" {
-		if dir, err := utils.NodeRuntimePath(form, nodeID); err == nil {
-			if fileExists(filepath.Join(dir, "gnb.pid")) || fileExists(filepath.Join(dir, "node.conf")) {
-				return filepath.Join(dir, "gnb.pid")
-			}
+	if nodeID == "" {
+		nodeID = "default"
+	}
+	if run, err := utils.RunProjectionPath(nodeID); err == nil && run != "" {
+		if fileExists(filepath.Join(run, "gnb.pid")) || fileExists(filepath.Join(run, "node.conf")) {
+			return filepath.Join(run, "gnb.pid")
+		}
+	}
+	if dir, err := utils.NodeRuntimePath(form, nodeID); err == nil {
+		if fileExists(filepath.Join(dir, "gnb.pid")) || fileExists(filepath.Join(dir, "node.conf")) {
+			return filepath.Join(dir, "gnb.pid")
 		}
 	}
 	base := filepath.Join(utils.GetMyNetHome(), "driver", "gnb", "conf")

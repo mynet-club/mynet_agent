@@ -10,6 +10,7 @@ import (
 	"github.com/mynet-club/mynet_agent/mynet/driver"
 	"github.com/mynet-club/mynet_agent/mynet/upgrade"
 	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/config"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
 	"github.com/mynet-club/mynet_agent/shared/utils"
@@ -85,8 +86,19 @@ func cmdApply(args []string) int {
 
 	snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "读 system.json 失败（先跑 mynet detector）: %v\n", err)
-		return 1
+		// system.json 是 apply 的素材（L6 判据）。编排层常漏跑 detector
+		// （OpenWrt init post_start / Lua apply_routes 直调本命令），缺素材
+		// 硬失败会把「隧道通、路由无」留在现场 —— 这里自愈一次再读。
+		fmt.Fprintln(os.Stderr, "system.json 缺失，先跑 detector")
+		if rc := cmdDetector(nil); rc != 0 {
+			fmt.Fprintf(os.Stderr, "读 system.json 失败（先跑 mynet detector）: %v\n", err)
+			return 1
+		}
+		snap, err = shared.ReadSnapshot(shared.DefaultSnapshotPath())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "读 system.json 失败（detector 后仍缺）: %v\n", err)
+			return 1
+		}
 	}
 
 	// --clear：只清**自己装的**隧道路由（dev = 隧道口上的），与 --auto 对称。
@@ -96,12 +108,25 @@ func cmdApply(args []string) int {
 	}
 
 	if auto {
-		env, err := loadBundleEnvelope()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "apply --auto: 读 bundle 失败（先让 mynetd 拉一版）: %v\n", err)
-			return 1
+		var plan ApplyPlan
+		// local 模式没有 bundle —— L6 计划从 intent.routes 来（与 bundle 同语义）。
+		st := &config.Store{}
+		_, mode, merr := st.ActiveSource()
+		if merr == nil && mode != nil && mode.Mode == domain.ModeLocal {
+			li, lerr := st.LoadLocalIntent()
+			if lerr != nil {
+				fmt.Fprintf(os.Stderr, "apply --auto: 读 local intent 失败: %v\n", lerr)
+				return 1
+			}
+			plan, err = planFromLocalIntent(li)
+		} else {
+			env, berr := loadBundleEnvelope()
+			if berr != nil {
+				fmt.Fprintf(os.Stderr, "apply --auto: 读 bundle 失败（先让 mynetd 拉一版）: %v\n", berr)
+				return 1
+			}
+			plan, err = planFromBundle(env)
 		}
-		plan, err := planFromBundle(env)
 		if err != nil {
 			// 计划不成立 = 一条都不装。半装（跳过对不上的路由）会把 FIB
 			// 留在「部分新部分旧」的状态，比不装更难排查。
@@ -111,7 +136,7 @@ func cmdApply(args []string) int {
 		if len(plan.Routes) == 0 && len(plan.Firewall) == 0 && len(plan.Interfaces) == 0 && plan.ProxyExitDevice == "" {
 			// 不是错误：没有对端时本来就没有路由要装。但要**说出来**，
 			// 否则「apply 成功」和「apply 什么都没做」在日志里长得一样。
-			fmt.Println("apply --auto: bundle 里没有要应用的路由/防火墙/接口（无对端？）")
+			fmt.Println("apply --auto: 没有要应用的路由/防火墙/接口（无对端？）")
 			return 0
 		}
 
@@ -267,6 +292,13 @@ func cmdService(args []string) int {
 		return 0
 	case "reload", "restart":
 		// UI 用语是「重启」；CLI 历史名是 reload。两者同一动作。
+		// 先投影再重启：refresh-config 只写原生配置，运行投影在 ApplyFromActive
+		// 里生成 —— 旧序「先 Reload 后 applyAfterStart」让 gnb 重启读的是旧投影，
+		// 配置永远差一代。
+		if err := ApplyFromActive(false); err != nil {
+			fmt.Fprintf(os.Stderr, "reload %s: 投影失败（gnb 保持旧配置）: %v\n", name, err)
+			return 1
+		}
 		if err := d.Reload(); err != nil {
 			fmt.Fprintf(os.Stderr, "reload %s: %v\n", name, err)
 			return 1
@@ -315,6 +347,16 @@ func applyAfterStart() int {
 // 写原生配置的目录仍是 conf 节点目录（project_active 写完再投影过来）。
 // 两处若对不上，症状是「配置明明写了，起的却是另一个目录」。
 func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, error) {
+	// local 模式没有 bundle —— 身份在 conf/local/intent.json。CLI service 主链
+	// （start/stop/reload/status）在本地模式也必须能跑，不能只认 bundle。
+	store := &config.Store{}
+	if _, mode, err := store.ActiveSource(); err == nil && mode != nil && mode.Mode == domain.ModeLocal {
+		li, lerr := store.LoadLocalIntent()
+		if lerr != nil {
+			return nil, fmt.Errorf("load local intent: %w", lerr)
+		}
+		return buildLocalLifecycleDriver(typ, li)
+	}
 	env, err := loadBundleEnvelope()
 	if err != nil {
 		return nil, fmt.Errorf("读 bundle 失败（先让 mynetd 拉一版，或跑 mynet refresh-config）: %w", err)
@@ -356,6 +398,29 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 		}
 
 		return d, nil
+	default:
+		return nil, fmt.Errorf("未知驱动类型 %q", typ)
+	}
+}
+
+// buildLocalLifecycleDriver local 模式驱动：身份/目录与 applyLocal 同源。
+// wireguard 的 local 意图没有接口名（applyLocal 也只有 gnb 线），如实报错。
+func buildLocalLifecycleDriver(typ domain.VPNDriverType, li *domain.LocalIntent) (domain.VPNLifecycleDriver, error) {
+	switch typ {
+	case domain.DriverTypeGNB:
+		nodeID, err := strconv.ParseInt(li.Node.ID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("intent.node.id 非法: %q", li.Node.ID)
+		}
+		d := driver.NewGNBDriver(nodeID)
+		if run, rerr := utils.RunProjectionPath(li.Node.ID); rerr == nil && run != "" {
+			d.ConfDir = run
+		} else {
+			d.ConfDir = gnbConfDir()
+		}
+		return d, nil
+	case domain.DriverTypeWireGuard:
+		return nil, fmt.Errorf("local 意图不含 wireguard 接口名，service 命令暂只支持 online 模式的 wireguard")
 	default:
 		return nil, fmt.Errorf("未知驱动类型 %q", typ)
 	}

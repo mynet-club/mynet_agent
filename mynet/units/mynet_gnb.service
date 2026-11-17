@@ -47,6 +47,9 @@ Type=simple
 # （systemd 支持 Environment 里的变量展开，但**第一个 token 必须是绝对路径**，
 #  所以 gnb 的位置不能写成变量）
 Environment=MYNET_HOME=__MYNET_HOME__
+# 铁律 6（paths.md）：起服务前必须先 apply 投影 —— /var/run 重启即空，
+# 不先投影 gnb 必缺 node.conf。失败仅在既有投影可复用时降级（禁静默 fallback）。
+ExecStartPre=/bin/sh -c "__MYNET_BIN__ apply --active || test -f __GNB_CONF__/node.conf"
 # MYNET_UTC_LAUNCH_V1
 ExecStart=__MYNET_BIN__ utc driver-run --binary /usr/local/bin/gnb -c __GNB_CONF__ --systemd
 

@@ -297,6 +297,41 @@ func planFromBundle(env *domain.BundleEnvelope) (ApplyPlan, error) {
 	return plan, nil
 }
 
+// planFromLocalIntent local 模式的 L6 计划：intent.routes 装进隧道口（on-link），
+// 与 bundle.network.routes 同语义。LocalRoute.Via 是**节点 ID**（L5 归属，
+// 已由 LocalToGnbIntent 进 route.conf），OS 路由不需要网关 —— 全部经 TUN on-link。
+func planFromLocalIntent(li *domain.LocalIntent) (ApplyPlan, error) {
+	var plan ApplyPlan
+	if li == nil {
+		return plan, fmt.Errorf("local intent 为空")
+	}
+	// 逻辑接口名与 gnb 渲染默认一致；darwin 上由 resolveDevice 反查真实 utunN。
+	const dev = "gnb_tun"
+	locals := localConnectedCIDRs()
+	for _, r := range li.Routes {
+		if r.CIDR == "" {
+			continue
+		}
+		if ln, hit := routeHitsLocalSubnet(r.CIDR, locals); hit {
+			plan.Skipped = append(plan.Skipped, SkippedRoute{
+				Destination: r.CIDR,
+				Reason:      "与本机直连网段 " + ln + " 重叠，保持直连",
+			})
+			continue
+		}
+		plan.Routes = append(plan.Routes, RouteOp{
+			Action:      "replace",
+			Destination: r.CIDR,
+			Device:      dev,
+		})
+	}
+	if li.Node.Overlay != "" {
+		plan.LocalAddresses = append(plan.LocalAddresses, li.Node.Overlay)
+	}
+	plan.ProxyExitDevice = dev
+	return plan, nil
+}
+
 // firstEnabledExit 策略路由只认**第一个**启用出口。
 // PC 形态（2026-10-28 用户裁定）只支持单出口；GW 多出口走 gnb proxy.conf w=/order=，
 // 这里的 via 只是把流量推进隧道的下一跳，不做 OS 加权 ECMP（mac/win 无此能力）。

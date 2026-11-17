@@ -57,8 +57,26 @@ node_confdir() {
 	[ -d "$MYNET_HOME/conf/$form/$node" ] && echo "$MYNET_HOME/conf/$form/$node"
 }
 
-# 驱动原生 conf 目录（gnb）：节点唯一存放位（D4-E）；旧 driver/gnb/conf/<nodeId>/ 只作回退。
+# 运行投影（paths.md §2）：gnb -c 的唯一打开处，由 `mynet apply --active` 生成。
+# /var/run 重启即空 —— 起服务前必须先投影（铁律 6），start_gnb_instance 保证。
+gnb_rundir() {
+	local modefile="$MYNET_HOME/conf/mode.json" node root
+	[ -f "$modefile" ] || modefile="$MYNET_HOME/mode.json"
+	[ -f "$modefile" ] && node=$(jsonfilter -i "$modefile" -e '@.active.node_id' 2>/dev/null)
+	[ -n "$node" ] || node=default
+	root="${MYNET_RUN_ROOT:-/var/run/mynet}"
+	echo "$root/$node"
+}
+
+# gnb -c 打开处 = 运行投影（paths.md「gnb -c 指投影」）。
+# 原生节点目录只作读配置/归属判据，不直接交给 gnb。
 gnb_confdir() {
+	gnb_rundir
+}
+
+# 原生配置目录（真相源，读配置用）：节点唯一存放位（D4-E）；
+# 旧 driver/gnb/conf/<nodeId>/ 只作回退。
+native_confdir() {
 	local d
 	d=$(node_confdir)
 	[ -n "$d" ] && { echo "$d"; return 0; }
@@ -66,9 +84,10 @@ gnb_confdir() {
 }
 
 # 从驱动自己的 node.conf 取接口名 —— gnb 读 .conf 是它的方言，不属"agent 读 conf"。
+# 读**原生**目录：load_config 跑在投影生成之前，投影里此刻还没有 node.conf。
 driver_ifname() {
 	local d
-	d=$(gnb_confdir)
+	d=$(native_confdir)
 	[ -n "$d" ] || return 0
 	sed -n 's/^ifname[[:space:]][[:space:]]*//p' "$d/node.conf" 2>/dev/null | head -1
 }
@@ -188,47 +207,61 @@ procd_gnb_pids() {
 # 判据按 **confdir**：只清理指向本节点配置目录的 gnb，同机其它节点的 gnb 不受影响
 # （多节点/多 zone 共存是设计支持的）。红线：pid + cmdline 精确停，绝不按名字杀。
 converge_stale_gnb() {
-	local confdir="$1" procd_pids p cmd
+	local procd_pids p cmd d
 	procd_pids=$(procd_gnb_pids)
 	[ -n "$procd_pids" ] || procd_pids=" "   # 成员判据要能匹配空集
 	for p in $(pidof gnb 2>/dev/null); do
 		case " $procd_pids " in *" $p "*) continue ;; esac
 		cmd=$(tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null) || continue
-		case "$cmd" in
-			*"$confdir"*)
-				log "converge: 停止同节点遗留 gnb pid=$p（procd 未托管，$confdir）"
-				kill "$p" 2>/dev/null || true
-				sleep 1
-				kill -9 "$p" 2>/dev/null || true
-				;;
-		esac
+		# 判据目录可多个：投影目录 + 原生目录（覆盖升级前 -c 指原生的旧实例）
+		for d in "$@"; do
+			[ -n "$d" ] || continue
+			case "$cmd" in
+				*"$d"*)
+					log "converge: 停止同节点遗留 gnb pid=$p（procd 未托管，$d）"
+					kill "$p" 2>/dev/null || true
+					sleep 1
+					kill -9 "$p" 2>/dev/null || true
+					break
+					;;
+			esac
+		done
 	done
 }
 
 start_gnb_instance() {
-	local nid confdir bin launcher
+	local nid confdir nativedir bin launcher
 	nid=$(get_node_id_from_conf)
-	# D4-E：节点唯一存放位优先（gnb_confdir 含 mode.json 解析），旧 driver 位只回退
+	# gnb -c = 运行投影（gnb_confdir）；原生目录只作读配置/归属判据（D4-E）
 	confdir=$(gnb_confdir)
-	[ -n "$confdir" ] || confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
+	nativedir=$(native_confdir)
 	bin="${MYNET_HOME}/driver/gnb/bin/gnb"
 	[ -x "$bin" ] || bin="$(command -v gnb)"
-	if [ -z "$nid" ] || [ ! -d "$confdir" ] || [ -z "$bin" ]; then
+	launcher="$(command -v mynet)"
+	[ -n "$launcher" ] || launcher="/usr/sbin/mynet"
+	[ -x "$launcher" ] || { log "ERROR: mynet UTC-aware launcher missing"; return 1; }
+	if [ -z "$nid" ] || [ -z "$bin" ]; then
 		log "ERROR: gnb not ready (nid=$nid conf=$confdir bin=$bin)"
 		return 1
 	fi
-	# 收敛：注册 procd 实例前，先停掉本节点上 procd 未托管的遗留 gnb。
-	converge_stale_gnb "$confdir"
-	# E-2：daemon off，交给 procd 前台
-	if [ -f "$confdir/node.conf" ]; then
-		sed -i 's/^daemon on$/daemon off/' "$confdir/node.conf" 2>/dev/null || true
+	# 铁律 6（paths.md）：起服务前必须先 apply 投影 —— 原生渲染 + /var/run 运行投影。
+	# 失败只在**既有投影可复用**时降级；没有投影拒绝起 gnb（禁静默 fallback）。
+	if ! MYNET_HOME="$MYNET_HOME" "$launcher" apply --active; then
+		if [ -f "$confdir/node.conf" ]; then
+			log "WARNING: apply --active 失败，沿用既有运行投影 $confdir"
+		else
+			log "ERROR: apply --active 失败且无运行投影 $confdir —— 拒绝起 gnb"
+			return 1
+		fi
 	fi
-	launcher="$(command -v mynet)"
-	[ -n "$launcher" ] || { log "ERROR: mynet UTC-aware launcher missing"; return 1; }
+	# 收敛：注册 procd 实例前，先停掉本节点上 procd 未托管的遗留 gnb
+	# （投影 + 原生两个口径都认，覆盖升级前 -c 指原生的旧实例）。
+	converge_stale_gnb "$confdir" "$nativedir"
 	log "procd gnb: guarded launch $bin -c $confdir"
 	procd_open_instance gnb
-	# MYNET_UTC_LAUNCH_V1
-	procd_set_param command "$launcher" utc driver-run --binary "$bin" -c "$confdir"
+	# MYNET_UTC_LAUNCH_V1。--systemd = gnb 前台运行，生命周期归 procd（E-2）——
+	# 不再 sed 改 node.conf：daemon off 由 --systemd 承担，配置文件保持只读。
+	procd_set_param command "$launcher" utc driver-run --binary "$bin" -c "$confdir" --systemd
 	procd_set_param env MYNET_HOME="$MYNET_HOME"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
@@ -238,25 +271,31 @@ start_gnb_instance() {
 }
 
 stop_gnb_instance() {
-	local nid confdir es_bin gnb_pids gnb_pid owned pid exe ppid
+	local nid confdir nativedir es_bin gnb_pids gnb_pid owned pid exe ppid
 	nid=$(get_node_id_from_conf)
-	# D4-E：同 start_gnb_instance，节点唯一存放位优先、旧 driver 位回退
+	# 同 start_gnb_instance：gnb -c = 运行投影，原生目录并入归属判据
 	confdir=$(gnb_confdir)
-	[ -n "$confdir" ] || confdir="${MYNET_HOME}/driver/gnb/conf/${nid}"
+	nativedir=$(native_confdir)
 	es_bin="${MYNET_HOME}/driver/gnb/bin/gnb_es"
 	[ -x "$es_bin" ] || es_bin="$(command -v gnb_es)"
 
 	# 归属判据（G-9）：gnb_es 必须 (a) exe 是本部署的 gnb_es，(b) **父进程是本实例 gnb**
-	# —— 后者按「gnb 的 cmdline 指向本实例 confdir」认定。
+	# —— 后者按「gnb 的 cmdline 指向本实例 confdir」认定（投影/原生两个口径都认）。
 	# ⚠️ 必须在停 gnb **之前**取父 pid：gnb 一死，gnb_es 变孤儿(PPID=1)，而 PPID=1
 	#    只说明「没有父进程」，**不证明属于本节点** —— 据此清理会误杀别的实例的孤儿。
 	owned=""
-	if [ -n "$nid" ] && [ -d "$confdir" ]; then
+	if [ -n "$nid" ]; then
 		gnb_pids=$(pidof gnb 2>/dev/null) || true
 		for gnb_pid in $gnb_pids; do
-			if tr '\0' ' ' < "/proc/${gnb_pid}/cmdline" 2>/dev/null | grep -qF -- "$confdir"; then
-				owned="$owned $gnb_pid"
+			cmd=$(tr '\0' ' ' < "/proc/${gnb_pid}/cmdline" 2>/dev/null) || continue
+			match=""
+			if [ -n "$confdir" ]; then
+				case "$cmd" in *"$confdir"*) match=1 ;; esac
 			fi
+			if [ -z "$match" ] && [ -n "$nativedir" ]; then
+				case "$cmd" in *"$nativedir"*) match=1 ;; esac
+			fi
+			[ -n "$match" ] && owned="$owned $gnb_pid"
 		done
 	fi
 

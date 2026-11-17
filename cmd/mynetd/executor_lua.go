@@ -77,6 +77,16 @@ func execLua(argv []string) (any, error) {
 	if len(argv) > 0 && goNativeInLua(argv[0]) {
 		return execMynet(argv)
 	}
+	// apply --active = 渲染原生配置 + 运行投影，只属 Go（O1）。Lua 的 apply 分支
+	// 只有 L6 路由面，flag 白名单也没有 --active —— 直译会被「--x 取下一个参数为值」
+	// 吞掉，语义漂移成「装路由」。见到 --active 整条交回 Go。
+	if len(argv) >= 2 && argv[0] == "apply" {
+		for _, a := range argv[1:] {
+			if a == "--active" {
+				return execMynet(argv)
+			}
+		}
+	}
 	script, err := planLuaScript(argv)
 	if err != nil {
 		return map[string]any{"argv": argv, "error": err.Error()}, err

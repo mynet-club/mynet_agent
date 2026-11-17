@@ -89,3 +89,35 @@ func TestPlanFromBundleProxyUsesAuthority(t *testing.T) {
 		t.Fatal("无接口名时不该出计划")
 	}
 }
+
+// TestPlanFromLocalIntent local 模式 L6 计划：intent.routes → 隧道口 on-link，
+// Via 是节点 ID 不当网关；overlay 进 LocalAddresses 供 resolveDevice 反查。
+func TestPlanFromLocalIntent(t *testing.T) {
+	li := &domain.LocalIntent{
+		Schema: 2,
+		Mode:   domain.ModeLocal,
+		Driver: domain.DriverTypeGNB,
+		Node:   domain.LocalNode{ID: "8888888888880001", Overlay: "10.88.0.1/32"},
+		Routes: []domain.LocalRoute{
+			{CIDR: "10.99.0.0/24", Via: "8888888888880002"},
+			{CIDR: ""},
+		},
+	}
+	plan, err := planFromLocalIntent(li)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Routes) != 1 {
+		t.Fatalf("路由数=%d，want 1（空 CIDR 跳过）", len(plan.Routes))
+	}
+	r := plan.Routes[0]
+	if r.Destination != "10.99.0.0/24" || r.Device != "gnb_tun" || r.Gateway != "" {
+		t.Fatalf("RouteOp=%+v，want 10.99.0.0/24 dev gnb_tun 无网关", r)
+	}
+	if len(plan.LocalAddresses) != 1 || plan.LocalAddresses[0] != "10.88.0.1/32" {
+		t.Fatalf("LocalAddresses=%v", plan.LocalAddresses)
+	}
+	if plan.ProxyExitDevice != "gnb_tun" {
+		t.Fatalf("ProxyExitDevice=%q", plan.ProxyExitDevice)
+	}
+}

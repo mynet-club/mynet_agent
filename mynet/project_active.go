@@ -326,6 +326,20 @@ func projectToRun(confDir, nodeID string) (string, error) {
 			return "", err
 		}
 	}
+	// 清理陈旧投影：源里已删除的不能留在 runDir（proxy.conf 从有到无时残留旧文件，
+	// gnb 仍会读到）。运行脏文件（gnb.map/pid 等）是进程产物，保留。
+	src := make(map[string]bool, len(ents))
+	for _, e := range ents {
+		src[e.Name()] = true
+	}
+	if rents, rerr := os.ReadDir(runDir); rerr == nil {
+		for _, e := range rents {
+			if skip[e.Name()] || src[e.Name()] {
+				continue
+			}
+			_ = os.RemoveAll(filepath.Join(runDir, e.Name()))
+		}
+	}
 	return runDir, nil
 }
 
