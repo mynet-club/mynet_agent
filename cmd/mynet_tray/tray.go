@@ -430,6 +430,11 @@ func (a *App) shutdownApp() {
 }
 
 // ensureDaemon 本机 API 不在时尝试拉起 mynetd（上一次退出应用会停服务）。
+//
+// 例外备案（E12）：托盘直连平台服务管理器（launchctl/systemctl/init）——
+// 这是**允许**的自举：mynetd 就是命令面/API 的宿主，它不在时没有任何命令面
+// 可经；且动作只是「请平台管理器起它自己管理的单元」，持有者仍是平台服务
+// 管理器（P1 规则②），未绕开编排（mynetd 起来后恢复隧道仍走 mynet service）。
 func (a *App) ensureDaemon() {
 	name := "mynetd"
 	switch runtime.GOOS {
