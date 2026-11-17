@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 func TestWGCapsNoDiscoveryNoProxy(t *testing.T) {
@@ -312,5 +313,23 @@ func TestRenderGNBNodeConfListenFormBarePortDualStack(t *testing.T) {
 	}
 	if strings.Count(trimmed, "listen ") != 1 {
 		t.Fatalf("应当只有一行 listen，text=%s", trimmed)
+	}
+}
+
+// 解析 gnb_ctl 必须 prefix/bin 先于 PATH：PATH 里躺着旧构建的 gnb_ctl 时，
+// 读不懂新 gnb 的 gnb.map，node_num 恒 0，链路/出口探测全判不可达。
+func TestResolveGNBCtlBinaryPrefersPrefixBin(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(binDir, utils.ExeName("gnb_ctl"))
+	if err := os.WriteFile(want, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MYNET_PREFIX", dir)
+	if got := resolveGNBCtlBinary(); got != want {
+		t.Fatalf("gnb_ctl 解析 = %s，want %s（<prefix>/bin 必须先于 PATH）", got, want)
 	}
 }

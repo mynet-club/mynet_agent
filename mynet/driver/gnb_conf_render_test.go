@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared/domain"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // realIntent 取自 staging 上后端真实下发的 envelope（节点 2132596500330640，
@@ -726,7 +727,11 @@ func TestGnbCtlStatusPassesFullFlags(t *testing.T) {
 	d.ConfDir = dir
 	var calls []string
 	d.Exec = func(name string, args ...string) ([]byte, error) {
-		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		// 命令名是 resolveGNBCtlBinary 的产物（可含路径），基名必须是 gnb_ctl
+		if filepath.Base(name) != utils.ExeName("gnb_ctl") {
+			t.Fatalf("命令应解析为 gnb_ctl，got %q", name)
+		}
+		calls = append(calls, strings.Join(args, " "))
 		return []byte(gnbStatusOutput), nil
 	}
 
@@ -735,7 +740,7 @@ func TestGnbCtlStatusPassesFullFlags(t *testing.T) {
 	}
 	got := strings.Join(calls, " ")
 	// -b 必须指向**本实例**的 map：不带 -b 时 gnb_ctl 只打 usage 就 exit 0
-	want := "gnb_ctl -b " + dir + "/gnb.map -c -s"
+	want := "-b " + dir + "/gnb.map -c -s"
 	if got != want {
 		t.Fatalf("argv 不对\n got: %s\nwant: %s", got, want)
 	}

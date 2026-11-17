@@ -97,7 +97,7 @@ func (d *GNBDriver) gnbCtlStatusArgs() []string {
 }
 
 func (d *GNBDriver) ctlStatus() (string, error) {
-	out, err := d.Exec("gnb_ctl", d.gnbCtlStatusArgs()...)
+	out, err := d.Exec(d.gnbCtlBinary(), d.gnbCtlStatusArgs()...)
 	if err != nil {
 		return "", fmt.Errorf("gnb_ctl %v: %w", d.gnbCtlStatusArgs(), err)
 	}
@@ -487,6 +487,37 @@ func resolveGNBBinary() string {
 		return p
 	}
 	return name // 交给 Spawn 去失败（错误信息里带名字）
+}
+
+// gnbCtlBinary 解析 gnb_ctl 可执行文件。空则 resolveGNBCtlBinary。
+func (d *GNBDriver) gnbCtlBinary() string {
+	return resolveGNBCtlBinary()
+}
+
+// resolveGNBCtlBinary 与 resolveGNBBinary 同一优先级：<prefix>/bin 先于 PATH。
+//
+// ⚠️ 不要一上来就 LookPath —— 系统 PATH 里可能是旧 gnb_ctl。旧 ctl 读不懂
+// 新 gnb 的 gnb.map（node_num 恒 0、peer 表空），出口探测与节点链路会把
+// 一切判成不可达，而数据面其实通着（2026-11-18 实机：PATH 命中旧构建，
+// ping 10.182.236.180 正常，GUI 加速页却报「节点不可达」）。
+func resolveGNBCtlBinary() string {
+	name := utils.ExeName("gnb_ctl")
+	home := utils.GetMyNetHome()
+	cands := []string{
+		filepath.Join(utils.PrefixBinDir(), name),
+		filepath.Join(home, "driver", "gnb", "bin", name),
+		"/opt/mynet/bin/" + name,
+		"/usr/local/opt/mynet/bin/" + name,
+	}
+	for _, p := range cands {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return name // 交给 Exec 去失败（错误信息里带名字）
 }
 
 // waitAlive 确认进程真的起来了。
@@ -1250,7 +1281,7 @@ func GnbPeerLinks(confDir string) map[int64]PeerLink {
 	d := NewGNBDriver(0)
 	d.ConfDir = confDir
 	// ctl 块是 gnb.map（不是 ctl），缺 -b 会打印 usage 却 exit 0
-	out, err := d.Exec("gnb_ctl", "-b", confDir+"/gnb.map", "-c", "-s")
+	out, err := d.Exec(d.gnbCtlBinary(), "-b", confDir+"/gnb.map", "-c", "-s")
 	if err != nil {
 		return nil
 	}
