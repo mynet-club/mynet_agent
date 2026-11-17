@@ -394,6 +394,8 @@ func parseExitProbeLine(stdout string) map[string]any {
 				}
 			case "reachable":
 				probe["reachable"] = v == "true"
+			case "monitoring":
+				probe["monitoring"] = v == "true"
 			case "rtt_ms":
 				if f, err := strconv.ParseFloat(v, 64); err == nil {
 					probe["rtt_ms"] = f

@@ -384,9 +384,11 @@ func runExitProbeTick() {
 }
 
 // FormatExitProbeStatus 状态输出一行，供 parseDesktopHookStatus 解析。
+// monitoring=探测循环是否在监（有探测结果 = 在监；未启用/隧道未起/已清 = 不监），
+// 托盘与 GUI 靠它区分「未监测」和「可达/不可达」。
 func FormatExitProbeStatus(res ExitProbeResult, ok bool) string {
 	if !ok || (res.NodeID == "" && res.Target == "") {
-		return "exit_probe: node= target= driver=none method=none reachable=false rtt_ms=0 age_ms=-1 fails=0"
+		return "exit_probe: node= target= driver=none method=none monitoring=false reachable=false rtt_ms=0 age_ms=-1 fails=0"
 	}
 	age := res.AgeMs
 	return "exit_probe: node=" + res.NodeID +
@@ -394,6 +396,7 @@ func FormatExitProbeStatus(res ExitProbeResult, ok bool) string {
 		" driver=" + res.Driver +
 		" method=" + res.Method +
 		" link=" + res.Link +
+		" monitoring=true" +
 		" reachable=" + strconv.FormatBool(res.Reachable) +
 		" rtt_ms=" + strconv.FormatFloat(res.RTTMs, 'f', 1, 64) +
 		" age_ms=" + strconv.FormatInt(age, 10) +

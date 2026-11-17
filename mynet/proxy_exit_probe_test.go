@@ -208,6 +208,9 @@ func TestFormatExitProbeStatusEmpty(t *testing.T) {
 	if !strings.Contains(line, "reachable=false") || !strings.Contains(line, "method=none") {
 		t.Fatalf("空状态行形状不对: %s", line)
 	}
+	if !strings.Contains(line, "monitoring=false") {
+		t.Fatalf("空状态行须带 monitoring=false（托盘据此显示「未监测」）: %s", line)
+	}
 }
 
 func TestFormatExitProbeStatusGnb(t *testing.T) {
@@ -219,7 +222,7 @@ func TestFormatExitProbeStatusGnb(t *testing.T) {
 	line := FormatExitProbeStatus(res, true)
 	for _, want := range []string{
 		"node=1001", "target=10.0.0.8", "driver=gnb", "method=gnb_map",
-		"link=direct", "reachable=true", "rtt_ms=1.5", "age_ms=200",
+		"link=direct", "monitoring=true", "reachable=true", "rtt_ms=1.5", "age_ms=200",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("状态行缺 %q: %s", want, line)

@@ -101,7 +101,7 @@ func TestDesktopAccelerationApplyIsIdempotent(t *testing.T) {
 }
 
 func TestParseDesktopHookStatusWithExitProbe(t *testing.T) {
-	got := parseDesktopHookStatus("dns-hook: pid=42 alive=true wanted=true state=running active=true listen_default=127.0.0.1:5353 pins=2 domains=7 routes=3\nexit_probe: node=1001 target=10.182.236.180 driver=gnb method=gnb_map link=direct reachable=true rtt_ms=1.5 age_ms=200 fails=0\nlast_error=none")
+	got := parseDesktopHookStatus("dns-hook: pid=42 alive=true wanted=true state=running active=true listen_default=127.0.0.1:5353 pins=2 domains=7 routes=3\nexit_probe: node=1001 target=10.182.236.180 driver=gnb method=gnb_map link=direct monitoring=true reachable=true rtt_ms=1.5 age_ms=200 fails=0\nlast_error=none")
 	if got["alive"] != true {
 		t.Fatalf("alive=%v", got["alive"])
 	}
@@ -121,6 +121,9 @@ func TestParseDesktopHookStatusWithExitProbe(t *testing.T) {
 	if probe["reachable"] != true {
 		t.Fatalf("reachable=%v", probe["reachable"])
 	}
+	if probe["monitoring"] != true {
+		t.Fatalf("monitoring=%v（托盘靠它区分未监测/可达）", probe["monitoring"])
+	}
 	if probe["rtt_ms"] != 1.5 {
 		t.Fatalf("rtt_ms=%v", probe["rtt_ms"])
 	}
@@ -130,10 +133,13 @@ func TestParseDesktopHookStatusWithExitProbe(t *testing.T) {
 }
 
 func TestParseDesktopHookStatusExitProbeUnreachable(t *testing.T) {
-	got := parseDesktopHookStatus("dns-hook: pid=1 alive=true wanted=true state=running active=true listen_default=127.0.0.1:53 pins=0 domains=1 routes=1\nexit_probe: node=1001 target=10.0.0.8 driver=gnb method=gnb_map link=offline reachable=false rtt_ms=0 age_ms=-1 fails=3")
+	got := parseDesktopHookStatus("dns-hook: pid=1 alive=true wanted=true state=running active=true listen_default=127.0.0.1:53 pins=0 domains=1 routes=1\nexit_probe: node=1001 target=10.0.0.8 driver=gnb method=gnb_map link=offline monitoring=true reachable=false rtt_ms=0 age_ms=-1 fails=3")
 	probe := got["exit_probe"].(map[string]any)
 	if probe["reachable"] != false {
 		t.Fatalf("reachable=%v", probe["reachable"])
+	}
+	if probe["monitoring"] != true {
+		t.Fatalf("monitoring=%v（在监但不可达 ≠ 未监测）", probe["monitoring"])
 	}
 	if probe["fails"] != 3 {
 		t.Fatalf("fails=%v", probe["fails"])
