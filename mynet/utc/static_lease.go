@@ -33,8 +33,12 @@ type StaticLease struct {
 	QuotaAccountID    string `json:"quota_account_id"`
 	QuotaOwner        string `json:"quota_owner"`
 	RevocationEpoch   uint64 `json:"revocation_epoch"`
-	Nonce             string `json:"nonce"` // 16-byte canonical hex, not a one-shot handshake token
-	Signature         string `json:"signature,omitempty"`
+	// WindowNo is the Core-dispatched monotonic quota window number
+	// (ADR-0036). Optional for compatibility: omitted (0) means the legacy
+	// account-keyed window mode. When present it is part of the signed JSON.
+	WindowNo  uint64 `json:"window_no,omitempty"`
+	Nonce     string `json:"nonce"` // 16-byte canonical hex, not a one-shot handshake token
+	Signature string `json:"signature,omitempty"`
 }
 
 type StaticRevocations struct {
