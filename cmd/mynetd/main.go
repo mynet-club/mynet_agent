@@ -452,17 +452,24 @@ func runAgent(ctx context.Context) {
 	}
 	go hb.run(ctx)
 
-	// 随 mynetd 恢复隧道：按上次退出时 gnb|wg 状态 + agent.json 开关
+	// 随 mynetd 恢复隧道：按启停意图（shared/tunnelstate）+ agent.json 开关。
+	// 判活（已在跑）问执行器 `mynet service status` 退出码，mynetd 不做 pid/kill -0（B2）。
 	go func() {
 		time.Sleep(2 * time.Second) // 等 localapi / bundle 就绪
 		// 启动恢复也是**写节点状态**（拉起 gnb|wg），必须与 HTTP 写面互斥：
 		// 否则它与 LuCI/面板的 config 写并发时会同抢驱动 → 双 gnb 一类问题（O7 并发护序）。
 		// 尽力而为：拿不到锁（用户正在写）就跳过，以用户操作为准。
 		ok := api.TryRunExclusive(func() error {
-			restoreTunnelIfNeeded(func(drv string) error {
-				_, err := execMynet([]string{"service", "start", drv})
-				return err
-			})
+			restoreTunnelIfNeeded(
+				func(drv string) bool {
+					_, err := execMynet([]string{"service", "status", drv})
+					return err == nil // status 退出码 0 = 在跑
+				},
+				func(drv string) error {
+					_, err := execMynet([]string{"service", "start", drv})
+					return err
+				},
+			)
 			return nil
 		})
 		if !ok {
@@ -471,8 +478,7 @@ func runAgent(ctx context.Context) {
 	}()
 
 	<-ctx.Done()
-	// 退出前记下 gnb|wg 是否在跑，下次启动按此恢复
-	recordTunnelExit()
+	// 意图不在此覆写：want_running 只由启停动作（执行器 service / localapi 命令面）产生。
 	_ = api.Close()
 }
 

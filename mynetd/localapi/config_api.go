@@ -16,9 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/mynet-club/mynet_agent/shared/utils"
+	"github.com/mynet-club/mynet_agent/shared/tunnelstate"
 )
 
 func (s *Server) registerConfigRoutes() {
@@ -503,17 +502,13 @@ func markTunnelWant(on bool) {
 	markTunnelWantDriver(on, "gnb")
 }
 
+// markTunnelWantDriver 意图写入统一走 shared/tunnelstate（与执行器
+// `mynet service start|stop` 同一读写口，B2：localapi 不自管状态文件）。
 func markTunnelWantDriver(on bool, driver string) {
 	if driver != "wireguard" {
 		driver = "gnb"
 	}
-	path := filepath.Join(utils.VarDir(), "tunnel-state.json")
-	b, _ := json.MarshalIndent(map[string]any{
-		"want_running": on,
-		"driver":       driver,
-		"updated_at":   time.Now().UTC().Format(time.RFC3339),
-	}, "", "  ")
-	_ = os.WriteFile(path, append(b, '\n'), 0o600)
+	_ = tunnelstate.MarkWant(on, driver)
 }
 
 // prepare is a thin structured wrapper: key sync and pull stay in the executor.

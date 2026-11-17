@@ -287,20 +287,23 @@ esac
 #    详见 AGENTS.md §1.2 / spec/mynetd-ops-contract.md。
 #    范围：mynetd/** + cmd/mynetd/** 的 **import 字符串**（注释里提到包名允许）。
 #    禁：根 mynet 包、mynet/{detector,tools,apply,metrics,service,driver,upgrade}、
-#        shared/config、gopsutil。允许：mynet/keys、shared/creds（密钥/会话原语）。
+#        shared/config、gopsutil。允许：mynet/keys、mynet/utc/{hub,hubd,nodedesc}、
+#        shared/creds（密钥/会话/UTC hub 通信原语）。
 #    组合根 wiring 的残留 import 写 GUARD-OK <原因>（行级豁免，进审计日志）。
 #    ⚠️ 有意分叉：模板 B2 更窄；覆盖前先 diff，勿 cp 模板削掉本段。
+#    ⚠️ 全量扫（非只看新增行）：存量违规也要被抓 —— 2026-10-13 审计实证
+#    「只扫增量 → 存量违规永不复扫」放走过失守。
 B2PAT='"[^"]*mynet_agent/mynet"|"[^"]*mynet/(detector|tools|apply|metrics|service|driver|upgrade)|"[^"]*shared/config|gopsutil|shirou/gopsutil'
 b2=0
 for f in $FILES; do
   case "$f" in
     mynetd/*|cmd/mynetd/*)
-      if added_in_file "$f" | grep -v 'GUARD-OK' | grep -qE "$B2PAT"; then
+      if grep -v 'GUARD-OK' "$f" | grep -qE "$B2PAT"; then
         bad "B2 mynetd 不得依赖系统能力/配置面（执行器架构）: $f"; b2=1
       fi ;;
   esac
 done
-[ "$b2" -eq 0 ] && ok "B2 mynetd/cmd/mynetd 未依赖系统能力/配置面"
+[ "$b2" -eq 0 ] && ok "B2 mynetd/cmd/mynetd 未依赖系统能力/配置面（全量扫）"
 
 # B3 relaypolicy 不含鉴权逻辑（relay 不做鉴权，鉴权归后端）—— 只扫 relaypolicy/
 B3PAT='Authorization|Sanctum|Rbac|CheckPermission|auth:sanctum|VerifySignature' # GUARD-OK 自检正则

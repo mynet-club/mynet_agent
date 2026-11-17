@@ -13,6 +13,7 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/config"
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
+	"github.com/mynet-club/mynet_agent/shared/tunnelstate"
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
@@ -233,6 +234,9 @@ func cmdService(args []string) int {
 
 	switch action {
 	case "start":
+		// 启停意图（开机期望隧道）：用户说 start 就记 true —— 与成败无关，
+		// 意图只由启停动作产生（shared/tunnelstate，mynetd 开机恢复读它）。
+		_ = tunnelstate.MarkWant(true, name)
 		// 身份门禁：无私钥不起隧道（口径 B）
 		if err := RequireLocalIdentity(); err != nil {
 			fmt.Fprintf(os.Stderr, "start %s: %v\n", name, err)
@@ -281,6 +285,7 @@ func cmdService(args []string) int {
 		SyncSidecarsOnTunnelUp()
 		return 0
 	case "stop":
+		_ = tunnelstate.MarkWant(false, name)
 		// 栈式逆序收侧车：dns-hook → dns-restore（不再单独跑 RestoreSystemDNS，
 		// 已并入 restoreDNSSidecar，避免双跑）。
 		SyncSidecarsOnTunnelDown()
@@ -291,6 +296,7 @@ func cmdService(args []string) int {
 		fmt.Printf("stopped %s\n", name)
 		return 0
 	case "reload", "restart":
+		_ = tunnelstate.MarkWant(true, name)
 		// UI 用语是「重启」；CLI 历史名是 reload。两者同一动作。
 		// 先投影再重启：refresh-config 只写原生配置，运行投影在 ApplyFromActive
 		// 里生成 —— 旧序「先 Reload 后 applyAfterStart」让 gnb 重启读的是旧投影，
