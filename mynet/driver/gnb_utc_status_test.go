@@ -29,6 +29,9 @@ func TestUTCStatusRequiresExactCurrentProjectionAndFreshBoot(t *testing.T) {
 		valid      bool
 	}{
 		{"valid", status, true},
+		{"usage", status + "usage 8 100 200\n", true},
+		{"usagewrongpeer", status + "usage 9 100 200\n", false},
+		{"usagebaddigits", status + "usage 8 x 200\n", false},
 		{"oldboot", strings.Replace(status, boot, strings.Repeat("b", 32), 1), false},
 		{"staletime", strings.Replace(status, "1900000000", "1899999994", 1), false},
 		{"future", strings.Replace(status, "1900000000", "1900000001", 1), false},

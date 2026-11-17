@@ -43,8 +43,16 @@ func (d *GNBDriver) VerifyUTCProjection(expected UTCProjection, boot string, pid
 		return fmt.Errorf("UTC status is incomplete")
 	}
 	lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-	if len(lines) != 2+2*len(expected.Peers) {
+	// Per peer: policy + peer rows, plus the optional usage row the GNB writer
+	// emits since the per-peer byte-counter export. Unknown rows still fail.
+	peers := len(expected.Peers)
+	withUsage := len(lines) == 2+3*peers
+	if len(lines) != 2+2*peers && !withUsage {
 		return fmt.Errorf("UTC status record count mismatch")
+	}
+	step := 2
+	if withUsage {
+		step = 3
 	}
 	header := strings.Fields(lines[0])
 	if len(header) != 9 || header[0] != "status-v1" || header[1] != expected.Scope || header[2] != expected.Instance || header[3] != strconv.FormatUint(expected.LocalID, 10) || header[4] != boot || header[5] != strconv.FormatUint(expected.ConfigGen, 10) || header[8] != strconv.FormatUint(pid, 10) {
@@ -69,7 +77,7 @@ func (d *GNBDriver) VerifyUTCProjection(expected UTCProjection, boot string, pid
 		id, _ := strconv.ParseUint(fields[1], 10, 64)
 		policies[id] = "policy" + strings.TrimPrefix(line, "peer")
 	}
-	for i := 2; i < len(lines); i += 2 {
+	for i := 2; i < len(lines); i += step {
 		fields := strings.Fields(lines[i])
 		if len(fields) != 11 || fields[0] != "policy" {
 			return fmt.Errorf("invalid UTC policy row")
@@ -91,6 +99,18 @@ func (d *GNBDriver) VerifyUTCProjection(expected UTCProjection, boot string, pid
 		peer := fmt.Sprintf("peer %s %s %s APPLIED %s %s %x", fields[1], fields[2], fields[3], reason, fields[10], hash)
 		if lines[i+1] != peer {
 			return fmt.Errorf("UTC peer not applied or digest mismatch")
+		}
+		if withUsage {
+			usage := strings.Fields(lines[i+2])
+			if len(usage) != 4 || usage[0] != "usage" || usage[1] != fields[1] {
+				return fmt.Errorf("UTC usage row invalid")
+			}
+			if _, err := strconv.ParseUint(usage[2], 10, 64); err != nil {
+				return fmt.Errorf("UTC usage row invalid")
+			}
+			if _, err := strconv.ParseUint(usage[3], 10, 64); err != nil {
+				return fmt.Errorf("UTC usage row invalid")
+			}
 		}
 	}
 	return nil
