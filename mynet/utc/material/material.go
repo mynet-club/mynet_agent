@@ -69,6 +69,55 @@ type Config struct {
 	RestartCommand    []string `json:"restart_command"`
 	PollSeconds       int64    `json:"poll_seconds"`
 	RefreshBeforeSecs int64    `json:"refresh_before_seconds"`
+	// A1: the trust file and token pools travel with the material. Empty
+	// paths keep the previous behaviour (leases only, operator-provided
+	// trust/pools).
+	TrustPath  string `json:"trust_path"`
+	TokenAFile string `json:"token_a_file"`
+	TokenBFile string `json:"token_b_file"`
+	NextAFile  string `json:"next_a_file"`
+	NextBFile  string `json:"next_b_file"`
+	// UTCD hands utcd's lifecycle to the agent: the configuration is rendered
+	// from the template and the process is started/restarted by this agent.
+	UTCD utcdConfig `json:"utcd"`
+	// Pairs lists every pair this node terminates. When empty the legacy
+	// single-pair fields above are used as one pair.
+	Pairs []PairMaterial `json:"pairs"`
+	// SlotBase skips already-consumed leading tokens of the placement spec.
+	SlotBase uint64 `json:"slot_base"`
+}
+
+// PairMaterial is one pair's local material wiring. Side is "a" or "b" (empty
+// keeps the legacy behaviour of writing both token pools).
+type PairMaterial struct {
+	PairID    uint64 `json:"pair_id"`
+	Side      string `json:"side"`
+	Dir       string `json:"dir"`
+	StateDir  string `json:"state_dir"`
+	TrustPath string `json:"trust_path"`
+	TokenFile string `json:"token_file"`
+	NextFile  string `json:"next_file"`
+	// SlotBase skips tokens already consumed from the placement spec head.
+	SlotBase uint64 `json:"slot_base"`
+}
+
+// pairList resolves the configured pairs, falling back to the legacy
+// single-pair layout so existing configurations keep working.
+func (c *Config) pairList() []PairMaterial {
+	if len(c.Pairs) > 0 {
+		return c.Pairs
+	}
+	return []PairMaterial{{
+		Dir: c.Dir, StateDir: c.StateDir, TrustPath: c.TrustPath,
+		TokenFile: c.TokenAFile, NextFile: c.NextAFile,
+	}}
+}
+
+func (p PairMaterial) label() string {
+	if p.PairID == 0 {
+		return "material"
+	}
+	return fmt.Sprintf("pair%d", p.PairID)
 }
 
 // LoadConfig reads, decodes and validates path. Polling defaults are applied
@@ -93,7 +142,7 @@ func LoadConfig(path string) (Config, error) {
 func (c *Config) Validate() error {
 	if c.URL == "" || c.CA == "" || c.Certificate == "" || c.PrivateKey == "" ||
 		c.ServerPin == "" || c.Dir == "" || c.StateDir == "" || c.Transport == "" ||
-		len(c.RestartCommand) == 0 || len(c.ServerPin) != 64 {
+		len(c.ServerPin) != 64 {
 		return errors.New(LogPrefix + "config is incomplete")
 	}
 	// A pin that is not 64 hex characters can never match a certificate, so
@@ -119,6 +168,13 @@ type response struct {
 	Revocations string `json:"revocations"`
 	FloorName   string `json:"floor_name"`
 	FloorB64    string `json:"floor_b64"`
+	Trust       string `json:"trust"`
+	TokensA     string `json:"tokens_a"`
+	TokensB     string `json:"tokens_b"`
+	NextA       string `json:"next_a"`
+	NextB       string `json:"next_b"`
+	PoolSeq     uint64 `json:"pool_seq"`
+	UDPPort     uint32 `json:"udp_port"`
 }
 
 // Agent is a material client bound to one validated configuration.
@@ -126,6 +182,7 @@ type Agent struct {
 	cfg     Config
 	client  *http.Client
 	restart func() error
+	utcd    *supervisor
 	logger  *log.Logger
 }
 
@@ -139,14 +196,22 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Agent{
-		cfg:    cfg,
-		client: client,
-		logger: log.Default(),
-		restart: func() error {
-			return runCommand(cfg.RestartCommand)
-		},
-	}, nil
+	agent := &Agent{cfg: cfg, client: client, logger: log.Default()}
+	sup, err := newSupervisor(cfg.UTCD, agent.logf)
+	if err != nil {
+		return nil, err
+	}
+	agent.utcd = sup
+	agent.restart = func() error {
+		if sup != nil {
+			return sup.restart()
+		}
+		if len(cfg.RestartCommand) == 0 {
+			return nil
+		}
+		return runCommand(cfg.RestartCommand)
+	}
+	return agent, nil
 }
 
 func newClient(c Config) (*http.Client, error) {
@@ -188,6 +253,21 @@ func newClient(c Config) (*http.Client, error) {
 	return &http.Client{Transport: transport, Timeout: 20 * time.Second}, nil
 }
 
+// SetLogger redirects the agent log lines (used by mynetd's logger).
+func (a *Agent) SetLogger(f func(string, ...any)) {
+	if f == nil {
+		return
+	}
+	a.logger = log.New(logWriter{f}, "", 0)
+}
+
+type logWriter struct{ f func(string, ...any) }
+
+func (w logWriter) Write(p []byte) (int, error) {
+	w.f("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
 // RunOnce performs exactly one fetch/install cycle and returns its error.
 func (a *Agent) RunOnce(ctx context.Context) error { return a.sync(ctx) }
 
@@ -219,77 +299,303 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) sync(ctx context.Context) error {
-	localRev := a.LocalRevision()
-	reqURL := a.cfg.URL + "?transport=" + url.QueryEscape(a.cfg.Transport)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
+	trustChanged := false
+	for _, pair := range a.cfg.pairList() {
+		changed, err := a.syncPair(ctx, pair)
+		if err != nil {
+			return fmt.Errorf("%s: %w", pair.label(), err)
+		}
+		trustChanged = trustChanged || changed
+	}
+	if err := a.renderUTCD(); err != nil {
 		return err
+	}
+	if trustChanged {
+		if err := a.restart(); err != nil {
+			return err
+		}
+		a.logf("trust changed, utcd restarted")
+		return nil
+	}
+	return a.ensureUTCD()
+}
+
+// syncPair fetches and installs one pair and reports whether its trust changed.
+func (a *Agent) syncPair(ctx context.Context, pair PairMaterial) (bool, error) {
+	localRev := localRevisionIn(pair.Dir)
+	parsed, err := url.Parse(a.cfg.URL)
+	if err != nil {
+		return false, err
+	}
+	q := parsed.Query()
+	q.Set("transport", a.cfg.Transport)
+	if pair.PairID != 0 {
+		q.Set("pair", strconv.FormatUint(pair.PairID, 10))
+	}
+	if pair.Side != "" {
+		q.Set("side", pair.Side)
+	}
+	base := pair.SlotBase
+	if base == 0 {
+		base = a.cfg.SlotBase
+	}
+	if base != 0 {
+		q.Set("base", strconv.FormatUint(base, 10))
+	}
+	slot := localPoolSeqIn(pair.Dir)
+	if slot == 0 || (pair.TokenFile != "" && !fileExists(pair.TokenFile)) {
+		slot = 1
+	} else if pair.NextFile != "" && !fileExists(pair.NextFile) {
+		// utcd copied next over the live pool and deleted it: the client must
+		// supply the following slot without touching the live token file.
+		slot++
+	}
+	q.Set("slot", strconv.FormatUint(slot, 10))
+	parsed.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return false, err
 	}
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("material server: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("material server: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	var material response
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&material); err != nil {
-		return err
+		return false, err
 	}
 	if material.Revision == 0 || material.LeaseA == "" || material.LeaseB == "" ||
 		material.Revocations == "" || material.FloorName == "" || material.FloorB64 == "" {
-		return errors.New("incomplete material response")
+		return false, errors.New("incomplete material response")
 	}
 	// The issuer rotates before expiry, so a revision already installed is
 	// authoritative; re-installing it would restart utcd on every poll.
 	if material.Revision <= localRev {
-		if a.LocalExpiry() != material.ExpiresAt {
-			_ = writeAtomic(filepath.Join(a.cfg.Dir, "material.expires"),
+		if localExpiryIn(pair.Dir) != material.ExpiresAt {
+			_ = writeAtomic(filepath.Join(pair.Dir, "material.expires"),
 				[]byte(strconv.FormatUint(material.ExpiresAt, 10)+"\n"), 0600)
 		}
-		return nil
+		// A newer pool on an already-installed revision is applied in place:
+		// utcd reads the pool per attempt and the cursor restarts at the head,
+		// so replenishment never restarts the data plane.
+		return false, a.applyPools(&material, pair)
 	}
 	floor, err := base64.StdEncoding.DecodeString(material.FloorB64)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := os.MkdirAll(a.cfg.StateDir, 0700); err != nil {
-		return err
+	if err := os.MkdirAll(pair.Dir, 0700); err != nil {
+		return false, err
 	}
-	if err := os.Chmod(a.cfg.StateDir, 0700); err != nil {
-		return err
+	if err := os.MkdirAll(pair.StateDir, 0700); err != nil {
+		return false, err
 	}
 	files := map[string][]byte{
-		filepath.Join(a.cfg.Dir, "lease-a.json"):                         []byte(material.LeaseA),
-		filepath.Join(a.cfg.Dir, "lease-b.json"):                         []byte(material.LeaseB),
-		filepath.Join(a.cfg.Dir, "revocations.json"):                     []byte(material.Revocations),
-		filepath.Join(a.cfg.StateDir, filepath.Base(material.FloorName)): floor,
+		filepath.Join(pair.Dir, "lease-a.json"):                         []byte(material.LeaseA),
+		filepath.Join(pair.Dir, "lease-b.json"):                         []byte(material.LeaseB),
+		filepath.Join(pair.Dir, "revocations.json"):                     []byte(material.Revocations),
+		filepath.Join(pair.StateDir, filepath.Base(material.FloorName)): floor,
 	}
 	for path, data := range files {
 		if err := writeAtomic(path, data, 0600); err != nil {
+			return false, err
+		}
+	}
+	trustChanged := false
+	if material.Trust != "" && pair.TrustPath != "" {
+		previous, _ := os.ReadFile(pair.TrustPath)
+		if !bytes.Equal(previous, []byte(material.Trust)) {
+			if err := writeAtomic(pair.TrustPath, []byte(material.Trust), 0600); err != nil {
+				return false, err
+			}
+			trustChanged = true
+		}
+	}
+	if err := a.applyPools(&material, pair); err != nil {
+		return false, err
+	}
+	if err := syncTrustLeases(pair); err != nil {
+		return false, err
+	}
+	if err := writeAtomic(filepath.Join(pair.Dir, "material.revision"),
+		[]byte(strconv.FormatUint(material.Revision, 10)+"\n"), 0600); err != nil {
+		return false, err
+	}
+	if err := writeAtomic(filepath.Join(pair.Dir, "material.expires"),
+		[]byte(strconv.FormatUint(material.ExpiresAt, 10)+"\n"), 0600); err != nil {
+		return false, err
+	}
+	_ = syncTrustLeases(pair)
+	a.logf("%s installed revision=%d expires=%d trust_changed=%v (hot apply)",
+		pair.label(), material.Revision, material.ExpiresAt, trustChanged)
+	return trustChanged, nil
+}
+
+// materialPaths are the template variables the utcd configuration may use.
+// Legacy single-pair names stay available; multi-pair templates use
+// pair<N>_token / pair<N>_next / pair<N>_trust.
+func (a *Agent) materialPaths() map[string]string {
+	paths := map[string]string{
+		"trust": a.cfg.TrustPath, "token_a": a.cfg.TokenAFile,
+		"token_b": a.cfg.TokenBFile, "next_a": a.cfg.NextAFile,
+		"next_b": a.cfg.NextBFile,
+	}
+	for _, p := range a.cfg.pairList() {
+		if p.PairID == 0 {
+			continue
+		}
+		prefix := fmt.Sprintf("pair%d", p.PairID)
+		paths[prefix+"_token"] = p.TokenFile
+		paths[prefix+"_next"] = p.NextFile
+		paths[prefix+"_trust"] = p.TrustPath
+		paths[prefix+"_dir"] = p.Dir
+	}
+	return paths
+}
+
+func (a *Agent) renderUTCD() error {
+	if a.utcd == nil {
+		return nil
+	}
+	return a.utcd.render(a.materialPaths())
+}
+
+// ensureUTCD renders the configuration and starts utcd when it is not running.
+func (a *Agent) ensureUTCD() error {
+	if a.utcd == nil {
+		return nil
+	}
+	if err := a.utcd.render(a.materialPaths()); err != nil {
+		return err
+	}
+	return a.utcd.ensure()
+}
+
+// applyPools installs the token pools and clears the per-pool cursors so utcd
+// starts at the head of the fresh pool. Pools with the same sequence are a
+// no-op, which keeps polls cheap.
+func (a *Agent) applyPools(m *response, pair PairMaterial) error {
+	seq := localPoolSeqIn(pair.Dir)
+	first := seq == 0 || (pair.TokenFile != "" && !fileExists(pair.TokenFile))
+	needNext := !first && pair.NextFile != "" && !fileExists(pair.NextFile)
+	if !first && !needNext {
+		return nil
+	}
+	write := func(path, data string, clearCursor bool) error {
+		if path == "" || data == "" {
+			return nil
+		}
+		if err := writeAtomic(path, []byte(data), 0600); err != nil {
+			return err
+		}
+		if !clearCursor {
+			return nil
+		}
+		if err := os.Remove(path + ".cursor"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	apply := func(tokenPath, nextPath string, tokens, next string) error {
+		if first {
+			if err := write(tokenPath, tokens, true); err != nil {
+				return err
+			}
+			if err := write(nextPath, next, true); err != nil {
+				return err
+			}
+		} else if needNext {
+			if err := write(nextPath, next, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	switch pair.Side {
+	case "a":
+		if err := apply(pair.TokenFile, pair.NextFile, m.TokensA, m.NextA); err != nil {
+			return err
+		}
+	case "b":
+		if err := apply(pair.TokenFile, pair.NextFile, m.TokensB, m.NextB); err != nil {
+			return err
+		}
+	default:
+		// Legacy configuration: one node may carry both sides' pools.
+		if first || needNext {
+			if err := apply(a.cfg.TokenAFile, a.cfg.NextAFile, m.TokensA, m.NextA); err != nil {
+				return err
+			}
+			if err := apply(a.cfg.TokenBFile, a.cfg.NextBFile, m.TokensB, m.NextB); err != nil {
+				return err
+			}
+		}
+	}
+	if m.PoolSeq != 0 {
+		if err := writeAtomic(filepath.Join(pair.Dir, "material.pool_seq"),
+			[]byte(strconv.FormatUint(m.PoolSeq, 10)+"\n"), 0600); err != nil {
 			return err
 		}
 	}
-	if err := writeAtomic(filepath.Join(a.cfg.Dir, "material.revision"),
-		[]byte(strconv.FormatUint(material.Revision, 10)+"\n"), 0600); err != nil {
-		return err
+	if first {
+		a.logf("%s pools installed slot=%d (no restart)", pair.label(), m.PoolSeq)
+	} else {
+		a.logf("%s next pool replenished slot=%d (no restart)", pair.label(), m.PoolSeq)
 	}
-	if err := writeAtomic(filepath.Join(a.cfg.Dir, "material.expires"),
-		[]byte(strconv.FormatUint(material.ExpiresAt, 10)+"\n"), 0600); err != nil {
-		return err
-	}
-	if err := a.restart(); err != nil {
-		return err
-	}
-	a.logf("installed revision=%d expires=%d", material.Revision, material.ExpiresAt)
 	return nil
 }
 
-// LocalExpiry returns the installed expires_at, or 0 when nothing is installed.
-func (a *Agent) LocalExpiry() uint64 {
-	raw, err := os.ReadFile(filepath.Join(a.cfg.Dir, "material.expires"))
+// syncTrustLeases copies the delivered lease/revocation files over the paths
+// the installed trust references. The trust document is signed and cannot be
+// rewritten, so the delivered material must land where it points; otherwise
+// the two relays load different lease generations and refuse with STATE.
+func syncTrustLeases(pair PairMaterial) error {
+	raw, err := os.ReadFile(pair.TrustPath)
+	if err != nil {
+		return nil
+	}
+	wanted := map[string]string{
+		"lease_a_to_b": "lease-a.json",
+		"lease_b_to_a": "lease-b.json",
+		"revocations":  "revocations.json",
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name, known := wanted[key]
+		if !known || value == "" {
+			continue
+		}
+		src := filepath.Join(pair.Dir, name)
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		if existing, err := os.ReadFile(value); err == nil && bytes.Equal(existing, data) {
+			continue
+		}
+		if err := writeAtomic(value, data, 0600); err != nil {
+			return fmt.Errorf("sync %s -> %s: %w", name, value, err)
+		}
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func localPoolSeqIn(dir string) uint64 {
+	raw, err := os.ReadFile(filepath.Join(dir, "material.pool_seq"))
 	if err != nil {
 		return 0
 	}
@@ -297,9 +603,23 @@ func (a *Agent) LocalExpiry() uint64 {
 	return v
 }
 
+// LocalExpiry returns the installed expires_at, or 0 when nothing is installed.
+func (a *Agent) LocalExpiry() uint64 { return localExpiryIn(a.cfg.Dir) }
+
 // LocalRevision returns the installed revision, or 0 when nothing is installed.
-func (a *Agent) LocalRevision() uint64 {
-	raw, err := os.ReadFile(filepath.Join(a.cfg.Dir, "material.revision"))
+func (a *Agent) LocalRevision() uint64 { return localRevisionIn(a.cfg.Dir) }
+
+func localExpiryIn(dir string) uint64 {
+	raw, err := os.ReadFile(filepath.Join(dir, "material.expires"))
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+	return v
+}
+
+func localRevisionIn(dir string) uint64 {
+	raw, err := os.ReadFile(filepath.Join(dir, "material.revision"))
 	if err != nil {
 		return 0
 	}

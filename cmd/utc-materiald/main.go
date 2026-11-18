@@ -58,6 +58,22 @@ type config struct {
 	TTLSeconds      int64             `json:"ttl_seconds"`
 	IntervalSecs    int64             `json:"interval_seconds"`
 	Transports      map[string]string `json:"transports"` // transport id -> SPKI sha256
+	// A1 material delivery: the trust file, the Core placement spec (token
+	// source) and the lane UDP port the node's utcd must bind. When SpecFile is
+	// empty the payload carries no pools (leases only).
+	SpecFile  string `json:"spec_file"`
+	UDPPort   uint32 `json:"udp_port"`
+	PoolSize  int    `json:"pool_size"`
+	PoolState string `json:"pool_state_file"`
+	// SpecBase is the number of leading placement-spec entries per side that
+	// are spacer tokens (token_refill.sh writes 240). Static pools start at
+	// SpecBase so a spacer head is never served as a usable pool.
+	SpecBase uint64 `json:"spec_base"`
+	// Static pairs mode: <pairs_dir>/<pair>/ holds lease-a/lease-b/
+	// revocations/relay.trust/*.floor and the pools still come from SpecFile.
+	PairsDir     string            `json:"pairs_dir"`
+	AllowedPairs []uint64          `json:"allowed_pairs"`
+	PairUDPPorts map[string]uint32 `json:"pair_udp_ports"`
 }
 
 type material struct {
@@ -68,12 +84,19 @@ type material struct {
 	Revocations []byte
 	FloorName   string
 	Floor       []byte
+	Trust       []byte
+	TokensA     []byte
+	TokensB     []byte
+	NextA       []byte
+	NextB       []byte
+	PoolSeq     uint64
 }
 
 type server struct {
-	cfg config
-	mu  sync.RWMutex
-	cur *material
+	cfg     config
+	mu      sync.RWMutex
+	cur     *material
+	lastRev map[uint64]uint64
 }
 
 func main() {
@@ -94,8 +117,10 @@ func main() {
 	if err := cfg.validate(); err != nil {
 		log.Fatal(err)
 	}
-	s := &server{cfg: cfg}
-	if err := s.rotate(); err != nil {
+	s := &server{cfg: cfg, lastRev: make(map[uint64]uint64)}
+	if cfg.PairsDir != "" {
+		log.Printf("utc-materiald: static pairs mode %s", cfg.PairsDir)
+	} else if err := s.rotate(); err != nil {
 		log.Printf("utc-materiald: initial rotation failed: %v", err)
 	}
 	if *once {
@@ -104,9 +129,17 @@ func main() {
 		}
 		return
 	}
-	go s.loop()
+	if cfg.PairsDir == "" {
+		go s.loop()
+	}
 	log.Printf("utc-materiald: listening on %s", cfg.Listen)
-	http.HandleFunc("/v1/material", s.handle)
+	http.HandleFunc("/v1/material", func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.PairsDir != "" {
+			s.handleStatic(w, r)
+			return
+		}
+		s.handle(w, r)
+	})
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		TLSConfig:         s.tlsConfig(),
@@ -118,6 +151,18 @@ func main() {
 }
 
 func (c *config) validate() error {
+	if c.PairsDir != "" {
+		if c.Listen == "" || c.CA == "" || c.Certificate == "" || c.PrivateKey == "" {
+			return errors.New("utc-materiald: static pairs config is incomplete")
+		}
+		if c.TTLSeconds <= 0 {
+			c.TTLSeconds = 3600
+		}
+		if c.IntervalSecs <= 0 {
+			c.IntervalSecs = 2700
+		}
+		return nil
+	}
 	if c.Listen == "" || c.CA == "" || c.Certificate == "" || c.PrivateKey == "" ||
 		c.SigningKey == "" || c.Guard == "" || c.Trust == "" || c.LeaseDir == "" ||
 		c.StateDir == "" || c.Scope == "" || c.Issuer == "" || c.KeyID == "" ||
@@ -134,6 +179,161 @@ func (c *config) validate() error {
 		c.IntervalSecs = c.TTLSeconds - 900
 	}
 	return nil
+}
+
+type poolState struct {
+	Seq  uint64 `json:"seq"`
+	OffA int    `json:"offset_a"`
+	OffB int    `json:"offset_b"`
+}
+
+func (s *server) poolStatePath(pair uint64) string {
+	if s.cfg.PoolState == "" {
+		return ""
+	}
+	return s.cfg.PoolState + "." + strconv.FormatUint(pair, 10)
+}
+
+func (s *server) loadPoolStateFor(pair uint64) poolState {
+	var st poolState
+	path := s.poolStatePath(pair)
+	if path == "" {
+		return st
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return st
+	}
+	_ = json.Unmarshal(raw, &st)
+	return st
+}
+
+func (s *server) savePoolStateFor(pair uint64, st poolState) error {
+	path := s.poolStatePath(pair)
+	if path == "" {
+		return nil
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (s *server) loadPoolState() poolState {
+	var st poolState
+	if s.cfg.PoolState == "" {
+		return st
+	}
+	raw, err := os.ReadFile(s.cfg.PoolState)
+	if err != nil {
+		return st
+	}
+	_ = json.Unmarshal(raw, &st)
+	return st
+}
+
+func (s *server) savePoolState(st poolState) error {
+	if s.cfg.PoolState == "" {
+		return nil
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	tmp := s.cfg.PoolState + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.cfg.PoolState)
+}
+
+func specSideTokens(raw []byte, pair uint64, side string) []string {
+	var tokens []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		if fields[1] != strconv.FormatUint(pair, 10) || fields[3] != side {
+			continue
+		}
+		tokens = append(tokens, fields[0])
+	}
+	return tokens
+}
+
+// slotPools returns the pools for one deterministic slot: tokens=slot N,
+// next=slot N+1. Slot addressing makes polling idempotent — a client may ask
+// again without burning the spec.
+func slotPools(tokens []string, size int, slot, base uint64) (cur, next []byte, err error) {
+	if size <= 0 {
+		size = 120
+	}
+	if slot == 0 {
+		slot = 1
+	}
+	start := int(slot-1)*size + int(base)
+	if start+2*size > len(tokens) {
+		return nil, nil, fmt.Errorf("slot %d out of range (%d entries, size %d)",
+			slot, len(tokens), size)
+	}
+	return joinPool(tokens[start : start+size]), joinPool(tokens[start+size : start+2*size]), nil
+}
+
+func joinPool(tokens []string) []byte {
+	if len(tokens) == 0 {
+		return nil
+	}
+	return []byte(strings.Join(tokens, "\n") + "\n")
+}
+
+// nextPools slices two consecutive pools (head + next) per side out of the
+// Core placement spec. Offsets advance on every rotation so a consumed pool is
+// never re-served (single-use tokens must not replay). Exhaustion is an error:
+// the Hub must publish a fresh spec before the current one is fully handed out.
+func (s *server) nextPools() (a, b, nextA, nextB []byte, seq uint64, err error) {
+	return s.nextPoolsFor(s.cfg.PairID)
+}
+
+func (s *server) nextPoolsFor(pair uint64) (a, b, nextA, nextB []byte, seq uint64, err error) {
+	if s.cfg.SpecFile == "" {
+		return nil, nil, nil, nil, 0, nil
+	}
+	raw, err := os.ReadFile(s.cfg.SpecFile)
+	if err != nil {
+		return nil, nil, nil, nil, 0, fmt.Errorf("spec: %w", err)
+	}
+	st := s.loadPoolStateFor(pair)
+	aTokens := specSideTokens(raw, pair, "A")
+	bTokens := specSideTokens(raw, pair, "B")
+	size := s.cfg.PoolSize
+	if size <= 0 {
+		size = 240
+	}
+	needA := st.OffA + 2*size
+	needB := st.OffB + 2*size
+	if needA > len(aTokens) || needB > len(bTokens) {
+		return nil, nil, nil, nil, 0,
+			fmt.Errorf("spec pool exhausted (pair %d: A %d/%d B %d/%d)",
+				pair, len(aTokens)-st.OffA, len(aTokens),
+				len(bTokens)-st.OffB, len(bTokens))
+	}
+	a = joinPool(aTokens[st.OffA : st.OffA+size])
+	nextA = joinPool(aTokens[st.OffA+size : st.OffA+2*size])
+	b = joinPool(bTokens[st.OffB : st.OffB+size])
+	nextB = joinPool(bTokens[st.OffB+size : st.OffB+2*size])
+	st.OffA += 2 * size
+	st.OffB += 2 * size
+	st.Seq++
+	if err := s.savePoolStateFor(pair, st); err != nil {
+		return nil, nil, nil, nil, 0, err
+	}
+	return a, b, nextA, nextB, st.Seq, nil
 }
 
 func (s *server) loop() {
@@ -194,6 +394,14 @@ func (s *server) rotate() error {
 			return err
 		}
 	}
+	trust, err := os.ReadFile(s.cfg.Trust)
+	if err != nil {
+		return fmt.Errorf("trust: %w", err)
+	}
+	tokensA, tokensB, nextA, nextB, poolSeq, err := s.nextPools()
+	if err != nil {
+		return err
+	}
 	floorName, floor, err := newestFloor(s.cfg.StateDir)
 	if err != nil {
 		return err
@@ -211,7 +419,8 @@ func (s *server) rotate() error {
 		return err
 	}
 	s.cur = &material{Revision: rev, ExpiresAt: expires, LeaseA: leaseA, LeaseB: leaseB,
-		Revocations: revs, FloorName: floorName, Floor: floor}
+		Revocations: revs, FloorName: floorName, Floor: floor, Trust: trust,
+		TokensA: tokensA, TokensB: tokensB, NextA: nextA, NextB: nextB, PoolSeq: poolSeq}
 	if err := os.WriteFile(s.cfg.RevisionFile, []byte(strconv.FormatUint(rev, 10)+"\n"), 0600); err != nil {
 		log.Printf("utc-materiald: revision file: %v", err)
 	}
@@ -314,6 +523,9 @@ func (s *server) tlsConfig() *tls.Config {
 			if err != nil {
 				return err
 			}
+			if s.cfg.PairsDir != "" {
+				return nil // pair is enforced by certificate CN in the handler
+			}
 			sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 			id := hex.EncodeToString(sum[:])
 			for _, pin := range s.cfg.Transports {
@@ -351,6 +563,13 @@ func (s *server) handle(w http.ResponseWriter, r *http.Request) {
 		"revocations": string(cur.Revocations),
 		"floor_name":  cur.FloorName,
 		"floor_b64":   base64.StdEncoding.EncodeToString(cur.Floor),
+		"trust":       string(cur.Trust),
+		"tokens_a":    string(cur.TokensA),
+		"tokens_b":    string(cur.TokensB),
+		"next_a":      string(cur.NextA),
+		"next_b":      string(cur.NextB),
+		"pool_seq":    cur.PoolSeq,
+		"udp_port":    s.cfg.UDPPort,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

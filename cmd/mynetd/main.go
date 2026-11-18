@@ -248,6 +248,7 @@ func runAgent(ctx context.Context) {
 	// 不在其中发布投影。
 	if !*flagOnce {
 		startUTCHub(ctx)
+		startUTCMaterial(ctx)
 	}
 
 	// S3-1：心跳组装 + 命令分派 + WS 长连接。

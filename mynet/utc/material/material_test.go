@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,6 +38,13 @@ type payload struct {
 	Revocations string `json:"revocations"`
 	FloorName   string `json:"floor_name"`
 	FloorB64    string `json:"floor_b64"`
+	Trust       string `json:"trust"`
+	TokensA     string `json:"tokens_a"`
+	TokensB     string `json:"tokens_b"`
+	NextA       string `json:"next_a"`
+	NextB       string `json:"next_b"`
+	PoolSeq     uint64 `json:"pool_seq"`
+	UDPPort     uint32 `json:"udp_port"`
 }
 
 func validPayload(revision, expires uint64) payload {
@@ -53,12 +61,15 @@ func validPayload(revision, expires uint64) payload {
 
 // materialServer serves one payload (or raw bytes when payload is a string) and
 // records the transport query it observed.
-func materialServer(t *testing.T, status int, body any) (*httptest.Server, *string) {
+type bodyHolder struct{ v atomic.Value }
+
+func materialServer(t *testing.T, status int, holder *bodyHolder) (*httptest.Server, *string) {
 	t.Helper()
 	seenTransport := new(string)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*seenTransport = r.URL.Query().Get("transport")
+		*seenTransport = r.URL.RawQuery
 		w.WriteHeader(status)
+		body := holder.v.Load()
 		if raw, ok := body.(string); ok {
 			_, _ = io.WriteString(w, raw)
 			return
@@ -153,6 +164,7 @@ type fixture struct {
 	cfg       Config
 	dir       string
 	stateDir  string
+	body      *bodyHolder
 }
 
 // newFixture wires a TLS test server, a temporary install tree and a valid
@@ -165,7 +177,9 @@ func newFixture(t *testing.T, status int, body any, pinOverrides ...string) *fix
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	srv, transport := materialServer(t, status, body)
+	holder := &bodyHolder{}
+	holder.v.Store(body)
+	srv, transport := materialServer(t, status, holder)
 	ca := writeCAPEM(t, root, "ca.pem", srv)
 	cert, key := writeClientKeyPair(t, root)
 	pin := serverPin(t, srv)
@@ -185,8 +199,10 @@ func newFixture(t *testing.T, status int, body any, pinOverrides ...string) *fix
 		PollSeconds:       60,
 		RefreshBeforeSecs: 120,
 	}
-	return &fixture{srv: srv, transport: transport, cfg: cfg, dir: dir, stateDir: stateDir}
+	return &fixture{srv: srv, transport: transport, cfg: cfg, dir: dir, stateDir: stateDir, body: holder}
 }
+
+func (f *fixture) setBody(body any) { f.body.v.Store(body) }
 
 func (f *fixture) agent(t *testing.T) *Agent {
 	t.Helper()
@@ -320,7 +336,7 @@ func TestRunOnceInstallsMaterial(t *testing.T) {
 	if err := f.agent(t).RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if *f.transport != "relay-a" {
+	if q, _ := url.ParseQuery(*f.transport); q.Get("transport") != "relay-a" {
 		t.Fatalf("transport query = %q", *f.transport)
 	}
 	if got := f.readFile(t, filepath.Join(f.dir, "lease-a.json")); got != `{"lease":"a"}` {
@@ -443,8 +459,14 @@ func TestRunOnceRejectsBadResponse(t *testing.T) {
 }
 
 func TestRunOnceRestartFailureKeepsInstalledFiles(t *testing.T) {
-	f := newFixture(t, http.StatusOK, validPayload(7, uint64(time.Now().Add(time.Hour).Unix())))
+	body := validPayload(7, uint64(time.Now().Add(time.Hour).Unix()))
+	body.Trust = "trust-v2"
+	f := newFixture(t, http.StatusOK, body)
 	f.cfg.RestartCommand = failureCommand(t)
+	f.cfg.TrustPath = filepath.Join(f.dir, "relay.trust")
+	if err := os.WriteFile(f.cfg.TrustPath, []byte("trust-v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	err := f.agent(t).RunOnce(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "restart") {
 		t.Fatalf("err = %v, want restart failure", err)
@@ -491,5 +513,285 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run ignored context cancellation")
+	}
+}
+
+// A1: a pool-only update on an installed revision applies in place (no
+// restart), and a revision with unchanged trust is hot-applied as well.
+func TestRunOnceHotAppliesPoolsAndRenewals(t *testing.T) {
+	body := validPayload(7, uint64(time.Now().Add(time.Hour).Unix()))
+	body.Trust = "trust-v1"
+	body.TokensA = "ta1\nta2\n"
+	body.NextA = "na1\n"
+	body.TokensB = "tb1\n"
+	body.NextB = "nb1\n"
+	body.PoolSeq = 1
+	f := newFixture(t, http.StatusOK, body)
+	f.cfg.TrustPath = filepath.Join(f.dir, "relay.trust")
+	f.cfg.TokenAFile = filepath.Join(f.dir, "token-a")
+	f.cfg.TokenBFile = filepath.Join(f.dir, "token-b")
+	f.cfg.NextAFile = filepath.Join(f.dir, "next-a")
+	f.cfg.NextBFile = filepath.Join(f.dir, "next-b")
+	if err := os.WriteFile(f.cfg.TrustPath, []byte("trust-v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var restarts atomic.Int32
+	a := f.agent(t)
+	a.restart = func() error { restarts.Add(1); return nil }
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarts.Load() != 0 {
+		t.Fatalf("restart ran on first install with unchanged trust: %d", restarts.Load())
+	}
+	if got := f.readFile(t, f.cfg.TokenAFile); got != "ta1\nta2\n" {
+		t.Fatalf("token-a = %q", got)
+	}
+	if err := os.WriteFile(f.cfg.TokenAFile+".cursor", []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// utcd rotates by copying next over token and deleting next; the agent
+	// must restore next only, leaving the live (cursor-tracked) pool alone.
+	if err := os.Remove(f.cfg.NextAFile); err != nil {
+		t.Fatal(err)
+	}
+	body.PoolSeq = 2
+	body.TokensA = "ta3\n"
+	body.NextA = "na2\n"
+	f.setBody(body)
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarts.Load() != 0 {
+		t.Fatalf("pool replenishment restarted utcd: %d", restarts.Load())
+	}
+	if got := f.readFile(t, f.cfg.TokenAFile); got != "ta1\nta2\n" {
+		t.Fatalf("live pool must not be rewritten = %q", got)
+	}
+	if got := f.readFile(t, f.cfg.NextAFile); got != "na2\n" {
+		t.Fatalf("next pool = %q", got)
+	}
+	if _, err := os.Stat(f.cfg.TokenAFile + ".cursor"); err != nil {
+		t.Fatal("cursor must survive a next-only replenishment")
+	}
+}
+
+// A1 multi-pair: one agent and one utcd serve several pairs; each pair keeps
+// its own revision, trust and pool sequence so replenishment stays hot.
+func TestRunOnceMultiPairWritesPerPairPools(t *testing.T) {
+	body := validPayload(5, uint64(time.Now().Add(time.Hour).Unix()))
+	body.Trust = "trust-v1"
+	body.TokensA = "pa1\npa2\n"
+	body.NextA = "na1\n"
+	body.TokensB = "pb1\npb2\n"
+	body.NextB = "nb1\n"
+	body.PoolSeq = 1
+	f := newFixture(t, http.StatusOK, body)
+	aDir, bDir := filepath.Join(f.dir, "p200"), filepath.Join(f.dir, "p201")
+	f.cfg.Pairs = []PairMaterial{
+		{PairID: 200, Side: "a", Dir: aDir, StateDir: filepath.Join(aDir, "state"),
+			TrustPath: filepath.Join(aDir, "relay.trust"),
+			TokenFile: filepath.Join(aDir, "token"), NextFile: filepath.Join(aDir, "next")},
+		{PairID: 201, Side: "b", Dir: bDir, StateDir: filepath.Join(bDir, "state"),
+			TrustPath: filepath.Join(bDir, "relay.trust"),
+			TokenFile: filepath.Join(bDir, "token"), NextFile: filepath.Join(bDir, "next")},
+	}
+	a := f.agent(t)
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "pa1\npa2\n" {
+		t.Fatalf("pair200 token = %q", got)
+	}
+	if got := f.readFile(t, filepath.Join(bDir, "token")); got != "pb1\npb2\n" {
+		t.Fatalf("pair201 token = %q", got)
+	}
+	if got := f.readFile(t, filepath.Join(aDir, "relay.trust")); got != "trust-v1" {
+		t.Fatalf("pair200 trust = %q", got)
+	}
+	for _, dir := range []string{aDir, bDir} {
+		if got := f.readFile(t, filepath.Join(dir, "material.revision")); got != "5\n" {
+			t.Fatalf("%s revision = %q", dir, got)
+		}
+	}
+	// utcd rotates next -> token and deletes next; replenishment refills next.
+	for _, p := range []string{filepath.Join(aDir, "next"), filepath.Join(bDir, "next")} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body.PoolSeq = 2
+	body.TokensA = "pa3\n"
+	body.TokensB = "pb3\n"
+	body.NextA = "na9\n"
+	body.NextB = "nb9\n"
+	f.setBody(body)
+	var restarts atomic.Int32
+	a.restart = func() error { restarts.Add(1); return nil }
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarts.Load() != 0 {
+		t.Fatalf("hot pool swap restarted utcd: %d", restarts.Load())
+	}
+	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "pa1\npa2\n" {
+		t.Fatalf("pair200 live pool must not be rewritten = %q", got)
+	}
+	if got := f.readFile(t, filepath.Join(aDir, "next")); got != "na9\n" {
+		t.Fatalf("pair200 next = %q", got)
+	}
+	if got := f.readFile(t, filepath.Join(bDir, "next")); got != "nb9\n" {
+		t.Fatalf("pair201 next = %q", got)
+	}
+	if got := f.readFile(t, filepath.Join(aDir, "material.pool_seq")); got != "2\n" {
+		t.Fatalf("pair200 pool seq = %q", got)
+	}
+}
+
+func TestSupervisorRendersTemplate(t *testing.T) {
+	dir := t.TempDir()
+	tmpl := filepath.Join(dir, "utcd.tmpl")
+	out := filepath.Join(dir, "utcd.ini")
+	if err := os.WriteFile(tmpl, []byte("token={{pair200_token}}\ntrust={{pair200_trust}}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sup := &supervisor{cfg: utcdConfig{Template: tmpl, Config: out}, logf: t.Logf}
+	if err := sup.render(map[string]string{
+		"pair200_token": "/etc/mynet/utc/relay/p200/token",
+		"pair200_trust": "/etc/mynet/utc/relay/p200/relay.trust",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "token=/etc/mynet/utc/relay/p200/token\ntrust=/etc/mynet/utc/relay/p200/relay.trust\n" {
+		t.Fatalf("rendered = %q", raw)
+	}
+}
+
+func TestSyncTrustLeasesCopiesDeliveredMaterial(t *testing.T) {
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "ref-leases")
+	if err := os.MkdirAll(ref, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lease-a.json"), []byte("new-a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "revocations.json"), []byte("new-rev"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ref, "lease-a.json"), []byte("old-a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	trust := filepath.Join(dir, "relay.trust")
+	body := "[trust]\nlease_a_to_b=" + filepath.Join(ref, "lease-a.json") +
+		"\nlease_b_to_a=" + filepath.Join(ref, "lease-b.json") +
+		"\nrevocations=" + filepath.Join(ref, "revocations.json") + "\n"
+	if err := os.WriteFile(trust, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncTrustLeases(PairMaterial{Dir: dir, TrustPath: trust}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ref, "lease-a.json")); string(got) != "new-a" {
+		t.Fatalf("lease not synced: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ref, "revocations.json")); string(got) != "new-rev" {
+		t.Fatalf("revocations not synced: %q", got)
+	}
+}
+
+// Contract gate: the agent must ask the server for the slot it is about to
+// install (1 on a cold start, local+1 when utcd consumed the next pool) and
+// must include pair/side/base so multi-pair agents never share a pool.
+func TestAgentRequestsSlotAndScopePerInstall(t *testing.T) {
+	body := validPayload(9, uint64(time.Now().Add(time.Hour).Unix()))
+	body.Trust = "trust-v1"
+	body.TokensA = "q1\nq2\n"
+	body.NextA = "q3\n"
+	body.PoolSeq = 1
+	f := newFixture(t, http.StatusOK, body)
+	dir := filepath.Join(f.dir, "p300")
+	f.cfg.Pairs = []PairMaterial{{
+		PairID: 300, Side: "a", Dir: dir, StateDir: filepath.Join(dir, "state"),
+		TrustPath: filepath.Join(dir, "client.trust"),
+		TokenFile: filepath.Join(dir, "token"), NextFile: filepath.Join(dir, "next"),
+		SlotBase: 240,
+	}}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.cfg.Pairs[0].TrustPath, []byte("trust-v1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := f.agent(t)
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertQuery := func(wantSlot string) {
+		t.Helper()
+		q, err := url.ParseQuery(*f.transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q.Get("pair") != "300" || q.Get("side") != "a" || q.Get("base") != "240" ||
+			q.Get("slot") != wantSlot || q.Get("transport") != f.cfg.Transport {
+			t.Fatalf("query = %q", *f.transport)
+		}
+	}
+	assertQuery("1")
+	if err := os.Remove(f.cfg.Pairs[0].NextFile); err != nil {
+		t.Fatal(err)
+	}
+	body.PoolSeq = 2
+	body.NextA = "q4\n"
+	f.setBody(body)
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertQuery("2")
+	if got := f.readFile(t, f.cfg.Pairs[0].NextFile); got != "q4\n" {
+		t.Fatalf("next after replenish = %q", got)
+	}
+}
+
+// Scale gate: one agent, many pairs — each pair keeps its own directory,
+// trust and pool files, and a pair without a pending next is not rewritten.
+func TestManyPairsStayIsolated(t *testing.T) {
+	body := validPayload(3, uint64(time.Now().Add(time.Hour).Unix()))
+	body.Trust = "shared-trust"
+	body.TokensA = "ha\n"
+	body.NextA = "hn\n"
+	body.PoolSeq = 1
+	f := newFixture(t, http.StatusOK, body)
+	for pid := uint64(400); pid < 408; pid++ {
+		dir := filepath.Join(f.dir, "p"+strconv.FormatUint(pid, 10))
+		f.cfg.Pairs = append(f.cfg.Pairs, PairMaterial{
+			PairID: pid, Side: "a", Dir: dir, StateDir: filepath.Join(dir, "state"),
+			TrustPath: filepath.Join(dir, "client.trust"),
+			TokenFile: filepath.Join(dir, "token"), NextFile: filepath.Join(dir, "next"),
+			SlotBase: 240,
+		})
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := f.agent(t)
+	if err := a.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range f.cfg.Pairs {
+		if got := f.readFile(t, p.TokenFile); got != "ha\n" {
+			t.Fatalf("pair %d token = %q", p.PairID, got)
+		}
+		if got := f.readFile(t, p.TrustPath); got != "shared-trust" {
+			t.Fatalf("pair %d trust = %q", p.PairID, got)
+		}
+		if got := f.readFile(t, filepath.Join(p.Dir, "material.pool_seq")); got != "1\n" {
+			t.Fatalf("pair %d seq = %q", p.PairID, got)
+		}
 	}
 }
