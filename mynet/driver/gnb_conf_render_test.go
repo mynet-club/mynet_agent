@@ -425,6 +425,7 @@ func TestGnbStartExecsGnbNotGnbCtl(t *testing.T) {
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	recordingExec(d, &calls)
 	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
@@ -452,6 +453,7 @@ func TestGnbStartReportsFailureWhenProcessNeverAppears(t *testing.T) {
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	recordingExec(d, &calls)
 	// Spawn 成功但**不写 pid 文件** —— 模拟 gnb 子进程读配置失败后 exit
@@ -477,6 +479,7 @@ func TestGnbStartIsIdempotentWhenAlreadyRunning(t *testing.T) {
 	}
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	recordingExec(d, &calls)
 	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
@@ -496,6 +499,7 @@ func TestGnbStopUsesPidFileNotGnbCtlK(t *testing.T) {
 	}
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	recordingExec(d, &calls)
 
@@ -522,6 +526,7 @@ func TestGnbStopUsesPidFileNotGnbCtlK(t *testing.T) {
 func TestGnbStopFailsCleanlyWithoutPidFile(t *testing.T) {
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	d.ServiceUnit = "" // 这条测的是「无服务管理器」的退路，委托路径见下面两条
 	var calls []string
 	recordingExec(d, &calls)
@@ -576,6 +581,7 @@ func TestGnbDelegatesToSystemdWhenUnitLoaded(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	fakeSystemd(d, &calls, true /*loaded*/, true /*active*/)
 
@@ -609,6 +615,7 @@ func TestGnbStartsUnitWhenLoadedButInactive(t *testing.T) {
 	t.Setenv("MYNET_HOME", t.TempDir())
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	d.StartProbes, d.StartProbeDelay = 2, time.Millisecond
 	var calls []string
 	// loaded 但**一开始 inactive**；systemctl start 之后转为 active
@@ -653,6 +660,7 @@ func TestGnbFallsBackToSpawnWithoutSystemd(t *testing.T) {
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	fakeSystemd(d, &calls, false /*not-found*/, false)
 	recordingSpawn(d, &calls, filepath.Join(dir, "gnb.pid"))
@@ -671,7 +679,8 @@ func TestGnbFallsBackToSpawnWithoutSystemd(t *testing.T) {
 
 func TestGnbIsProcessAliveDoesNotLookForGnbEs(t *testing.T) {
 	d := NewGNBDriver(3001)
-	d.ConfDir = t.TempDir() // 无 pid 文件
+	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t) // 无 pid 文件
 	var calls []string
 	recordingExec(d, &calls)
 
@@ -725,6 +734,7 @@ func TestGnbCtlStatusPassesFullFlags(t *testing.T) {
 	dir := t.TempDir()
 	d := NewGNBDriver(3001)
 	d.ConfDir = dir
+	d.Binary = stubGnbBinary(t)
 	var calls []string
 	d.Exec = func(name string, args ...string) ([]byte, error) {
 		// 命令名是 resolveGNBCtlBinary 的产物（可含路径），基名必须是 gnb_ctl
@@ -749,6 +759,7 @@ func TestGnbCtlStatusPassesFullFlags(t *testing.T) {
 func TestGnbCtlStatusRejectsUsageOutput(t *testing.T) {
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbUsageOutput), nil }
 
 	if d.IsAvailable() {
@@ -762,6 +773,7 @@ func TestGnbCtlStatusRejectsUsageOutput(t *testing.T) {
 func TestGnbCtlStatusRejectsCtlBlockError(t *testing.T) {
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbCtlBlockError), nil }
 
 	if d.IsAvailable() {
@@ -779,6 +791,7 @@ func TestGnbCtlStatusRejectsCtlBlockError(t *testing.T) {
 func TestGnbParseStatusFromRealCtlOutput(t *testing.T) {
 	d := NewGNBDriver(3001)
 	d.ConfDir = t.TempDir()
+	d.Binary = stubGnbBinary(t)
 	d.Exec = func(string, ...string) ([]byte, error) { return []byte(gnbStatusOutput), nil }
 
 	peers, err := d.GetAllPeers()

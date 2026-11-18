@@ -15,6 +15,7 @@ import (
 
 	"github.com/mynet-club/mynet_agent/mynet/driver"
 	"github.com/mynet-club/mynet_agent/mynet/utc/material"
+	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // The launcher replaces itself with GNB: service managers retain the same PID,
@@ -49,6 +50,12 @@ func cmdUTC(args []string) int {
 	d := driver.NewGNBDriver(0)
 	d.Binary = *binary
 	d.ConfDir = *conf
+	// R2 死限（持进程咽喉）：异构建/混批拒起 —— 单元/procd 直启也走这里，
+	// 混代共享 ctl block（gnb_es 段错误根因）起前拦下，fail loud。
+	if err := utils.CheckGNBSuite(*binary); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	launchArgs, err := d.UTCLaunchArgs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

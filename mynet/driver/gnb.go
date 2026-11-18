@@ -374,7 +374,13 @@ func (d *GNBDriver) systemdManages() bool {
 }
 
 // Start 拉起 gnb。整段在**每 confdir 一把**的生命周期锁内执行（见 withLifecycle）。
-func (d *GNBDriver) Start() error { return d.withLifecycle(d.startLocked) }
+func (d *GNBDriver) Start() error {
+	// R2 死限：异构建/混批拒起（混代共享 ctl block 按错位布局解析 = 段错误根因）。
+	if err := utils.CheckGNBSuite(d.gnbBinary()); err != nil {
+		return err
+	}
+	return d.withLifecycle(d.startLocked)
+}
 
 func (d *GNBDriver) startLocked() error {
 	log := logger.Comp("driver")
@@ -615,6 +621,10 @@ func (d *GNBDriver) readPidFile() (int, error) {
 // ⚠️ 两步必须在**同一把生命周期锁内**：分别调 Start/Stop 会各自取锁 —— 既可能自锁死，
 // 也把「停完再起」这个原子语义拆开（那正是重叠 reload 留下两个 gnb 的形态）。
 func (d *GNBDriver) Reload() error {
+	// R2 死限：异构建/混批拒起（同 Start）。
+	if err := utils.CheckGNBSuite(d.gnbBinary()); err != nil {
+		return err
+	}
 	return d.withLifecycle(func() error {
 		managed, err := d.utcManaged()
 		if err != nil {

@@ -10,6 +10,17 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
+// stubGnbBinary 无横幅桩二进制：R2 套件判据对桩放行 —— 起停用例不耦合
+// 真机套件状态（混批时会把 Start/Reload 直接拒掉）。
+func stubGnbBinary(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "gnb")
+	if err := os.WriteFile(p, []byte("\x7fELF-stub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestWGCapsNoDiscoveryNoProxy(t *testing.T) {
 	d := NewWireGuardDriver("wg0", 1)
 	c := d.Capabilities()

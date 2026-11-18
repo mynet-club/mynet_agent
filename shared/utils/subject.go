@@ -271,6 +271,13 @@ func finalize(p GnbProc, all []GnbProc, opts ResolveOpts) (*Subject, error) {
 		s.Warnings = append(s.Warnings,
 			fmt.Sprintf("gnb_ctl 不在活主体同目录 %s —— 禁止使用其它树的 ctl（异构建读表会错）", binDir))
 	}
+	// R2 死限（诊断面同判据）：异构建/混批不是告警 —— 记下，subject 装完整再返回错误。
+	var suiteErr error
+	if err := CheckGNBSuite(s.GnbBin); err != nil {
+		s.ToolsMissing = append(s.ToolsMissing, "suite-mismatch")
+		s.Warnings = append(s.Warnings, err.Error())
+		suiteErr = err
+	}
 
 	// R4：map 探测
 	s.MapPath = resolveMapPath(p)
@@ -304,6 +311,9 @@ func finalize(p GnbProc, all []GnbProc, opts ResolveOpts) (*Subject, error) {
 
 	if err := writeSubjectCache(s); err != nil {
 		s.Warnings = append(s.Warnings, "写 subject 缓存失败: "+err.Error())
+	}
+	if suiteErr != nil {
+		return s, suiteErr
 	}
 	return s, nil
 }
@@ -363,6 +373,13 @@ func fallbackNoProcess(all []GnbProc, opts ResolveOpts, scanErr error) (*Subject
 		s.ToolsMissing = append(s.ToolsMissing, "gnb_ctl")
 		s.Warnings = append(s.Warnings, "标准位无 gnb_ctl；不要捡其它树的 ctl")
 	}
+	// R2 死限（诊断面同判据）：异构建/混批不是告警 —— 记下，subject 装完整再返回。
+	var suiteErr error
+	if err := CheckGNBSuite(s.GnbBin); err != nil {
+		s.ToolsMissing = append(s.ToolsMissing, "suite-mismatch")
+		s.Warnings = append(s.Warnings, err.Error())
+		suiteErr = err
+	}
 	if confDir != "" {
 		mp := filepath.Join(confDir, "gnb.map")
 		if fileExists(mp) {
@@ -377,6 +394,9 @@ func fallbackNoProcess(all []GnbProc, opts ResolveOpts, scanErr error) (*Subject
 	}
 	for _, o := range all {
 		s.Candidates = append(s.Candidates, Candidate{PID: o.PID, GnbBin: o.Exe, ConfDir: o.ConfDir, Note: "idle-or-index"})
+	}
+	if suiteErr != nil {
+		return s, suiteErr
 	}
 	if len(s.ToolsMissing) > 0 {
 		return s, fmt.Errorf("subject: 未找到运行中的 gnb，且工具不完整 missing=%v", s.ToolsMissing)

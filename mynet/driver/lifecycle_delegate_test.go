@@ -20,6 +20,7 @@ func TestLifecycleDelegatesToPlatformOwner(t *testing.T) {
 		var calls []string
 		d := NewGNBDriver(1)
 		d.ConfDir = t.TempDir()
+		d.Binary = stubGnbBinary(t)
 		d.Exec = func(n string, a ...string) ([]byte, error) {
 			calls = append(calls, n+" "+strings.Join(a, " "))
 			return nil, nil
