@@ -894,6 +894,11 @@ type dnsHookServer struct {
 	cache   *dnsRespCache
 	forward func(string, []byte, time.Duration) ([]byte, error)
 	tun     func() string
+	// 云端清单刷新节奏（零值 = 生产默认，见 runBaselineRefreshLoop）。
+	// 测试注入小值以压缩退避时间。
+	baselineSteady    time.Duration
+	baselineRetryBase time.Duration
+	baselineRetryCap  time.Duration
 }
 
 func (s *dnsHookServer) refresh(fresh *dnsHookRules, now time.Time) error {
@@ -928,21 +933,37 @@ func (s *dnsHookServer) refresh(fresh *dnsHookRules, now time.Time) error {
 	return s.pins.sync(s.rules, s.tun(), now)
 }
 
-func runDNSHookServer(listen string, done <-chan struct{}) error {
+// newConfiguredHookServer 组装钩子服务：策略规则 + 广告拦截 + 钉扎会话。
+// 启动期 fail loud 仅限不可恢复错误（配置非法、钉扎状态损坏）；网络类失败不在这里。
+func newConfiguredHookServer() (*dnsHookServer, error) {
 	rules := newHookRulesFromPolicy()
 	if rules.upstreamError != nil {
-		return fmt.Errorf("DNS config: %w", rules.upstreamError)
+		return nil, fmt.Errorf("DNS config: %w", rules.upstreamError)
 	}
 	block, blockSignature, err := loadDNSAdBlock()
 	if err != nil {
-		return fmt.Errorf("ad-block config: %w", err)
+		return nil, fmt.Errorf("ad-block config: %w", err)
 	}
 	rules.block, rules.blockSignature = block, blockSignature
 	pins := newPCProxySession()
 	if err := pins.load(hookTunDevice()); err != nil {
+		return nil, err
+	}
+	return &dnsHookServer{rules: rules, pins: pins, cache: newDNSRespCache(), forward: forwardDNSQuery, tun: liveHookTunDevice}, nil
+}
+
+func runDNSHookServer(listen string, done <-chan struct{}) error {
+	server, err := newConfiguredHookServer()
+	if err != nil {
 		return err
 	}
-	server := &dnsHookServer{rules: rules, pins: pins, cache: newDNSRespCache(), forward: forwardDNSQuery, tun: liveHookTunDevice}
+	return serveDNSHook(server, listen, done)
+}
+
+// serveDNSHook 前台跑 forwarder（阻塞）。stop 由信号/CLI pid kill。
+// 云端清单拉取失败只降级重试（runBaselineRefreshLoop），不退出、不停监听。
+func serveDNSHook(server *dnsHookServer, listen string, done <-chan struct{}) error {
+	rules := server.rules
 	pc, err := net.ListenPacket("udp", listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listen, err)
@@ -955,7 +976,7 @@ func runDNSHookServer(listen string, done <-chan struct{}) error {
 		cancel()
 		close(stop)
 		workers.Wait() // 不允许在释放后有查询重新装路由。
-		if err := pins.release(time.Now()); err != nil {
+		if err := server.pins.release(time.Now()); err != nil {
 			hookLogf("release: %v", err)
 		}
 	}()
@@ -985,21 +1006,16 @@ func runDNSHookServer(listen string, done <-chan struct{}) error {
 	}
 	workers.Add(1)
 	go func() { defer workers.Done(); warmUpstreamIPs(rules.foreign, rules.domestic) }()
+	// 云端清单：失败降级（沿用缓存清单）+ 退避重试，成功后立即热更新规则。
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
 		s := server
-		s.updateBaseline(ctx)
-		tick := time.NewTicker(time.Hour)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				s.updateBaseline(ctx)
+		runBaselineRefreshLoop(ctx, s.updateBaseline, func() {
+			if err := s.refresh(newHookRulesFromPolicy(), time.Now()); err != nil {
+				hookLogf("baseline apply: %v", err)
 			}
-		}
+		}, s.baselineSteady, s.baselineRetryBase, s.baselineRetryCap)
 	}()
 	workers.Add(1)
 	go func() {
@@ -1009,15 +1025,26 @@ func runDNSHookServer(listen string, done <-chan struct{}) error {
 		}
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
+		tunMisses := 0
 		for {
 			select {
 			case <-stop:
 				return
 			case <-t.C:
-				if liveHookTunDevice() == "" {
-					_ = pc.Close()
-					return
+				if server.tun() == "" {
+					// 隧道探测会瞬时失败（网络抖动、接口重建）。单次失败就关监听
+					// 会把「网络抖动」放大成「DNS 全哑」（2026-11-18 实测）。
+					// 连续 3 个周期（30s）都探不到才认定隧道真没了，停发并交
+					// watcher 收尾（还原系统 DNS、释放路由）。
+					tunMisses++
+					if tunMisses >= 3 {
+						hookLogf("tun device gone for 30s, stopping forwarder")
+						_ = pc.Close()
+						return
+					}
+					continue
 				}
+				tunMisses = 0
 				if err := server.refresh(newHookRulesFromPolicy(), time.Now()); err != nil {
 					hookLogf("reconcile: %v", err)
 				}

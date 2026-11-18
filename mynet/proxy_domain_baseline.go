@@ -3,6 +3,7 @@ package mynet
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,17 +94,81 @@ func refreshProxyDomainBaseline(ctx context.Context, client *http.Client, base s
 	return config.SaveProxyDomainBaseline(ProxyStateDir(), &config.ProxyDomainBaseline{Proxied: proxied, Direct: direct, Version: version})
 }
 
-func (s *dnsHookServer) updateBaseline(ctx context.Context) {
+func (s *dnsHookServer) updateBaseline(ctx context.Context) error {
 	client := &http.Client{Timeout: 10 * time.Second}
+	var errs []error
 	if err := refreshProxyDomainBaseline(ctx, client, proxyDomainBaselineURL()); err != nil {
 		hookLogf("ctl domains: %v", err)
+		errs = append(errs, err)
 	}
 	if err := refreshDNSBlockBaseline(ctx, client, proxyDomainBaselineURL()); err != nil {
 		hookLogf("ctl block domains: %v", err)
+		errs = append(errs, err)
 	}
 	// 干净 DNS 清单（SSOT=ctl dns-clean.txt）：解析源值 + 永久钉隧道同一份
 	if err := refreshCleanDNSList(ctx, client, proxyDomainBaselineURL()); err != nil {
 		hookLogf("ctl clean dns: %v", err)
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// baselineRetryDelay 拉取失败后的退避间隔：retryBase 起倍增、retryCap 封顶。
+func baselineRetryDelay(failures int, retryBase, retryCap time.Duration) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	d := retryBase
+	for i := 1; i < failures && d < retryCap; i++ {
+		d *= 2
+	}
+	if d > retryCap {
+		d = retryCap
+	}
+	return d
+}
+
+// runBaselineRefreshLoop 云端清单后台刷新循环（dns-hook worker 内跑）。
+//
+// 合同（2026-11-18 健壮性收口）：拉取失败/超时只记日志并退避重试，沿用已落盘
+// 清单继续服务——不得退出、不得打断 DNS 监听。不可恢复的致命错误（端口被占、
+// 配置非法）在 runDNSHookServer 启动检查里 fail loud，不在本循环。
+//
+// 参数零值取生产默认：steady=1h（与旧 hourly ticker 一致），失败退避 30s 起
+// 倍增、15min 封顶。onUpdated 在每次成功后调用（热更新钩子，可为 nil）。
+func runBaselineRefreshLoop(ctx context.Context, refresh func(context.Context) error, onUpdated func(), steady, retryBase, retryCap time.Duration) {
+	if steady <= 0 {
+		steady = time.Hour
+	}
+	if retryBase <= 0 {
+		retryBase = 30 * time.Second
+	}
+	if retryCap <= 0 {
+		retryCap = 15 * time.Minute
+	}
+	failures := 0
+	for {
+		err := refresh(ctx)
+		var wait time.Duration
+		if err != nil {
+			failures++
+			wait = baselineRetryDelay(failures, retryBase, retryCap)
+			hookLogf("baseline refresh failed (attempt %d, cached lists stay active), retry in %s", failures, wait)
+		} else {
+			if failures > 0 {
+				hookLogf("baseline refresh recovered after %d failed attempts", failures)
+			}
+			failures = 0
+			wait = steady
+			if onUpdated != nil {
+				onUpdated()
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
 	}
 }
 
