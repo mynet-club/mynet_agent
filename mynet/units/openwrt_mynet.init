@@ -270,7 +270,7 @@ start_gnb_instance() {
 }
 
 stop_gnb_instance() {
-	local nid confdir nativedir es_bin gnb_pids gnb_pid owned pid exe ppid
+	local nid confdir nativedir es_bin gnb_pids gnb_pid owned pid exe ppid cmd match
 	nid=$(get_node_id_from_conf)
 	# 同 start_gnb_instance：gnb -c = 运行投影，原生目录并入归属判据
 	confdir=$(gnb_confdir)
@@ -304,7 +304,21 @@ stop_gnb_instance() {
 		ppid=$(awk '{print $4}' "/proc/${pid}/stat" 2>/dev/null) || continue
 		case " $owned " in
 			*" $ppid "*) ;;
-			*) log "skip gnb_es pid=$pid（父进程 $ppid 非本实例 gnb，归属不可证）"; continue ;;
+			*)
+				# 孤儿补充判据：ppid=1 本身不证明归属，但 cmdline 指向本节点
+				# 投影/原生目录时归属可证。这类孤儿会继承旧 gnb 的 tun fd，
+				# 留着会让重启后的 gnb 打不开 tun（/dev/net/tun: Resource busy）。
+				[ "$ppid" = "1" ] || { log "skip gnb_es pid=$pid（父进程 $ppid 非本实例 gnb，归属不可证）"; continue; }
+				cmd=$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null) || { log "skip gnb_es pid=$pid（cmdline 不可读）"; continue; }
+				match=""
+				if [ -n "$confdir" ]; then
+					case "$cmd" in *"$confdir"*) match=1 ;; esac
+				fi
+				if [ -z "$match" ] && [ -n "$nativedir" ]; then
+					case "$cmd" in *"$nativedir"*) match=1 ;; esac
+				fi
+				[ -n "$match" ] || { log "skip gnb_es pid=$pid（孤儿但 cmdline 不指向本节点）"; continue; }
+				;;
 		esac
 		kill "$pid" 2>/dev/null || true
 		sleep 1

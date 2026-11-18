@@ -129,7 +129,7 @@ func syncUTCHistory(path string) error {
 }
 
 func (d *GNBDriver) utcStartArgs() ([]string, error) {
-	args := []string{"-c", d.ConfDir}
+	args := append([]string{"-c", d.ConfDir}, d.gnbExplicitPathArgs()...)
 	managed, err := d.utcManaged()
 	if err != nil {
 		return nil, fmt.Errorf("UTC RECOVERY_REQUIRED: %w", err)

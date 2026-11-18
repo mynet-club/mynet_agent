@@ -91,6 +91,7 @@ DIST_MATRIX := \
   linux:linux:arm64:arm64: \
   linux:linux:mipsle:mipsel: \
   openwrt:linux:mipsle:mipsel:openwrt \
+  openwrt:linux:amd64:amd64:openwrt \
   freebsd:freebsd:amd64:amd64: \
   freebsd:freebsd:arm64:arm64: \
   openbsd:openbsd:amd64:amd64: \
