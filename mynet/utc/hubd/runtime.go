@@ -433,50 +433,58 @@ func (r *Runtime) syncIdentity() {
 // fails the cycle: publishing against a header the GNB never wrote would be a
 // silent no-op the dataplane never applies.
 func (r *Runtime) refreshIdentity() error {
-	bootID, pid, identityErr := readIdentityFile(r.identityPath(), r.cfg.Identity.LocalID)
-	haveIdentity := identityErr == nil
-	if haveIdentity {
-		r.identity.BootID, r.identity.PID = bootID, pid
+	// Two sources describe the local GNB: utc.identity (written by managed
+	// builds at start) and utc.status (written by the RUNNING instance). Pick
+	// the newer one: a stale identity must not keep a crashed/restarted GNB
+	// unbound, while a just-written identity supersedes an older status.
+	type candidate struct {
+		boot  string
+		pid   uint64
+		mtime int64
+		ident bool
+	}
+	var best candidate
+	statusSnap := statusSnapshot{}
+	var haveStatus bool
+	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
+		if snapshot, err := parseStatus(raw); err == nil {
+			discloseOnly := snapshot.Header.Scope == "none" &&
+				snapshot.Header.Instance == "none"
+			if discloseOnly || (snapshot.Header.Scope == r.cfg.Scope &&
+				snapshot.Header.Instance == r.identity.Instance &&
+				snapshot.Header.LocalID == r.cfg.Identity.LocalID) {
+				statusSnap = snapshot
+				haveStatus = true
+				if info, statErr := os.Stat(r.cfg.StatusPath); statErr == nil {
+					best = candidate{snapshot.Header.BootID, snapshot.Header.PID,
+						info.ModTime().UnixNano(), false}
+				}
+			} else {
+				r.logf("utc hub: ignored utc.status for another scope/instance/local")
+			}
+		}
+	}
+	if bootID, pid, identityErr := readIdentityFile(r.identityPath(),
+		r.cfg.Identity.LocalID); identityErr == nil {
+		if info, statErr := os.Stat(r.identityPath()); statErr == nil &&
+			info.ModTime().UnixNano() > best.mtime {
+			best = candidate{bootID, pid, info.ModTime().UnixNano(), true}
+		}
 	} else if !os.IsNotExist(identityErr) {
 		return fmt.Errorf("utc.identity: %w", identityErr)
 	}
-	r.statusFresh = haveIdentity
-	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
-		if snapshot, err := parseStatus(raw); err == nil {
-			r.statusSeen = true
-			{
-				maxAge := r.cfg.StatusMaxAge
-				if maxAge <= 0 {
-					maxAge = defaultStatusMaxAge
-				}
-				if snapshot.Header.GeneratedAt != 0 &&
-					r.Now().Unix()-int64(snapshot.Header.GeneratedAt) <= int64(maxAge/time.Second) {
-					r.statusFresh = snapshot.Header.LocalID == r.cfg.Identity.LocalID
-				}
-			}
-			discloseOnly := snapshot.Header.Scope == "none" && snapshot.Header.Instance == "none"
-			matches := snapshot.Header.Scope == r.cfg.Scope &&
-				snapshot.Header.Instance == r.identity.Instance &&
-				snapshot.Header.LocalID == r.identity.LocalID
-			if !discloseOnly && !matches {
-				r.logf("utc hub: ignored utc.status for another scope/instance/local")
-			} else {
-				if !haveIdentity {
-					r.identity.BootID = snapshot.Header.BootID
-					r.identity.PID = snapshot.Header.PID
-				}
-				if snapshot.Header.ConfigGen > r.configGen {
-					r.configGen = snapshot.Header.ConfigGen
-				}
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		// Not fatal: the identity file already bound this cycle, and a
-		// later poll will surface a persistent status problem.
-		r.logf("utc hub: reading utc.status failed: %v", err)
-	}
-	if r.identity.BootID == "" || r.identity.PID == 0 {
+	if best.boot != "" && best.pid != 0 {
+		r.identity.BootID = best.boot
+		r.identity.PID = best.pid
+		r.statusFresh = true
+	} else if r.identity.BootID != "" && r.identity.PID != 0 {
+		// Configured/previous binding stays valid until a source appears.
+		r.statusFresh = true
+	} else {
 		return errors.New("utc hub identity has no usable boot id/pid")
+	}
+	if haveStatus && statusSnap.Header.ConfigGen > r.configGen {
+		r.configGen = statusSnap.Header.ConfigGen
 	}
 	r.syncIdentity()
 	return nil
@@ -594,20 +602,26 @@ func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 // during the same control cycle, so a refresh-time snapshot is too early.
 func (r *Runtime) statusState() (present, fresh bool) {
 	raw, err := readStatusFile(r.cfg.StatusPath)
-	if err != nil {
-		return false, false
-	}
-	snapshot, err := parseStatus(raw)
-	if err != nil || snapshot.Header.LocalID != r.cfg.Identity.LocalID ||
-		snapshot.Header.GeneratedAt == 0 {
+	if err == nil {
+		snapshot, perr := parseStatus(raw)
+		if perr == nil && snapshot.Header.LocalID == r.cfg.Identity.LocalID &&
+			snapshot.Header.GeneratedAt != 0 {
+			maxAge := r.cfg.StatusMaxAge
+			if maxAge <= 0 {
+				maxAge = defaultStatusMaxAge
+			}
+			if r.Now().Unix()-int64(snapshot.Header.GeneratedAt) <=
+				int64(maxAge/time.Second) {
+				return true, true
+			}
+		}
 		return true, false
 	}
-	maxAge := r.cfg.StatusMaxAge
-	if maxAge <= 0 {
-		maxAge = defaultStatusMaxAge
+	if _, _, identityErr := readIdentityFile(r.identityPath(),
+		r.cfg.Identity.LocalID); identityErr == nil {
+		return true, true
 	}
-	return true, r.Now().Unix()-int64(snapshot.Header.GeneratedAt) <=
-		int64(maxAge/time.Second)
+	return false, false
 }
 
 func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome hub.Outcome, now time.Time) error {
@@ -646,12 +660,13 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 		newGeneration := false
 		if !matches {
 			nextGen := gen
-			// The first projection may use the configured generation. Once a
-			// projection reached disk at this generation — the file still
-			// exists or a summary proves a prior publish — the dataplane owns
-			// its high water, so every rewrite must strictly advance it.
-			if r.file.Exists || r.hadSummary {
-				nextGen++
+			// The running GNB already carries its own high water in utc.status;
+			// only step past the on-disk generation when the disk is at or
+			// above the target, otherwise the projection would outrun APPLIED.
+			if r.file.Exists && r.file.ConfigGen >= nextGen {
+				nextGen = r.file.ConfigGen + 1
+			} else if !r.file.Exists && r.hadSummary && nextGen <= r.configGen {
+				nextGen = r.configGen + 1
 			}
 			if nextGen == 0 {
 				nextGen = 1
