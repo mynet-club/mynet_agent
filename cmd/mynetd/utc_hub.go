@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mynet-club/mynet_agent/mynet/driver"
 	"github.com/mynet-club/mynet_agent/mynet/utc/hubd"
 	"github.com/mynet-club/mynet_agent/shared/logger"
 	"github.com/mynet-club/mynet_agent/shared/utils"
@@ -40,6 +41,19 @@ func startUTCHub(ctx context.Context) {
 				"err", err)
 			return
 		}
+	}
+	// Hubd owns the GNB projection: mark the instance managed before the first
+	// publish and inject a reload hook so each new generation is actually read.
+	gnbDriver := driver.NewGNBDriver(int64(config.Identity.LocalID))
+	gnbDriver.ConfDir = config.ConfDir
+	if err := gnbDriver.MarkUTCManaged(); err != nil {
+		logger.Error("UTC Hub 无法标记受管实例，运行时未启动（fail-closed）",
+			"err", err)
+		return
+	}
+	config.Apply = func(applyCtx context.Context) error {
+		_ = applyCtx
+		return gnbDriver.Reload()
 	}
 	runtime, err := hubd.New(config)
 	if err != nil {

@@ -7,6 +7,7 @@ package hubd
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -70,6 +71,12 @@ type Config struct {
 	ConfDir    string
 	StatusPath string
 	MeterPath  string
+
+	// Apply, when set by the embedding agent, reloads/restarts the local GNB
+	// after a new projection generation is durably published. The closed loop
+	// is publish -> apply -> verify APPLIED; without it a new generation would
+	// never be read and every retry would advance config_gen again.
+	Apply func(context.Context) error
 
 	LeaseTTL     time.Duration
 	RenewLead    time.Duration

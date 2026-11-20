@@ -605,6 +605,7 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 		if err != nil {
 			return err
 		}
+		newGeneration := false
 		if !matches {
 			nextGen := gen
 			// The first projection may use the configured generation. Once a
@@ -618,6 +619,7 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 				nextGen = 1
 			}
 			r.setConfigGen(nextGen)
+			newGeneration = true
 			text, err = r.canonicalProjection(nextGen, pair.cfg.PairID, peer)
 			if err != nil {
 				return err
@@ -626,6 +628,18 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 		outcome.Summary.ConfigGen = r.configGen
 		if err := r.publish(pair, outcome, text); err != nil {
 			return err
+		}
+		// Closed loop: a new generation or a rebinding is only effective after
+		// the GNB applies it. Ask the agent to reload/restart the GNB once, then
+		// verify APPLIED below; on failure the same generation is retried
+		// without churn.
+		if r.cfg.Apply != nil && (newGeneration || identityChanged) {
+			applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := r.cfg.Apply(applyCtx)
+			cancel()
+			if err != nil {
+				return fmt.Errorf("utc GNB apply after publish: %w", err)
+			}
 		}
 		// The publish is durable; refresh the state so a status failure keeps
 		// the exact text/digest for the next idempotent verification.
