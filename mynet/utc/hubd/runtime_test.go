@@ -152,19 +152,30 @@ func TestRuntimeApplyHookRunsOnNewGeneration(t *testing.T) {
 	key, public := testKey(t)
 	config := coreConfig(t, "", public)
 	reply := baseReply(t, key, 1, 1, 1, 2, time.Now().Add(5*time.Minute).Unix())
+	bootstrapped := false
 	server := newFakeHub(t, func(_ *fakeHub, _ int, _ recordedRequest) []byte {
+		if bootstrapped {
+			writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
+		}
 		return successPayload(t, key, reply)
 	})
 	config.HubAddress = server.listener.Addr().String()
 	applied := 0
 	config.Apply = func(context.Context) error {
 		applied++
-		writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
+		bootstrapped = true
+		text := "status-v1 none none " + strconv.FormatUint(testLocalID, 10) + " " +
+			testBoot + " 0 " + strconv.FormatUint(uint64(time.Now().Unix()), 10) +
+			" NEVER_ENABLED 123\nmetrics 0 0 0 0\n"
+		if err := os.WriteFile(config.StatusPath, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
 		return nil
 	}
 	runtime := newRuntime(t, config)
-	if err := stepOnce(t, runtime); err != nil {
-		t.Fatal(err)
+	if err := stepOnce(t, runtime); err == nil ||
+		!strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("first step = %v, want bootstrap wait", err)
 	}
 	if applied != 1 {
 		t.Fatalf("apply calls = %d, want 1 when the GNB is not reporting", applied)

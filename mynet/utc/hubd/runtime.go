@@ -27,6 +27,7 @@ type Runtime struct {
 	configGen  uint64
 	statusSeen bool
 	statusFresh bool
+	lastBootstrap time.Time
 	file       projectionState
 	hadSummary bool
 
@@ -345,10 +346,17 @@ func (r *Runtime) load() error {
 		}
 		peer, hasRow := file.Peers[pair.cfg.PairID]
 		if !summaryExists {
-			if hasRow || statusHasPair(snapshot, statusExists, pair) {
+			if hasRow {
 				return permanent(fmt.Errorf(
-					"utc-hub summary is missing while pair %d projection/status exists",
+					"utc-hub summary is missing while pair %d projection exists",
 					pair.cfg.PairID))
+			}
+			if statusHasPair(snapshot, statusExists, pair) {
+				// A rebuilt Hub has no summary yet, but the running GNB may
+				// still report a recovered row. It is not authority: wait for
+				// the next publish instead of bricking the runtime.
+				r.logf("utc hub: ignoring recovered status row for pair %d without a summary",
+					pair.cfg.PairID)
 			}
 			continue
 		}
@@ -624,7 +632,37 @@ func (r *Runtime) statusState() (present, fresh bool) {
 	return false, false
 }
 
+
+func (r *Runtime) anyIdentitySource() bool {
+	if _, err := os.Stat(r.cfg.StatusPath); err == nil {
+		return true
+	}
+	if _, err := os.Stat(r.identityPath()); err == nil {
+		return true
+	}
+	return false
+}
+
 func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome hub.Outcome, now time.Time) error {
+	if r.cfg.Apply != nil && !r.anyIdentitySource() {
+		// Bootstrap order: never publish against an unknown process. Move a
+		// stale projection aside so the GNB can start and disclose its own
+		// identity, then start it (rate-limited) and wait for the next cycle.
+		if _, err := os.Stat(r.confPath()); err == nil {
+			_ = os.Rename(r.confPath(), fmt.Sprintf("%s.stale-%d", r.confPath(), now.Unix()))
+			r.logf("utc hub: stale utc.conf moved aside for identity bootstrap")
+		}
+		if r.lastBootstrap.IsZero() || now.Sub(r.lastBootstrap) >= 30*time.Second {
+			applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			err := r.cfg.Apply(applyCtx)
+			cancel()
+			r.lastBootstrap = now
+			if err != nil {
+				return fmt.Errorf("bootstrap GNB start: %w", err)
+			}
+		}
+		return errors.New("bootstrap: waiting for the GNB to publish utc.identity/utc.status")
+	}
 	if present, fresh := r.statusState(); present && !fresh {
 		return errors.New("waiting for a fresh GNB identity (utc.status stale or foreign)")
 	}
