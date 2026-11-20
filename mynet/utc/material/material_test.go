@@ -544,7 +544,7 @@ func TestRunOnceHotAppliesPoolsAndRenewals(t *testing.T) {
 	if restarts.Load() != 0 {
 		t.Fatalf("restart ran on first install with unchanged trust: %d", restarts.Load())
 	}
-	if got := f.readFile(t, f.cfg.TokenAFile); got != "ta1\nta2\n" {
+	if got := f.readFile(t, f.cfg.TokenAFile); got != "#window=1\nta1\nta2\n" { // GUARD-OK pool-window tag literal in test expectation
 		t.Fatalf("token-a = %q", got)
 	}
 	if err := os.WriteFile(f.cfg.TokenAFile+".cursor", []byte("x"), 0600); err != nil {
@@ -565,10 +565,10 @@ func TestRunOnceHotAppliesPoolsAndRenewals(t *testing.T) {
 	if restarts.Load() != 0 {
 		t.Fatalf("pool replenishment restarted utcd: %d", restarts.Load())
 	}
-	if got := f.readFile(t, f.cfg.TokenAFile); got != "ta1\nta2\n" {
+	if got := f.readFile(t, f.cfg.TokenAFile); got != "#window=1\nta1\nta2\n" { // GUARD-OK pool-window tag literal in test expectation
 		t.Fatalf("live pool must not be rewritten = %q", got)
 	}
-	if got := f.readFile(t, f.cfg.NextAFile); got != "na2\n" {
+	if got := f.readFile(t, f.cfg.NextAFile); got != "#window=2\nna2\n" {
 		t.Fatalf("next pool = %q", got)
 	}
 	if _, err := os.Stat(f.cfg.TokenAFile + ".cursor"); err != nil {
@@ -600,10 +600,10 @@ func TestRunOnceMultiPairWritesPerPairPools(t *testing.T) {
 	if err := a.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "pa1\npa2\n" {
+	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "#window=1\npa1\npa2\n" { // GUARD-OK pool-window tag literal in test expectation
 		t.Fatalf("pair200 token = %q", got)
 	}
-	if got := f.readFile(t, filepath.Join(bDir, "token")); got != "pb1\npb2\n" {
+	if got := f.readFile(t, filepath.Join(bDir, "token")); got != "#window=1\npb1\npb2\n" { // GUARD-OK pool-window tag literal in test expectation
 		t.Fatalf("pair201 token = %q", got)
 	}
 	if got := f.readFile(t, filepath.Join(aDir, "relay.trust")); got != "trust-v1" {
@@ -634,13 +634,13 @@ func TestRunOnceMultiPairWritesPerPairPools(t *testing.T) {
 	if restarts.Load() != 0 {
 		t.Fatalf("hot pool swap restarted utcd: %d", restarts.Load())
 	}
-	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "pa1\npa2\n" {
+	if got := f.readFile(t, filepath.Join(aDir, "token")); got != "#window=1\npa1\npa2\n" { // GUARD-OK pool-window tag literal in test expectation
 		t.Fatalf("pair200 live pool must not be rewritten = %q", got)
 	}
-	if got := f.readFile(t, filepath.Join(aDir, "next")); got != "na9\n" {
+	if got := f.readFile(t, filepath.Join(aDir, "next")); got != "#window=2\nna9\n" {
 		t.Fatalf("pair200 next = %q", got)
 	}
-	if got := f.readFile(t, filepath.Join(bDir, "next")); got != "nb9\n" {
+	if got := f.readFile(t, filepath.Join(bDir, "next")); got != "#window=2\nnb9\n" {
 		t.Fatalf("pair201 next = %q", got)
 	}
 	if got := f.readFile(t, filepath.Join(aDir, "material.pool_seq")); got != "2\n" {
@@ -753,7 +753,7 @@ func TestAgentRequestsSlotAndScopePerInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertQuery("2")
-	if got := f.readFile(t, f.cfg.Pairs[0].NextFile); got != "q4\n" {
+	if got := f.readFile(t, f.cfg.Pairs[0].NextFile); got != "#window=2\nq4\n" {
 		t.Fatalf("next after replenish = %q", got)
 	}
 }
@@ -784,7 +784,7 @@ func TestManyPairsStayIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range f.cfg.Pairs {
-		if got := f.readFile(t, p.TokenFile); got != "ha\n" {
+		if got := f.readFile(t, p.TokenFile); got != "#window=1\nha\n" { // GUARD-OK pool-window tag literal in test expectation
 			t.Fatalf("pair %d token = %q", p.PairID, got)
 		}
 		if got := f.readFile(t, p.TrustPath); got != "shared-trust" {

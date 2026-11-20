@@ -501,16 +501,30 @@ func (a *Agent) applyPools(m *response, pair PairMaterial) error {
 		}
 		return nil
 	}
+	// utcd keys its pool rotation on the leading "#window=<N>" tag; a pool
+	// without it parses as window zero, so the next Core watermark bump parks
+	// the cursor and the pool is never used. The material server's pool_seq is
+	// the window this slice belongs to.
+	tag := ""
+	if m.PoolSeq != 0 {
+		tag = "#window=" + strconv.FormatUint(m.PoolSeq, 10) + "\n"
+	}
+	tagged := func(pool string) string {
+		if pool == "" || strings.HasPrefix(pool, "#window=") {
+			return pool
+		}
+		return tag + pool
+	}
 	apply := func(tokenPath, nextPath string, tokens, next string) error {
 		if first {
-			if err := write(tokenPath, tokens, true); err != nil {
+			if err := write(tokenPath, tagged(tokens), true); err != nil {
 				return err
 			}
-			if err := write(nextPath, next, true); err != nil {
+			if err := write(nextPath, tagged(next), true); err != nil {
 				return err
 			}
 		} else if needNext {
-			if err := write(nextPath, next, false); err != nil {
+			if err := write(nextPath, tagged(next), false); err != nil {
 				return err
 			}
 		}
