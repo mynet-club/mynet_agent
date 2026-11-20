@@ -42,8 +42,8 @@ go run -tags dev ./cmd/mynetd -listen 127.0.0.1:8096
 
 ## 文档
 
-- UTC 材料下发（方案 A）：hub `utc-materiald` 静态多对 + slot/base 切池；myndet 读 `conf/utc/material.json` 渲染 utcd ini、托管生命周期、next-only 热补池。
-  现场问题记录：<https://github.com/mynet-club/mynet_utc/blob/main/docs/UTC_MATERIAL_DELIVERY_A1_ISSUE_20261118.md>；复盘：<https://github.com/mynet-club/mynet_utc/blob/main/docs/UTC_MATERIAL_DELIVERY_A1_RETROSPECTIVE_20261118.md>
+- UTC 客户端：mynetd 通过 `mynet/utc/endpoint` 托管 `utcd --config`；默认配置为 `conf/utc/utcd.conf`，可由 `MYNET_UTC_CONFIG` 指定，二进制位于安装前缀的 `bin/utcd`。utcd 自己认证、取池和维护消费水位，GNB 投影继续由 hubd 负责。
+  启动契约与未验收边界：[BOOT-0 客户端契约](../mynet_utc/docs/productization/BOOT0_CLIENT.md)；三节点现场：[接手手册](../mynet_utc/docs/productization/UTC_THREE_NODE_TAKEOVER_20261120.md)。
 
 - 托盘优化：[Tray 渐进优化 Playbook](docs/TRAY_OPTIMIZATION_PLAYBOOK.md)（沿用现有 App/FSM，局部修复与交互优化）
 - 规则：`mynet_ctl/docs/knowledge-base/AGENTS.md`
