@@ -153,24 +153,28 @@ func TestRuntimeApplyHookRunsOnNewGeneration(t *testing.T) {
 	config := coreConfig(t, "", public)
 	reply := baseReply(t, key, 1, 1, 1, 2, time.Now().Add(5*time.Minute).Unix())
 	server := newFakeHub(t, func(_ *fakeHub, _ int, _ recordedRequest) []byte {
-		writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
 		return successPayload(t, key, reply)
 	})
 	config.HubAddress = server.listener.Addr().String()
 	applied := 0
-	config.Apply = func(context.Context) error { applied++; return nil }
+	config.Apply = func(context.Context) error {
+		applied++
+		writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
+		return nil
+	}
 	runtime := newRuntime(t, config)
 	if err := stepOnce(t, runtime); err != nil {
 		t.Fatal(err)
 	}
 	if applied != 1 {
-		t.Fatalf("apply calls = %d, want 1 after first publish", applied)
+		t.Fatalf("apply calls = %d, want 1 when the GNB is not reporting", applied)
 	}
+	writeStatus(t, config.StatusPath, "RUNNING", 5, 1, "APPLIED", "POLICY_LOADED")
 	if err := stepOnce(t, runtime); err != nil {
 		t.Fatal(err)
 	}
 	if applied != 1 {
-		t.Fatalf("apply calls = %d, want no extra apply when nothing changed", applied)
+		t.Fatalf("apply calls = %d, want no apply while the GNB reports APPLIED", applied)
 	}
 }
 

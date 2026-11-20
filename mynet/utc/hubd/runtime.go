@@ -26,6 +26,7 @@ type Runtime struct {
 
 	configGen  uint64
 	statusSeen bool
+	statusFresh bool
 	file       projectionState
 	hadSummary bool
 
@@ -439,9 +440,20 @@ func (r *Runtime) refreshIdentity() error {
 	} else if !os.IsNotExist(identityErr) {
 		return fmt.Errorf("utc.identity: %w", identityErr)
 	}
+	r.statusFresh = haveIdentity
 	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
 		if snapshot, err := parseStatus(raw); err == nil {
 			r.statusSeen = true
+			{
+				maxAge := r.cfg.StatusMaxAge
+				if maxAge <= 0 {
+					maxAge = defaultStatusMaxAge
+				}
+				if snapshot.Header.GeneratedAt != 0 &&
+					r.Now().Unix()-int64(snapshot.Header.GeneratedAt) <= int64(maxAge/time.Second) {
+					r.statusFresh = snapshot.Header.LocalID == r.cfg.Identity.LocalID
+				}
+			}
 			discloseOnly := snapshot.Header.Scope == "none" && snapshot.Header.Instance == "none"
 			matches := snapshot.Header.Scope == r.cfg.Scope &&
 				snapshot.Header.Instance == r.identity.Instance &&
@@ -577,7 +589,31 @@ func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 	return nil
 }
 
+
+// freshStatus reads utc.status at the decision point: the GNB may write it
+// during the same control cycle, so a refresh-time snapshot is too early.
+func (r *Runtime) statusState() (present, fresh bool) {
+	raw, err := readStatusFile(r.cfg.StatusPath)
+	if err != nil {
+		return false, false
+	}
+	snapshot, err := parseStatus(raw)
+	if err != nil || snapshot.Header.LocalID != r.cfg.Identity.LocalID ||
+		snapshot.Header.GeneratedAt == 0 {
+		return true, false
+	}
+	maxAge := r.cfg.StatusMaxAge
+	if maxAge <= 0 {
+		maxAge = defaultStatusMaxAge
+	}
+	return true, r.Now().Unix()-int64(snapshot.Header.GeneratedAt) <=
+		int64(maxAge/time.Second)
+}
+
 func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome hub.Outcome, now time.Time) error {
+	if present, fresh := r.statusState(); present && !fresh {
+		return errors.New("waiting for a fresh GNB identity (utc.status stale or foreign)")
+	}
 	verifiedPrior := pair.verified != nil && pair.verified.Prior() == pair.prior &&
 		pair.verified.ConfigGen == r.configGen
 	// A same-generation renewal keeps pair_gen and both epochs, so Outcome
@@ -636,7 +672,7 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 		// verify APPLIED below; on failure the same generation is retried
 		// without churn.
 		if r.cfg.Apply != nil && (newGeneration || identityChanged) &&
-			!r.statusSeen {
+			func() bool { _, fresh := r.statusState(); return !fresh }() {
 			applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			err := r.cfg.Apply(applyCtx)
 			cancel()
