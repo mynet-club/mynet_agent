@@ -25,6 +25,7 @@ type Runtime struct {
 	pairs    []*pairState
 
 	configGen  uint64
+	statusSeen bool
 	file       projectionState
 	hadSummary bool
 
@@ -440,6 +441,7 @@ func (r *Runtime) refreshIdentity() error {
 	}
 	if raw, err := readStatusFile(r.cfg.StatusPath); err == nil {
 		if snapshot, err := parseStatus(raw); err == nil {
+			r.statusSeen = true
 			discloseOnly := snapshot.Header.Scope == "none" && snapshot.Header.Instance == "none"
 			matches := snapshot.Header.Scope == r.cfg.Scope &&
 				snapshot.Header.Instance == r.identity.Instance &&
@@ -633,7 +635,8 @@ func (r *Runtime) publishOutcome(ctx context.Context, pair *pairState, outcome h
 		// the GNB applies it. Ask the agent to reload/restart the GNB once, then
 		// verify APPLIED below; on failure the same generation is retried
 		// without churn.
-		if r.cfg.Apply != nil && (newGeneration || identityChanged) {
+		if r.cfg.Apply != nil && (newGeneration || identityChanged) &&
+			!r.statusSeen {
 			applyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			err := r.cfg.Apply(applyCtx)
 			cancel()
