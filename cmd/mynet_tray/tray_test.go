@@ -124,6 +124,7 @@ func testApp(t *testing.T, base string, pr Prober) (*App, *int) {
 	t.Helper()
 	isolateUserConfig(t)
 	a := NewApp(pr, base)
+	a.startDaemon = func() {}
 	a.hc.Timeout = 2 * time.Second
 	renders := 0
 	a.renderFn = func() { renders++ }

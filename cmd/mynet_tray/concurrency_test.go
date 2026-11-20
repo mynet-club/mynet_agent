@@ -250,6 +250,7 @@ func newConcApp(t *testing.T, base string, pr Prober) (*App, *int64) {
 	t.Helper()
 	isolateUserConfig(t)
 	a := NewApp(pr, base)
+	a.startDaemon = func() {}
 	a.hc.Timeout = 5 * time.Second
 	renders := new(int64)
 	a.renderFn = func() { atomic.AddInt64(renders, 1) }

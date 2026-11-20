@@ -119,7 +119,8 @@ type App struct {
 	mAuto      *systray.MenuItem
 	mQuit      *systray.MenuItem
 
-	autoStart AutoStarter
+	autoStart   AutoStarter
+	startDaemon func()
 
 	mu sync.Mutex // 保护下面这些字段（以及 FSM 内部状态）
 	// deadline Starting/Stopping 的超时判据。
@@ -184,12 +185,13 @@ type view struct {
 
 func NewApp(prob Prober, base string) *App {
 	return &App{
-		fsm:        NewFSM(),
-		prob:       prob,
-		base:       base,
-		hc:         &http.Client{Timeout: cmdTimeout},
-		pushedIcon: iconUnset,
-		autoStart:  NewAutoStarter(),
+		fsm:         NewFSM(),
+		prob:        prob,
+		base:        base,
+		hc:          &http.Client{Timeout: cmdTimeout},
+		pushedIcon:  iconUnset,
+		autoStart:   NewAutoStarter(),
+		startDaemon: ensureDaemon,
 	}
 }
 
@@ -266,7 +268,7 @@ func (a *App) bootSequence() {
 	p, _ := a.prob.Probe()
 	if !p.Up {
 		// 服务没在跑（可能被上一次「退出应用」停掉）→ 尝试拉起。
-		a.ensureDaemon()
+		a.startDaemon()
 		p, _ = a.prob.Probe()
 	}
 	// 服务没在跑不单独写文案：下面的 fsm.On(eventFromProbe(p)) 会落 msgSvcDown。
@@ -435,7 +437,7 @@ func (a *App) shutdownApp() {
 // 这是**允许**的自举：mynetd 就是命令面/API 的宿主，它不在时没有任何命令面
 // 可经；且动作只是「请平台管理器起它自己管理的单元」，持有者仍是平台服务
 // 管理器（P1 规则②），未绕开编排（mynetd 起来后恢复隧道仍走 mynet service）。
-func (a *App) ensureDaemon() {
+func ensureDaemon() {
 	name := "mynetd"
 	switch runtime.GOOS {
 	case "darwin":
