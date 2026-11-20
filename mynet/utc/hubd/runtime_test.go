@@ -147,7 +147,6 @@ func TestRuntimeAssignPublishesAndVerifies(t *testing.T) {
 	}
 }
 
-
 func TestRuntimeApplyHookRunsOnNewGeneration(t *testing.T) {
 	key, public := testKey(t)
 	config := coreConfig(t, "", public)

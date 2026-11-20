@@ -24,12 +24,12 @@ type Runtime struct {
 	identity hub.Identity
 	pairs    []*pairState
 
-	configGen  uint64
-	statusSeen bool
-	statusFresh bool
+	configGen     uint64
+	statusSeen    bool
+	statusFresh   bool
 	lastBootstrap time.Time
-	file       projectionState
-	hadSummary bool
+	file          projectionState
+	hadSummary    bool
 
 	// Now, Jitter and Logf are testability/observability seams. New installs
 	// production defaults.
@@ -605,7 +605,6 @@ func (r *Runtime) validateAccepted(outcome hub.Outcome, now time.Time) error {
 	return nil
 }
 
-
 // freshStatus reads utc.status at the decision point: the GNB may write it
 // during the same control cycle, so a refresh-time snapshot is too early.
 func (r *Runtime) statusState() (present, fresh bool) {
@@ -631,7 +630,6 @@ func (r *Runtime) statusState() (present, fresh bool) {
 	}
 	return false, false
 }
-
 
 func (r *Runtime) anyIdentitySource() bool {
 	if _, err := os.Stat(r.cfg.StatusPath); err == nil {
