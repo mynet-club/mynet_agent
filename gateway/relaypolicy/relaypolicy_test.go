@@ -51,3 +51,27 @@ func TestAppInviteCodePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestUtcVisibilityPaths(t *testing.T) {
+	// UTC 租户可见面（路径/用量/客户端配置）走本机 relay；
+	// 缺前缀时 GUI 显示「path 不在中继白名单内」，数据源变 unknown。
+	for _, path := range []string{
+		"/api/v1/utc/paths",
+		"/api/v1/utc/identity",
+		"/api/v1/utc/client-config",
+		"/api/v1/utc/transports",
+	} {
+		if !IsAllowed(path) {
+			t.Fatalf("utc visibility path blocked: %s", path)
+		}
+	}
+	// 管理面（/utc/admin/*）仍由 /admin 片段拒绝：本机 relay 不是管理入口。
+	for _, path := range []string{
+		"/api/v1/utc/admin/pair-approvals",
+		"/api/v1/utc/admin/relay-inventory",
+	} {
+		if IsAllowed(path) {
+			t.Fatalf("utc admin path must stay denied: %s", path)
+		}
+	}
+}
