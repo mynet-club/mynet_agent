@@ -6,48 +6,37 @@ import (
 	"net/http"
 )
 
-// UTCLocalStatus is the local UTC acceleration toggle and runtime snapshot
-// exposed by mynetd's localapi for desktop/local UI consumers.
+// UTCPeerState describes one peer entry configured in the local utcd.conf.
+type UTCPeerState struct {
+	Name        string `json:"name"`
+	TransportID uint64 `json:"transport_id,omitempty"`
+	UDPBind     string `json:"udp_bind,omitempty"`
+	UDPTarget   string `json:"udp_target,omitempty"`
+	PairID      uint64 `json:"pair_id,omitempty"`
+	Side        string `json:"side,omitempty"`
+}
+
+// UTCLocalStatus is the local UTC acceleration snapshot exposed to local UIs.
+// Under ADR-0037 (一端一配), utcd.conf is the sole client configuration source.
 type UTCLocalStatus struct {
-	Enabled  bool             `json:"enabled"`
-	Endpoint UTCEndpointState `json:"endpoint"`
-	Hub      UTCHubState      `json:"hub"`
+	Enabled        bool           `json:"enabled"`
+	Configured     bool           `json:"configured"`
+	Running        bool           `json:"running"`
+	ConfigPath     string         `json:"config_path,omitempty"`
+	ConfigVersion  uint32         `json:"config_version,omitempty"`
+	StateDir       string         `json:"state_dir,omitempty"`
+	EdgeCandidates []string       `json:"edge_candidates"`
+	Peers          []UTCPeerState `json:"peers"`
+	LastError      string         `json:"last_error,omitempty"`
 }
 
-// UTCEndpointState describes the supervised local utcd endpoint process.
-type UTCEndpointState struct {
-	Configured bool   `json:"configured"`
-	Running    bool   `json:"running"`
-	ConfigPath string `json:"config_path,omitempty"`
-	LastError  string `json:"last_error,omitempty"`
-}
-
-// UTCHubState describes the resident local hubd pair runtime.
-type UTCHubState struct {
-	Configured  bool           `json:"configured"`
-	Running     bool           `json:"running"`
-	Scope       string         `json:"scope,omitempty"`
-	TransportID string         `json:"transport_id,omitempty"`
-	AccountID   string         `json:"account_id,omitempty"`
-	ConfigPath  string         `json:"config_path,omitempty"`
-	LastError   string         `json:"last_error,omitempty"`
-	Pairs       []UTCPairState `json:"pairs"`
-}
-
-// UTCPairState is one locally configured UTC pair and its last verified
-// APPLIED watermark (16-digit JS-safe Core pair_id compatible).
-type UTCPairState struct {
-	PairID         uint64 `json:"pair_id"`
-	PeerID         uint64 `json:"peer_id"`
-	Side           uint8  `json:"side"`
-	Mode           string `json:"mode"`
-	Applied        bool   `json:"applied"`
-	PairGen        uint64 `json:"pair_gen,omitempty"`
-	LeaseEpoch     uint64 `json:"lease_epoch,omitempty"`
-	PlacementEpoch uint64 `json:"placement_epoch,omitempty"`
-	EdgeID         uint32 `json:"edge_id,omitempty"`
-	ValidUntil     uint64 `json:"valid_until,omitempty"`
-	ObservedAt     uint64 `json:"observed_at,omitempty"`
+// UTCPairsResponse is the payload returned by GET /api/v1/utc/pairs.
+type UTCPairsResponse struct {
+	Enabled    bool           `json:"enabled"`
+	Configured bool           `json:"configured"`
+	Running    bool           `json:"running"`
+	Count      int            `json:"count"`
+	Peers      []UTCPeerState `json:"peers"`
 }
 
 func (s *Server) registerUTCRoutes() {
@@ -65,13 +54,9 @@ func (s *Server) handleUTCStatus(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	status := s.UTCStatus()
-	if status.Hub.Pairs == nil {
-		status.Hub.Pairs = []UTCPairState{}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"data":    status,
+		"data":    normalizeUTCStatus(s.UTCStatus()),
 	})
 }
 
@@ -84,19 +69,15 @@ func (s *Server) handleUTCPairs(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	status := s.UTCStatus()
-	pairs := status.Hub.Pairs
-	if pairs == nil {
-		pairs = []UTCPairState{}
-	}
+	st := normalizeUTCStatus(s.UTCStatus())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"data": map[string]any{
-			"enabled":      status.Enabled,
-			"scope":        status.Hub.Scope,
-			"transport_id": status.Hub.TransportID,
-			"count":        len(pairs),
-			"pairs":        pairs,
+		"data": UTCPairsResponse{
+			Enabled:    st.Enabled,
+			Configured: st.Configured,
+			Running:    st.Running,
+			Count:      len(st.Peers),
+			Peers:      st.Peers,
 		},
 	})
 }
@@ -111,15 +92,9 @@ func (s *Server) handleUTCAcceleration(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		status := s.UTCStatus()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"success": true,
-			"data": map[string]any{
-				"enabled":          status.Enabled,
-				"configured":       status.Endpoint.Configured || status.Hub.Configured,
-				"endpoint_running": status.Endpoint.Running,
-				"hub_running":      status.Hub.Running,
-			},
+			"data":    normalizeUTCStatus(s.UTCStatus()),
 		})
 		return
 	}
@@ -145,7 +120,7 @@ func (s *Server) handleUTCAccelerationPut(w http.ResponseWriter, r *http.Request
 	var body struct {
 		Enabled *bool `json:"enabled"`
 	}
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil || body.Enabled == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -172,11 +147,18 @@ func (s *Server) handleUTCAccelerationPut(w http.ResponseWriter, r *http.Request
 		})
 		return
 	}
-	if status.Hub.Pairs == nil {
-		status.Hub.Pairs = []UTCPairState{}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
-		"data":    status,
+		"data":    normalizeUTCStatus(status),
 	})
+}
+
+func normalizeUTCStatus(st UTCLocalStatus) UTCLocalStatus {
+	if st.EdgeCandidates == nil {
+		st.EdgeCandidates = []string{}
+	}
+	if st.Peers == nil {
+		st.Peers = []UTCPeerState{}
+	}
+	return st
 }

@@ -42,7 +42,7 @@ go run -tags dev ./cmd/mynetd -listen 127.0.0.1:8096
 
 ## 文档
 
-- UTC 客户端：mynetd 通过 `mynet/utc/endpoint` 托管 `utcd --config`；默认配置为 `conf/utc/utcd.conf`，可由 `MYNET_UTC_CONFIG` 指定，二进制位于安装前缀的 `bin/utcd`。utcd 自己认证、取池和维护消费水位，GNB 投影继续由 hubd 负责。
+- UTC 客户端：mynetd 通过 `mynet/utc/endpoint` 托管 `utcd --config`；默认单一配置为 `conf/utc/utcd.conf`（一端一配，旧 `hub.json` / `hubd` 已退役），可由 `MYNET_UTC_CONFIG` 指定，二进制位于安装前缀的 `bin/utcd`。utcd 自己认证、取池和维护消费水位。
   启动契约与未验收边界：[BOOT-0 客户端契约](../mynet_utc/docs/productization/BOOT0_CLIENT.md)；三节点现场：[接手手册](../mynet_utc/docs/productization/UTC_THREE_NODE_TAKEOVER_20261120.md)。
 
 - 托盘优化：[Tray 渐进优化 Playbook](docs/TRAY_OPTIMIZATION_PLAYBOOK.md)（沿用现有 App/FSM，局部修复与交互优化）

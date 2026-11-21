@@ -250,7 +250,7 @@ func runAgent(ctx context.Context) {
 	}
 
 	// UTC Hub 与 utcd 常驻运行时：受本地 UTC 加速开关（utc_state.json）控制，
-	// 默认在存在 utcd.conf 或 hub.json 时自动启动；--once 是只读探针，不启动。
+	// UTC 加速运行时管理器（仅托管 utcd.conf；默认存在 utcd.conf 时自动启动，--once 不启动）。
 	if !*flagOnce {
 		utcMgr.StartIfEnabled()
 		defer utcMgr.Stop()
