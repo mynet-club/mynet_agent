@@ -170,6 +170,49 @@ func (m *utcManager) Stop() {
 	}
 }
 
+func utcRefsPath() string {
+	if path := os.Getenv("MYNET_UTC_REFS"); path != "" {
+		return path
+	}
+	return filepath.Join(utils.GetMyNetHome(), "conf", "utc", "utcd.refs")
+}
+
+func (m *utcManager) Sync(req localapi.UTCSyncRequest) (localapi.UTCLocalStatus, error) {
+	refsPath := utcRefsPath()
+	refs, err := endpoint.LoadRefs(refsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return m.Status(), fmt.Errorf("缺少本机根引用文件 %s（需包含 identity_ref/trust_ref/material_ref/state_dir）", refsPath)
+		}
+		return m.Status(), fmt.Errorf("读取 utcd.refs 失败: %w", err)
+	}
+	peers := make([]endpoint.PeerSummary, 0, len(req.Peers))
+	for _, p := range req.Peers {
+		peers = append(peers, endpoint.PeerSummary{
+			Name:        p.Name,
+			TransportID: p.TransportID,
+			UDPBind:     p.UDPBind,
+			UDPTarget:   p.UDPTarget,
+		})
+	}
+	rendered, err := endpoint.RenderV3Config(refs, req.EdgeCandidates, peers)
+	if err != nil {
+		return m.Status(), fmt.Errorf("渲染 utcd.conf 失败: %w", err)
+	}
+	if err := endpoint.WriteConfigAtomic(utcConfigPath(), rendered); err != nil {
+		return m.Status(), fmt.Errorf("写入 utcd.conf 失败: %w", err)
+	}
+
+	m.mu.Lock()
+	shouldRestart := m.enabled
+	m.mu.Unlock()
+	if shouldRestart {
+		m.Stop()
+		m.startRuntime()
+	}
+	return m.Status(), nil
+}
+
 func (m *utcManager) Status() localapi.UTCLocalStatus {
 	m.mu.Lock()
 	enabled := m.enabled

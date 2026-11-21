@@ -132,4 +132,34 @@ func TestUTCStatusPairsAndToggle(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("PUT toggle error got %d, want 409", rec.Code)
 	}
+
+	// POST /api/v1/utc/sync unwired -> 503
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/utc/sync", bytes.NewBufferString(`{"peers":[{"name":"peer_102","transport_id":102}]}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST sync unwired got %d, want 503", rec.Code)
+	}
+
+	// POST /api/v1/utc/sync wired -> 200
+	srv.UTCSync = func(req UTCSyncRequest) (UTCLocalStatus, error) {
+		state.Configured = true
+		state.EdgeCandidates = req.EdgeCandidates
+		state.Peers = []UTCPeerState{{Name: req.Peers[0].Name, TransportID: req.Peers[0].TransportID}}
+		return state, nil
+	}
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/utc/sync", bytes.NewBufferString(`{"edge_candidates":["edge-b:4433"],"peers":[{"name":"peer_102","transport_id":102}]}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST sync got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"peer_102"`)) {
+		t.Fatalf("expected peer_102 in %s", rec.Body.String())
+	}
+
+	// POST /api/v1/utc/sync empty peers -> 400
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/utc/sync", bytes.NewBufferString(`{"peers":[]}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST sync empty peers got %d, want 400", rec.Code)
+	}
 }

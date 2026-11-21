@@ -39,10 +39,25 @@ type UTCPairsResponse struct {
 	Peers      []UTCPeerState `json:"peers"`
 }
 
+// UTCSyncPeer is one peer entry submitted to POST /api/v1/utc/sync.
+type UTCSyncPeer struct {
+	Name        string `json:"name"`
+	TransportID uint64 `json:"transport_id"`
+	UDPBind     string `json:"udp_bind,omitempty"`
+	UDPTarget   string `json:"udp_target,omitempty"`
+}
+
+// UTCSyncRequest is the JSON payload accepted by POST /api/v1/utc/sync.
+type UTCSyncRequest struct {
+	EdgeCandidates []string      `json:"edge_candidates,omitempty"`
+	Peers          []UTCSyncPeer `json:"peers"`
+}
+
 func (s *Server) registerUTCRoutes() {
 	s.mux.HandleFunc("/api/v1/utc/status", getOnly(s.handleUTCStatus))
 	s.mux.HandleFunc("/api/v1/utc/pairs", getOnly(s.handleUTCPairs))
 	s.mux.HandleFunc("/api/v1/utc/acceleration", s.handleUTCAcceleration)
+	s.mux.HandleFunc("/api/v1/utc/sync", s.handleUTCSync)
 }
 
 func (s *Server) handleUTCStatus(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +158,68 @@ func (s *Server) handleUTCAccelerationPut(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"success":     false,
 			"reason_code": "UTC_TOGGLE_FAILED",
+			"message":     err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    normalizeUTCStatus(status),
+	})
+}
+
+func (s *Server) handleUTCSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"success": false,
+			"message": "POST only",
+		})
+		return
+	}
+	s.withConfigMutation(s.handleUTCSyncPost)(w, r)
+}
+
+func (s *Server) handleUTCSyncPost(w http.ResponseWriter, r *http.Request) {
+	if s.UTCSync == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_UNAVAILABLE",
+			"message":     "本机 UTC 配置同步未装配",
+		})
+		return
+	}
+	var req UTCSyncRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, 32<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "invalid json: " + err.Error(),
+		})
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "unexpected trailing json",
+		})
+		return
+	}
+	if len(req.Peers) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "peers must be non-empty",
+		})
+		return
+	}
+	status, err := s.UTCSync(req)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_SYNC_FAILED",
 			"message":     err.Error(),
 		})
 		return

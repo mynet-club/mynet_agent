@@ -41,6 +41,8 @@ var AllowedPathPrefixes = []string{
 	// 通知与头像（gui 主布局启动即调，缺了就一片 403）
 	"/api/v1/notifications",
 	"/api/v1/files",
+	// UTC 客户端面（/api/v1/utc/client-config 等；/admin 仍被 deniedFragments 拦截）
+	"/api/v1/utc",
 }
 
 // deniedFragments 即便前缀命中也必须拒绝。

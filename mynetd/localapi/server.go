@@ -77,6 +77,7 @@ type Server struct {
 	// UTCStatus / UTCSetEnabled 本机 UTC 加速开关与配对状态（组合根注入，localapi 不 import mynet —— B2）
 	UTCStatus     func() UTCLocalStatus
 	UTCSetEnabled func(enabled bool) (UTCLocalStatus, error)
+	UTCSync       func(req UTCSyncRequest) (UTCLocalStatus, error)
 }
 
 func NewServer(cfg Config) *Server {

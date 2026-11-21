@@ -48,3 +48,45 @@ peer.n178.udp_target = 127.0.0.1:9002
 		t.Fatalf("unexpected peer[1]: %+v", summary.Peers[1])
 	}
 }
+
+func TestLoadRefsRenderAndWriteV3Config(t *testing.T) {
+	dir := t.TempDir()
+	refsPath := filepath.Join(dir, "utcd.refs")
+	stateDir := "/var/lib/mynet/utc"
+	refsContent := "identity_ref=" + filepath.Join(dir, "id.ref") + "\n" +
+		"trust_ref=" + filepath.Join(dir, "tr.ref") + "\n" +
+		"material_ref=" + filepath.Join(dir, "mat.ref") + "\n" +
+		"state_dir=" + stateDir + "\n" +
+		"edge_candidates=edge-a:4433\n"
+	if err := os.WriteFile(refsPath, []byte(refsContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := LoadRefs(refsPath)
+	if err != nil {
+		t.Fatalf("LoadRefs failed: %v", err)
+	}
+	rendered, err := RenderV3Config(refs, []string{"edge-b:4433", "edge-c:4433"}, []PeerSummary{
+		{Name: "peer_102", TransportID: 102},
+		{Name: "peer_101", TransportID: 101},
+	})
+	if err != nil {
+		t.Fatalf("RenderV3Config failed: %v", err)
+	}
+	outPath := filepath.Join(dir, "utcd.conf")
+	if err := WriteConfigAtomic(outPath, rendered); err != nil {
+		t.Fatalf("WriteConfigAtomic failed: %v", err)
+	}
+	parsed, err := ParseConfig(outPath)
+	if err != nil {
+		t.Fatalf("ParseConfig failed: %v", err)
+	}
+	if parsed.ConfigVersion != 3 || len(parsed.EdgeCandidates) != 2 || parsed.EdgeCandidates[0] != "edge-b:4433" {
+		t.Fatalf("unexpected parsed summary: %+v", parsed)
+	}
+	if len(parsed.Peers) != 2 || parsed.Peers[0].Name != "peer_101" || parsed.Peers[0].UDPBind != "127.0.0.1:19100" {
+		t.Fatalf("unexpected parsed peers: %+v", parsed.Peers)
+	}
+	if err := WriteConfigAtomic(filepath.Join(dir, "utc.conf"), rendered); err == nil {
+		t.Fatal("expected utc.conf basename collision to be rejected")
+	}
+}
