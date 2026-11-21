@@ -1134,18 +1134,18 @@ func (a *App) toggleAccel() {
 		return
 	}
 	if err := apiErr(a.postJSON("/api/v1/acceleration/apply", map[string]any{})); err != nil {
-		a.notice("加速" + opText(map[bool]string{true: "开启", false: "关闭"}[cfg.Enabled]) + "失败：" + safeText(err.Error(), MaxMenuRunes))
+		a.notice("加速" + opText(cfg.Enabled) + "失败：" + safeText(err.Error(), MaxMenuRunes))
 		return
 	}
 	a.notice("加速设置已更新")
 	a.syncAccelMenu()
 }
 
-func opText(op string) string {
-	if op == "stop" {
-		return "关闭"
+func opText(enable bool) string {
+	if enable {
+		return "开启"
 	}
-	return "开启"
+	return "关闭"
 }
 
 // openProxyPanel 打开面板代理分流页（域名白名单管理入口）。

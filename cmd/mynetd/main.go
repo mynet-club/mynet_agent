@@ -405,9 +405,12 @@ func runAgent(ctx context.Context) {
 				OnCommand: func(_ context.Context, req commands.Request) commands.Result {
 					return commands.Run(execStd, req, nodeID)
 				},
-				// 每次连上（含重连）补拉一次 bundle：断线窗口里后端推的事件不会补发，
+				// 每次连上（含重连）补拉一次 bundle 与待执行命令：断线窗口里后端推的事件不会补发，
 				// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
-				OnConnect: func(context.Context) { dispatcher.catchUpBundle() },
+				OnConnect: func(context.Context) {
+					dispatcher.catchUpBundle()
+					dispatcher.runCommandPull("ws_reconnect")
+				},
 				OnEvent:   dispatcher.Handle,
 				OnResult:  onResult,
 			}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })

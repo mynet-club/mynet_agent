@@ -188,3 +188,16 @@ func TestDesktopAccelerationRejectsInvalidDomain(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestDesktopAccelerationApplyRejectsGET(t *testing.T) {
+	s := NewServer(Config{ProxyConfDir: t.TempDir()})
+	s.ProxyLoad = func(string) (*domain.ProxyIntentState, error) {
+		return &domain.ProxyIntentState{Desktop: &domain.DesktopAccelerationConfig{Enabled: true}}, nil
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acceleration/apply", nil)
+	rr := httptest.NewRecorder()
+	s.mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /apply status=%d, want 405 body=%s", rr.Code, rr.Body.String())
+	}
+}

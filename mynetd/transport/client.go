@@ -182,9 +182,13 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		c.mu.Unlock()
 
+		dialStart := time.Now()
 		err := c.dialOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if time.Since(dialStart) >= 30*time.Second {
+			backoff = c.cfg.BackoffBase
 		}
 		c.logf("transport: 连接结束: %v，%s 后重试", err, backoff)
 		select {
@@ -289,5 +293,13 @@ func truncate(b []byte, n int) string {
 }
 
 func jitter(d time.Duration) time.Duration {
-	return d
+	if d <= 0 {
+		return d
+	}
+	delta := d / 5 // ±20% 抖动
+	if delta <= 0 {
+		return d
+	}
+	offset := time.Duration(time.Now().UnixNano()%(2*int64(delta)+1)) - delta
+	return d + offset
 }

@@ -284,6 +284,10 @@ func (s *Server) handleAcceleration(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAccelerationApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"success": false, "message": "POST only"})
+		return
+	}
 	st, dir, err := s.loadProxyState()
 	if err != nil || st.Desktop == nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"success": false, "reason_code": "NOT_CONFIGURED", "message": "桌面加速尚未配置"})

@@ -173,8 +173,15 @@ func Run(ex Executor, req Request, nodeID string) Result {
 	if !ok {
 		return Result{ID: req.ID, OK: false, Error: "unknown op: " + req.Op}
 	}
+	start := time.Now()
 	stdout, stderr, err := ex(argv)
-	res := Result{ID: req.ID, Stdout: stdout, Stderr: stderr, OK: err == nil}
+	res := Result{
+		ID:      req.ID,
+		Stdout:  stdout,
+		Stderr:  stderr,
+		OK:      err == nil,
+		Elapsed: time.Since(start).Milliseconds(),
+	}
 	if err != nil {
 		res.Error = err.Error()
 	}

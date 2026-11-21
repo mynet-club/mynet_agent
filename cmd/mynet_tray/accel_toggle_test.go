@@ -227,3 +227,18 @@ func TestToggleAccelStopKeepsIntentOff(t *testing.T) {
 		t.Errorf("关闭也应 apply 一次，实际 %d 次", stub.applyHits)
 	}
 }
+
+// TestToggleAccelReportsStopApplyFailure 关闭路径 apply 失败应提示「加速关闭失败」。
+func TestToggleAccelReportsStopApplyFailure(t *testing.T) {
+	isolateUserConfig(t)
+	stub := &accelStub{statusBody: accelStatusFixture(true, true), applyFail: true}
+	srv := stub.serve(t)
+	a, _ := testApp(t, strings.TrimPrefix(srv.URL, "http://"), &fakeProber{})
+
+	a.toggleAccel()
+
+	got := noticeText(t, a)
+	if !strings.Contains(got, "加速关闭失败") {
+		t.Errorf("关闭 apply 失败必须提示「加速关闭失败」，实际 %q", got)
+	}
+}
