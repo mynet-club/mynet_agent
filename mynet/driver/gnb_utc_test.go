@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,54 @@ func utcTestDriver(t *testing.T) *GNBDriver {
 	return &GNBDriver{ConfDir: conf, Binary: "test-gnb", Exec: func(string, ...string) ([]byte, error) {
 		return []byte("GNB\nFeatures: proxy utc-conf utc-conf-v1\n"), nil
 	}}
+}
+
+func TestUTCStateDirectoryBindingFailsClosed(t *testing.T) {
+	d := utcTestDriver(t)
+	if err := d.MarkUTCManaged(); err != nil {
+		t.Fatal(err)
+	}
+	history, expected, err := d.utcHistoryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := history + ".state"
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(history, []byte(strings.Replace(expected, "utc-managed-v1\n", "utc-managed-v2\n", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.utcStartArgs(); err == nil {
+		t.Fatal("old binary accepted")
+	}
+	d.Exec = func(string, ...string) ([]byte, error) {
+		return []byte("Features: utc-conf-v1 utc-state-dir-v1\n"), nil
+	}
+	args, err := d.UTCLaunchArgs()
+	want := append([]string{"-c", d.ConfDir}, d.gnbExplicitPathArgs()...)
+	want = append(want, "--utc-state-dir", state, "--utc-managed")
+	if err != nil || !reflect.DeepEqual(args, want) {
+		t.Fatalf("args=%v err=%v", args, err)
+	}
+	if err := d.MarkUTCManaged(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.UTCLaunchArgs(); err == nil {
+		t.Fatal("missing state allowed fallback")
+	}
+	if err := os.Mkdir(state, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(state, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.UTCLaunchArgs(); err == nil {
+		t.Fatal("public state allowed")
+	}
 }
 func TestUTCManagedHistorySurvivesConfigurationLoss(t *testing.T) {
 	d := utcTestDriver(t)
@@ -36,7 +85,9 @@ func TestUTCManagedHistorySurvivesConfigurationLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(args, []string{"-c", d.ConfDir, "--utc-managed"}) {
+	want := append([]string{"-c", d.ConfDir}, d.gnbExplicitPathArgs()...)
+	want = append(want, "--utc-managed")
+	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("unsafe arguments: %v", args)
 	}
 }

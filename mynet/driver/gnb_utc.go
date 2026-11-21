@@ -28,31 +28,53 @@ func (d *GNBDriver) utcHistoryPath() (string, string, error) {
 }
 
 func (d *GNBDriver) utcManaged() (bool, error) {
+	managed, _, err := d.utcHistory()
+	return managed, err
+}
+
+func (d *GNBDriver) utcHistory() (bool, string, error) {
 	if d.ConfDir == "" {
-		return false, nil
+		return false, "", nil
 	}
 	path, expected, err := d.utcHistoryPath()
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		return false, nil
+		return false, "", nil
 	}
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 8192 {
-		return false, fmt.Errorf("UTC history is not a private regular file")
+		return false, "", fmt.Errorf("UTC history is not a private regular file")
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	if string(content) != expected {
-		return false, fmt.Errorf("UTC history scope mismatch or corruption")
+	if string(content) == expected {
+		return true, "", nil
 	}
-	return true, nil
+	// v2 is reserved for a trusted recovery workflow: it must establish the
+	// complete authoritative watermarks and durable state before publishing
+	// this marker atomically. This package does not perform that migration.
+	if string(content) == strings.Replace(expected, "utc-managed-v1\n", "utc-managed-v2\n", 1) {
+		return true, path + ".state", nil
+	}
+	return false, "", fmt.Errorf("UTC history scope mismatch or corruption")
+}
+
+func validateUTCStateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("UTC state directory unavailable: %w", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0700 {
+		return fmt.Errorf("UTC state directory must be a private directory")
+	}
+	return nil
 }
 
 // MarkUTCManaged must succeed BEFORE the first UTC configuration is published.
@@ -130,7 +152,7 @@ func syncUTCHistory(path string) error {
 
 func (d *GNBDriver) utcStartArgs() ([]string, error) {
 	args := append([]string{"-c", d.ConfDir}, d.gnbExplicitPathArgs()...)
-	managed, err := d.utcManaged()
+	managed, stateDir, err := d.utcHistory()
 	if err != nil {
 		return nil, fmt.Errorf("UTC RECOVERY_REQUIRED: %w", err)
 	}
@@ -140,7 +162,15 @@ func (d *GNBDriver) utcStartArgs() ([]string, error) {
 	if runtime.GOOS == "windows" {
 		return nil, fmt.Errorf("UTC managed GNB is unsupported on Windows")
 	}
-	if err := d.checkUTCFeature(); err != nil {
+	if stateDir != "" {
+		if err := validateUTCStateDirectory(stateDir); err != nil {
+			return nil, fmt.Errorf("UTC RECOVERY_REQUIRED: %w", err)
+		}
+		if err := d.checkUTCFeatures("utc-conf-v1", "utc-state-dir-v1"); err != nil {
+			return nil, err
+		}
+		args = append(args, "--utc-state-dir", stateDir)
+	} else if err := d.checkUTCFeature(); err != nil {
 		return nil, err
 	}
 	return append(args, "--utc-managed"), nil
@@ -179,22 +209,26 @@ func (d *GNBDriver) utcCheckDelegation() error {
 }
 
 func (d *GNBDriver) checkUTCFeature() error {
+	return d.checkUTCFeatures("utc-conf-v1")
+}
+
+func (d *GNBDriver) checkUTCFeatures(required ...string) error {
 	output, err := d.Exec(d.gnbBinary(), "--version")
 	if err != nil {
 		return fmt.Errorf("UTC driver capability: %w", err)
 	}
-	capable := false
+	features := map[string]bool{}
 	for _, line := range strings.Split(string(output), "\n") {
 		if strings.HasPrefix(line, "Features:") {
 			for _, feature := range strings.Fields(strings.TrimPrefix(line, "Features:")) {
-				if feature == "utc-conf-v1" {
-					capable = true
-				}
+				features[feature] = true
 			}
 		}
 	}
-	if !capable {
-		return fmt.Errorf("UTC requires driver feature utc-conf-v1")
+	for _, feature := range required {
+		if !features[feature] {
+			return fmt.Errorf("UTC requires driver feature %s", feature)
+		}
 	}
 	return nil
 }
