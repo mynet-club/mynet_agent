@@ -74,6 +74,9 @@ type Server struct {
 	sessions *SessionTable
 	// OnResult E-4：执行结果回调（经 WS 上报）
 	OnResult func(id string, ok bool, message, source string)
+	// UTCStatus / UTCSetEnabled 本机 UTC 加速开关与配对状态（组合根注入，localapi 不 import mynet —— B2）
+	UTCStatus     func() UTCLocalStatus
+	UTCSetEnabled func(enabled bool) (UTCLocalStatus, error)
 }
 
 func NewServer(cfg Config) *Server {
@@ -103,6 +106,7 @@ func (s *Server) routes() {
 	s.registerConfigRoutes()
 	s.registerProxyRoutes()
 	s.registerAccelerationRoutes()
+	s.registerUTCRoutes()
 	s.registerKBRoutes() // tips-kb 知识库只读透出（/api/v1/kb/tips-kb.json）
 	// 退出不占 configMutation：用户要关应用时必须能出去，不能被在途配置操作 409。
 	s.mux.HandleFunc("/api/v1/daemon/quit", s.handleDaemonQuit)

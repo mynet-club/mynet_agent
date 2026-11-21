@@ -154,8 +154,14 @@ func runAgent(ctx context.Context) {
 		}
 		return pc.Exits, pc.MaxExits, nil
 	}
+	// 本机 UTC 加速开关与配对状态（B2：由组合根注入，localapi 不 import mynet）。
+	utcMgr := newUTCManager(ctx)
+	api.UTCStatus = utcMgr.Status
+	api.UTCSetEnabled = utcMgr.SetEnabled
+
 	// 托盘「退出应用」：停隧道 + 注销并退出 mynetd（2026-10-28 用户裁定）。
 	api.DaemonQuit = newDaemonQuit(func() {
+		utcMgr.Stop()
 		_, _ = execMynet([]string{"service", "stop"})
 	})
 	// B2：会话落盘 / 设备指纹经注入，localapi 不 import mynet
@@ -243,12 +249,11 @@ func runAgent(ctx context.Context) {
 		return
 	}
 
-	// UTC Hub 常驻运行时：仅当本地安装了 conf/utc/hub.json 时启动。
-	// 常驻续约不能放进 60s 执行器命令，也不另建守护进程；--once 是只读探针，
-	// 不在其中发布投影。
+	// UTC Hub 与 utcd 常驻运行时：受本地 UTC 加速开关（utc_state.json）控制，
+	// 默认在存在 utcd.conf 或 hub.json 时自动启动；--once 是只读探针，不启动。
 	if !*flagOnce {
-		startUTCHub(ctx)
-		defer startUTCEndpoint(ctx)()
+		utcMgr.StartIfEnabled()
+		defer utcMgr.Stop()
 	}
 
 	// S3-1：心跳组装 + 命令分派 + WS 长连接。

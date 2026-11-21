@@ -48,6 +48,11 @@ func (v Verified) Prior() hub.Prior {
 	}
 }
 
+// LoadVerified reads one pair's durable APPLIED watermark for status inspection.
+func LoadVerified(path string) (Verified, error) {
+	return loadVerified(path)
+}
+
 func loadVerified(path string) (Verified, error) {
 	var verified Verified
 	info, err := os.Lstat(path)
