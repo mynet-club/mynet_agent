@@ -529,3 +529,38 @@ func TestStringifyParams(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandResultQueuedOnReportFailureAndFlushedOnReconnect(t *testing.T) {
+	ex := &recordingExec{}
+	pull := &scriptedPull{batches: [][]pendingCommand{{{ID: "88", Command: "mynet.metrics"}}}}
+	var mu sync.Mutex
+	fail := true
+	var delivered []string
+	d, logs := newTestDispatcher(ex.run)
+	d.pull = pull.next
+	d.report = func(_ context.Context, res commands.Result) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if fail {
+			return errors.New("未连接到网关")
+		}
+		delivered = append(delivered, res.ID)
+		return nil
+	}
+
+	d.Handle("command_queued", nil)
+	if !logs.waitLog(t, "已入队待重连补发") {
+		t.Fatalf("回报失败应入队并记日志，实际: %q", logs.joined())
+	}
+
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	d.flushPendingResults()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delivered) != 1 || delivered[0] != "88" {
+		t.Fatalf("重连后应补发命令 88 的结果，实际 delivered=%v", delivered)
+	}
+}

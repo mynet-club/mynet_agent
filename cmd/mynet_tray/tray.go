@@ -34,6 +34,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/systray"
@@ -142,9 +143,10 @@ type App struct {
 	// **不直接 SetTooltip**：tooltip 每 3s 被探针重画，直接写会立刻被冲掉，
 	// 用户点了却什么都看不到（P3:114「点击失败可见」）。存进状态、由渲染路径
 	// 带上、到点自动消失，才留得住。
-	noticeText       string
-	noticeUntil      time.Time
-	accelInterrupted bool
+	noticeText        string
+	noticeUntil       time.Time
+	accelInterrupted  bool
+	accelSyncInFlight atomic.Bool
 	// autoTitle 「登录时启动」菜单项的真实文案，由 syncAutoMenu 解析后写入。
 	// 存起来而不是渲染时现查：AutoStarter 会 shell out（launchctl / 注册表），
 	// 不能压在 mu 里。
@@ -681,13 +683,14 @@ func (a *App) refreshOnce() {
 
 	a.fsm.On(ev)
 	a.mu.Unlock()
-	// 加速状态也跟随实际连接刷新，避免启动/断开后一直显示旧值。
-	if p.Up && a.mAccelOn != nil {
-		a.syncAccelMenu()
-	}
-	// 稳态也要刷：one_line 每轮都可能变（旧版这里 if/else 两支都调 render，
-	// 判据是假的，直接合并）。
+	// 稳态先推主菜单渲染，加速子菜单放后台单飞刷新，避免 3s 轮询被两次串行 HTTP 阻塞。
 	a.render()
+	if p.Up && a.mAccelOn != nil && a.accelSyncInFlight.CompareAndSwap(false, true) {
+		go func() {
+			defer a.accelSyncInFlight.Store(false)
+			a.syncAccelMenu()
+		}()
+	}
 }
 
 // render 刷新界面。测试用 renderFn 换掉出口（见 App.renderFn 注释）。

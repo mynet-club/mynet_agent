@@ -76,7 +76,17 @@ type eventDispatcher struct {
 	// pending 是「跑的时候又来事件」的补跑队列（按事件名合并，见 runExclusive）。
 	pendingMu sync.Mutex
 	pending   map[string]func()
+
+	// failedResults 暂存因 WS 断线/瞬断导致回报失败的命令结果，待 OnConnect 后补发。
+	failedResultsMu sync.Mutex
+	failedResults   []commands.Result
+
+	// onLifecycleDone 在 bundle 落地链（可能重载驱动/改隧道）结束后回调，
+	// 用于通知 heartbeatLoop 失效一次启动快照以刷新 vpn_interfaces 运行态。
+	onLifecycleDone func()
 }
+
+const maxPendingResults = 32
 
 // setConfigExclusive 注入与 HTTP 写面共享的互斥（main.go 装配 api.TryRunExclusive）。
 func (d *eventDispatcher) setConfigExclusive(fn func(func() error) bool) {
@@ -238,6 +248,9 @@ func (d *eventDispatcher) runBundleLifecycle() {
 				d.logf("event: bundle_changed → %s（%s）成功", s.label, s.op)
 				if s.op == commands.OpServiceReload {
 					recordReloadFingerprint(fp)
+					if d.onLifecycleDone != nil {
+						d.onLifecycleDone()
+					}
 				}
 				continue
 			}
@@ -400,8 +413,60 @@ func (d *eventDispatcher) executeOne(ctx context.Context, cmd pendingCommand) {
 
 func (d *eventDispatcher) reportResult(ctx context.Context, res commands.Result) {
 	if err := d.report(ctx, res); err != nil {
-		// 回报失败必须吵出来：命令执行了但后端不知道，会一直显示「执行中」。
-		d.logf("command: 结果回报失败（id=%s）: %v", res.ID, err)
+		// 回报失败必须吵出来并入队：待 WS 重连后补发，避免后端等 10 分钟超时重跑。
+		d.enqueueFailedResult(res)
+		d.logf("command: 结果回报失败（id=%s），已入队待重连补发: %v", res.ID, err)
+	}
+}
+
+func (d *eventDispatcher) enqueueFailedResult(res commands.Result) {
+	d.failedResultsMu.Lock()
+	defer d.failedResultsMu.Unlock()
+	for i := range d.failedResults {
+		if d.failedResults[i].ID == res.ID {
+			d.failedResults[i] = res
+			return
+		}
+	}
+	if len(d.failedResults) >= maxPendingResults {
+		d.failedResults = d.failedResults[1:]
+	}
+	d.failedResults = append(d.failedResults, res)
+}
+
+// flushPendingResults 在 WS 重连建立后补发此前回报失败的命令结果。
+func (d *eventDispatcher) flushPendingResults() {
+	if d.report == nil {
+		return
+	}
+	d.failedResultsMu.Lock()
+	if len(d.failedResults) == 0 {
+		d.failedResultsMu.Unlock()
+		return
+	}
+	batch := d.failedResults
+	d.failedResults = nil
+	d.failedResultsMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var remaining []commands.Result
+	for i, res := range batch {
+		if err := d.report(ctx, res); err != nil {
+			d.logf("command: 重连补发结果失败（id=%s），保留待下次重连: %v", res.ID, err)
+			remaining = append(remaining, batch[i:]...)
+			break
+		}
+		d.logf("command: 重连补发结果成功（id=%s）", res.ID)
+	}
+	if len(remaining) > 0 {
+		d.failedResultsMu.Lock()
+		d.failedResults = append(remaining, d.failedResults...)
+		if len(d.failedResults) > maxPendingResults {
+			d.failedResults = d.failedResults[len(d.failedResults)-maxPendingResults:]
+		}
+		d.failedResultsMu.Unlock()
 	}
 }
 

@@ -402,3 +402,27 @@ func TestHeartbeatRetriesCollectUntilFirstSuccess(t *testing.T) {
 		t.Fatalf("上报 %d 条，期望 2", reports)
 	}
 }
+
+func TestHeartbeatInvalidateMetricsRefreshesNextBeat(t *testing.T) {
+	var metricsCalls int
+	h := &heartbeatLoop{
+		ops: func(argv []string) (string, string, error) {
+			if len(argv) > 0 && argv[0] == "metrics" {
+				metricsCalls++
+				return metricsFixture, "", nil
+			}
+			return "", "", nil
+		},
+	}
+	h.setReporter("1", func(_ context.Context, _, _ []byte) error { return nil })
+
+	ctx := context.Background()
+	h.beat(ctx) // 首拍采集（1）
+	h.beat(ctx) // 稳态复用（仍 1）
+	h.invalidateMetrics()
+	h.beat(ctx) // 失效后重采（2）
+	h.beat(ctx) // 稳态复用（仍 2）
+	if metricsCalls != 2 {
+		t.Fatalf("metrics 调用 %d 次，期望 2 次", metricsCalls)
+	}
+}

@@ -354,6 +354,7 @@ func runAgent(ctx context.Context) {
 			// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
 			// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
 			dispatcher.setConfigExclusive(api.TryRunExclusive)
+			dispatcher.onLifecycleDone = hb.invalidateMetrics
 
 			// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
 			// 才能经 WS 上报后端。此前这里没接，结果进了 mynetd 就被丢掉。
@@ -405,14 +406,15 @@ func runAgent(ctx context.Context) {
 				OnCommand: func(_ context.Context, req commands.Request) commands.Result {
 					return commands.Run(execStd, req, nodeID)
 				},
-				// 每次连上（含重连）补拉一次 bundle 与待执行命令：断线窗口里后端推的事件不会补发，
-				// 这是 WS 链路唯一的追平机会（见 transport.Handlers.OnConnect）。
+				// 每次连上（含重连）先补发断线期间未上报的命令结果，再补拉 bundle 与待执行命令：
+				// 断线窗口里后端推的事件不会补发，这是 WS 链路唯一的追平机会。
 				OnConnect: func(context.Context) {
+					dispatcher.flushPendingResults()
 					dispatcher.catchUpBundle()
 					dispatcher.runCommandPull("ws_reconnect")
 				},
-				OnEvent:   dispatcher.Handle,
-				OnResult:  onResult,
+				OnEvent:  dispatcher.Handle,
+				OnResult: onResult,
 			}, func(f string, a ...any) { logger.Info(fmt.Sprintf(f, a...)) })
 			if err != nil {
 				logger.Error("transport 启动失败", "err", err)
@@ -477,6 +479,9 @@ func runAgent(ctx context.Context) {
 				},
 				func(drv string) error {
 					_, err := execMynet([]string{"service", "start", drv})
+					if err == nil {
+						hb.invalidateMetrics()
+					}
 					return err
 				},
 			)
@@ -572,6 +577,14 @@ func (h *heartbeatLoop) getReporter() (string, func(context.Context, []byte, []b
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.nodeID, h.reporter
+}
+
+// invalidateMetrics 标记启动采集缓存失效，使下一拍心跳重新采集一次最新的
+// vpn_interfaces 运行态（仅在隧道启停/配置重载时触发，稳态仍保持 0 次 exec）。
+func (h *heartbeatLoop) invalidateMetrics() {
+	h.mu.Lock()
+	h.metricsReady = false
+	h.mu.Unlock()
 }
 
 func (h *heartbeatLoop) run(ctx context.Context) {
