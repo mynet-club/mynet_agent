@@ -111,8 +111,9 @@ func (d *GNBDriver) lockLifecycleCtx(ctx context.Context) (func(), error) {
 //     `-A`/`-o`（2026-10-11 在 `.182` 实测：`ps: unrecognized option: A`），
 //     而 OpenWrt 上跑的是 busybox。这条回落与 init 的 converge_stale_gnb 是同一判据。
 func (d *GNBDriver) sameConfdirPidsOS() []int {
+	cands := d.confDirCandidates()
 	if out, err := d.Exec("ps", "-Ao", "pid=,args="); err == nil {
-		return parseSameConfdirPids(string(out), d.ConfDir, gnbExeName())
+		return parseSameConfdirPidsMulti(string(out), cands, gnbExeName())
 	}
 	return d.sameConfdirPidsViaProc()
 }
@@ -133,8 +134,12 @@ func (d *GNBDriver) sameConfdirPidsViaProc() []int {
 		if rerr != nil {
 			continue
 		}
-		if strings.Contains(strings.ReplaceAll(string(raw), "\x00", " "), d.ConfDir) {
-			pids = append(pids, pid)
+		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+		for _, cd := range d.confDirCandidates() {
+			if cd != "" && strings.Contains(cmdline, cd) {
+				pids = append(pids, pid)
+				break
+			}
 		}
 	}
 	return pids

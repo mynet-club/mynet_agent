@@ -501,7 +501,21 @@ func TestGnbStopUsesPidFileNotGnbCtlK(t *testing.T) {
 	d.ConfDir = dir
 	d.Binary = stubGnbBinary(t)
 	var calls []string
-	recordingExec(d, &calls)
+	alive := true
+	d.Exec = func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		if name == "kill" && len(args) == 2 {
+			switch args[0] {
+			case "-TERM", "-KILL":
+				alive = false
+			case "-0":
+				if !alive {
+					return nil, os.ErrNotExist
+				}
+			}
+		}
+		return nil, nil
+	}
 
 	if err := d.Stop(); err != nil {
 		t.Fatal(err)

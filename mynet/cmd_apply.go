@@ -311,11 +311,19 @@ func cmdService(args []string) int {
 			fmt.Fprintf(os.Stderr, "reload %s: 投影失败（gnb 保持旧配置）: %v\n", name, err)
 			return 1
 		}
+		// 重载前先回收旧隧道口路由：macOS 下 gnb 重启会换 utun 编号，先清旧口可避免残留路由指向已失效 utun。
+		_ = cmdApply([]string{"--clear"})
 		if err := d.Reload(); err != nil {
 			fmt.Fprintf(os.Stderr, "reload %s: %v\n", name, err)
 			return 1
 		}
 		fmt.Printf("reloaded %s\n", name)
+		if err := verifyTunAfterStart(name, func() TunHealth {
+			return currentTunHealth(home)
+		}, 3, 500*time.Millisecond); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ reload %s: %v\n", name, err)
+			return 1
+		}
 		if code := applyAfterStart(); code != 0 {
 			fmt.Fprintf(os.Stderr, "reload %s: apply（投影+路由）未全部成功（exit %d）\n", name, code)
 			return code

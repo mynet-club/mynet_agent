@@ -108,7 +108,13 @@ func currentTunHealth(home string) TunHealth {
 		vpnIP = readIntentOverlay(home)
 	}
 	expected, _, _ := tunNameFromBundle()
-	return computeTunHealth(vpnIP, expected, ifaceWithAddr, ifaceExistsByName)
+	find := func(ip string) string {
+		if owned := activeGnbUtunIface(home); owned != "" && ifaceHasAnyIP(owned, []string{ip}) {
+			return owned
+		}
+		return ifaceWithAddr(ip)
+	}
+	return computeTunHealth(vpnIP, expected, find, ifaceExistsByName)
 }
 
 // tunStartAcceptance 启动验收判据（缺口⑥）：gnb 活了但 tun 未起 → error（fail loud）。

@@ -519,6 +519,13 @@ func resolveDevice(name string, localAddrs []string) string {
 	if _, err := net.InterfaceByName(name); err == nil {
 		return platformIfaceToken(name)
 	}
+	// 0) macOS 原生系统调用：直接从当前 gnb.pid 持有的 PF_SYSTEM 控制套接字拿到真实 utunN，
+	// 避免同机残留旧 utun 同 IP 时被按序号误选（零子进程）。
+	if owned := activeGnbUtunIface(utils.GetMyNetHome()); owned != "" {
+		if len(localAddrs) == 0 || ifaceHasAnyIP(owned, localAddrs) {
+			return platformIfaceToken(owned)
+		}
+	}
 	// 1) 用本机 overlay IP 反查（darwin utunN / windows P2PNet）
 	for _, cidr := range localAddrs {
 		ip := parseAddr(cidr)
@@ -538,6 +545,29 @@ func parseAddr(s string) net.IP {
 		return ip
 	}
 	return net.ParseIP(s)
+}
+
+func ifaceHasAnyIP(ifaceName string, localAddrs []string) bool {
+	ifc, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return false
+	}
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, cidr := range localAddrs {
+		want := parseAddr(cidr)
+		if want == nil {
+			continue
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.Equal(want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func ifaceWithIP(ip net.IP) string {
@@ -966,16 +996,28 @@ func gatewayHijacked(gw string) bool {
 // 「只删自己配置的」的落点。对齐 openwrt node.lua:clear_routes
 // （`ip route show dev $tun` 再删，绝不按目的地盲删）。
 func destOwnedBy(dest, ourDev string) bool {
-	return routeTouched(destOwnerDev(dest), ourDev)
+	return routeTouchedWithExists(destOwnerDev(dest), ourDev, ifaceExistsByName)
 }
 
 // routeTouched 纯策略：owner 是目的地现挂设备（"" = 空闲），
 // ourDev 是本次操作的目标隧道口。只有空闲或自己装的才准动。
 func routeTouched(owner, ourDev string) bool {
+	return routeTouchedWithExists(owner, ourDev, nil)
+}
+
+// routeTouchedWithExists 在 routeTouched 基础上，允许接管 macOS 已销毁的旧 utunN
+// 残留路由（gnb 重启换号 utun7→utun9 时，已不存在的 utun7 不算“别人的活隧道”）。
+func routeTouchedWithExists(owner, ourDev string, ifaceExists func(string) bool) bool {
 	if owner == "" {
 		return true
 	}
-	return ourDev != "" && owner == ourDev
+	if ourDev != "" && owner == ourDev {
+		return true
+	}
+	if ifaceExists != nil && strings.HasPrefix(owner, "utun") && strings.HasPrefix(ourDev, "utun") && !ifaceExists(owner) {
+		return true
+	}
+	return false
 }
 
 // clearTunnelRoutes 清掉**本节点受管隧道口**上的路由（`mynet apply --clear`）。

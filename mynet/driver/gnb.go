@@ -586,9 +586,13 @@ func (d *GNBDriver) stopLocked() error {
 		d.convergeSameConfdir(0, "pid 缺失时收敛")
 		return err
 	}
-	if err := d.pidKillOS(pid); err != nil {
-		log.Error("gnb 停止失败", "pid", pid, "err", err)
-		return err
+	if d.pidAliveOS(pid) {
+		d.killUntilDead(pid)
+		if d.pidAliveOS(pid) {
+			err := fmt.Errorf("gnb pid=%d 未能退出", pid)
+			log.Error("gnb 停止失败", "pid", pid, "err", err)
+			return err
+		}
 	}
 	// 清 pid 文件：否则 node-status 会把「用户主动停」误判成
 	// 「启动失败：gnb 已退出」（pid 文件在、进程没了）。
@@ -704,14 +708,45 @@ func (d *GNBDriver) killUntilDead(pid int) {
 	_ = d.pidKill9OS(pid)
 }
 
+// confDirCandidates 返回 ConfDir 的等价路径列表（含符号链接归一化，
+// 解决 macOS 下 /var/run/mynet/... 与 /private/var/run/mynet/... 字面不一致漏匹配）。
+func (d *GNBDriver) confDirCandidates() []string {
+	if d.ConfDir == "" {
+		return nil
+	}
+	clean := filepath.Clean(d.ConfDir)
+	cands := []string{clean}
+	if resolved, err := canonicalUTCPath(clean); err == nil && resolved != "" && resolved != clean {
+		cands = append(cands, resolved)
+	}
+	return cands
+}
+
 // parseSameConfdirPids 从 `<pid> <argv...>` 行里挑出「命令行含 confDir 且 argv[0] 是 gnb」
 // 的 pid。单独抽出来是为了可测：两种平台的扫描（unix ps / windows powershell）共用它，
 // 而「误把只是提到该路径的别的进程当 gnb」是这条判据最容易出的错。
 func parseSameConfdirPids(out, confDir, exeName string) []int {
+	if confDir == "" {
+		return nil
+	}
+	return parseSameConfdirPidsMulti(out, []string{confDir}, exeName)
+}
+
+func parseSameConfdirPidsMulti(out string, confDirs []string, exeName string) []int {
 	var pids []int
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, confDir) {
+		if line == "" {
+			continue
+		}
+		matched := false
+		for _, cd := range confDirs {
+			if cd != "" && strings.Contains(line, cd) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		fields := strings.Fields(line)
