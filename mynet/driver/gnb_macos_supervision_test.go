@@ -92,3 +92,25 @@ func TestConvergeMatchesSymlinkNormalizedConfDir(t *testing.T) {
 	}
 	_ = strconv.Itoa(pids[0])
 }
+
+// 回归 2026-11-23 .181 实测：旧 gnb 退出后，其子进程 gnb_es 继承了 utun7 与 UDP 9016 fd
+// 并以 /opt/mynet/conf/online/<nodeID>/gnb.map 残留，导致新 gnb 抢不到 9016 且双 utun 并存。
+func TestConvergeReapsOrphanGnbEsFromLegacyConfDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	nodeID := int64(3764021915150630)
+	runConf := filepath.Join(t.TempDir(), "3764021915150630")
+	legacyConf := filepath.Join(home, "conf", "online", "3764021915150630")
+
+	d := &GNBDriver{NodeID: nodeID, ConfDir: runConf}
+	cands := d.confDirCandidates()
+	psOut := "12672 /opt/mynet/bin/gnb_es -s -L -b " + legacyConf + "/gnb.map\n" +
+		"31303 /opt/mynet/bin/gnb -c " + runConf + "\n" +
+		"99999 /opt/mynet/bin/gnb_es -s -L -b " + filepath.Join(home, "conf", "online", "1000000000000001") + "/gnb.map\n"
+
+	// keepPid==0（Stop / 启动前收敛）：同时命中同节点孤儿 gnb_es 与 gnb，不碰其它节点
+	pids := parseSameConfdirPidsMulti(psOut, cands, "gnb", "gnb_es")
+	if len(pids) != 2 || pids[0] != 12672 || pids[1] != 31303 {
+		t.Fatalf("期望命中 [12672 31303]，实际=%v (cands=%v)", pids, cands)
+	}
+}

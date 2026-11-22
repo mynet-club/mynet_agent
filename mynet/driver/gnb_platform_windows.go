@@ -111,3 +111,7 @@ func (d *GNBDriver) sameConfdirPidsOS() []int {
 	}
 	return parseSameConfdirPids(string(out), d.ConfDir, gnbExeName())
 }
+
+func (d *GNBDriver) sameConfdirPidsWithESOS(includeES bool) []int {
+	return d.sameConfdirPidsOS()
+}

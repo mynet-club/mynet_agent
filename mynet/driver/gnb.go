@@ -685,7 +685,8 @@ func (d *GNBDriver) convergeSameConfdir(keepPid int, why string) int {
 	}
 	self := os.Getpid()
 	n := 0
-	for _, pid := range d.sameConfdirPidsOS() {
+	includeES := keepPid == 0
+	for _, pid := range d.sameConfdirPidsWithESOS(includeES) {
 		if pid == keepPid || pid == self {
 			continue
 		}
@@ -714,10 +715,34 @@ func (d *GNBDriver) confDirCandidates() []string {
 	if d.ConfDir == "" {
 		return nil
 	}
-	clean := filepath.Clean(d.ConfDir)
-	cands := []string{clean}
-	if resolved, err := canonicalUTCPath(clean); err == nil && resolved != "" && resolved != clean {
-		cands = append(cands, resolved)
+	seen := map[string]bool{}
+	var cands []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		p = filepath.Clean(p)
+		if !seen[p] {
+			seen[p] = true
+			cands = append(cands, p)
+		}
+		if resolved, err := canonicalUTCPath(p); err == nil && resolved != "" && !seen[resolved] {
+			seen[resolved] = true
+			cands = append(cands, resolved)
+		}
+	}
+	add(d.ConfDir)
+	// 同 NodeID 的历史原生配置目录（如 /opt/mynet/conf/online/<nodeID>）上残留的孤儿 gnb/gnb_es
+	// 会继承并占死 utun fd 与 UDP 监听端口，必须按 NodeID 精确一并收敛（不影响其它节点）。
+	if d.NodeID > 0 {
+		idStr := strconv.FormatInt(d.NodeID, 10)
+		if filepath.Base(filepath.Clean(d.ConfDir)) == idStr {
+			for _, form := range []string{utils.NodeFormOnline, utils.NodeFormLocal} {
+				if p, err := utils.NodeRuntimePath(form, idStr); err == nil {
+					add(p)
+				}
+			}
+		}
 	}
 	return cands
 }
@@ -732,7 +757,7 @@ func parseSameConfdirPids(out, confDir, exeName string) []int {
 	return parseSameConfdirPidsMulti(out, []string{confDir}, exeName)
 }
 
-func parseSameConfdirPidsMulti(out string, confDirs []string, exeName string) []int {
+func parseSameConfdirPidsMulti(out string, confDirs []string, exeNames ...string) []int {
 	var pids []int
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -757,7 +782,15 @@ func parseSameConfdirPidsMulti(out string, confDirs []string, exeName string) []
 		if err != nil || pid <= 0 {
 			continue
 		}
-		if filepath.Base(fields[1]) != exeName {
+		base := filepath.Base(fields[1])
+		exeOK := false
+		for _, exe := range exeNames {
+			if base == exe {
+				exeOK = true
+				break
+			}
+		}
+		if !exeOK {
 			continue
 		}
 		pids = append(pids, pid)

@@ -15,24 +15,24 @@ import (
 
 // macOS XNU proc_info(2) 系统调用常量（核对自 MacOSX SDK sys/proc_info.h 与 sys/syscall.h）。
 const (
-	darwinSysProcInfo       = 336 // SYS_proc_info
-	procInfoCallPIDInfo     = 2   // PROC_INFO_CALL_PIDINFO
-	procInfoCallPIDFDInfo   = 3   // PROC_INFO_CALL_PIDFDINFO
-	procPIDListFDs          = 1   // PROC_PIDLISTFDS
-	procPIDFDSocketInfo     = 3   // PROC_PIDFDSOCKETINFO
-	proxFDTypeSocket        = 2   // PROX_FDTYPE_SOCKET
-	procFDInfoSize          = 8   // sizeof(struct proc_fdinfo)
-	socketFDInfoSize        = 792 // sizeof(struct socket_fdinfo)
-	afSystem                = 32  // AF_SYSTEM
-	sysprotoControl         = 2   // SYSPROTO_CONTROL
-	sockinfoKernCtl         = 6   // SOCKINFO_KERN_CTL
-	offSocketProtocol       = 180 // offsetof(socket_fdinfo, psi.soi_protocol)
-	offSocketFamily         = 184 // offsetof(socket_fdinfo, psi.soi_family)
-	offSocketKind           = 256 // offsetof(socket_fdinfo, psi.soi_kind)
-	offKernCtlUnit          = 284 // offsetof(socket_fdinfo, psi.soi_proto.pri_kern_ctl.kcsi_unit)
-	offKernCtlName          = 288 // offsetof(socket_fdinfo, psi.soi_proto.pri_kern_ctl.kcsi_name)
-	lenKernCtlName          = 96  // MAX_KCTL_NAME
-	utunControlName         = "com.apple.net.utun_control"
+	darwinSysProcInfo     = 336 // SYS_proc_info
+	procInfoCallPIDInfo   = 2   // PROC_INFO_CALL_PIDINFO
+	procInfoCallPIDFDInfo = 3   // PROC_INFO_CALL_PIDFDINFO
+	procPIDListFDs        = 1   // PROC_PIDLISTFDS
+	procPIDFDSocketInfo   = 3   // PROC_PIDFDSOCKETINFO
+	proxFDTypeSocket      = 2   // PROX_FDTYPE_SOCKET
+	procFDInfoSize        = 8   // sizeof(struct proc_fdinfo)
+	socketFDInfoSize      = 792 // sizeof(struct socket_fdinfo)
+	afSystem              = 32  // AF_SYSTEM
+	sysprotoControl       = 2   // SYSPROTO_CONTROL
+	sockinfoKernCtl       = 6   // SOCKINFO_KERN_CTL
+	offSocketProtocol     = 180 // offsetof(socket_fdinfo, psi.soi_protocol)
+	offSocketFamily       = 184 // offsetof(socket_fdinfo, psi.soi_family)
+	offSocketKind         = 256 // offsetof(socket_fdinfo, psi.soi_kind)
+	offKernCtlUnit        = 284 // offsetof(socket_fdinfo, psi.soi_proto.pri_kern_ctl.kcsi_unit)
+	offKernCtlName        = 288 // offsetof(socket_fdinfo, psi.soi_proto.pri_kern_ctl.kcsi_name)
+	lenKernCtlName        = 96  // MAX_KCTL_NAME
+	utunControlName       = "com.apple.net.utun_control"
 )
 
 // utunIfaceForPID 通过 macOS 原生 SYS_proc_info 系统调用查询指定 PID 持有的 utunN 接口名。

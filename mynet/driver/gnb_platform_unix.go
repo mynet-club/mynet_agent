@@ -111,34 +111,50 @@ func (d *GNBDriver) lockLifecycleCtx(ctx context.Context) (func(), error) {
 //     `-A`/`-o`（2026-10-11 在 `.182` 实测：`ps: unrecognized option: A`），
 //     而 OpenWrt 上跑的是 busybox。这条回落与 init 的 converge_stale_gnb 是同一判据。
 func (d *GNBDriver) sameConfdirPidsOS() []int {
+	return d.sameConfdirPidsWithESOS(false)
+}
+
+func (d *GNBDriver) sameConfdirPidsWithESOS(includeES bool) []int {
 	cands := d.confDirCandidates()
-	if out, err := d.Exec("ps", "-Ao", "pid=,args="); err == nil {
-		return parseSameConfdirPidsMulti(string(out), cands, gnbExeName())
+	exes := []string{gnbExeName()}
+	if includeES {
+		exes = append(exes, "gnb_es")
 	}
-	return d.sameConfdirPidsViaProc()
+	if out, err := d.Exec("ps", "-Ao", "pid=,args="); err == nil {
+		return parseSameConfdirPidsMulti(string(out), cands, exes...)
+	}
+	return d.sameConfdirPidsViaProc(exes...)
 }
 
 // sameConfdirPidsViaProc pidof + /proc 口径（busybox / 无 GNU ps 的环境）。
-func (d *GNBDriver) sameConfdirPidsViaProc() []int {
-	out, err := d.Exec("pidof", gnbExeName())
-	if err != nil {
-		return nil
+func (d *GNBDriver) sameConfdirPidsViaProc(exes ...string) []int {
+	if len(exes) == 0 {
+		exes = []string{gnbExeName()}
 	}
+	seen := map[int]bool{}
 	var pids []int
-	for _, f := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(f)
-		if err != nil || pid <= 0 {
+	cands := d.confDirCandidates()
+	for _, exe := range exes {
+		out, err := d.Exec("pidof", exe)
+		if err != nil {
 			continue
 		}
-		raw, rerr := d.Exec("cat", fmt.Sprintf("/proc/%d/cmdline", pid))
-		if rerr != nil {
-			continue
-		}
-		cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-		for _, cd := range d.confDirCandidates() {
-			if cd != "" && strings.Contains(cmdline, cd) {
-				pids = append(pids, pid)
-				break
+		for _, f := range strings.Fields(string(out)) {
+			pid, err := strconv.Atoi(f)
+			if err != nil || pid <= 0 || seen[pid] {
+				continue
+			}
+			raw, rerr := d.Exec("cat", fmt.Sprintf("/proc/%d/cmdline", pid))
+			if rerr != nil {
+				continue
+			}
+			cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
+			for _, cd := range cands {
+				if cd != "" && strings.Contains(cmdline, cd) {
+					seen[pid] = true
+					pids = append(pids, pid)
+					break
+				}
 			}
 		}
 	}
