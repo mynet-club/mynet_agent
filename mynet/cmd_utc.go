@@ -24,11 +24,11 @@ func cmdUTC(args []string) int {
 	if len(args) > 0 && args[0] == "coordinate" {
 		return cmdUTCCoordinate(args[1:])
 	}
-	if len(args) > 0 && (args[0] == "publish" || args[0] == "publish-peer" || args[0] == "history" || args[0] == "verify") {
+	if len(args) > 0 && (args[0] == "publish" || args[0] == "publish-peer" || args[0] == "history" || args[0] == "verify" || args[0] == "recover-v2") {
 		return cmdUTCProjection(args)
 	}
 	if len(args) == 0 || args[0] != "driver-run" {
-		fmt.Fprintln(os.Stderr, "usage: mynet utc authority verify|install-floor [options]\n       mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
+		fmt.Fprintln(os.Stderr, "usage: mynet utc authority verify|install-floor [options]\n       mynet utc driver-run --binary PATH -c DIR [--systemd]\n       mynet utc publish -c DIR --binary PATH --file projection.json\n       mynet utc recover-v2 -c DIR --binary PATH [--file projection.json]\n       mynet utc verify -c DIR --file projection.json --boot ID --pid PID (local APPLIED only)")
 		return 2
 	}
 	flags := flag.NewFlagSet("utc driver-run", flag.ContinueOnError)
@@ -76,7 +76,7 @@ func cmdUTCProjection(args []string) int {
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2
 	}
-	if *conf == "" || flags.NArg() != 0 || args[0] != "history" && *input == "" {
+	if *conf == "" || flags.NArg() != 0 || (args[0] != "history" && args[0] != "recover-v2" && *input == "") {
 		return 2
 	}
 	d := driver.NewGNBDriver(0)
@@ -92,6 +92,18 @@ func cmdUTCProjection(args []string) int {
 			State      string                `json:"state"`
 			Projection *driver.UTCProjection `json:"projection"`
 		}{"WATERMARK", projection})
+		return 0
+	}
+	if args[0] == "recover-v2" && *input == "" {
+		stateDir, err := d.PublishUTCRecoveryV2(nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			State    string `json:"state"`
+			StateDir string `json:"state_dir"`
+		}{"RECOVERED_V2", stateDir})
 		return 0
 	}
 	file, err := os.Open(*input)
@@ -115,6 +127,20 @@ func cmdUTCProjection(args []string) int {
 	if err = decoder.Decode(new(any)); err != io.EOF {
 		fmt.Fprintln(os.Stderr, "UTC projection has trailing data")
 		return 1
+	}
+	if args[0] == "recover-v2" {
+		stateDir, err := d.PublishUTCRecoveryV2(&projection)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(struct {
+			State      string               `json:"state"`
+			StateDir   string               `json:"state_dir"`
+			ConfigGen  uint64               `json:"config_gen"`
+			Projection driver.UTCProjection `json:"projection"`
+		}{"RECOVERED_V2", stateDir, projection.ConfigGen, projection})
+		return 0
 	}
 	if args[0] == "publish-peer" {
 		if len(projection.Peers) != 1 || projection.ConfigGen != 0 {
