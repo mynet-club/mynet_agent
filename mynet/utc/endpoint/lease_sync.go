@@ -161,12 +161,23 @@ func SyncUTCConfFromStateDir(stateDir, utcConfPath string) (int, uint64, error) 
 		return 0, 0, fmt.Errorf("empty utc.conf: %s", utcConfPath)
 	}
 	header := strings.Fields(lines[0])
-	if len(header) != 5 || header[0] != "utc-v1" {
+	var isV2 bool
+	switch {
+	case len(header) == 5 && header[0] == "utc-v1":
+		isV2 = false
+	case len(header) >= 5 && header[0] == "utc-v2":
+		isV2 = true
+	default:
 		return 0, 0, fmt.Errorf("invalid utc.conf header in %s", utcConfPath)
 	}
 	configGen, err := strconv.ParseUint(header[4], 10, 64)
 	if err != nil {
 		return 0, 0, fmt.Errorf("invalid utc.conf config_gen: %w", err)
+	}
+
+	wantFields, modeIdx, expiresIdx, manifestIdx := 11, 4, 5, 10
+	if isV2 {
+		wantFields, modeIdx, expiresIdx, manifestIdx = 13, 6, 7, 12
 	}
 
 	updated := 0
@@ -178,13 +189,13 @@ func SyncUTCConfFromStateDir(stateDir, utcConfPath string) (int, uint64, error) 
 			continue
 		}
 		fields := strings.Fields(trimmed)
-		if len(fields) != 11 || fields[0] != "peer" {
+		if len(fields) != wantFields || fields[0] != "peer" {
 			return 0, configGen, fmt.Errorf("unrecognized utc.conf peer row in %s", utcConfPath)
 		}
 		pairID, err1 := strconv.ParseUint(fields[2], 10, 64)
 		pairGen, err2 := strconv.ParseUint(fields[3], 10, 64)
-		mode, err3 := strconv.ParseUint(fields[4], 10, 8)
-		expiresAt, err4 := strconv.ParseUint(fields[5], 10, 64)
+		mode, err3 := strconv.ParseUint(fields[modeIdx], 10, 8)
+		expiresAt, err4 := strconv.ParseUint(fields[expiresIdx], 10, 64)
 		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
 			return 0, configGen, fmt.Errorf("invalid numeric field in utc.conf peer row")
 		}
@@ -193,9 +204,9 @@ func SyncUTCConfFromStateDir(stateDir, utcConfPath string) (int, uint64, error) 
 			if inst, ok := installed[pairID]; ok {
 				if inst.PairGen > pairGen || (inst.PairGen == pairGen && inst.ExpiresAt > expiresAt) {
 					fields[3] = strconv.FormatUint(inst.PairGen, 10)
-					fields[5] = strconv.FormatUint(inst.ExpiresAt, 10)
+					fields[expiresIdx] = strconv.FormatUint(inst.ExpiresAt, 10)
 					if inst.Manifest != "" {
-						fields[10] = inst.Manifest
+						fields[manifestIdx] = inst.Manifest
 					}
 					outLines = append(outLines, strings.Join(fields, " "))
 					updated++
