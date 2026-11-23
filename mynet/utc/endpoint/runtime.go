@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -21,6 +22,21 @@ func Run(ctx context.Context, binary, config string, logf func(string, ...any)) 
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	if _, err := os.Stat(binary); err != nil {
+		if resolved := ResolveBinary(filepath.Dir(binary)); resolved != "" {
+			binary = resolved
+		}
+	}
+	syncCtx, syncCancel := context.WithCancel(ctx)
+	syncDone := make(chan struct{})
+	go func() {
+		defer close(syncDone)
+		RunLeaseSyncLoop(syncCtx, config, os.Getenv("MYNET_HOME"), 15*time.Second, logf)
+	}()
+	defer func() {
+		syncCancel()
+		<-syncDone
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
