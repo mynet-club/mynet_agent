@@ -101,6 +101,17 @@ func (s *Server) resolveUpstream(rawPath string) (*url.URL, error) {
 func (s *Server) relayProxy(target *url.URL) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			// 透传客户端访问网关时使用的原始域名（如 gw.mynet.club / luoyueliang.mynet.club），
+			// 让后端按框架二级域名策略自动识别网络区（ZoneID），避免登录时手填区域 ID。
+			if req.Header.Get("X-Original-Host") == "" {
+				origHost := req.Header.Get("X-Forwarded-Host")
+				if origHost == "" {
+					origHost = req.Host
+				}
+				if origHost != "" {
+					req.Header.Set("X-Original-Host", origHost)
+				}
+			}
 			req.URL = target
 			req.Host = target.Host
 			// 出站请求由 http.Client 重新计算，留着会报

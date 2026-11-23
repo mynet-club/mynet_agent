@@ -533,3 +533,42 @@ func (s *Server) handleConfigPrepare(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"success": true})
 }
+
+// GET/PUT /api/v1/config/gateway — 经执行器 `mynet config gateway` 读写本机网关域名。
+func (s *Server) handleConfigGateway(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		data, err := s.opsJSON([]string{"config", "gateway", "--json"})
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"success": false, "message": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"success": true, "data": data})
+		return
+	}
+	if r.Method != http.MethodPut && r.Method != http.MethodPost {
+		writeJSON(w, 405, map[string]any{"success": false, "message": "GET|PUT|POST only"})
+		return
+	}
+	var body struct {
+		Gateway string `json:"gateway"`
+		Host    string `json:"host"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"success": false, "message": "bad json"})
+		return
+	}
+	raw := strings.TrimSpace(body.Gateway)
+	if raw == "" {
+		raw = strings.TrimSpace(body.Host)
+	}
+	if raw == "" {
+		writeJSON(w, 400, map[string]any{"success": false, "message": "网关域名不能为空"})
+		return
+	}
+	data, err := s.opsJSON([]string{"config", "gateway", "--set", raw, "--json"})
+	if err != nil {
+		writeJSON(w, 400, map[string]any{"success": false, "message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"success": true, "message": "网关域名已保存", "data": data})
+}

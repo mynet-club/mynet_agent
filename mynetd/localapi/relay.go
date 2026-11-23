@@ -73,6 +73,9 @@ func (s *Server) handleRelay(w http.ResponseWriter, r *http.Request) {
 	if proxyReq.Header.Get("Accept") == "" {
 		proxyReq.Header.Set("Accept", "application/json")
 	}
+	if proxyReq.Header.Get("X-Original-Host") == "" && target.Host != "" {
+		proxyReq.Header.Set("X-Original-Host", target.Host)
+	}
 
 	client := &http.Client{Timeout: relayTimeout}
 	resp, err := client.Do(proxyReq)

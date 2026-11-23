@@ -17,6 +17,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,4 +123,101 @@ func gatewaysFromJSON(path string) []string {
 		}
 	}
 	return nil
+}
+
+// SaveGateways 将网关列表原子写入 conf/gateways.json（配置面唯一真相）。
+func SaveGateways(list []string) error {
+	clean := make([]string, 0, len(list))
+	for _, g := range list {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		clean = append(clean, NormalizeGatewayURL(g))
+	}
+	if len(clean) == 0 {
+		return fmt.Errorf("网关列表不能为空")
+	}
+	target := GatewaysFile()
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(clean, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, target)
+}
+
+// ParseGatewayInput 将用户输入的域名或完整地址规整为节点网关地址与主机名。
+func ParseGatewayInput(raw string) (string, string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", "", fmt.Errorf("网关域名不能为空")
+	}
+	if strings.ContainsAny(s, " \t\r\n") {
+		return "", "", fmt.Errorf("网关域名不能包含空白字符")
+	}
+	if !strings.Contains(s, "://") {
+		s = "wss://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return "", "", fmt.Errorf("网关域名格式无效")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "wss":
+		u.Scheme = "wss"
+	case "http", "ws":
+		u.Scheme = "ws"
+	default:
+		return "", "", fmt.Errorf("不支持的协议类型")
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/v1/node/connect"
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), u.Host, nil
+}
+
+// GatewayConfigSnapshot 返回当前网关配置快照。
+func GatewayConfigSnapshot() map[string]any {
+	defaultHost := ""
+	if u, err := url.Parse(DefaultGateway); err == nil {
+		defaultHost = u.Host
+	}
+	list, src, _ := ExplicitGateways()
+	current, host := "", ""
+	if len(list) > 0 {
+		current = list[0]
+		if u, err := url.Parse(current); err == nil {
+			host = u.Host
+		}
+	}
+	return map[string]any{
+		"gateway":      current,
+		"host":         host,
+		"gateways":     list,
+		"source":       src,
+		"env_override": src == "env",
+		"default_host": defaultHost,
+	}
+}
+
+// UpdateGatewayFromInput 校验并落盘单网关配置，返回更新后的快照。
+func UpdateGatewayFromInput(raw string) (map[string]any, error) {
+	wsURL, _, err := ParseGatewayInput(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := SaveGateways([]string{wsURL}); err != nil {
+		return nil, err
+	}
+	return GatewayConfigSnapshot(), nil
 }

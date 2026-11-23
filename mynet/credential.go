@@ -262,8 +262,11 @@ func (c *backClient) raw(method, path string, body any) ([]byte, int, error) {
 	// Token Binding：指纹随请求带上；与登录时绑定值不一致则后端应拒绝
 	req.Header.Set("X-Device-Fingerprint", DeviceFingerprint())
 	if c.tenant != "" {
-		// S2 显式租户上下文（框架 3.10 EnforcesLoginPolicy fail-closed）
+		// S2 显式租户上下文（未传时后端按网关二级域名自动识别，例如 gw.mynet.club）
 		req.Header.Set("X-Tenant-ID", c.tenant)
+	}
+	if req.URL != nil && req.URL.Host != "" && req.Header.Get("X-Original-Host") == "" {
+		req.Header.Set("X-Original-Host", req.URL.Host)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

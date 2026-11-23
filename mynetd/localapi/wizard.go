@@ -33,6 +33,9 @@ func relayToBack(ctx context.Context, method, backPath string, body []byte) ([]b
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if req.URL != nil && req.URL.Host != "" {
+		req.Header.Set("X-Original-Host", req.URL.Host)
+	}
 	resp, err := (&http.Client{Timeout: relayTimeout}).Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -98,6 +101,7 @@ func machineName() string {
 // 这条是刻意的：token 进了浏览器就有 XSS 泄漏面，而本机页面虽然同源，
 // 但内嵌 webui 与第三方内容同处一域时会放大风险。
 func (s *Server) registerWizardRoutes() {
+	s.mux.HandleFunc("/api/v1/wizard/zone-context", getOnly(s.handleWizardZoneContext))
 	s.mux.HandleFunc("/api/v1/wizard/login", s.handleWizardLogin)
 	s.mux.HandleFunc("/api/v1/wizard/logout", s.handleWizardLogout)
 	s.mux.HandleFunc("/api/v1/wizard/state", s.handleWizardState)
@@ -157,6 +161,25 @@ func experienceState(wizard, node any) (string, string) {
 		}
 		return "INITIALIZING", "retry"
 	}
+}
+
+// handleWizardZoneContext 返回当前本机配置的网关域名对应的网络区上下文。
+func (s *Server) handleWizardZoneContext(w http.ResponseWriter, r *http.Request) {
+	relayFn := s.Relay
+	if relayFn == nil {
+		relayFn = relayToBack
+	}
+	raw, code, err := relayFn(r.Context(), http.MethodGet, "/api/v1/system/zone-context", nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"success": false,
+			"message": "获取网关区域上下文失败: " + err.Error(),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = w.Write(raw)
 }
 
 // handleWizardLogin —— 本机 WebUI 登录。

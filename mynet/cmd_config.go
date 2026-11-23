@@ -141,10 +141,47 @@ func cmdConfig(args []string) int {
 		return rc
 	case "cloud":
 		return configFaceCloud()
+	case "gateway":
+		return cmdConfigGateway(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "mynet config %s: 未知子命令\n", args[0])
 		return 1
 	}
+}
+
+func cmdConfigGateway(args []string) int {
+	asJSON := false
+	setVal := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--set":
+			if i+1 < len(args) {
+				i++
+				setVal = args[i]
+			}
+		}
+	}
+	var data map[string]any
+	if setVal != "" {
+		var err error
+		data, err = utils.UpdateGatewayFromInput(setVal)
+		if err != nil {
+			if asJSON {
+				return printJSON(map[string]any{"error": err.Error()})
+			}
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	} else {
+		data = utils.GatewayConfigSnapshot()
+	}
+	if asJSON {
+		return printJSON(data)
+	}
+	fmt.Printf("gateway=%v host=%v source=%v\n", data["gateway"], data["host"], data["source"])
+	return 0
 }
 
 func filterFlag(args []string, drop string) []string {
