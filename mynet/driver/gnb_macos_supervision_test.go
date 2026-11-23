@@ -82,9 +82,13 @@ func TestConvergeMatchesSymlinkNormalizedConfDir(t *testing.T) {
 	}
 	linkConf := filepath.Join(linkBase, "3764021915150630")
 
+	realConfResolved, err := filepath.EvalSymlinks(realConf)
+	if err != nil {
+		t.Fatal(err)
+	}
 	d := &GNBDriver{NodeID: 1, ConfDir: linkConf}
 	cands := d.confDirCandidates()
-	psOut := "4242 /opt/mynet/bin/gnb -c " + realConf + " --utc-managed\n" +
+	psOut := "4242 /opt/mynet/bin/gnb -c " + realConfResolved + " --utc-managed\n" +
 		"9999 /opt/mynet/bin/gnb -c /other/node\n"
 	pids := parseSameConfdirPidsMulti(psOut, cands, "gnb")
 	if len(pids) != 1 || pids[0] != 4242 {
