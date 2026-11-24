@@ -259,6 +259,68 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmpPath, path)
 }
 
+// ResolveUTCDConfigPath returns the canonical utcd.conf path under MYNET_HOME
+// ($MYNET_HOME/conf/utc/utcd.conf), honouring MYNET_UTC_CONFIG and falling back
+// to legacy OpenWrt $MYNET_HOME/utc/utcd.conf when the canonical file is absent.
+func ResolveUTCDConfigPath(myNetHome string) string {
+	if explicit := strings.TrimSpace(os.Getenv("MYNET_UTC_CONFIG")); explicit != "" {
+		return explicit
+	}
+	if strings.TrimSpace(myNetHome) != "" {
+		canonical := filepath.Join(myNetHome, "conf", "utc", "utcd.conf")
+		if info, err := os.Lstat(canonical); err == nil && info.Mode().IsRegular() {
+			return canonical
+		}
+		legacy := filepath.Join(myNetHome, "utc", "utcd.conf")
+		if info, err := os.Lstat(legacy); err == nil && info.Mode().IsRegular() {
+			return legacy
+		}
+		return canonical
+	}
+	return ""
+}
+
+// DiscoverUTCDStateDirs returns candidate utcd state_dir paths ordered by
+// authority: utcd.conf state_dir -> $MYNET_HOME/state/utc/utcd -> legacy /var/lib/mynet-utc/utcd.
+func DiscoverUTCDStateDirs(utcdConfPath, myNetHome string) []string {
+	var raw []string
+	confPath := strings.TrimSpace(utcdConfPath)
+	if confPath == "" {
+		confPath = ResolveUTCDConfigPath(myNetHome)
+	}
+	if confPath != "" {
+		if summary, err := ParseConfig(confPath); err == nil && strings.TrimSpace(summary.StateDir) != "" {
+			raw = append(raw, strings.TrimSpace(summary.StateDir))
+		}
+	}
+	if strings.TrimSpace(myNetHome) != "" {
+		raw = append(raw, filepath.Join(myNetHome, "state", "utc", "utcd"))
+	}
+	raw = append(raw, "/var/lib/mynet-utc/utcd")
+
+	seen := make(map[string]struct{}, len(raw))
+	var out []string
+	for _, dir := range raw {
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		canon := filepath.Clean(dir)
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			canon = filepath.Clean(resolved)
+		}
+		if _, ok := seen[canon]; ok {
+			continue
+		}
+		seen[canon] = struct{}{}
+		out = append(out, dir)
+	}
+	return out
+}
+
 // DiscoverUTCConfPaths locates existing gnb utc.conf files on the host,
 // deduplicating symlinked /var/run and /run paths.
 func DiscoverUTCConfPaths(myNetHome string) []string {
@@ -305,6 +367,7 @@ func DiscoverUTCConfPaths(myNetHome string) []string {
 
 // RunLeaseSyncLoop periodically reconciles utcd-installed leases into gnb's
 // utc.conf files so gnb never stalls in BLOCKED EXPIRED after lease renewal.
+// It operates independently of whether utcd is spawned by mynetd or procd/systemd.
 func RunLeaseSyncLoop(ctx context.Context, utcdConfPath, myNetHome string, interval time.Duration, logf func(string, ...any)) {
 	if interval <= 0 {
 		interval = 15 * time.Second
@@ -313,19 +376,25 @@ func RunLeaseSyncLoop(ctx context.Context, utcdConfPath, myNetHome string, inter
 		logf = func(string, ...any) {}
 	}
 	syncOnce := func() {
-		summary, err := ParseConfig(utcdConfPath)
-		if err != nil || strings.TrimSpace(summary.StateDir) == "" {
+		stateDirs := DiscoverUTCDStateDirs(utcdConfPath, myNetHome)
+		if len(stateDirs) == 0 {
 			return
 		}
-		for _, utcConf := range DiscoverUTCConfPaths(myNetHome) {
-			updated, newGen, err := SyncUTCConfFromStateDir(summary.StateDir, utcConf)
-			if err != nil {
-				logf("utc.conf sync error path=%s err=%v", utcConf, err)
-				continue
-			}
-			if updated > 0 {
-				logf("utc.conf synced from utcd state_dir=%s path=%s updated_peers=%d config_gen=%d",
-					summary.StateDir, utcConf, updated, newGen)
+		utcConfs := DiscoverUTCConfPaths(myNetHome)
+		if len(utcConfs) == 0 {
+			return
+		}
+		for _, stateDir := range stateDirs {
+			for _, utcConf := range utcConfs {
+				updated, newGen, err := SyncUTCConfFromStateDir(stateDir, utcConf)
+				if err != nil {
+					logf("utc.conf sync error state_dir=%s path=%s err=%v", stateDir, utcConf, err)
+					continue
+				}
+				if updated > 0 {
+					logf("utc.conf synced from utcd state_dir=%s path=%s updated_peers=%d config_gen=%d",
+						stateDir, utcConf, updated, newGen)
+				}
 			}
 		}
 	}

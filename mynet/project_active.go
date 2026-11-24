@@ -300,7 +300,19 @@ func projectToRun(confDir, nodeID string) (string, error) {
 	if err := utils.SafeCreateDir(runDir, 0o700); err != nil {
 		return "", err
 	}
-	skip := map[string]bool{"gnb.map": true, "gnb.pid": true, "node_cache.dump": true}
+	skip := map[string]bool{
+		"gnb.map":         true,
+		"gnb.pid":         true,
+		"gnb_es.pid":      true,
+		"node_cache.dump": true,
+		"utc.status":      true,
+	}
+	// utc.conf 可由真相源投影，也可由运行期租约同步器/协调器写入；
+	// 当真相源 confDir 中没有 utc.conf 时，禁止清理循环删除 runDir 现有 utc.conf，
+	// 避免 bundle_changed / service.reload 把正在生效的 UTC 隧道配置抹掉。
+	preserveIfAbsent := map[string]bool{
+		"utc.conf": true,
+	}
 	ents, err := os.ReadDir(confDir)
 	if err != nil {
 		return "", err
@@ -327,14 +339,14 @@ func projectToRun(confDir, nodeID string) (string, error) {
 		}
 	}
 	// 清理陈旧投影：源里已删除的不能留在 runDir（proxy.conf 从有到无时残留旧文件，
-	// gnb 仍会读到）。运行脏文件（gnb.map/pid 等）是进程产物，保留。
+	// gnb 仍会读到）。运行脏文件（gnb.map/pid 等）与运行期保留文件（utc.conf）保留。
 	src := make(map[string]bool, len(ents))
 	for _, e := range ents {
 		src[e.Name()] = true
 	}
 	if rents, rerr := os.ReadDir(runDir); rerr == nil {
 		for _, e := range rents {
-			if skip[e.Name()] || src[e.Name()] {
+			if skip[e.Name()] || preserveIfAbsent[e.Name()] || src[e.Name()] {
 				continue
 			}
 			_ = os.RemoveAll(filepath.Join(runDir, e.Name()))

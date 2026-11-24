@@ -144,3 +144,30 @@ func TestSyncUTCConfFromStateDirSupportsV2Format(t *testing.T) {
 		t.Fatalf("utc-v2 mismatch:\ngot:\n%s\nwant:\n%s", string(gotBytes), want)
 	}
 }
+
+func TestResolveUTCDConfigPathCanonicalAndLegacyFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_UTC_CONFIG", "")
+
+	legacy := filepath.Join(home, "utc", "utcd.conf")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("config_version=3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveUTCDConfigPath(home); got != legacy {
+		t.Fatalf("legacy fallback = %q, want %q", got, legacy)
+	}
+
+	canonical := filepath.Join(home, "conf", "utc", "utcd.conf")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(canonical, []byte("config_version=3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := ResolveUTCDConfigPath(home); got != canonical {
+		t.Fatalf("canonical path = %q, want %q", got, canonical)
+	}
+}
