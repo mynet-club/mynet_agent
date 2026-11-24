@@ -138,6 +138,9 @@ func (d *GNBDriver) IsProcessAlive() bool {
 
 		return err == nil && strings.TrimSpace(string(out)) == "active"
 	}
+	if platformServiceOwnerFn() != "" {
+		return len(d.sameConfdirPidsWithESOS(false)) > 0
+	}
 	pid, err := d.readPidFile()
 	if err != nil {
 		return false

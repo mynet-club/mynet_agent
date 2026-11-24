@@ -431,12 +431,36 @@ stop_wg_interface() {
 # P1 编排归属：路由（apply --auto）与防火墙 enforcement（firewall.mynet start）
 # 归编排侧 `mynet service start`（applyAfterStart + 防火墙同步），init 不做 E 层
 # 动作 —— 此处只跑插件钩子。
+# tun 就绪后带退避重试安装内核路由（确保 /etc/init.d/mynet restart 或 procd respawn 后
+# 30s 内内核路由自动恢复，无需人工补跑 mynet apply --auto）。
+apply_routes_with_retry() {
+	local mynet_bin delay attempt=1
+	mynet_bin="$(command -v mynet 2>/dev/null || true)"
+	[ -n "$mynet_bin" ] || mynet_bin="/usr/sbin/mynet"
+	if [ ! -x "$mynet_bin" ]; then
+		log "WARNING: 未找到 mynet 可执行文件，跳过 post_start 自动装路由"
+		return 1
+	fi
+	for delay in 0 2 5; do
+		[ "$delay" -gt 0 ] && sleep "$delay"
+		if MYNET_HOME="$MYNET_HOME" "$mynet_bin" apply --auto >/dev/null 2>&1; then
+			log "post_start: 内核路由自动恢复成功（attempt=$attempt）"
+			return 0
+		fi
+		log "WARNING: post_start apply --auto 失败（attempt=$attempt），将退避重试"
+		attempt=$((attempt + 1))
+	done
+	log "WARNING: post_start 连续 3 次 apply --auto 失败，请检查 tun $VPN_INTERFACE 与 var/bundle.json"
+	return 1
+}
+
 post_start_setup() {
 	wait_for_tun 20 || {
-		log "WARNING: tun $VPN_INTERFACE 未就绪，post_start 插件钩子跳过"
+		log "WARNING: tun $VPN_INTERFACE 未就绪，post_start 路由与插件钩子跳过"
 		return 1
 	}
 
+	apply_routes_with_retry || true
 	run_plugin_hooks "post_start"
 	log "MyNet started ($VPN_TYPE)"
 	return 0

@@ -60,6 +60,10 @@ func TestOpenWrtMynetInitUsesProcdInstance(t *testing.T) {
 	if !strings.Contains(body, "gnb_es") {
 		t.Fatal("mynet init stop must clean gnb_es orphans")
 	}
+	// post_start 必须在 tun 就绪后带退避重试恢复内核路由（防 gnb/tun 重启后丢 10.182 路由）
+	if !strings.Contains(body, "apply_routes_with_retry") || !strings.Contains(body, "apply --auto") {
+		t.Fatal("mynet init post_start must auto-reapply routes with retry after tun ready")
+	}
 }
 
 // 收敛守卫：procd 托管的 gnb 与「驱动侧 daemon 化 spawn 的 gnb」重叠时会留下

@@ -139,7 +139,12 @@ func cmdApply(args []string) int {
 			return 0
 		}
 
-		rc := executeApply(snap, &plan, dry)
+		rc := retryApplyWithBackoff(3, 2*time.Second, dry, func() int {
+			return executeApply(snap, &plan, dry)
+		}, func(attempt, maxAttempts int, wait time.Duration) {
+			fmt.Fprintf(os.Stderr, "WARN: apply --auto 失败（第 %d/%d 次，可能 tun 尚未就绪），%s 后退避重试\n",
+				attempt, maxAttempts, wait)
+		})
 		if rc == 0 && !dry {
 			// 防火墙持久化同步（上层合同见 firewall_persist_common.go）：
 			// OpenWrt 登记 UCI include（fw4 reload 后重放），Linux 按后端登记。
@@ -259,7 +264,7 @@ func cmdService(args []string) int {
 		// tun 不在，后面 apply 装路由也是白装，先 fail loud。
 		if err := verifyTunAfterStart(name, func() TunHealth {
 			return currentTunHealth(home)
-		}, 3, 500*time.Millisecond); err != nil {
+		}, 15, time.Second); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ start %s: %v\n", name, err)
 			return 1
 		}
@@ -317,7 +322,7 @@ func cmdService(args []string) int {
 		fmt.Printf("reloaded %s\n", name)
 		if err := verifyTunAfterStart(name, func() TunHealth {
 			return currentTunHealth(home)
-		}, 3, 500*time.Millisecond); err != nil {
+		}, 15, time.Second); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ reload %s: %v\n", name, err)
 			return 1
 		}
@@ -342,6 +347,31 @@ func cmdService(args []string) int {
 		fmt.Fprintf(os.Stderr, "未知动作: %s（只支持 start|stop|reload|restart|status）\n", action)
 		return 2
 	}
+}
+
+// retryApplyWithBackoff 在 tun 重启窗口内对 apply --auto 做带退避重试（dry-run 不重试）。
+func retryApplyWithBackoff(maxAttempts int, baseDelay time.Duration, dry bool, run func() int, onRetry func(attempt, maxAttempts int, wait time.Duration)) int {
+	if dry || maxAttempts <= 1 {
+		return run()
+	}
+	var rc int
+	delay := baseDelay
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		rc = run()
+		if rc == 0 {
+			return 0
+		}
+		if attempt < maxAttempts {
+			if onRetry != nil {
+				onRetry(attempt, maxAttempts, delay)
+			}
+			if delay > 0 {
+				time.Sleep(delay)
+				delay *= 2
+			}
+		}
+	}
+	return rc
 }
 
 // applyAfterStart 启动/重启后：先投影再装 OS 路由（route-firewall-split §3.1）。

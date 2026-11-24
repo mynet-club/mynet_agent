@@ -588,3 +588,80 @@ func TestReconcileUTCConfRebindsIdentityOnGNBRestart(t *testing.T) {
 		t.Fatalf("post-rebind steady-state must be idempotent: got updated=%d gen=%d err=%v", updated, gen, err)
 	}
 }
+
+// P2 regression: when utc.identity carries a non-live parent PID (e.g. daemonized
+// gnb) but boot_id genuinely changed, agent must log an explicit warning AND
+// still rebind + unlock rather than failing silently. Malformed identity must
+// also emit an explicit warning.
+func TestReconcileUTCConfDeadIdentityPIDRebindsOnBootIDChangeAndLogs(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	utcConf := filepath.Join(root, "utc.conf")
+	utcIdentity := filepath.Join(root, "utc.identity")
+
+	const nowUnix uint64 = 1795500000
+	const leaseExp uint64 = 1795586400
+	m1 := strings.Repeat("b", 64)
+	oldBoot := "33333333333333333333333333333333"
+	newBoot := "44444444444444444444444444444444"
+
+	initial := strings.Join([]string{
+		"utc-v2 mynet-prod node182 8283289760467957 17 " + oldBoot + " 4679 3",
+		"peer 3722810996882027 3470419108809137 14 2 1 1 1795586400 4 00000000000000000000ffff7f000001 19711 0 " + m1,
+	}, "\n") + "\n"
+	if err := os.WriteFile(utcConf, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pairDir := filepath.Join(stateDir, "pairs", "3470419108809137-b")
+	writeLeaseJSON(t, filepath.Join(pairDir, "lease-a-to-b.json"), 3470419108809137, 6, leaseExp, m1)
+	writeLeaseJSON(t, filepath.Join(pairDir, "lease-b-to-a.json"), 3470419108809137, 6, leaseExp, m1)
+	writeBridgeStatus(t, filepath.Join(pairDir, "bridge.status"), 1, 3470419108809137, 6, leaseExp, nowUnix, 20001)
+
+	// Dead parent PID 50001 + new boot_id
+	if err := os.WriteFile(utcIdentity, []byte("identity-v1 8283289760467957 "+newBoot+" 50001\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs []string
+	enabled := true
+	opts := ReconcileOptions{
+		StateDir:       stateDir,
+		UTCConfPath:    utcConf,
+		NowUnix:        nowUnix,
+		UserEnabled:    &enabled,
+		ProcessAliveFn: func(pid int) bool { return pid == 20001 }, // utcd alive, identity pid 50001 dead
+		Logf:           func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
+	}
+	state := NewReconcileState()
+	updated, gen, err := ReconcileUTCConf(opts, state)
+	if err != nil || updated != 1 || gen != 18 {
+		t.Fatalf("dead-pid boot_id change should rebind: got updated=%d gen=%d err=%v", updated, gen, err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "WARN utc.identity pid=50001 not alive") {
+		t.Fatalf("expected explicit warning log, got: %v", logs)
+	}
+	got, _ := os.ReadFile(utcConf)
+	if !strings.Contains(string(got), "utc-v2 mynet-prod node182 8283289760467957 18 "+newBoot+" 50001 3") ||
+		!strings.Contains(string(got), "peer 3722810996882027 3470419108809137 15 2 1 1") {
+		t.Fatalf("expected rebound header + unlocked pair_gen=15, got:\n%s", string(got))
+	}
+
+	// Next poll with same dead PID & already-matching boot_id: idempotent (zero writes)
+	updated, gen, err = ReconcileUTCConf(opts, state)
+	if err != nil || updated != 0 || gen != 18 {
+		t.Fatalf("post-rebind dead-pid steady-state must be idempotent: got updated=%d gen=%d err=%v", updated, gen, err)
+	}
+
+	// Malformed utc.identity: must emit explicit WARN log (never silent)
+	logs = nil
+	if err := os.WriteFile(utcIdentity, []byte("corrupt-identity\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = ReconcileUTCConf(opts, state)
+	if err != nil {
+		t.Fatalf("malformed identity should not error reconcile: %v", err)
+	}
+	if !strings.Contains(strings.Join(logs, "\n"), "WARN ignoring utc.identity") {
+		t.Fatalf("expected WARN log for malformed identity, got: %v", logs)
+	}
+}

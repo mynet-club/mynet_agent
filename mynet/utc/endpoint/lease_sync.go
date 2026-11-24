@@ -493,28 +493,36 @@ func isCanonicalBootIDHex(s string) bool {
 
 // LoadGNBIdentity reads and validates utc.identity next to utcConfPath.
 func LoadGNBIdentity(utcConfPath string, aliveFn func(int) bool) (GNBIdentity, bool) {
-	var id GNBIdentity
+	id, present, pidAlive, reason := loadGNBIdentityDetailed(utcConfPath, aliveFn)
+	if !present || reason != "" || !pidAlive {
+		return GNBIdentity{}, false
+	}
+	return id, true
+}
+
+func loadGNBIdentityDetailed(utcConfPath string, aliveFn func(int) bool) (id GNBIdentity, present bool, pidAlive bool, reason string) {
 	identityPath := filepath.Join(filepath.Dir(utcConfPath), "utc.identity")
 	raw, err := os.ReadFile(identityPath)
 	if err != nil {
-		return id, false
+		if os.IsNotExist(err) {
+			return id, false, false, ""
+		}
+		return id, true, false, fmt.Sprintf("read error: %v", err)
 	}
 	fields := strings.Fields(strings.TrimSpace(string(raw)))
 	if len(fields) != 4 || fields[0] != "identity-v1" {
-		return id, false
+		return id, true, false, fmt.Sprintf("invalid format (%q)", strings.TrimSpace(string(raw)))
 	}
 	localID, err1 := strconv.ParseUint(fields[1], 10, 64)
 	pid, err2 := strconv.ParseUint(fields[3], 10, 64)
 	if err1 != nil || err2 != nil || localID == 0 || pid == 0 || !isCanonicalBootIDHex(fields[2]) {
-		return id, false
+		return id, true, false, "invalid local_id/boot_id/pid field"
 	}
 	if aliveFn == nil {
 		aliveFn = isProcessAlive
 	}
-	if !aliveFn(int(pid)) {
-		return id, false
-	}
-	return GNBIdentity{LocalID: localID, BootID: fields[2], ProcessID: pid}, true
+	id = GNBIdentity{LocalID: localID, BootID: fields[2], ProcessID: pid}
+	return id, true, aliveFn(int(pid)), ""
 }
 
 // ReconcileState holds per-peer anti-flap debounce counters and cached loopback
@@ -628,20 +636,41 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 		logf = func(string, ...any) {}
 	}
 
-	// P1-a: rebind utc-v2 header boot_id/process_id when gnb restarts and publishes
-	// a new utc.identity, so gnb never stalls in CONFIG_INVALID / BLOCKED.
+	// P1-a / P2: rebind utc-v2 header boot_id/process_id when gnb restarts and
+	// publishes a new utc.identity. Never fail silently when utc.identity is
+	// present but malformed or carries a non-live parent PID (e.g. daemonized gnb).
 	headerRebound := false
 	if isV2 && !opts.DisableFailOpen {
 		headerLocalID, errLocal := strconv.ParseUint(header[3], 10, 64)
 		if errLocal == nil && headerLocalID != 0 {
-			if ident, ok := LoadGNBIdentity(opts.UTCConfPath, opts.ProcessAliveFn); ok && ident.LocalID == headerLocalID {
-				pidStr := strconv.FormatUint(ident.ProcessID, 10)
-				if header[5] != ident.BootID || header[6] != pidStr {
-					logf("utc.conf rebinding utc-v2 identity path=%s boot_id=%s->%s pid=%s->%s",
-						opts.UTCConfPath, header[5], ident.BootID, header[6], pidStr)
-					header[5] = ident.BootID
-					header[6] = pidStr
-					headerRebound = true
+			ident, present, pidAlive, reason := loadGNBIdentityDetailed(opts.UTCConfPath, opts.ProcessAliveFn)
+			if present {
+				switch {
+				case reason != "":
+					logf("utc.conf WARN ignoring utc.identity path=%s reason=%s", opts.UTCConfPath, reason)
+				case ident.LocalID != headerLocalID:
+					logf("utc.conf WARN ignoring utc.identity path=%s reason=local_id_mismatch identity=%d header=%d",
+						opts.UTCConfPath, ident.LocalID, headerLocalID)
+				default:
+					pidStr := strconv.FormatUint(ident.ProcessID, 10)
+					if header[5] != ident.BootID || header[6] != pidStr {
+						if pidAlive {
+							logf("utc.conf rebinding utc-v2 identity path=%s boot_id=%s->%s pid=%s->%s",
+								opts.UTCConfPath, header[5], ident.BootID, header[6], pidStr)
+							header[5] = ident.BootID
+							header[6] = pidStr
+							headerRebound = true
+						} else if header[5] != ident.BootID {
+							logf("utc.conf WARN utc.identity pid=%d not alive (daemonized gnb?), rebinding on boot_id change path=%s boot_id=%s->%s pid=%s->%s",
+								ident.ProcessID, opts.UTCConfPath, header[5], ident.BootID, header[6], pidStr)
+							header[5] = ident.BootID
+							header[6] = pidStr
+							headerRebound = true
+						} else {
+							logf("utc.conf WARN utc.identity pid=%d not alive and boot_id unchanged (%s), skipping rebind path=%s",
+								ident.ProcessID, ident.BootID, opts.UTCConfPath)
+						}
+					}
 				}
 			}
 		}
