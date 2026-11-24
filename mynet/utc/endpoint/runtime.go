@@ -27,15 +27,19 @@ func Run(ctx context.Context, binary, config string, logf func(string, ...any)) 
 			binary = resolved
 		}
 	}
+	syncState := NewReconcileState()
 	syncCtx, syncCancel := context.WithCancel(ctx)
 	syncDone := make(chan struct{})
 	go func() {
 		defer close(syncDone)
-		RunLeaseSyncLoop(syncCtx, config, os.Getenv("MYNET_HOME"), 15*time.Second, logf)
+		RunLeaseSyncLoopWithState(syncCtx, config, os.Getenv("MYNET_HOME"), 3*time.Second, syncState, logf)
 	}()
 	defer func() {
 		syncCancel()
 		<-syncDone
+		// Trigger one immediate fail-open pass on shutdown so GNB falls back
+		// to native UDP without waiting for the next poll tick.
+		ReconcileAllOnce(config, os.Getenv("MYNET_HOME"), syncState, logf)
 	}()
 	for {
 		if err := ctx.Err(); err != nil {
