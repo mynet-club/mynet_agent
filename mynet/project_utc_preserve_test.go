@@ -6,58 +6,25 @@ import (
 	"testing"
 )
 
-func TestProjectToRunPreservesRuntimeUTCConfAndStatus(t *testing.T) {
-	root := t.TempDir()
-	confDir := filepath.Join(root, "conf", "online", "3722810996882027")
-	runRoot := filepath.Join(root, "run")
-	t.Setenv("MYNET_RUN_ROOT", runRoot)
+func TestGnbConfPathUsesSingleConfDirWithoutProjection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MYNET_HOME", home)
+	t.Setenv("MYNET_RUN_ROOT", filepath.Join(t.TempDir(), "should-not-be-used"))
 
-	if err := os.MkdirAll(confDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(confDir, "node.conf"), []byte("node-id 3722810996882027\n"), 0o600); err != nil {
-		t.Fatal(err)
+	// Default fallback before setup
+	if got, want := gnbConfPath(home), filepath.Join(home, "conf", "local", "default"); got != want {
+		t.Fatalf("gnbConfPath(empty) = %q, want %q", got, want)
 	}
 
-	runDir := filepath.Join(runRoot, "3722810996882027")
-	if err := os.MkdirAll(runDir, 0o700); err != nil {
+	// Online node resolves directly to $MYNET_HOME/conf/online/<nodeId>
+	if err := os.MkdirAll(filepath.Join(home, "conf"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	wantUTCConf := "utc-v2 mynet-prod nodeA 3722810996882027 7 boot 12292 3\n"
-	wantUTCStatus := "status-v1 mynet-prod nodeA 3722810996882027 boot 7 1795487865 APPLIED 12292\n"
-	if err := os.WriteFile(filepath.Join(runDir, "utc.conf"), []byte(wantUTCConf), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "conf", "mode.json"),
+		[]byte(`{"mode":"online","active":{"node_id":"3722810996882027"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "utc.status"), []byte(wantUTCStatus), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "stale.conf"), []byte("remove-me\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	gotRunDir, err := projectToRun(confDir, "3722810996882027")
-	if err != nil {
-		t.Fatalf("projectToRun failed: %v", err)
-	}
-	if gotRunDir != runDir {
-		t.Fatalf("runDir = %q, want %q", gotRunDir, runDir)
-	}
-
-	gotConf, err := os.ReadFile(filepath.Join(runDir, "utc.conf"))
-	if err != nil {
-		t.Fatalf("utc.conf was deleted by projectToRun: %v", err)
-	}
-	if string(gotConf) != wantUTCConf {
-		t.Fatalf("utc.conf mutated: got %q, want %q", string(gotConf), wantUTCConf)
-	}
-	gotStatus, err := os.ReadFile(filepath.Join(runDir, "utc.status"))
-	if err != nil {
-		t.Fatalf("utc.status was deleted by projectToRun: %v", err)
-	}
-	if string(gotStatus) != wantUTCStatus {
-		t.Fatalf("utc.status mutated: got %q, want %q", string(gotStatus), wantUTCStatus)
-	}
-	if _, err := os.Stat(filepath.Join(runDir, "stale.conf")); !os.IsNotExist(err) {
-		t.Fatalf("stale.conf should have been cleaned up, got err=%v", err)
+	if got, want := gnbConfPath(home), filepath.Join(home, "conf", "online", "3722810996882027"); got != want {
+		t.Fatalf("gnbConfPath(online) = %q, want %q", got, want)
 	}
 }

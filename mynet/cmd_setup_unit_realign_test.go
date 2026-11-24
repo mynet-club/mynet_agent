@@ -37,8 +37,9 @@ func TestSetupRealignsGnbUnitToNodeConfDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "-c /var/run/mynet/n7") {
-		t.Fatalf("setup 后单元应指向 /var/run/mynet/n7:\n%s", b)
+	wantOnline := filepath.Join(root, "conf", "online", "n7")
+	if !strings.Contains(string(b), "-c "+wantOnline) {
+		t.Fatalf("setup 后单元应指向 %s:\n%s", wantOnline, b)
 	}
 	if strings.Contains(string(b), "/var/run/mynet/default") {
 		t.Fatalf("坏的回退目标没被归位:\n%s", b)
@@ -52,8 +53,9 @@ func TestSetupRealignsGnbUnitToNodeConfDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "-c /var/run/mynet/3001") {
-		t.Fatalf("再 setup 后应指向 /var/run/mynet/3001:\n%s", b)
+	wantLocal := filepath.Join(root, "conf", "local", "3001")
+	if !strings.Contains(string(b), "-c "+wantLocal) {
+		t.Fatalf("再 setup 后应指向 %s:\n%s", wantLocal, b)
 	}
 }
 
@@ -68,8 +70,9 @@ func TestInstallWarnsWhenModeJsonMissing(t *testing.T) {
 	if !strings.Contains(warn, "mynet_gnb.service 的 -c 待 mynet setup 后归位") {
 		t.Fatalf("警告文案必须明说待归位: %q", warn)
 	}
-	if !strings.Contains(warn, "/var/run/mynet/default") {
-		t.Fatalf("警告要指出暂指的目标: %q", warn)
+	wantFallback := filepath.Join(home, "conf", "local", "default")
+	if !strings.Contains(warn, wantFallback) {
+		t.Fatalf("警告要指出暂指的目标 %s: %q", wantFallback, warn)
 	}
 
 	// 有 mode.json（conf/ 新位）就不许告警

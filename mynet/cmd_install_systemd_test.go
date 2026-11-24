@@ -88,9 +88,10 @@ func TestWriteSystemdUnitsSubstitutesGnbPath(t *testing.T) {
 			if strings.Contains(body, "/usr/local/bin/gnb") {
 				t.Errorf("mynet_gnb 里还残留默认 gnb 路径:\n%s", body)
 			}
-			// 缺口⑦：__GNB_CONF__ 按 gnbConfPath(home) 替换（无 mode.json → 回退 default）
-			if !strings.Contains(body, "-c /var/run/mynet/default") {
-				t.Errorf("mynet_gnb 的 -c 未按 gnbConfPath(home) 替换:\n%s", body)
+			// 缺口⑦：__GNB_CONF__ 按 gnbConfPath(home) 替换（无 mode.json → 回退 conf/local/default）
+			wantConf := filepath.Join(home, "conf", "local", "default")
+			if !strings.Contains(body, "-c "+wantConf) {
+				t.Errorf("mynet_gnb 的 -c 未按 gnbConfPath(home) 替换 (want %s):\n%s", wantConf, body)
 			}
 			if strings.Contains(body, "__GNB_CONF__") {
 				t.Errorf("占位符 __GNB_CONF__ 残留:\n%s", body)
@@ -118,8 +119,9 @@ func TestWriteSystemdUnitsWarnsWhenModeJsonMissing(t *testing.T) {
 	if !strings.Contains(warn, "mynet_gnb.service 的 -c 待 mynet setup 后归位") {
 		t.Fatalf("home 无 mode.json 时必须显式警告待归位，stderr=%q", warn)
 	}
-	if !strings.Contains(warn, "/var/run/mynet/default") {
-		t.Fatalf("警告要指出单元暂指的回退目标，stderr=%q", warn)
+	wantFallback := filepath.Join(home, "conf", "local", "default")
+	if !strings.Contains(warn, wantFallback) {
+		t.Fatalf("警告要指出单元暂指的回退目标 %s，stderr=%q", wantFallback, warn)
 	}
 
 	// 单元照写：警告不许把 install 的落盘职责顶掉
@@ -133,7 +135,7 @@ func TestWriteSystemdUnitsWarnsWhenModeJsonMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("警告归警告，单元必须照写: %v", err)
 	}
-	if !strings.Contains(string(b), "-c /var/run/mynet/default") {
+	if !strings.Contains(string(b), "-c "+wantFallback) {
 		t.Fatalf("单元应按回退目标照写（待 setup 归位）:\n%s", b)
 	}
 

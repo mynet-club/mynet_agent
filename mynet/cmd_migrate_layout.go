@@ -555,7 +555,7 @@ func rewriteGnbUnitConfRel(home string) {
 func rewriteGnbUnitConfRelFiles(home string, unitPaths []string) int {
 	want := gnbConfPath(home)
 	// 覆盖旧形态（${MYNET_HOME}/…）与新形态（绝对路径）
-	re := regexp.MustCompile(`-c (?:\$\{MYNET_HOME\}/[^ \t\n]+|/var/run/mynet/[^ \t\n]+|/[^ \t\n]*mynet[^ \t\n]*)`)
+	re := regexp.MustCompile(`-c (?:\$\{MYNET_HOME\}/[^ \t\n]+|/var/run/mynet/[^ \t\n]+|/[^ \t\n]+/conf/(?:local|online)/[^ \t\n]+|/[^ \t\n]*mynet[^ \t\n]*)`)
 	n := 0
 	for _, unitPath := range unitPaths {
 		body, err := os.ReadFile(unitPath)

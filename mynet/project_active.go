@@ -277,82 +277,10 @@ func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
 		_ = copyDirFiles(d.ConfDir, snap)
 	}
 	pruneLastGood(lastGoodKeep)
-	// 运行投影：conf 原生配置 → /var/run/mynet/<nodeId>（gnb -c 打开处）
-	runDir, err := projectToRun(d.ConfDir, nodeID)
-	if err != nil {
-		return fmt.Errorf("运行投影: %w", err)
-	}
-	fmt.Printf("✓ 原生配置 %s\n✓ 运行投影 %s\n", d.ConfDir, runDir)
+	// 两层目录模型：conf/<form>/<nodeId>/ 即唯一配置目录，gnb -c 直接打开此处，
+	// 不再向 /var/run/mynet/<nodeId> 复制配置文件（杜绝双份漂移与 reload 删 utc.conf）。
+	fmt.Printf("✓ 节点配置 %s\n", d.ConfDir)
 	return nil
-}
-
-// projectToRun 把 conf 节点目录的原生配置投到运行投影目录（专为运行时服务）。
-// 跳过 gnb.map / gnb.pid 等运行脏文件 —— 那是进程产物，不进投影源。
-// Windows 无 /var/run：返回 confDir（无独立投影，维持现状）。
-func projectToRun(confDir, nodeID string) (string, error) {
-	runDir, err := utils.RunProjectionPath(nodeID)
-	if err != nil {
-		return "", err
-	}
-	if runDir == "" {
-		return confDir, nil
-	}
-	if err := utils.SafeCreateDir(runDir, 0o700); err != nil {
-		return "", err
-	}
-	skip := map[string]bool{
-		"gnb.map":         true,
-		"gnb.pid":         true,
-		"gnb_es.pid":      true,
-		"node_cache.dump": true,
-		"utc.status":      true,
-	}
-	// utc.conf 可由真相源投影，也可由运行期租约同步器/协调器写入；
-	// 当真相源 confDir 中没有 utc.conf 时，禁止清理循环删除 runDir 现有 utc.conf，
-	// 避免 bundle_changed / service.reload 把正在生效的 UTC 隧道配置抹掉。
-	preserveIfAbsent := map[string]bool{
-		"utc.conf": true,
-	}
-	ents, err := os.ReadDir(confDir)
-	if err != nil {
-		return "", err
-	}
-	for _, e := range ents {
-		if skip[e.Name()] {
-			continue
-		}
-		s := filepath.Join(confDir, e.Name())
-		d := filepath.Join(runDir, e.Name())
-		if e.IsDir() {
-			_ = utils.SafeCreateDir(d, 0o700)
-			if err := copyDirFiles(s, d); err != nil {
-				return "", err
-			}
-			continue
-		}
-		b, err := os.ReadFile(s)
-		if err != nil {
-			continue
-		}
-		if err := os.WriteFile(d, b, 0o600); err != nil {
-			return "", err
-		}
-	}
-	// 清理陈旧投影：源里已删除的不能留在 runDir（proxy.conf 从有到无时残留旧文件，
-	// gnb 仍会读到）。运行脏文件（gnb.map/pid 等）与运行期保留文件（utc.conf）保留。
-	src := make(map[string]bool, len(ents))
-	for _, e := range ents {
-		src[e.Name()] = true
-	}
-	if rents, rerr := os.ReadDir(runDir); rerr == nil {
-		for _, e := range rents {
-			if skip[e.Name()] || preserveIfAbsent[e.Name()] || src[e.Name()] {
-				continue
-			}
-			_ = os.RemoveAll(filepath.Join(runDir, e.Name()))
-		}
-	}
-	return runDir, nil
 }
 
 // lastGoodKeep state/last-good 快照保留份数（含密钥，宁少勿多；够回滚一次就行）。
@@ -440,16 +368,8 @@ func writeWgProjection(env *domain.BundleEnvelope, dry bool) error {
 			_ = os.WriteFile(varConf, b, 0o600)
 		}
 	}
-	// 运行投影：原生配置 → /var/run/mynet/<nodeId>
-	nid := wgNodeID(env)
-	if nid == "" {
-		_, nid = utils.ActiveNodeInfo()
-	}
-	runDir, err := projectToRun(filepath.Dir(d.ConfPath), nid)
-	if err != nil {
-		return fmt.Errorf("运行投影: %w", err)
-	}
-	fmt.Printf("✓ 原生配置 %s\n✓ 运行投影 %s\n", d.ConfPath, runDir)
+	// 两层目录模型：conf/<form>/<nodeId>/wg.conf 即唯一配置，不再复制到 /var/run/mynet。
+	fmt.Printf("✓ 节点配置 %s\n", d.ConfPath)
 	return nil
 }
 

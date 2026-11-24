@@ -57,9 +57,8 @@ node_confdir() {
 	[ -d "$MYNET_HOME/conf/$form/$node" ] && echo "$MYNET_HOME/conf/$form/$node"
 }
 
-# 运行投影（paths.md §2）：gnb -c 的唯一打开处，由 `mynet apply --active` 生成。
-# /var/run 重启即空 —— 起服务前必须先投影（铁律 6），start_gnb_instance 保证。
-gnb_rundir() {
+# 兼容存量升级：旧版运行投影目录（仅用于收敛旧版遗留 gnb 进程，不再存放配置文件）。
+legacy_gnb_rundir() {
 	local modefile="$MYNET_HOME/conf/mode.json" node root
 	[ -f "$modefile" ] || modefile="$MYNET_HOME/mode.json"
 	[ -f "$modefile" ] && node=$(jsonfilter -i "$modefile" -e '@.active.node_id' 2>/dev/null)
@@ -68,10 +67,9 @@ gnb_rundir() {
 	echo "$root/$node"
 }
 
-# gnb -c 打开处 = 运行投影（paths.md「gnb -c 指投影」）。
-# 原生节点目录只作读配置/归属判据，不直接交给 gnb。
+# 两层目录模型：gnb -c 直接打开唯一节点配置目录 $MYNET_HOME/conf/<form>/<nodeId>。
 gnb_confdir() {
-	gnb_rundir
+	native_confdir
 }
 
 # 原生配置目录（真相源，读配置用）：节点唯一存放位（D4-E）；
@@ -230,11 +228,11 @@ converge_stale_gnb() {
 }
 
 start_gnb_instance() {
-	local nid confdir nativedir bin launcher
+	local nid confdir legacydir bin launcher
 	nid=$(get_node_id_from_conf)
-	# gnb -c = 运行投影（gnb_confdir）；原生目录只作读配置/归属判据（D4-E）
+	# 两层目录模型：gnb -c 直接打开唯一节点配置目录 conf/<form>/<nodeId>
 	confdir=$(gnb_confdir)
-	nativedir=$(native_confdir)
+	legacydir=$(legacy_gnb_rundir)
 	bin="${MYNET_HOME}/driver/gnb/bin/gnb"
 	[ -x "$bin" ] || bin="$(command -v gnb)"
 	launcher="$(command -v mynet)"
@@ -244,18 +242,13 @@ start_gnb_instance() {
 		log "ERROR: gnb not ready (nid=$nid conf=$confdir bin=$bin)"
 		return 1
 	fi
-	# P1 编排归属（lifecycle-contract D 层）：投影→起进程→装路由的编排只在
-	# `mynet service start`（mynetd restore / GUI / LuCI 都只喊它）。
-	# init 只持进程（procd）+ 护栏。护栏：投影不存在 = 编排没跑过 → 大声拒绝，
-	# 不自己补（禁静默 fallback、禁 init 内编排）；procd respawn 重试，
-	# 等 service start 补完投影即过 —— 不会出现「起了 gnb 但没路由」。
 	if [ ! -f "$confdir/node.conf" ]; then
-		log "ERROR: 运行投影 $confdir 缺 node.conf —— 编排未跑过（应由 mynet service start 生成）。拒绝起 gnb；等 mynetd restore 或人工执行: mynet service start gnb"
+		log "ERROR: 节点配置目录 $confdir 缺 node.conf —— 请先同步配置或执行: mynet service start gnb"
 		return 1
 	fi
 	# 收敛：注册 procd 实例前，先停掉本节点上 procd 未托管的遗留 gnb
-	# （投影 + 原生两个口径都认，覆盖升级前 -c 指原生的旧实例）。
-	converge_stale_gnb "$confdir" "$nativedir"
+	# （同时识别新唯一配置目录与旧 /var/run/mynet 投影目录，保证平滑升级不留孤儿）。
+	converge_stale_gnb "$confdir" "$legacydir"
 	log "procd gnb: guarded launch $bin -c $confdir"
 	procd_open_instance gnb
 	# MYNET_UTC_LAUNCH_V1。--systemd = gnb 前台运行，生命周期归 procd（E-2）——
@@ -272,9 +265,9 @@ start_gnb_instance() {
 stop_gnb_instance() {
 	local nid confdir nativedir es_bin gnb_pids gnb_pid owned pid exe ppid cmd match
 	nid=$(get_node_id_from_conf)
-	# 同 start_gnb_instance：gnb -c = 运行投影，原生目录并入归属判据
+	# 同 start_gnb_instance：confdir=唯一配置目录，nativedir 兼顾旧 /var/run/mynet 进程归属
 	confdir=$(gnb_confdir)
-	nativedir=$(native_confdir)
+	nativedir=$(legacy_gnb_rundir)
 	es_bin="${MYNET_HOME}/driver/gnb/bin/gnb_es"
 	[ -x "$es_bin" ] || es_bin="$(command -v gnb_es)"
 

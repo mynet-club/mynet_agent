@@ -40,9 +40,20 @@ go run -tags dev ./cmd/mynetd -listen 127.0.0.1:8096
 
 ⚠️ **`-tags dev` 不得进发布包**；`scripts/pack.sh` / Makefile `pack` 固定 `-tags embed`。
 
+## 目录模型（两层架构：取消配置投影）
+
+全平台统一只分两层（macOS/Linux 默认 `MYNET_HOME=/opt/mynet`，OpenWrt 默认 `/etc/mynet`，Windows 默认 `C:\ProgramData\MyNet`）：
+
+1. **持久化配置与状态（`$MYNET_HOME/conf/` + `state/`）**：全系统唯一配置真相源，**不再向 `/var/run/mynet/` 复制任何配置文件**：
+   - `conf/*.json`：mynet 自身配置（`mode.json`、`gateways.json`、`agent.json`）
+   - `conf/<form>/<nodeId>/`（`form=local|online`）：`gnb` 与 `wg` 的**唯一配置目录**（密钥 + `node/route/address/proxy/utc.conf` 或 `wg.conf`），`gnb -c` 直接打开此处
+   - `conf/utc/utcd.conf`：UTC 客户端唯一配置（ADR-0037 一端一配）
+   - `state/`：持久化状态（`last-good`、`utc/` 历史水位与端侧 leases）
+2. **运行态临时数据（`$MYNET_HOME/var/` + `logs/`）**：仅存与配置无关的临时产物（`bundle.json` 缓存、`system.json`、PID、socket、日志），随时可清空重建。
+
 ## 文档
 
-- UTC 客户端：mynetd 通过 `mynet/utc/endpoint` 托管 `utcd --config`；默认单一配置为 `conf/utc/utcd.conf`（一端一配，旧 `hub.json` / `hubd` 已退役），可由 `MYNET_UTC_CONFIG` 指定，二进制位于安装前缀的 `bin/utcd`。utcd 自己认证、取池和维护消费水位。
+- UTC 客户端：mynetd 通过 `mynet/utc/endpoint` 托管 `utcd --config`；默认单一配置为 `conf/utc/utcd.conf`（一端一配，旧 `hub.json` / `hubd` 已退役），可由 `MYNET_UTC_CONFIG` 指定，二进制位于安装前缀的 `bin/utcd`（OpenWrt 自动兼容 `/usr/sbin/utcd`）。utcd 自己认证、取池和维护消费水位。
   启动契约与未验收边界：[BOOT-0 客户端契约](../mynet_utc/docs/productization/BOOT0_CLIENT.md)；三节点现场：[接手手册](../mynet_utc/docs/productization/UTC_THREE_NODE_TAKEOVER_20261120.md)。
 
 - 托盘优化：[Tray 渐进优化 Playbook](docs/TRAY_OPTIMIZATION_PLAYBOOK.md)（沿用现有 App/FSM，局部修复与交互优化）

@@ -3,7 +3,6 @@ package mynet
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 	"github.com/mynet-club/mynet_agent/shared/logger"
 	"github.com/mynet-club/mynet_agent/shared/tunnelstate"
-	"github.com/mynet-club/mynet_agent/shared/utils"
 )
 
 // cmdApply — F-2/F-3/F-5：唯一写入者。
@@ -246,10 +244,9 @@ func cmdService(args []string) int {
 			fmt.Fprintln(os.Stderr, "加速偏好迁移失败:", err)
 			return 1
 		}
-		// 运行投影先行：/var/run/mynet/<nodeId> 是 gnb -c 打开处，
-		// 重启后 tmpfs 已空 —— 不先投影就 start，gnb 必缺 node.conf。
+		// 节点配置先行：确保 conf/<form>/<nodeId>/ 下驱动配置与当前意图/bundle 同步。
 		if err := ApplyFromActive(false); err != nil {
-			fmt.Fprintf(os.Stderr, "start %s: 先 apply 运行投影失败: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "start %s: 同步节点配置失败: %v\n", name, err)
 			return 1
 		}
 		if err := d.Start(); err != nil {
@@ -361,11 +358,9 @@ func applyAfterStart() int {
 	return cmdApply([]string{"--active", "--auto"})
 }
 
-// buildLifecycleDriver 按 refresh-config 的**同一套路径约定**构造驱动。
-//
-// 起进程的目录 = **运行投影** `/var/run/mynet/<nodeId>`（gnb -c 打开处）；
-// 写原生配置的目录仍是 conf 节点目录（project_active 写完再投影过来）。
-// 两处若对不上，症状是「配置明明写了，起的却是另一个目录」。
+// buildLifecycleDriver 按统一两层目录模型构造驱动：
+// 写配置与起进程均直接指向唯一节点配置目录 $MYNET_HOME/conf/<form>/<nodeId>/，
+// 不再经过 /var/run/mynet/<nodeId> 配置投影。
 func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, error) {
 	// local 模式没有 bundle —— 身份在 conf/local/intent.json。CLI service 主链
 	// （start/stop/reload/status）在本地模式也必须能跑，不能只认 bundle。
@@ -392,12 +387,7 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("bundle 的 gnb.identity.node_id 非法: %q", env.Gnb.Identity.NodeID)
 		}
 		d := driver.NewGNBDriver(nodeID)
-		// 运行投影优先；Windows 无 /var/run 时回落 conf 节点目录
-		if run, err := utils.RunProjectionPath(env.Gnb.Identity.NodeID); err == nil && run != "" {
-			d.ConfDir = run
-		} else {
-			d.ConfDir = gnbConfDir()
-		}
+		d.ConfDir = gnbConfDir()
 
 		return d, nil
 	case domain.DriverTypeWireGuard:
@@ -409,11 +399,7 @@ func buildLifecycleDriver(typ domain.VPNDriverType) (domain.VPNLifecycleDriver, 
 			return nil, fmt.Errorf("wireguard 接口名: %w", err)
 		}
 		d := driver.NewWireGuardDriver(dev, 0)
-		// ConfPath = 运行投影 /var/run/mynet/<nodeId>/wg.conf（Windows 回落 conf 节点目录）。
-		// 原生配置写在 conf 节点目录（writeWgProjection），再投影过来。
-		if run, rerr := utils.RunProjectionPath(env.Node.ID); rerr == nil && run != "" {
-			d.ConfPath = filepath.Join(run, "wg.conf")
-		} else if p := wgNodeConfPath(env.Node.ID); p != "" {
+		if p := wgNodeConfPath(env.Node.ID); p != "" {
 			d.ConfPath = p
 		}
 
@@ -433,11 +419,7 @@ func buildLocalLifecycleDriver(typ domain.VPNDriverType, li *domain.LocalIntent)
 			return nil, fmt.Errorf("intent.node.id 非法: %q", li.Node.ID)
 		}
 		d := driver.NewGNBDriver(nodeID)
-		if run, rerr := utils.RunProjectionPath(li.Node.ID); rerr == nil && run != "" {
-			d.ConfDir = run
-		} else {
-			d.ConfDir = gnbConfDir()
-		}
+		d.ConfDir = gnbConfDir()
 		return d, nil
 	case domain.DriverTypeWireGuard:
 		return nil, fmt.Errorf("local 意图不含 wireguard 接口名，service 命令暂只支持 online 模式的 wireguard")

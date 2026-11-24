@@ -126,30 +126,3 @@ func TestPruneLastGoodKeepsRecentOnly(t *testing.T) {
 		t.Fatalf("只应留最近 3 份: %v", names)
 	}
 }
-
-func TestProjectToRunSkipsDirtyFiles(t *testing.T) {
-	t.Setenv("MYNET_RUN_ROOT", t.TempDir())
-	conf := t.TempDir()
-	if err := os.WriteFile(filepath.Join(conf, "node.conf"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(conf, "gnb.map"), []byte("m"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(conf, "gnb.pid"), []byte("1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	run, err := projectToRun(conf, "n1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(run, "node.conf")); err != nil {
-		t.Fatalf("投影缺 node.conf: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(run, "gnb.map")); err == nil {
-		t.Fatal("gnb.map 不应进投影")
-	}
-	if _, err := os.Stat(filepath.Join(run, "gnb.pid")); err == nil {
-		t.Fatal("gnb.pid 不应进投影")
-	}
-}

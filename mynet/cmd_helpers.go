@@ -44,10 +44,9 @@ func collectMetricsBrief() map[string]any {
 func goos() string   { return runtime.GOOS }
 func goarch() string { return runtime.GOARCH }
 
-// gnbConfPath gnb `-c` 的绝对目标：unix = 运行投影 `/var/run/mynet/<nodeId>`
-// （map/pid 也落这）；Windows 无 /var/run，回落 conf 节点目录。
+// gnbConfPath gnb `-c` 的绝对目标：全平台统一为节点唯一配置目录
+// `$MYNET_HOME/conf/<form>/<nodeId>`（不再经 /var/run/mynet 投影）。
 // form+nodeId 取 mode.json；节点未定时给 default（setup 后重跑 install 归位）。
-// 放无 build-tag 的本文件：迁移命令（全平台）与 install（分平台）都要用。
 func gnbConfPath(home string) string {
 	form, nodeID := "local", ""
 	raw, err := os.ReadFile(filepath.Join(home, "conf", "mode.json"))
@@ -71,10 +70,6 @@ func gnbConfPath(home string) string {
 	if nodeID == "" {
 		nodeID = "default"
 	}
-	if run, err := utils.RunProjectionPath(nodeID); err == nil && run != "" {
-		return run
-	}
-	// Windows：无独立运行投影，仍指 conf 节点目录
 	return filepath.Join(home, "conf", form, nodeID)
 }
 

@@ -34,7 +34,7 @@
 # 否则 gnb 因缺 node.conf 直接退出。
 #
 # ⚠️ -c 的目标是**节点唯一存放位**（D4-E）：install/服务单元生成面按 mode.json
-# 解析 form+nodeId 后替换 __GNB_CONF__（绝对路径：unix=运行投影 /var/run/mynet/<nodeId>）。
+# 解析 form+nodeId 后替换 __GNB_CONF__（绝对路径：$MYNET_HOME/conf/<form>/<nodeId>）。
 
 [Unit]
 Description=MyNet gnb tunnel (data plane)

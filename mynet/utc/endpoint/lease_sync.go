@@ -322,22 +322,23 @@ func DiscoverUTCDStateDirs(utcdConfPath, myNetHome string) []string {
 }
 
 // DiscoverUTCConfPaths locates existing gnb utc.conf files on the host,
-// deduplicating symlinked /var/run and /run paths.
+// prioritizing the canonical single config tree ($MYNET_HOME/conf/<form>/<nodeId>/utc.conf)
+// while keeping legacy /var/run/mynet/*/utc.conf as a transition fallback.
 func DiscoverUTCConfPaths(myNetHome string) []string {
 	var patterns []string
 	if explicit := strings.TrimSpace(os.Getenv("MYNET_UTC_CONF_PATH")); explicit != "" {
 		patterns = append(patterns, explicit)
 	}
+	if strings.TrimSpace(myNetHome) != "" {
+		patterns = append(patterns,
+			filepath.Join(myNetHome, "conf", "*", "*", "utc.conf"),
+		)
+	}
+	// Transition fallback for nodes not yet restarted off legacy /var/run/mynet projection.
 	patterns = append(patterns,
 		"/var/run/mynet/*/utc.conf",
 		"/run/mynet/*/utc.conf",
 	)
-	if strings.TrimSpace(myNetHome) != "" {
-		patterns = append(patterns,
-			filepath.Join(myNetHome, "conf", "*", "*", "utc.conf"),
-			filepath.Join(myNetHome, "var", "*", "utc.conf"),
-		)
-	}
 
 	seen := make(map[string]struct{})
 	var paths []string
