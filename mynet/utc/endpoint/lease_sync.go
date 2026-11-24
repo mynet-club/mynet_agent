@@ -441,6 +441,7 @@ func readTrustPairTransport(trustPath string) (pairID uint64, peerTransport uint
 		return 0, 0
 	}
 	defer file.Close()
+	var fallbackTarget uint64
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -455,13 +456,65 @@ func readTrustPairTransport(trustPath string) (pairID uint64, peerTransport uint
 			if v, err := strconv.ParseUint(val, 10, 64); err == nil && pairID == 0 {
 				pairID = v
 			}
-		case "peer_transport_id":
+		// utcd pair_issuance.c writes peer_transport= in [trust] (authoritative on both
+		// side-a and side-b); keep peer_transport_id for legacy compatibility and
+		// target_peer_id only as a last-resort fallback.
+		case "peer_transport", "peer_transport_id":
 			if v, err := strconv.ParseUint(val, 10, 64); err == nil && peerTransport == 0 {
 				peerTransport = v
 			}
+		case "target_peer_id":
+			if v, err := strconv.ParseUint(val, 10, 64); err == nil && fallbackTarget == 0 {
+				fallbackTarget = v
+			}
 		}
 	}
+	if peerTransport == 0 {
+		peerTransport = fallbackTarget
+	}
 	return pairID, peerTransport
+}
+
+// GNBIdentity represents the live instance identity published by gnb in
+// <dir(utc.conf)>/utc.identity: "identity-v1 <local_id> <boot_id(32hex)> <process_id>".
+type GNBIdentity struct {
+	LocalID   uint64
+	BootID    string
+	ProcessID uint64
+}
+
+func isCanonicalBootIDHex(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	raw, err := hex.DecodeString(s)
+	return err == nil && len(raw) == 16 && hex.EncodeToString(raw) == s
+}
+
+// LoadGNBIdentity reads and validates utc.identity next to utcConfPath.
+func LoadGNBIdentity(utcConfPath string, aliveFn func(int) bool) (GNBIdentity, bool) {
+	var id GNBIdentity
+	identityPath := filepath.Join(filepath.Dir(utcConfPath), "utc.identity")
+	raw, err := os.ReadFile(identityPath)
+	if err != nil {
+		return id, false
+	}
+	fields := strings.Fields(strings.TrimSpace(string(raw)))
+	if len(fields) != 4 || fields[0] != "identity-v1" {
+		return id, false
+	}
+	localID, err1 := strconv.ParseUint(fields[1], 10, 64)
+	pid, err2 := strconv.ParseUint(fields[3], 10, 64)
+	if err1 != nil || err2 != nil || localID == 0 || pid == 0 || !isCanonicalBootIDHex(fields[2]) {
+		return id, false
+	}
+	if aliveFn == nil {
+		aliveFn = isProcessAlive
+	}
+	if !aliveFn(int(pid)) {
+		return id, false
+	}
+	return GNBIdentity{LocalID: localID, BootID: fields[2], ProcessID: pid}, true
 }
 
 // ReconcileState holds per-peer anti-flap debounce counters and cached loopback
@@ -494,6 +547,7 @@ type ReconcileOptions struct {
 	DownDebounceTicks int
 	DisableFailOpen   bool
 	ProcessAliveFn    func(int) bool
+	Logf              func(string, ...any)
 }
 
 // ReconcileUTCConf reconciles utcd-installed leases and live TCP bridge status
@@ -567,6 +621,30 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 	debounceTicks := opts.DownDebounceTicks
 	if debounceTicks <= 0 {
 		debounceTicks = defaultFailOpenTicks
+	}
+
+	logf := opts.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+
+	// P1-a: rebind utc-v2 header boot_id/process_id when gnb restarts and publishes
+	// a new utc.identity, so gnb never stalls in CONFIG_INVALID / BLOCKED.
+	headerRebound := false
+	if isV2 && !opts.DisableFailOpen {
+		headerLocalID, errLocal := strconv.ParseUint(header[3], 10, 64)
+		if errLocal == nil && headerLocalID != 0 {
+			if ident, ok := LoadGNBIdentity(opts.UTCConfPath, opts.ProcessAliveFn); ok && ident.LocalID == headerLocalID {
+				pidStr := strconv.FormatUint(ident.ProcessID, 10)
+				if header[5] != ident.BootID || header[6] != pidStr {
+					logf("utc.conf rebinding utc-v2 identity path=%s boot_id=%s->%s pid=%s->%s",
+						opts.UTCConfPath, header[5], ident.BootID, header[6], pidStr)
+					header[5] = ident.BootID
+					header[6] = pidStr
+					headerRebound = true
+				}
+			}
+		}
 	}
 
 	var bridges map[uint64]PairBridgeStatus
@@ -652,7 +730,10 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 				if !ok {
 					ep, ok = endpoints[pairID]
 				}
-				if ok {
+				if !ok {
+					logf("utc.conf cannot restore export mode for pair_id=%d path=%s: no loopback udp_bind resolved from utcd.conf=%s",
+						pairID, opts.UTCConfPath, opts.UTCDConfPath)
+				} else {
 					nextPairGen := pairGen + 1
 					if inst.PairGen > nextPairGen {
 						nextPairGen = inst.PairGen
@@ -672,15 +753,16 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 					continue
 				}
 			} else if mode == exportMode {
-				// Already in EXPORT: keep lease window fresh
+				// Already in EXPORT: keep lease window fresh, and if gnb just restarted
+				// (headerRebound), bump pair_gen once to release gnb's REQUIRES_NEW_GENERATION latch.
 				manifestChanged := inst.Manifest != "" && inst.Manifest != fields[manifestIdx]
-				if manifestChanged || inst.PairGen > pairGen || inst.ExpiresAt > expiresAt {
+				if headerRebound || manifestChanged || inst.PairGen > pairGen || inst.ExpiresAt > expiresAt {
 					nextPairGen := pairGen
 					if inst.PairGen > nextPairGen {
 						nextPairGen = inst.PairGen
 					}
-					// Changing manifest requires strictly newer pair_gen (gnb_utc.c).
-					if manifestChanged && nextPairGen <= pairGen {
+					// Changing manifest or unlocking post-restart recovery requires strictly newer pair_gen (gnb_utc.c).
+					if (headerRebound || manifestChanged) && nextPairGen <= pairGen {
 						nextPairGen = pairGen + 1
 					}
 					fields[3] = strconv.FormatUint(nextPairGen, 10)
@@ -730,7 +812,7 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 		outLines = append(outLines, trimmed)
 	}
 
-	if updated == 0 {
+	if updated == 0 && !headerRebound {
 		return 0, configGen, nil
 	}
 
@@ -915,6 +997,7 @@ func ReconcileAllOnce(utcdConfPath, myNetHome string, state *ReconcileState, log
 				UTCConfPath:  utcConf,
 				UTCDConfPath: resolvedUTCDConf,
 				MyNetHome:    myNetHome,
+				Logf:         logf,
 			}, state)
 			if err != nil {
 				logf("utc.conf reconcile error state_dir=%s path=%s err=%v", stateDir, utcConf, err)

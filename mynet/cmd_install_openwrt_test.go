@@ -50,9 +50,12 @@ func TestOpenWrtMynetInitUsesProcdInstance(t *testing.T) {
 	if !strings.Contains(body, "respawn") {
 		t.Fatal("mynet init must respawn gnb")
 	}
-	// stop 必须走 procd_kill + 精确清 gnb_es，而不是 Lua spawn/kill
+	// stop 必须走 procd_kill + 精确清 gnb_es + 回收残留 owned gnb（防孤儿占 utc.lock）
 	if !strings.Contains(body, "procd_kill") {
 		t.Fatal("mynet init stop must procd_kill instance")
+	}
+	if !strings.Contains(body, "reclaim_gnb_pid") {
+		t.Fatal("mynet init stop must reclaim surviving owned gnb PIDs to release utc.lock")
 	}
 	if !strings.Contains(body, "gnb_es") {
 		t.Fatal("mynet init stop must clean gnb_es orphans")

@@ -204,6 +204,23 @@ procd_gnb_pids() {
 #
 # 判据按 **confdir**：只清理指向本节点配置目录的 gnb，同机其它节点的 gnb 不受影响
 # （多节点/多 zone 共存是设计支持的）。红线：pid + cmdline 精确停，绝不按名字杀。
+# 按精确 PID 等待退出并确保释放 utc.lock（绝不按名字杀）。
+reclaim_gnb_pid() {
+	local p="$1" reason="$2" i=0
+	[ -n "$p" ] && [ -d "/proc/${p}" ] || return 0
+	log "reclaim: 停止 gnb pid=$p（$reason）"
+	kill "$p" 2>/dev/null || true
+	while [ "$i" -lt 20 ] && [ -d "/proc/${p}" ]; do
+		sleep 1
+		i=$((i + 1))
+		[ "$i" -ge 2 ] && break
+	done
+	if [ -d "/proc/${p}" ]; then
+		kill -9 "$p" 2>/dev/null || true
+		sleep 1
+	fi
+}
+
 converge_stale_gnb() {
 	local procd_pids p cmd d
 	procd_pids=$(procd_gnb_pids)
@@ -216,10 +233,7 @@ converge_stale_gnb() {
 			[ -n "$d" ] || continue
 			case "$cmd" in
 				*"$d"*)
-					log "converge: 停止同节点遗留 gnb pid=$p（procd 未托管，$d）"
-					kill "$p" 2>/dev/null || true
-					sleep 1
-					kill -9 "$p" 2>/dev/null || true
+					reclaim_gnb_pid "$p" "procd 未托管，$d"
 					break
 					;;
 			esac
@@ -319,8 +333,33 @@ stop_gnb_instance() {
 		log "cleaned gnb_es pid=$pid (parent gnb=$ppid)"
 	done
 
-	# procd 精确停实例（不按名字杀进程）
+	# procd 精确停实例（不按名字杀进程），随后等待并回收仍存活的本节点 owned gnb
+	# （避免孤儿 gnb 继续持有 utc.lock 导致重启后 procd 崩溃循环）。
 	procd_kill mynet gnb 2>/dev/null || true
+	if [ -n "$owned" ]; then
+		local wait_i=0 still
+		while [ "$wait_i" -lt 3 ]; do
+			still=""
+			for gnb_pid in $owned; do
+				[ -d "/proc/${gnb_pid}" ] && still="$still $gnb_pid"
+			done
+			[ -z "$still" ] && break
+			sleep 1
+			wait_i=$((wait_i + 1))
+		done
+		for gnb_pid in $owned; do
+			[ -d "/proc/${gnb_pid}" ] || continue
+			cmd=$(tr '\0' ' ' < "/proc/${gnb_pid}/cmdline" 2>/dev/null) || continue
+			match=""
+			if [ -n "$confdir" ]; then
+				case "$cmd" in *"$confdir"*) match=1 ;; esac
+			fi
+			if [ -z "$match" ] && [ -n "$nativedir" ]; then
+				case "$cmd" in *"$nativedir"*) match=1 ;; esac
+			fi
+			[ -n "$match" ] && reclaim_gnb_pid "$gnb_pid" "stop 后残留孤儿，释放 utc.lock"
+		done
+	fi
 }
 
 # ── wireguard：内核接口（无常驻进程）─────────────────────────
