@@ -159,6 +159,9 @@ func runAgent(ctx context.Context) {
 	api.UTCStatus = utcMgr.Status
 	api.UTCSetEnabled = utcMgr.SetEnabled
 	api.UTCSync = utcMgr.Sync
+	api.UTCPairs = utcMgr.Pairs
+	api.UTCPairIntent = utcMgr.SetPairIntent
+	api.UTCPairResult = utcMgr.SetPairIntentResult
 
 	// 托盘「退出应用」：停隧道 + 注销并退出 mynetd（2026-10-28 用户裁定）。
 	api.DaemonQuit = newDaemonQuit(func() {

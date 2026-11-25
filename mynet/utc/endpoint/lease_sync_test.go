@@ -665,3 +665,218 @@ func TestReconcileUTCConfDeadIdentityPIDRebindsOnBootIDChangeAndLogs(t *testing.
 		t.Fatalf("expected WARN log for malformed identity, got: %v", logs)
 	}
 }
+
+// Regression: newly materialized utc-v2 peer rows must (a) respect the Fail-Open
+// dual gate (mode=0 DIRECT when bridge_up=0, mode=2 EXPORT when bridge_up=1)
+// and (b) be sorted strictly ascending by peer_id so gnb_utc_hub_parse never
+// rejects utc.conf with CONFIG_INVALID.
+func TestReconcileUTCConfMaterializesSortedByPeerIDAndRespectsFailOpen(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	utcConf := filepath.Join(root, "utc.conf")
+	utcdConf := filepath.Join(root, "utcd.conf")
+
+	const localID uint64 = 3722810996882027
+	const existingPeerID uint64 = 8283289760467957
+	const smallerNewPeerID uint64 = 3764021915150630
+	const nowUnix uint64 = 1795500000
+	const leaseExp uint64 = 1795586400
+	mExist := strings.Repeat("1", 64)
+	mNew := strings.Repeat("2", 64)
+
+	utcdBody := strings.Join([]string{
+		"config_version=3",
+		"state_dir=" + stateDir,
+		fmt.Sprintf("peer.p1.transport_id=%d", existingPeerID),
+		"peer.p1.udp_bind=127.0.0.1:19721",
+		fmt.Sprintf("peer.p2.transport_id=%d", smallerNewPeerID),
+		"peer.p2.udp_bind=127.0.0.1:19710",
+	}, "\n") + "\n"
+	if err := os.WriteFile(utcdConf, []byte(utcdBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// utc.conf initially has only existingPeerID (8283...)
+	initial := strings.Join([]string{
+		fmt.Sprintf("utc-v2 mynet-prod node178 %d 10 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1001 3", localID),
+		fmt.Sprintf("peer %d 3470419108809137 5 2 1 1 %d 4 00000000000000000000ffff7f000001 19721 0 %s", existingPeerID, leaseExp, mExist),
+	}, "\n") + "\n"
+	if err := os.WriteFile(utcConf, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing pair is healthy (bridge_up=1)
+	dir1 := filepath.Join(stateDir, "pairs", "3470419108809137-a")
+	writeLeaseJSON(t, filepath.Join(dir1, "lease-a-to-b.json"), 3470419108809137, 5, leaseExp, mExist)
+	writeLeaseJSON(t, filepath.Join(dir1, "lease-b-to-a.json"), 3470419108809137, 5, leaseExp, mExist)
+	writeBridgeStatus(t, filepath.Join(dir1, "bridge.status"), 1, 3470419108809137, 5, leaseExp, nowUnix, 5555)
+
+	// Newly installed pair for smallerNewPeerID (3764... < 8283...) has bridge_up=0!
+	dir2 := filepath.Join(stateDir, "pairs", "9990419108809138-a")
+	if err := os.MkdirAll(dir2, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	leaseNew := fmt.Sprintf(
+		`{"version":1,"pair_id":9990419108809138,"pair_gen":3,"expires_at":%d,"manifest":"%s","target_peer_id":%d,"source_transport_id":"%d"}`,
+		leaseExp, mNew, smallerNewPeerID, localID,
+	)
+	if err := os.WriteFile(filepath.Join(dir2, "lease-a-to-b.json"), []byte(leaseNew), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir2, "lease-b-to-a.json"), []byte(leaseNew), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeBridgeStatus(t, filepath.Join(dir2, "bridge.status"), 0, 9990419108809138, 3, leaseExp, nowUnix, 5555)
+
+	enabled := true
+	updated, gen, err := ReconcileUTCConf(ReconcileOptions{
+		StateDir:       stateDir,
+		UTCConfPath:    utcConf,
+		UTCDConfPath:   utcdConf,
+		NowUnix:        nowUnix,
+		UserEnabled:    &enabled,
+		ProcessAliveFn: func(pid int) bool { return pid == 5555 },
+	}, NewReconcileState())
+	if err != nil || updated != 1 || gen != 11 {
+		t.Fatalf("materialize got updated=%d gen=%d err=%v, want 1, 11, nil", updated, gen, err)
+	}
+
+	gotBytes, _ := os.ReadFile(utcConf)
+	lines := strings.Split(strings.TrimSpace(string(gotBytes)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got:\n%s", string(gotBytes))
+	}
+	// Line 1 MUST be smallerNewPeerID (3764...) in mode=0 DIRECT (since bridge_up=0)
+	wantLine1 := fmt.Sprintf("peer %d 9990419108809138 3 0 1 1 0 0 00000000000000000000000000000000 0 0 %s", smallerNewPeerID, mNew)
+	if lines[1] != wantLine1 {
+		t.Fatalf("line 1 must be sorted smaller peer in mode=0 DIRECT:\ngot:  %s\nwant: %s", lines[1], wantLine1)
+	}
+	if !strings.HasPrefix(lines[2], fmt.Sprintf("peer %d ", existingPeerID)) {
+		t.Fatalf("line 2 must be larger peer_id %d, got: %s", existingPeerID, lines[2])
+	}
+}
+
+func writeLeaseJSONWithPeer(t *testing.T, path string, pairID, pairGen, expiresAt uint64, manifest string, peerID uint64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(
+		`{"version":1,"pair_id":%d,"pair_gen":%d,"expires_at":%d,"manifest":"%s","target_peer_id":%d}`,
+		pairID, pairGen, expiresAt, manifest, peerID,
+	)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconcileAddsMissingLeaseProjectionRow(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	utcConf := filepath.Join(root, "utc.conf")
+	utcdConf := filepath.Join(root, "utcd.conf")
+
+	const pairID uint64 = 2705111895483964
+	const peerID uint64 = 8283289760467957
+	const nowUnix uint64 = 1795574000
+	const leaseExp uint64 = 1795660356
+	manifest := strings.Repeat("a", 64)
+
+	utcdBody := strings.Join([]string{
+		"config_version=3",
+		"state_dir=" + stateDir,
+		fmt.Sprintf("peer.n182.transport_id=%d", peerID),
+		"peer.n182.udp_bind=127.0.0.1:19101",
+	}, "\n") + "\n"
+	if err := os.WriteFile(utcdConf, []byte(utcdBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The hub lease exists but gnb's projection has no row yet.
+	initial := "utc-v2 mynet-prod nodeMac 3764021915150630 1 27f37d2a17b4ec9489e32e1ade1d4a39 43498 3\n"
+	if err := os.WriteFile(utcConf, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pairDir := filepath.Join(stateDir, "pairs", fmt.Sprintf("%d-a", pairID))
+	writeLeaseJSONWithPeer(t, filepath.Join(pairDir, "lease-a-to-b.json"), pairID, 2, leaseExp, manifest, peerID)
+	writeLeaseJSONWithPeer(t, filepath.Join(pairDir, "lease-b-to-a.json"), pairID, 2, leaseExp, manifest, peerID)
+
+	updated, gen, err := ReconcileUTCConf(ReconcileOptions{
+		StateDir:        stateDir,
+		UTCConfPath:     utcConf,
+		UTCDConfPath:    utcdConf,
+		NowUnix:         nowUnix,
+		DisableFailOpen: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if updated != 1 || gen != 2 {
+		t.Fatalf("got updated=%d gen=%d, want 1 and 2", updated, gen)
+	}
+	got, _ := os.ReadFile(utcConf)
+	want := strings.Join([]string{
+		"utc-v2 mynet-prod nodeMac 3764021915150630 2 27f37d2a17b4ec9489e32e1ade1d4a39 43498 3",
+		fmt.Sprintf("peer %d %d 2 2 1 1 %d 4 00000000000000000000ffff7f000001 19101 0 %s", peerID, pairID, leaseExp, manifest),
+	}, "\n") + "\n"
+	if string(got) != want {
+		t.Fatalf("missing-row projection mismatch:\ngot:\n%s\nwant:\n%s", string(got), want)
+	}
+}
+
+func TestReconcileAddsMissingRowForBSideUsingSourcePeer(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	utcConf := filepath.Join(root, "utc.conf")
+	utcdConf := filepath.Join(root, "utcd.conf")
+
+	const pairID uint64 = 2705111895483964
+	const localID uint64 = 8283289760467957
+	const peerID uint64 = 3764021915150630
+	const leaseExp uint64 = 1795660356
+	manifest := strings.Repeat("b", 64)
+
+	utcdBody := strings.Join([]string{
+		"config_version=3",
+		"state_dir=" + stateDir,
+		fmt.Sprintf("peer.mac.transport_id=%d", peerID),
+		"peer.mac.udp_bind=127.0.0.1:19101",
+	}, "\n") + "\n"
+	if err := os.WriteFile(utcdConf, []byte(utcdBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial := fmt.Sprintf("utc-v2 mynet-prod nodeHome %d 1 04e7377f29aacd2dfc3d1adee7650150 8518 3\n", localID)
+	if err := os.WriteFile(utcConf, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pairDir := filepath.Join(stateDir, "pairs", fmt.Sprintf("%d-b", pairID))
+	body := fmt.Sprintf(`{"version":1,"pair_id":%d,"pair_gen":2,"expires_at":%d,"manifest":"%s","target_peer_id":%d,"source_transport_id":"%d"}`,
+		pairID, leaseExp, manifest, localID, peerID)
+	if err := os.MkdirAll(pairDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lease-a-to-b.json", "lease-b-to-a.json"} {
+		if err := os.WriteFile(filepath.Join(pairDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	updated, gen, err := ReconcileUTCConf(ReconcileOptions{
+		StateDir:        stateDir,
+		UTCConfPath:     utcConf,
+		UTCDConfPath:    utcdConf,
+		NowUnix:         1795574000,
+		DisableFailOpen: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if updated != 1 || gen != 2 {
+		t.Fatalf("got updated=%d gen=%d, want 1 and 2", updated, gen)
+	}
+	got, _ := os.ReadFile(utcConf)
+	wantRow := fmt.Sprintf("peer %d %d 2 2 1 1 %d 4 00000000000000000000ffff7f000001 19101 0 %s", peerID, pairID, leaseExp, manifest)
+	if !strings.Contains(string(got), wantRow) {
+		t.Fatalf("B-side row missing:\n%s\nwant row: %s", string(got), wantRow)
+	}
+}

@@ -18,6 +18,8 @@ func TestUTCRoutesUnavailableFailClosed(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/utc/status", ""},
 		{http.MethodGet, "/api/v1/utc/pairs", ""},
+		{http.MethodPut, "/api/v1/utc/pairs/123", `{"intent":"on"}`},
+		{http.MethodPut, "/api/v1/utc/pairs/123/result", `{"result":"pending"}`},
 		{http.MethodGet, "/api/v1/utc/acceleration", ""},
 		{http.MethodPut, "/api/v1/utc/acceleration", `{"enabled":true}`},
 	} {
@@ -161,5 +163,140 @@ func TestUTCStatusPairsAndToggle(t *testing.T) {
 	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/v1/utc/sync", bytes.NewBufferString(`{"peers":[]}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST sync empty peers got %d, want 400", rec.Code)
+	}
+}
+
+func TestUTCPairIntentPutAndGet(t *testing.T) {
+	srv := NewServer(Config{})
+	state := UTCLocalStatus{Enabled: true, Configured: true, Running: true, Peers: []UTCPeerState{}}
+	pairs := []UTCPairState{{PeerID: 2000, Intent: "", State: "fallback"}}
+	var gotPeer uint64
+	var gotOn bool
+	var calls int
+
+	srv.UTCStatus = func() UTCLocalStatus { return state }
+	srv.UTCPairs = func() ([]UTCPairState, error) { return pairs, nil }
+	srv.UTCPairIntent = func(peerID uint64, on bool) (UTCLocalStatus, error) {
+		calls++
+		gotPeer, gotOn = peerID, on
+		pairs = []UTCPairState{{PeerID: peerID, Intent: "on", IntentState: "pending", State: "pending"}}
+		return state, nil
+	}
+
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/utc/pairs", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET pairs got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Success bool             `json:"success"`
+		Data    UTCPairsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Data.Pairs) != 1 || got.Data.Pairs[0].State != "fallback" {
+		t.Fatalf("unexpected pairs payload: %+v", got.Data)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/v1/utc/pairs/2000", bytes.NewBufferString(`{"intent":"on"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT intent got %d: %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 || gotPeer != 2000 || !gotOn {
+		t.Fatalf("intent not forwarded: calls=%d peer=%d on=%v", calls, gotPeer, gotOn)
+	}
+	var put struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Status UTCLocalStatus `json:"status"`
+			Pairs  []UTCPairState `json:"pairs"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &put); err != nil {
+		t.Fatalf("decode put: %v", err)
+	}
+	if !put.Success || len(put.Data.Pairs) != 1 || put.Data.Pairs[0].Intent != "on" || put.Data.Pairs[0].State != "pending" {
+		t.Fatalf("unexpected put payload: %s", rec.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{"bad peer", http.MethodPut, "/api/v1/utc/pairs/abc", `{"intent":"on"}`, http.StatusBadRequest},
+		{"zero peer", http.MethodPut, "/api/v1/utc/pairs/0", `{"intent":"on"}`, http.StatusBadRequest},
+		{"bad intent", http.MethodPut, "/api/v1/utc/pairs/2000", `{"intent":"maybe"}`, http.StatusBadRequest},
+		{"unknown field", http.MethodPut, "/api/v1/utc/pairs/2000", `{"enabled":true}`, http.StatusBadRequest},
+		{"wrong method", http.MethodPost, "/api/v1/utc/pairs/2000", `{}`, http.StatusMethodNotAllowed},
+	} {
+		rec := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body)))
+		if rec.Code != tc.want {
+			t.Fatalf("%s: got %d, want %d (%s)", tc.name, rec.Code, tc.want, rec.Body.String())
+		}
+	}
+}
+
+func TestUTCPairResultPut(t *testing.T) {
+	srv := NewServer(Config{})
+	state := UTCLocalStatus{Enabled: true, Configured: true, Running: true, Peers: []UTCPeerState{}}
+	pairs := []UTCPairState{{PeerID: 2000, Intent: "on", IntentState: "pending", State: "pending"}}
+	var gotID uint64
+	var gotResult, gotReason string
+
+	srv.UTCStatus = func() UTCLocalStatus { return state }
+	srv.UTCPairs = func() ([]UTCPairState, error) { return pairs, nil }
+	srv.UTCPairResult = func(peerID uint64, result, reason string) error {
+		if peerID == 999 {
+			return errors.New("no intent for peer")
+		}
+		gotID, gotResult, gotReason = peerID, result, reason
+		pairs = []UTCPairState{{PeerID: peerID, Intent: "on", IntentState: "rejected", State: "rejected", Reason: reason}}
+		return nil
+	}
+
+	rec := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/v1/utc/pairs/2000/result",
+		bytes.NewBufferString(`{"result":"rejected","reason":"需要管理员权限"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT result got %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotID != 2000 || gotResult != "rejected" || gotReason != "需要管理员权限" {
+		t.Fatalf("result not forwarded: id=%d result=%q reason=%q", gotID, gotResult, gotReason)
+	}
+	var got struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Pairs []UTCPairState `json:"pairs"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Success || len(got.Data.Pairs) != 1 || got.Data.Pairs[0].State != "rejected" {
+		t.Fatalf("unexpected payload: %s", rec.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+		want int
+	}{
+		{"bad result", "/api/v1/utc/pairs/2000/result", `{"result":"active"}`, http.StatusBadRequest},
+		{"bad peer", "/api/v1/utc/pairs/abc/result", `{"result":"pending"}`, http.StatusBadRequest},
+		{"unknown peer", "/api/v1/utc/pairs/999/result", `{"result":"pending"}`, http.StatusConflict},
+		{"unknown field", "/api/v1/utc/pairs/2000/result", `{"state":"rejected"}`, http.StatusBadRequest},
+	} {
+		rec := httptest.NewRecorder()
+		srv.mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, tc.path, bytes.NewBufferString(tc.body)))
+		if rec.Code != tc.want {
+			t.Fatalf("%s: got %d, want %d (%s)", tc.name, rec.Code, tc.want, rec.Body.String())
+		}
 	}
 }

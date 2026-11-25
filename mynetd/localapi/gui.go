@@ -3,6 +3,7 @@ package localapi
 import (
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,9 +28,15 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 
 	// API：/gui/api/v1/nodes → relay path=/api/v1/nodes
 	if strings.HasPrefix(p, "/api/") {
+		// 把浏览器查询串并入 relay 的 path（如 client-config?node_id=…），否则
+		// 多 transport 的 /utc/client-config 会因缺定位参数 422。
+		raw := p
+		if r.URL.RawQuery != "" {
+			raw += "?" + r.URL.RawQuery
+		}
 		r2 := r.Clone(r.Context())
-		q := r.URL.Query()
-		q.Set("path", p)
+		q := url.Values{}
+		q.Set("path", raw)
 		r2.URL.RawQuery = q.Encode()
 		s.handleRelay(w, r2)
 		return

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,12 @@ type InstalledPairLease struct {
 	PairGen   uint64
 	ExpiresAt uint64
 	Manifest  string
+	// PeerID is the lease's target_peer_id; SourceID is source_transport_id.
+	// For the B side the target is the local node, so the projection peer is
+	// source_transport_id instead. The row materializer picks the one that is
+	// not the local node.
+	PeerID   uint64
+	SourceID uint64
 }
 
 // PairBridgeStatus captures the live TCP bridge establishment state written by
@@ -158,10 +165,12 @@ func parseExportEndpointFromFields(family uint8, addrHex string, port uint16, is
 }
 
 type rawStaticLease struct {
-	PairID    uint64 `json:"pair_id"`
-	PairGen   uint64 `json:"pair_gen"`
-	ExpiresAt uint64 `json:"expires_at"`
-	Manifest  string `json:"manifest"`
+	PairID          uint64 `json:"pair_id"`
+	PairGen         uint64 `json:"pair_gen"`
+	ExpiresAt       uint64 `json:"expires_at"`
+	Manifest        string `json:"manifest"`
+	TargetPeerID    uint64 `json:"target_peer_id"`
+	SourceTransport string `json:"source_transport_id"`
 }
 
 func isCanonicalSHA256Hex(s string) bool {
@@ -221,11 +230,27 @@ func LoadInstalledPairLeases(stateDir string) (map[uint64]InstalledPairLease, er
 		if a2b.Manifest == b2a.Manifest && isCanonicalSHA256Hex(a2b.Manifest) {
 			manifest = a2b.Manifest
 		}
+		peerID := a2b.TargetPeerID
+		if peerID == 0 {
+			peerID = b2a.TargetPeerID
+		}
+		sourceID := uint64(0)
+		for _, rawSource := range []string{a2b.SourceTransport, b2a.SourceTransport} {
+			if rawSource == "" {
+				continue
+			}
+			if parsed, err := strconv.ParseUint(rawSource, 10, 64); err == nil {
+				sourceID = parsed
+				break
+			}
+		}
 		candidate := InstalledPairLease{
 			PairID:    a2b.PairID,
 			PairGen:   a2b.PairGen,
 			ExpiresAt: expiresAt,
 			Manifest:  manifest,
+			PeerID:    peerID,
+			SourceID:  sourceID,
 		}
 		if prev, ok := result[candidate.PairID]; ok {
 			if candidate.PairGen < prev.PairGen ||
@@ -696,7 +721,8 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 	defer state.mu.Unlock()
 
 	updated := 0
-	outLines := make([]string, 0, len(lines))
+	seenPairs := make(map[uint64]bool, len(lines))
+	outLines := make([]string, 0, len(lines)+len(installed))
 	outLines = append(outLines, "") // header placeholder
 	for _, line := range lines[1:] {
 		trimmed := strings.TrimSpace(line)
@@ -717,6 +743,7 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 			return 0, configGen, fmt.Errorf("invalid numeric field in utc.conf peer row")
 		}
 
+		seenPairs[pairID] = true
 		key := peerStateKey(opts.UTCConfPath, pairID)
 		if mode != 0 {
 			if ep, ok := parseExportEndpointFromFields(uint8(family), fields[addrIdx], uint16(port), isV2); ok {
@@ -841,8 +868,119 @@ func ReconcileUTCConf(opts ReconcileOptions, state *ReconcileState) (int, uint64
 		outLines = append(outLines, trimmed)
 	}
 
+	// A hub-issued lease is the authorization for the pair. If gnb's utc.conf
+	// has no row yet (the hub projection push is not wired on every node), add
+	// the utc-v2 row here from the installed lease so the local fail-open can
+	// take over. The endpoint is the utcd per-peer loopback UDP bind.
+	if localID, err := strconv.ParseUint(header[3], 10, 64); err == nil && localID != 0 && strings.TrimSpace(opts.UTCDConfPath) != "" {
+		peerBinds := map[uint64]string{}
+		if summary, err := ParseConfig(opts.UTCDConfPath); err == nil {
+			for _, peer := range summary.Peers {
+				if peer.TransportID != 0 && peer.UDPBind != "" {
+					peerBinds[peer.TransportID] = peer.UDPBind
+				}
+			}
+		}
+		pairs := make([]uint64, 0, len(installed))
+		for pairID := range installed {
+			pairs = append(pairs, pairID)
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i] < pairs[j] })
+		for _, pairID := range pairs {
+			if seenPairs[pairID] {
+				continue
+			}
+			lease := installed[pairID]
+			peerID := lease.PeerID
+			if peerID == localID {
+				peerID = lease.SourceID
+			}
+			if peerID == 0 || peerID == localID || !isCanonicalSHA256Hex(lease.Manifest) {
+				continue
+			}
+			host, portText, err := net.SplitHostPort(peerBinds[peerID])
+			if err != nil {
+				logf("utc.conf cannot add pair_id=%d: no loopback udp_bind for peer %d in utcd.conf=%s", pairID, peerID, opts.UTCDConfPath)
+				continue
+			}
+			port, err := strconv.ParseUint(portText, 10, 16)
+			if err != nil || port == 0 {
+				continue
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				continue
+			}
+			ep := ExportEndpoint{Family: 4, IP: ip.To4(), Port: uint16(port)}
+			if ep.IP == nil {
+				ep = ExportEndpoint{Family: 6, IP: ip.To16(), Port: uint16(port)}
+			}
+			if ep.IP == nil {
+				continue
+			}
+			state.cachedEndpoints[peerStateKey(opts.UTCConfPath, pairID)] = ep
+
+			// Respect Fail-Open dual gate when materializing a new row: only start
+			// in EXPORT when user enabled UTC, bridge is up, and lease is unexpired.
+			rowMode := exportMode
+			if !opts.DisableFailOpen {
+				leaseValid := lease.ExpiresAt > nowUnix
+				st, hasBridge := bridges[pairID]
+				bridgeUp := hasBridge && st.BridgeUp && st.Alive
+				if !(userEnabled && bridgeUp && leaseValid) {
+					rowMode = 0
+				}
+			}
+			fields := []string{
+				"peer",
+				strconv.FormatUint(peerID, 10),
+				strconv.FormatUint(lease.PairID, 10),
+				strconv.FormatUint(lease.PairGen, 10),
+				strconv.FormatUint(rowMode, 10),
+			}
+			if isV2 {
+				fields = append(fields, "1", "1")
+			}
+			if rowMode == 0 {
+				fields = append(fields, "0", "0", zeroAddrHex32, "0", "0", lease.Manifest)
+			} else {
+				fields = append(fields,
+					strconv.FormatUint(lease.ExpiresAt, 10),
+					strconv.FormatUint(uint64(ep.Family), 10),
+					ep.FormatHex(isV2),
+					strconv.FormatUint(uint64(ep.Port), 10),
+					"0",
+					lease.Manifest,
+				)
+			}
+			outLines = append(outLines, strings.Join(fields, " "))
+			updated++
+			logf("utc.conf added pair_id=%d peer=%d mode=%d (from installed lease)", pairID, peerID, rowMode)
+		}
+	}
+
 	if updated == 0 && !headerRebound {
 		return 0, configGen, nil
+	}
+
+	// gnb_utc_hub_parse requires utc-v2 peer rows to be strictly sorted ascending
+	// by peer_id (fields[1]); sorting here guarantees canonical output even when
+	// newly materialized peers have smaller peer_id than existing rows.
+	if isV2 && len(outLines) > 2 {
+		peerRows := outLines[1:]
+		sort.SliceStable(peerRows, func(i, j int) bool {
+			fi := strings.Fields(peerRows[i])
+			fj := strings.Fields(peerRows[j])
+			if len(fi) < 2 || len(fj) < 2 {
+				return peerRows[i] < peerRows[j]
+			}
+			pi, errI := strconv.ParseUint(fi[1], 10, 64)
+			pj, errJ := strconv.ParseUint(fj[1], 10, 64)
+			if errI != nil || errJ != nil {
+				return fi[1] < fj[1]
+			}
+			return pi < pj
+		})
 	}
 
 	nextConfigGen := configGen + 1
@@ -863,6 +1001,7 @@ func SyncUTCConfFromStateDir(stateDir, utcConfPath string) (int, uint64, error) 
 	return ReconcileUTCConf(ReconcileOptions{
 		StateDir:        stateDir,
 		UTCConfPath:     utcConfPath,
+		UTCDConfPath:    ResolveUTCDConfigPath(""),
 		DisableFailOpen: true,
 	}, nil)
 }

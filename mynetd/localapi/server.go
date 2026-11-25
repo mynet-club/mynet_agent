@@ -78,6 +78,12 @@ type Server struct {
 	UTCStatus     func() UTCLocalStatus
 	UTCSetEnabled func(enabled bool) (UTCLocalStatus, error)
 	UTCSync       func(req UTCSyncRequest) (UTCLocalStatus, error)
+	// UTCPairs / UTCPairIntent per-peer TCP intent（本地发起、云端授权）：
+	// 本地只记录意愿与云端回执，执行仍以 gnb utc-v2 投影为准。
+	UTCPairs      func() ([]UTCPairState, error)
+	UTCPairIntent func(peerID uint64, on bool) (UTCLocalStatus, error)
+	// UTCPairResult 云端写回结果（pending/rejected），由 GUI 在云端调用后回写本地。
+	UTCPairResult func(peerID uint64, result, reason string) error
 }
 
 func NewServer(cfg Config) *Server {

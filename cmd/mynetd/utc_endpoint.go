@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/mynet/utc/endpoint"
 	"github.com/mynet-club/mynet_agent/mynetd/localapi"
@@ -77,6 +79,11 @@ type utcToggleState struct {
 	Enabled bool `json:"enabled"`
 }
 
+// PairSyncer writes one local pair intent back to the cloud and returns the
+// authorization outcome. nil means the cloud path is not wired yet: intents
+// stay "pending" and never flip gnb to mode=2 on their own.
+type PairSyncer func(ctx context.Context, peerID uint64, on bool) (result, reason string, err error)
+
 // utcManager owns the local UTC acceleration toggle and supervises the single
 // utcd child process configured by utcd.conf (ADR-0037 一端一配).
 type utcManager struct {
@@ -86,6 +93,7 @@ type utcManager struct {
 	enabled      bool
 	endpointStop func()
 	running      bool
+	pairSyncer   PairSyncer
 }
 
 func newUTCManager(parent context.Context) *utcManager {
@@ -93,6 +101,118 @@ func newUTCManager(parent context.Context) *utcManager {
 		parent:    parent,
 		statePath: filepath.Join(utils.LocalConfDir(), "utc_state.json"),
 	}
+}
+
+// SetPairSyncer injects the cloud write-back path (composition root).
+func (m *utcManager) SetPairSyncer(sync PairSyncer) {
+	m.mu.Lock()
+	m.pairSyncer = sync
+	m.mu.Unlock()
+}
+
+// stateDir resolves the utcd state directory (pairs/bridge.status live there).
+func (m *utcManager) stateDir() string {
+	if summary, err := endpoint.ParseConfig(utcConfigPath()); err == nil {
+		if dir := strings.TrimSpace(summary.StateDir); dir != "" {
+			return dir
+		}
+	}
+	for _, dir := range endpoint.DiscoverUTCDStateDirs(utcConfigPath(), utils.GetMyNetHome()) {
+		return dir
+	}
+	return ""
+}
+
+// Pairs merges local intents, the gnb utc-v2 projection and the runtime
+// lease/bridge state for every peer the node knows about.
+func (m *utcManager) Pairs() ([]localapi.UTCPairState, error) {
+	home := utils.GetMyNetHome()
+	stateDir := m.stateDir()
+	now := uint64(time.Now().Unix())
+	paths := endpoint.DiscoverUTCConfPaths(home)
+	if len(paths) == 0 {
+		// No projection yet: still surface local intents as pending.
+		paths = []string{filepath.Join(home, "conf", "local", ".utc.conf.absent")}
+	}
+	out := make([]localapi.UTCPairState, 0, 4)
+	seen := make(map[uint64]bool, 4)
+	for _, conf := range paths {
+		views, err := endpoint.BuildPairViews(stateDir, conf, home, now)
+		if err != nil {
+			return nil, err
+		}
+		for _, view := range views {
+			if seen[view.PeerID] {
+				continue
+			}
+			seen[view.PeerID] = true
+			out = append(out, localapi.UTCPairState{
+				PeerID:      view.PeerID,
+				PairID:      view.PairID,
+				PairGen:     view.PairGen,
+				Intent:      view.Intent,
+				IntentState: view.IntentState,
+				Mode:        view.Mode,
+				BridgeUp:    view.BridgeUp,
+				LeaseValid:  view.LeaseValid,
+				ExpiresAt:   view.ExpiresAt,
+				State:       view.State,
+				Reason:      view.Reason,
+				UpdatedAt:   view.UpdatedAt,
+			})
+		}
+	}
+	return out, nil
+}
+
+// SetPairIntentResult records the cloud outcome so the local view can show
+// rejected/pending reasons without inventing an execution state.
+func (m *utcManager) SetPairIntentResult(peerID uint64, result, reason string) error {
+	if peerID == 0 {
+		return errors.New("peer_id must not be 0")
+	}
+	if result != endpoint.PairResultPending && result != endpoint.PairResultRejected {
+		return fmt.Errorf("result must be %q or %q", endpoint.PairResultPending, endpoint.PairResultRejected)
+	}
+	store, err := endpoint.LoadPairIntents(utils.GetMyNetHome())
+	if err != nil {
+		return err
+	}
+	_, err = store.SetResult(peerID, result, reason, time.Now().Unix())
+	return err
+}
+
+// SetPairIntent records the user's desire locally, then asks the cloud to
+// create/revoke the pair. Execution still comes from the next projection.
+func (m *utcManager) SetPairIntent(peerID uint64, on bool) (localapi.UTCLocalStatus, error) {
+	home := utils.GetMyNetHome()
+	store, err := endpoint.LoadPairIntents(home)
+	if err != nil {
+		return m.Status(), err
+	}
+	now := time.Now().Unix()
+	if _, err := store.Set(peerID, on, now); err != nil {
+		return m.Status(), err
+	}
+	result, reason := endpoint.PairResultPending, "cloud_sync_pending"
+	m.mu.Lock()
+	sync := m.pairSyncer
+	m.mu.Unlock()
+	if sync != nil {
+		ctx, cancel := context.WithTimeout(m.parent, 15*time.Second)
+		gotResult, gotReason, syncErr := sync(ctx, peerID, on)
+		cancel()
+		switch {
+		case syncErr != nil:
+			reason = syncErr.Error()
+		case gotResult != "":
+			result, reason = gotResult, gotReason
+		}
+	}
+	if _, err := store.SetResult(peerID, result, reason, time.Now().Unix()); err != nil {
+		return m.Status(), err
+	}
+	return m.Status(), nil
 }
 
 func (m *utcManager) loadIntent() (bool, bool) {

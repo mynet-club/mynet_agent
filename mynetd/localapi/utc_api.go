@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // UTCPeerState describes one peer entry configured in the local utcd.conf.
@@ -14,6 +16,25 @@ type UTCPeerState struct {
 	UDPTarget   string `json:"udp_target,omitempty"`
 	PairID      uint64 `json:"pair_id,omitempty"`
 	Side        string `json:"side,omitempty"`
+}
+
+// UTCPairState is the per-peer TCP view: local intent (desire), projection
+// mode (what the cloud authorized) and runtime bridge/lease health.
+//
+// State values: tcp | fallback | pending | degraded | rejected | revoking | off.
+type UTCPairState struct {
+	PeerID      uint64 `json:"peer_id"`
+	PairID      uint64 `json:"pair_id,omitempty"`
+	PairGen     uint64 `json:"pair_gen,omitempty"`
+	Intent      string `json:"intent,omitempty"`
+	IntentState string `json:"intent_state,omitempty"`
+	Mode        uint8  `json:"mode"`
+	BridgeUp    bool   `json:"bridge_up"`
+	LeaseValid  bool   `json:"lease_valid"`
+	ExpiresAt   uint64 `json:"expires_at,omitempty"`
+	State       string `json:"state"`
+	Reason      string `json:"reason,omitempty"`
+	UpdatedAt   uint64 `json:"updated_at,omitempty"`
 }
 
 // UTCLocalStatus is the local UTC acceleration snapshot exposed to local UIs.
@@ -37,6 +58,7 @@ type UTCPairsResponse struct {
 	Running    bool           `json:"running"`
 	Count      int            `json:"count"`
 	Peers      []UTCPeerState `json:"peers"`
+	Pairs      []UTCPairState `json:"pairs"`
 }
 
 // UTCSyncPeer is one peer entry submitted to POST /api/v1/utc/sync.
@@ -56,6 +78,7 @@ type UTCSyncRequest struct {
 func (s *Server) registerUTCRoutes() {
 	s.mux.HandleFunc("/api/v1/utc/status", getOnly(s.handleUTCStatus))
 	s.mux.HandleFunc("/api/v1/utc/pairs", getOnly(s.handleUTCPairs))
+	s.mux.HandleFunc("/api/v1/utc/pairs/", s.handleUTCPairIntent)
 	s.mux.HandleFunc("/api/v1/utc/acceleration", s.handleUTCAcceleration)
 	s.mux.HandleFunc("/api/v1/utc/sync", s.handleUTCSync)
 }
@@ -85,6 +108,15 @@ func (s *Server) handleUTCPairs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := normalizeUTCStatus(s.UTCStatus())
+	pairs, err := s.pairStates()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_PAIRS_UNAVAILABLE",
+			"message":     err.Error(),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
 		"data": UTCPairsResponse{
@@ -93,6 +125,195 @@ func (s *Server) handleUTCPairs(w http.ResponseWriter, r *http.Request) {
 			Running:    st.Running,
 			Count:      len(st.Peers),
 			Peers:      st.Peers,
+			Pairs:      pairs,
+		},
+	})
+}
+
+func (s *Server) pairStates() ([]UTCPairState, error) {
+	if s.UTCPairs == nil {
+		return []UTCPairState{}, nil
+	}
+	pairs, err := s.UTCPairs()
+	if err != nil {
+		return nil, err
+	}
+	if pairs == nil {
+		pairs = []UTCPairState{}
+	}
+	return pairs, nil
+}
+
+// handleUTCPairIntent serves GET /api/v1/utc/pairs/<peer_id> (current view) and
+// PUT /api/v1/utc/pairs/<peer_id> (record local intent + ask the cloud).
+func (s *Server) handleUTCPairIntent(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		pairs, err := s.pairStates()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"success":     false,
+				"reason_code": "UTC_PAIRS_UNAVAILABLE",
+				"message":     err.Error(),
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "data": pairs})
+	case http.MethodPut:
+		rawPath := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/utc/pairs/"), "/")
+		if strings.HasSuffix(rawPath, "/result") {
+			s.withConfigMutation(s.handleUTCPairResultPut)(w, r)
+			return
+		}
+		s.withConfigMutation(s.handleUTCPairIntentPut)(w, r)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"success": false,
+			"message": "GET|PUT only",
+		})
+	}
+}
+
+func (s *Server) handleUTCPairResultPut(w http.ResponseWriter, r *http.Request) {
+	if s.UTCPairResult == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_UNAVAILABLE",
+			"message":     "本机 UTC 配对结果未装配",
+		})
+		return
+	}
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/utc/pairs/"), "/")
+	rawID = strings.TrimSuffix(strings.TrimSuffix(rawID, "/result"), "/")
+	peerID, err := strconv.ParseUint(rawID, 10, 64)
+	if err != nil || peerID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_PEER",
+			"message":     "path must be /api/v1/utc/pairs/<peer_id>/result",
+		})
+		return
+	}
+	var body struct {
+		Result string `json:"result"`
+		Reason string `json:"reason"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "body must be {\"result\":\"pending\"|\"rejected\",\"reason\":\"...\"}",
+		})
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "unexpected trailing json",
+		})
+		return
+	}
+	if body.Result != "pending" && body.Result != "rejected" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "result must be \"pending\" or \"rejected\"",
+		})
+		return
+	}
+	if err := s.UTCPairResult(peerID, body.Result, body.Reason); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_PAIR_RESULT_FAILED",
+			"message":     err.Error(),
+		})
+		return
+	}
+	pairs, pairErr := s.pairStates()
+	if pairErr != nil {
+		pairs = []UTCPairState{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data":    map[string]any{"pairs": pairs},
+	})
+}
+
+func (s *Server) handleUTCPairIntentPut(w http.ResponseWriter, r *http.Request) {
+	if s.UTCPairIntent == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_UNAVAILABLE",
+			"message":     "本机 UTC 配对意图未装配",
+		})
+		return
+	}
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/utc/pairs/"), "/")
+	peerID, err := strconv.ParseUint(rawID, 10, 64)
+	if err != nil || peerID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_PEER",
+			"message":     "path must be /api/v1/utc/pairs/<peer_id>",
+		})
+		return
+	}
+	var body struct {
+		Intent string `json:"intent"`
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "body must be {\"intent\":\"on\"|\"off\"}",
+		})
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "unexpected trailing json",
+		})
+		return
+	}
+	var on bool
+	switch body.Intent {
+	case "on":
+		on = true
+	case "off":
+		on = false
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success":     false,
+			"reason_code": "INVALID_BODY",
+			"message":     "intent must be \"on\" or \"off\"",
+		})
+		return
+	}
+	status, err := s.UTCPairIntent(peerID, on)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"success":     false,
+			"reason_code": "UTC_PAIR_INTENT_FAILED",
+			"message":     err.Error(),
+		})
+		return
+	}
+	pairs, pairErr := s.pairStates()
+	if pairErr != nil {
+		pairs = []UTCPairState{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"status": normalizeUTCStatus(status),
+			"pairs":  pairs,
 		},
 	})
 }
