@@ -78,14 +78,27 @@ func TestProxyExitNftReplaceRevokeAndIsolation(t *testing.T) {
 	if f.table != previous {
 		t.Fatal("重复 apply 不幂等")
 	}
-	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err != nil {
+	// 显式撤销（legacy=true 或 Enabled=false 的 server 策略）必须保留 WAN 拒绝并移除 NAT。
+	if err := syncProxyExitFirewall(exitNftSnapshot(), &domain.ProxyPolicy{Enabled: false, Role: domain.ProxyRoleServer}, "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(f.table, "masquerade") || !strings.Contains(f.table, `iifname "gnb_tun" oifname "eth0" drop`) {
 		t.Fatal("撤销必须保留 WAN 拒绝并移除 NAT")
 	}
+	// 默认开放（无策略且非撤销）应清理残留专表，不再生成 DROP。
 	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err != nil {
 		t.Fatal(err)
+	}
+	if f.table != "" {
+		t.Fatalf("默认开放不应保留 DROP 专表: %s", f.table)
+	}
+	// 再次默认开放调用应为空操作（不写 nft）。
+	batchesBefore := len(f.batches)
+	if err := syncProxyExitFirewall(exitNftSnapshot(), nil, "gnb_tun", false, f.run); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.batches) != batchesBefore {
+		t.Fatalf("默认开放重复调用不应下发 nft batch: %v", f.batches[batchesBefore:])
 	}
 	for _, batch := range f.batches {
 		if strings.Contains(batch, "delete table ip nat") || strings.Contains(batch, "flush ruleset") || strings.Contains(batch, "delete table ip filter") {
@@ -94,6 +107,61 @@ func TestProxyExitNftReplaceRevokeAndIsolation(t *testing.T) {
 	}
 	if proxyExitName("gnb_tun") == proxyExitName("wg0") {
 		t.Fatal("接口归属碰撞")
+	}
+}
+
+func TestProxyExitIPTablesDefaultOpenAndExplicitOff(t *testing.T) {
+	name := proxyExitName("gnb_tun")
+	// 1. 全新节点默认开放：不应写入任何 iptables-restore
+	writes := 0
+	cleanRun := func(argv []string, input string) (string, error) {
+		if argv[0] == "iptables" {
+			return "-P FORWARD ACCEPT\n", nil
+		}
+		writes++
+		return "", nil
+	}
+	if err := syncProxyExitIPTables(nil, "gnb_tun", proxyExitScope{}, false, cleanRun); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 0 {
+		t.Fatalf("默认开放不应在干净主机上执行 iptables-restore，实际写入 %d 次", writes)
+	}
+
+	// 2. 存在历史残留 DROP 链时，默认开放应清理残留链
+	var cleanupInputs []string
+	staleRun := func(argv []string, input string) (string, error) {
+		if argv[0] == "iptables" {
+			if argv[4] == "filter" {
+				return "-P FORWARD ACCEPT\n-N " + name + "\n-A " + name + " -j DROP\n-A FORWARD -i gnb_tun -o ens5 -j " + name + "\n", nil
+			}
+			return "-P POSTROUTING ACCEPT\n", nil
+		}
+		cleanupInputs = append(cleanupInputs, input)
+		return "", nil
+	}
+	if err := syncProxyExitIPTables(nil, "gnb_tun", proxyExitScope{}, false, staleRun); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleanupInputs) != 1 || !strings.Contains(cleanupInputs[0], "-X "+name) || strings.Contains(cleanupInputs[0], "-j DROP") {
+		t.Fatalf("默认开放应清理残留 DROP 链，实际: %v", cleanupInputs)
+	}
+
+	// 3. 显式关闭（Enabled=false, Role=server）应生成 DROP 链
+	var denyInputs []string
+	denyRun := func(argv []string, input string) (string, error) {
+		if argv[0] == "iptables" {
+			return "-P FORWARD ACCEPT\n", nil
+		}
+		denyInputs = append(denyInputs, input)
+		return "", nil
+	}
+	if err := syncProxyExitIPTables(&domain.ProxyPolicy{Enabled: false, Role: domain.ProxyRoleServer}, "gnb_tun", proxyExitScope{WAN: []string{"ens5"}}, false, denyRun); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(denyInputs, "\n")
+	if !strings.Contains(joined, "-A "+name+" -j DROP") {
+		t.Fatalf("显式关闭必须写入 DROP 规则，实际: %s", joined)
 	}
 }
 func TestProxyExitNftFailurePreservesPrevious(t *testing.T) {

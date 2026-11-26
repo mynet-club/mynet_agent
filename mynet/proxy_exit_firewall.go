@@ -56,16 +56,45 @@ func proxyExitSources(p *domain.ProxyPolicy) ([]string, bool, error) {
 	return cidrs, true, nil // 空白名单 CIDR 也必须 DROP，不能开放。
 }
 
+func isProxyServerRole(role string) bool {
+	return role == domain.ProxyRoleServer || role == domain.ProxyRoleBoth
+}
+
+// proxyExitExplicitOff 判断当前是否属于「显式关闭或撤销」状态。
+// 默认策略为开放（不自动注入 DROP 链）；只有历史云端授权被撤销（legacy=true）
+// 或存在显式停用的 server/both 策略时才下发 DROP 规则。
+func proxyExitExplicitOff(p *domain.ProxyPolicy, legacy bool) bool {
+	if p != nil && p.Enabled && p.IsServerLike() {
+		return false
+	}
+	if legacy {
+		return true
+	}
+	return p != nil && !p.Enabled && isProxyServerRole(p.Role)
+}
+
 // 单一 nft batch 原子替换整张专表；失败时内核保留上一代。
 func proxyExitNftBatch(dev string, scope proxyExitScope, p *domain.ProxyPolicy, exists bool) (string, error) {
+	return proxyExitNftBatchWithDeny(dev, scope, p, exists, false)
+}
+
+func proxyExitNftBatchWithDeny(dev string, scope proxyExitScope, p *domain.ProxyPolicy, exists, explicitOff bool) (string, error) {
 	if err := domain.ValidateTunDevice(dev); err != nil {
 		return "", err
+	}
+	name := proxyExitName(dev)
+	enabled := p != nil && p.Enabled && p.IsServerLike()
+	if !enabled && !explicitOff {
+		// 默认开放：不新建 DROP 专表；若存在历史残留专表则删除。
+		if exists {
+			return fmt.Sprintf("delete table inet %s\n", name), nil
+		}
+		return "", nil
 	}
 	cidrs, restricted, err := proxyExitSources(p)
 	if err != nil {
 		return "", err
 	}
-	name := proxyExitName(dev)
 	var b strings.Builder
 	if exists {
 		fmt.Fprintf(&b, "delete table inet %s\n", name)
@@ -83,7 +112,6 @@ func proxyExitNftBatch(dev string, scope proxyExitScope, p *domain.ProxyPolicy, 
 		}
 		fmt.Fprintf(&b, "add rule inet %s forward %s %s daddr %s return\n", name, match, family, cidr)
 	}
-	enabled := p != nil && p.Enabled && p.IsServerLike()
 	if enabled {
 		if restricted {
 			for _, cidr := range cidrs {
@@ -94,15 +122,15 @@ func proxyExitNftBatch(dev string, scope proxyExitScope, p *domain.ProxyPolicy, 
 				}
 				fmt.Fprintf(&b, "add rule inet %s forward %s %s saddr %s accept\n", name, match, family, cidr)
 			}
+			fmt.Fprintf(&b, "add rule inet %s forward %s drop\n", name, match)
 		} else {
 			fmt.Fprintf(&b, "add rule inet %s forward %s accept\n", name, match)
 		}
-	}
-	// 即使撤销许可也保留 WAN 拒绝；不允许平台 forwarding/NAT 绕过。
-	fmt.Fprintf(&b, "add rule inet %s forward %s drop\n", name, match)
-	if enabled {
 		fmt.Fprintf(&b, "add rule inet %s forward iifname %s oifname %q ct state established,related accept\n", name, wan, dev)
 		fmt.Fprintf(&b, "add chain inet %s postrouting { type nat hook postrouting priority 100; }\nadd rule inet %s postrouting %s masquerade\n", name, name, match)
+	} else {
+		// 显式关闭或撤销：保留 WAN 拒绝，不允许平台 forwarding/NAT 绕过。
+		fmt.Fprintf(&b, "add rule inet %s forward %s drop\n", name, match)
 	}
 	return b.String(), nil
 }
@@ -116,8 +144,10 @@ func proxyFirewallMissing(out string, err error) bool {
 }
 
 func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, dev string, legacy bool, run proxyFirewallRun) error {
+	enabled := p != nil && p.Enabled && p.IsServerLike()
+	explicitOff := proxyExitExplicitOff(p, legacy)
 	if snap == nil || snap.OS == "darwin" || snap.OS == "windows" || snap.OS == "freebsd" || snap.OS == "openbsd" || snap.OS == "netbsd" {
-		if legacy || (p != nil && p.Enabled && p.IsServerLike()) {
+		if legacy || enabled {
 			return fmt.Errorf("当前平台不支持 Linux 出口规则管理")
 		}
 		return nil
@@ -125,9 +155,13 @@ func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, d
 	if err := domain.ValidateTunDevice(dev); err != nil {
 		return err
 	}
-	scope, err := proxyExitScopeFromSnapshot(snap, dev)
-	if err != nil {
-		return err
+	var scope proxyExitScope
+	if enabled || explicitOff {
+		var err error
+		scope, err = proxyExitScopeFromSnapshot(snap, dev)
+		if err != nil {
+			return err
+		}
 	}
 	if snap.Capabilities["nft"] {
 		name := proxyExitName(dev)
@@ -136,7 +170,7 @@ func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, d
 		if err != nil && !proxyFirewallMissing(out, err) {
 			return fmt.Errorf("读取出口 nft 规则: %w", err)
 		}
-		batch, err := proxyExitNftBatch(dev, scope, p, exists)
+		batch, err := proxyExitNftBatchWithDeny(dev, scope, p, exists, explicitOff)
 		if err != nil {
 			return err
 		}
@@ -156,9 +190,9 @@ func syncProxyExitFirewall(snap *shared.SystemSnapshot, p *domain.ProxyPolicy, d
 		return nil
 	}
 	if snap.Capabilities["iptables"] {
-		return syncProxyExitIPTables(p, dev, scope, legacy, run)
+		return syncProxyExitIPTablesWithDeny(p, dev, scope, legacy, explicitOff, run)
 	}
-	if legacy || (p != nil && p.Enabled && p.IsServerLike()) {
+	if legacy || enabled {
 		return fmt.Errorf("出口无可用 nft/iptables，拒绝假成功")
 	}
 	return nil
@@ -207,18 +241,26 @@ func legacyNftExitDeletes(dev string, run proxyFirewallRun) (string, error) {
 // 所以在 FORWARD 标记入隧道的包，再在 NAT 按标记匹配。保留 mark 低 8 位；
 // 0x4dxxxx00/0xffffff00 是 MyNet 出口保留段，与 client fwmark 0xc8 分开。
 func proxyExitIPTDesired(dev string, scope proxyExitScope, p *domain.ProxyPolicy) (map[string][]string, error) {
+	return proxyExitIPTDesiredWithDeny(dev, scope, p, false)
+}
+
+func proxyExitIPTDesiredWithDeny(dev string, scope proxyExitScope, p *domain.ProxyPolicy, explicitOff bool) (map[string][]string, error) {
 	if err := domain.ValidateTunDevice(dev); err != nil {
 		return nil, err
+	}
+	out := map[string][]string{"filter": nil, "mangle": nil, "nat": nil}
+	enabled := p != nil && p.Enabled && p.IsServerLike()
+	if !enabled && !explicitOff {
+		// 默认开放：返回空期望，不新建 DROP 链，并清理任何历史残留专链。
+		return out, nil
 	}
 	cidrs, restricted, err := proxyExitSources(p)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string][]string{"filter": nil, "mangle": nil, "nat": nil}
 	if err := scope.validate(dev); err != nil {
 		return nil, err
 	}
-	enabled := p != nil && p.Enabled && p.IsServerLike()
 	name := proxyExitName(dev)
 	sum := sha256.Sum256([]byte(dev))
 	mark := fmt.Sprintf("0x4d%02x%02x00/0xffffff00", sum[0], sum[1])
@@ -323,7 +365,11 @@ func proxyExitIPTRestore(table, snapshot, name string, desired []string) string 
 	return b.String()
 }
 func syncProxyExitIPTables(p *domain.ProxyPolicy, dev string, scope proxyExitScope, legacy bool, run proxyFirewallRun) error {
-	desired, err := proxyExitIPTDesired(dev, scope, p)
+	return syncProxyExitIPTablesWithDeny(p, dev, scope, legacy, proxyExitExplicitOff(p, legacy), run)
+}
+
+func syncProxyExitIPTablesWithDeny(p *domain.ProxyPolicy, dev string, scope proxyExitScope, legacy, explicitOff bool, run proxyFirewallRun) error {
+	desired, err := proxyExitIPTDesiredWithDeny(dev, scope, p, explicitOff)
 	if err != nil {
 		return err
 	}
@@ -349,6 +395,9 @@ func syncProxyExitIPTables(p *domain.ProxyPolicy, dev string, scope proxyExitSco
 	// filter 先提交（deny 先于 NAT）；每张表原子提交，失败只回退本出口。
 	var touched []string
 	for _, table := range tables {
+		if !enabled && !explicitOff && !legacy && len(proxyExitIPTOwned(snapshots[table], name)) == 0 {
+			continue
+		}
 		batch := proxyExitIPTRestore(table, snapshots[table], name, desired[table])
 		if legacy {
 			var deletes strings.Builder
@@ -455,12 +504,23 @@ func proxyExitMarkConflict(snapshot, name string, desired []string) error {
 
 // 重放产物不依赖内核现状：add + flush 专表，冷启动与重复加载同义。
 func writeProxyExitReplayArtifact(home, dev string, scope proxyExitScope, p *domain.ProxyPolicy) error {
-	batch, err := proxyExitNftBatch(dev, scope, p, false)
+	return writeProxyExitReplayArtifactWithDeny(home, dev, scope, p, false)
+}
+
+func writeProxyExitReplayArtifactWithDeny(home, dev string, scope proxyExitScope, p *domain.ProxyPolicy, explicitOff bool) error {
+	path := filepath.Join(home, "scripts", "firewall."+proxyExitName(dev)+".nft")
+	enabled := p != nil && p.Enabled && p.IsServerLike()
+	if !enabled && !explicitOff {
+		// 默认开放：不生成 DROP 重放产物；若存在历史残留文件则清理。
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	batch, err := proxyExitNftBatchWithDeny(dev, scope, p, false, explicitOff)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(home, "scripts", "firewall."+proxyExitName(dev)+".nft")
-
 	prefix := "add table inet " + proxyExitName(dev) + "\n"
 	batch = prefix + "flush table inet " + proxyExitName(dev) + "\n" + strings.TrimPrefix(batch, prefix)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -469,7 +529,26 @@ func writeProxyExitReplayArtifact(home, dev string, scope proxyExitScope, p *dom
 	return writeFirewallArtifact(path, []byte(batch), 0600)
 }
 
-// sync 本身也必须产生无授权 WAN 拒绝；不能只在 proxy apply 时才有边界。
+// proxyExitExplicitOffFromState 从本地持久化 proxy_intent.json 判断出口是否被显式关闭。
+func proxyExitExplicitOffFromState() bool {
+	st, err := LoadProxyState()
+	if err != nil || st == nil {
+		return false
+	}
+	if eff := st.Effective(); eff != nil && eff.Policy.Enabled && eff.Policy.IsServerLike() {
+		return false
+	}
+	if st.Cloud != nil && !st.Cloud.Policy.Enabled && isProxyServerRole(st.Cloud.Policy.Role) {
+		return true
+	}
+	if st.Local != nil && !st.Local.Policy.Enabled && isProxyServerRole(st.Local.Policy.Role) {
+		return true
+	}
+	return false
+}
+
+// ensureProxyExitReplay 在 sync 阶段同步重放产物：默认开放时不写 DROP 文件，
+// 仅在出口已启用或显式关闭时生成对应专表重放脚本。
 func ensureProxyExitReplay(home, dev string) error {
 	if dev == "" {
 		return nil
@@ -481,11 +560,17 @@ func ensureProxyExitReplay(home, dev string) error {
 	if snap.OS != "linux" || !snap.Capabilities["nft"] {
 		return nil
 	}
-	scope, err := proxyExitScopeFromSnapshot(snap, dev)
-	if err != nil {
-		return err
+	p := EffectiveProxyPolicy()
+	explicitOff := proxyExitExplicitOffFromState()
+	var scope proxyExitScope
+	if (p != nil && p.Enabled && p.IsServerLike()) || explicitOff {
+		var scopeErr error
+		scope, scopeErr = proxyExitScopeFromSnapshot(snap, dev)
+		if scopeErr != nil {
+			return scopeErr
+		}
 	}
-	return writeProxyExitReplayArtifact(home, dev, scope, EffectiveProxyPolicy())
+	return writeProxyExitReplayArtifactWithDeny(home, dev, scope, p, explicitOff)
 }
 
 // WAN is every detected default egress. Directly attached networks remain local

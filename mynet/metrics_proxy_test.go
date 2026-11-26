@@ -80,11 +80,21 @@ func TestMergeCloudExitPermission(t *testing.T) {
 		t.Fatalf("rendered both proxy.conf unexpected:\n%s", rendered)
 	}
 
-	// 3. 云端未授权 → 保持 nil / 原样（不误开 ingress）
-	if mergeCloudExitPermission(nil, nil) != nil {
-		t.Fatalf("expected nil when both local and cloud are nil")
+	// 3. 默认开放（本地与云端均无记录且未显式关闭）→ role=server, ingress_open on
+	got = mergeCloudExitPermission(nil, nil)
+	if got == nil || got.Role != "server" {
+		t.Fatalf("expected default open role=server when both local and cloud are nil, got %+v", got)
 	}
+	rendered = RenderGnbProxyConf(got)
+	if !strings.Contains(rendered, "role server") || !strings.Contains(rendered, "ingress_open on") {
+		t.Fatalf("default open proxy.conf missing ingress_open on:\n%s", rendered)
+	}
+
+	// 4. 云端显式关闭或本地显式关闭 → nil（落 proxy off + ingress_open off）
 	if mergeCloudExitPermission(nil, permOff) != nil {
 		t.Fatalf("expected nil when cloud perm disabled")
+	}
+	if mergeCloudExitPermissionWithOff(nil, nil, true) != nil {
+		t.Fatalf("expected nil when explicitly turned off")
 	}
 }

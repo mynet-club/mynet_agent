@@ -79,10 +79,14 @@ func TestServiceReloadHookKeepsNativeCommands(t *testing.T) {
 
 func TestProxyExitNoWANRejectsWithoutMutation(t *testing.T) {
 	called := false
-	if err := syncProxyExitFirewall(snapNft(), nil, "tun0", false, func(a []string, in string) (string, error) { called = true; return "", nil }); err == nil || called {
-		t.Fatal("missing WAN silently changed firewall")
+	// 启用出口或显式撤销时缺少 WAN 必须报错且不改动防火墙
+	if err := syncProxyExitFirewall(snapNft(), exitTestPolicy("10.30.0.3/32"), "tun0", false, func(a []string, in string) (string, error) { called = true; return "", nil }); err == nil || called {
+		t.Fatal("missing WAN silently changed firewall on enabled exit")
 	}
-	for _, p := range []*domain.ProxyPolicy{nil, exitTestPolicy(), exitTestPolicy("10.30.0.3/32")} {
+	if err := syncProxyExitFirewall(snapNft(), nil, "tun0", true, func(a []string, in string) (string, error) { called = true; return "", nil }); err == nil || called {
+		t.Fatal("missing WAN silently changed firewall on legacy revoke")
+	}
+	for _, p := range []*domain.ProxyPolicy{exitTestPolicy(), exitTestPolicy("10.30.0.3/32")} {
 		body, err := proxyExitNftBatch("tun0", proxyExitScope{WAN: []string{"eth0"}}, p, false)
 		if err != nil {
 			t.Fatal(err)
@@ -105,7 +109,12 @@ func TestProxyExitScopeMultiWANAndOnLinkLAN(t *testing.T) {
 	if strings.Join(scope.WAN, ",") != "br-lan,eth1,wan6" || strings.Join(scope.LAN, ",") != "192.168.1.0/24,fd00:1::/64" {
 		t.Fatalf("wrong exit scope: %+v", scope)
 	}
-	body, err := proxyExitNftBatch("tun0", scope, nil, false)
+	// 默认开放（nil 且非 explicitOff）不生成 DROP 规则
+	if openBody, err := proxyExitNftBatch("tun0", scope, nil, false); err != nil || openBody != "" {
+		t.Fatalf("default open should emit empty batch, got %q err=%v", openBody, err)
+	}
+	// 显式关闭时生成多 WAN + on-link LAN 例外规则
+	body, err := proxyExitNftBatchWithDeny("tun0", scope, nil, false, true)
 	if err != nil {
 		t.Fatal(err)
 	}

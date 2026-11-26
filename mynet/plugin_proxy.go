@@ -305,32 +305,57 @@ func loadPluginProxyConfig() *domain.PluginProxyConfig {
 
 // mergeCloudExitPermission 把云端 bundle.network.proxy（出口许可）与本地
 // plugins/proxy.json 意图合并为 gnb proxy.conf 投影输入：
-//   - 云端未授权出口（perm==nil 或 !perm.Enabled）：完全尊重本地配置
-//   - 云端已授权出口且本地无 proxy.json：合成为 role=server（投影 ingress_open on）
-//   - 云端已授权出口且本地仅 role=client：升级为 role=both（保留客户端出口同时开放 ingress）
-//   - 本地已是 server/both：原样返回（已含 ingress_open on）
-//
-// 这样存量出口节点升级到带 P2 的 gnb 后，只要云端有出口许可就不会被静默写成 ingress_open off。
+//   - 云端显式撤销或本地显式关闭出口（proxy_intent.json 记录停用 / plugins/proxy.json enabled=false）：
+//     不放开 ingress，返回 pp（nil 时落 proxy off + ingress_open off）
+//   - 云端已授权出口（perm.Enabled）或默认未显式关闭（perm==nil && pp==nil && !explicitOff）：
+//     默认开放入口转发（role=server → ingress_open on），避免存量节点升级即静默丢包
+//   - 本地仅配了 role=client 且云端授权出口：升级为 role=both（保留客户端出口同时开放 ingress）
 func mergeCloudExitPermission(pp *domain.PluginProxyConfig, perm *domain.ProxyPermission) *domain.PluginProxyConfig {
-	if perm == nil || !perm.Enabled {
+	return mergeCloudExitPermissionWithOff(pp, perm, false)
+}
+
+func mergeCloudExitPermissionWithOff(pp *domain.PluginProxyConfig, perm *domain.ProxyPermission, explicitOff bool) *domain.PluginProxyConfig {
+	if perm != nil && perm.Enabled {
+		if pp == nil {
+			return &domain.PluginProxyConfig{Role: "server"}
+		}
+		if pp.Role == "" || pp.Role == "client" {
+			cp := *pp
+			cp.Role = "both"
+			return &cp
+		}
+		return pp
+	}
+	if perm != nil && !perm.Enabled {
+		return pp
+	}
+	if explicitOff {
 		return pp
 	}
 	if pp == nil {
+		// 默认开放：未做任何关闭操作前允许作为出口，后续显式 off/revoke 再写 ingress_open off。
 		return &domain.PluginProxyConfig{Role: "server"}
 	}
-	if pp.Role == "" || pp.Role == "client" {
-		cp := *pp
-		cp.Role = "both"
-		return &cp
-	}
 	return pp
+}
+
+// isLocalProxyPluginExplicitlyDisabled 检查 plugins/proxy.json 是否存在且被显式置为 enabled=false。
+func isLocalProxyPluginExplicitlyDisabled() bool {
+	store := &config.Store{}
+	src, _, err := store.ActiveSource()
+	if err != nil {
+		return false
+	}
+	cfg, err := store.LoadPlugin(utils.PluginsConfDir(src), domain.PluginNameProxy)
+	return err == nil && cfg != nil && !cfg.Enabled
 }
 
 // enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent
 // （只动 direct-forwarding；proxy 开关归独立 proxy.conf）。
 // 不支持时不动 intent，只把警告留给 writeProxyProjection。
 func enrichIntentWithProxy(g *domain.GnbIntent, cloudPerm *domain.ProxyPermission) *domain.PluginProxyConfig {
-	pp := mergeCloudExitPermission(loadPluginProxyConfig(), cloudPerm)
+	explicitOff := proxyExitExplicitOffFromState() || isLocalProxyPluginExplicitlyDisabled()
+	pp := mergeCloudExitPermissionWithOff(loadPluginProxyConfig(), cloudPerm, explicitOff)
 	if pp == nil {
 		return nil
 	}

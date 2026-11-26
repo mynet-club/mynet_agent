@@ -442,11 +442,16 @@ func executeApply(snap *shared.SystemSnapshot, plan *ApplyPlan, dry bool) int {
 	}
 
 	if fail == 0 && !dry && exitDev != "" && snap.OS == "linux" && snap.Capabilities["nft"] {
-		scope, scopeErr := proxyExitScopeFromSnapshot(snap, exitDev)
-		if scopeErr != nil {
-			return 1
+		explicitOff := proxyExitExplicitOff(exitPolicy, plan.LegacyProxyExit)
+		var scope proxyExitScope
+		if (exitPolicy != nil && exitPolicy.Enabled && exitPolicy.IsServerLike()) || explicitOff {
+			var scopeErr error
+			scope, scopeErr = proxyExitScopeFromSnapshot(snap, exitDev)
+			if scopeErr != nil {
+				return 1
+			}
 		}
-		if err := writeProxyExitReplayArtifact(utils.GetMyNetHome(), exitDev, scope, exitPolicy); err != nil {
+		if err := writeProxyExitReplayArtifactWithDeny(utils.GetMyNetHome(), exitDev, scope, exitPolicy, explicitOff); err != nil {
 			fmt.Fprintf(os.Stderr, "proxy exit replay artifact: %v\n", err)
 			fail = 1
 		}

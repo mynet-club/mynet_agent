@@ -197,11 +197,18 @@ func TestProxyExitReplayReplaceAndRevoke(t *testing.T) {
 	if strings.Contains(string(got), "10.30.0.3/32") || !strings.Contains(string(got), "10.30.0.4/32") {
 		t.Fatal("old ACL retained")
 	}
-	if err := writeProxyExitReplayArtifact(home, "tun0", proxyExitScope{WAN: []string{"eth0"}}, nil); err != nil {
+	if err := writeProxyExitReplayArtifactWithDeny(home, "tun0", proxyExitScope{WAN: []string{"eth0"}}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = os.ReadFile(path)
 	if strings.Contains(string(got), "masquerade") || !strings.Contains(string(got), `iifname "tun0" oifname "eth0" drop`) {
 		t.Fatal("revocation must replay WAN denial")
+	}
+	// 默认开放（nil 且非显式撤销）应移除重放文件
+	if err := writeProxyExitReplayArtifact(home, "tun0", proxyExitScope{WAN: []string{"eth0"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("default open must remove replay artifact, stat err=%v", err)
 	}
 }
