@@ -17,6 +17,12 @@ var initMynetd string
 //go:embed units/openwrt_mynet.init
 var initMynet string
 
+//go:embed units/openwrt_2hop_hook.sh
+var openWrt2HopHook string
+
+// OpenWrt2HopHookScript 两跳中转运行时钩子（post_start + fw3 include 共用）。
+func OpenWrt2HopHookScript() string { return openWrt2HopHook }
+
 // openWrtInit 按名字取 procd init 正文。
 func openWrtInit(name string) (string, bool) {
 	switch name {
