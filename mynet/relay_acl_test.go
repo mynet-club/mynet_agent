@@ -82,3 +82,26 @@ func TestDeriveRelayACLDenylist(t *testing.T) {
 		t.Fatalf("deny=%v", got.Deny)
 	}
 }
+
+func TestDeriveRelayACLForIntent(t *testing.T) {
+	gi := &domain.GnbIntent{
+		Identity: domain.GnbIdentity{NodeID: "184"},
+		Nodes: []domain.GnbNode{
+			{NodeID: "a", TunAddress: "10.182.236.181/32"},
+			{NodeID: "b", TunAddress: "10.182.236.185/32"},
+		},
+		Routes: []domain.GnbRoute{
+			{NodeID: "184", Prefix: "10.182.236.184/24"},
+			{NodeID: "a", Prefix: "192.168.50.0/24"},
+		},
+		Options: &domain.GnbOptions{Ifname: "gnb_tun_16"},
+	}
+	got := deriveRelayACLForIntent(bothCfg("4997342800601732"), nil, gi)
+	if !got.Enabled || got.Dev != "gnb_tun_16" {
+		t.Fatalf("want dev=gnb_tun_16, got %+v", got)
+	}
+	wantOVL := []string{"10.182.236.0/24", "10.182.236.181/32", "10.182.236.185/32"}
+	if !reflect.DeepEqual(got.OverlayCIDRs, wantOVL) {
+		t.Fatalf("ovl=%v want %v", got.OverlayCIDRs, wantOVL)
+	}
+}

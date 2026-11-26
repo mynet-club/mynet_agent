@@ -8,12 +8,65 @@ import (
 	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
-// relayACL 两跳中转的准入判定（由云端 ACL 派生，默认 open）。
+// relayACL 两跳中转的准入与运行参数（由云端 ACL 与驱动意图派生，默认 open）。
 type relayACL struct {
-	Enabled bool
-	Mode    string
-	Allow   []string
-	Deny    []string
+	Enabled      bool
+	Mode         string
+	Allow        []string
+	Deny         []string
+	Dev          string
+	OverlayCIDRs []string
+}
+
+// deriveRelayACLForIntent 结合 GnbIntent 派生两跳 ACL 与接口/overlay 网段参数。
+func deriveRelayACLForIntent(pp *domain.PluginProxyConfig, perm *domain.ProxyPermission, gi *domain.GnbIntent) relayACL {
+	if gi == nil {
+		return deriveRelayACL(pp, perm, nil)
+	}
+	out := deriveRelayACL(pp, perm, gi.Nodes)
+	if !out.Enabled {
+		return out
+	}
+	if gi.Options != nil {
+		dev := strings.TrimSpace(gi.Options.Ifname)
+		if dev != "" && domain.ValidateTunDevice(dev) == nil {
+			out.Dev = dev
+		}
+	}
+	out.OverlayCIDRs = deriveOverlayCIDRs(gi)
+	return out
+}
+
+// deriveOverlayCIDRs 提取本节点及同网 overlay 的 IPv4 CIDR（用于 2hop 排除内网互访）。
+func deriveOverlayCIDRs(gi *domain.GnbIntent) []string {
+	if gi == nil {
+		return nil
+	}
+	var raw []string
+	for _, n := range gi.Nodes {
+		s := strings.TrimSpace(n.TunAddress)
+		if s == "" {
+			continue
+		}
+		ip, ipNet, err := net.ParseCIDR(s)
+		if err != nil || ip.To4() == nil {
+			continue
+		}
+		raw = append(raw, ipNet.String())
+	}
+	localID := strings.TrimSpace(gi.Identity.NodeID)
+	for _, r := range gi.Routes {
+		if localID != "" && strings.TrimSpace(r.NodeID) != localID {
+			continue
+		}
+		s := strings.TrimSpace(r.Prefix)
+		ip, ipNet, err := net.ParseCIDR(s)
+		if err != nil || ip.To4() == nil {
+			continue
+		}
+		raw = append(raw, ipNet.String())
+	}
+	return dedupeSort(raw)
 }
 
 // deriveRelayACL 把代理插件意图 + 云端出口许可 + 节点表合成为 2hop ACL。

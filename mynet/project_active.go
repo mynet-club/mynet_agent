@@ -276,7 +276,7 @@ func writeGnbProjectionWithCloudProxy(gi *domain.GnbIntent, cloudPerm *domain.Pr
 		return err
 	}
 	// 两跳中转（role both）：脚本/ACL/UCI include 由 agent 落地，重装不丢。
-	if err := EnsureRelayAssets(utils.GetMyNetHome(), deriveRelayACL(pp, cloudPerm, gi.Nodes)); err != nil {
+	if err := EnsureRelayAssets(utils.GetMyNetHome(), deriveRelayACLForIntent(pp, cloudPerm, gi)); err != nil {
 		return fmt.Errorf("relay assets: %w", err)
 	}
 	// last-good 快照（只留最近 N 份 —— 无界增长会把私钥复制出几十份，实测 12 天 55 份）

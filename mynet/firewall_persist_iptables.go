@@ -31,6 +31,7 @@ func firewallIncludeScriptIPTables(tunDev, wanDev string) (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(tunDev))
+	// 仅占用高 24 位（0x4eXXXX00/0xffffff00），低 8 位保留给 2hop（PREROUTING 0xc8）互不冲突。
 	mark := fmt.Sprintf("0x4e%02x%02x00/0xffffff00", sum[0], sum[1])
 	tag := hex.EncodeToString(sum[:3])
 	chainM := "MYNET_M_" + tag

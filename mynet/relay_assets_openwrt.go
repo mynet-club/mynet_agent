@@ -37,9 +37,18 @@ func EnsureRelayAssets(home string, acl relayACL) error {
 		}
 		_ = os.Remove(relayACLPath(home))
 		if _, err := os.Stat(path); err == nil {
-			return runRelayHook(home, "MYNET_2HOP_DISABLE=1")
+			if _, err := exec.LookPath("iptables"); err == nil {
+				return runRelayHook(home, acl.Dev, "MYNET_2HOP_DISABLE=1")
+			}
 		}
 		return nil
+	}
+	profile, err := openwrtFirewallProfile()
+	if err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return fmt.Errorf("2hop 需要 iptables（当前防火墙 %s 缺少 iptables 命令）", profile) // GUARD-OK 2hop-runtime（仅探测命令存在性）
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建 2hop 目录: %w", err)
@@ -50,6 +59,8 @@ func EnsureRelayAssets(home string, acl relayACL) error {
 	body, err := json.MarshalIndent(map[string]any{
 		"schema":      1,
 		"mode":        acl.Mode,
+		"dev":         acl.Dev,
+		"ovl_cidrs":   acl.OverlayCIDRs,
 		"allow_cidrs": acl.Allow,
 		"deny_cidrs":  acl.Deny,
 	}, "", "  ")
@@ -65,12 +76,15 @@ func EnsureRelayAssets(home string, acl relayACL) error {
 	if err := registerRelayInclude(path); err != nil {
 		return err
 	}
-	return runRelayHook(home, "")
+	return runRelayHook(home, acl.Dev, "")
 }
 
-func runRelayHook(home, extraEnv string) error {
+func runRelayHook(home, dev, extraEnv string) error {
 	cmd := exec.Command("sh", relayHookPath(home))
 	cmd.Env = append(os.Environ(), "MYNET_HOME="+home)
+	if dev != "" {
+		cmd.Env = append(cmd.Env, "MYNET_2HOP_DEV="+dev)
+	}
 	if extraEnv != "" {
 		cmd.Env = append(cmd.Env, extraEnv)
 	}
