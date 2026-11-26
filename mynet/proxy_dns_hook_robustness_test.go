@@ -49,6 +49,8 @@ func TestDNSHookSurvivesDomainListFetchFailureThenHotUpdates(t *testing.T) {
 			_, _ = w.Write([]byte("new.accel.test\n"))
 		case strings.HasSuffix(r.URL.Path, "direct-domains.txt"):
 			http.NotFound(w, r) // 云端未发布直连表不算失败
+		case strings.HasSuffix(r.URL.Path, "proxy-ips.txt"):
+			http.NotFound(w, r) // 云端未发布预设 IP 表不算失败
 		case strings.HasSuffix(r.URL.Path, "ad-domains.txt"):
 			_, _ = w.Write([]byte("ad.test\n"))
 		case strings.HasSuffix(r.URL.Path, "malware-domains.txt"):

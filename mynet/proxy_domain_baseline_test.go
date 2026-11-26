@@ -18,6 +18,7 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 	t.Setenv("MYNET_CONFIG_HOME", "")
 	proxy := "a.test\n*.b.test\na.test\n"
 	direct := "cn-only.test\n"
+	proxyIPs := "142.250.0.0/15\n"
 	fail := false
 	ctl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -29,6 +30,8 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 			w.Write([]byte(proxy))
 		case "/d/plugins/mp/direct-domains.txt":
 			w.Write([]byte(direct))
+		case "/d/plugins/mp/proxy-ips.txt":
+			w.Write([]byte(proxyIPs))
 		default:
 			t.Errorf("unexpected list dependency: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -52,6 +55,9 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 	if !reflect.DeepEqual(first.Direct, []string{"cn-only.test"}) {
 		t.Fatal("direct list not merged", first.Direct)
 	}
+	if !reflect.DeepEqual(first.ProxyIPs, []string{"142.250.0.0/15"}) {
+		t.Fatal("proxy ips list not merged", first.ProxyIPs)
+	}
 	proxy = "new.test\n"
 	fail = true
 	if err := refresh(); err == nil {
@@ -71,11 +77,12 @@ func TestCtlDomainBaselineRefreshReplaceAndFailedDownload(t *testing.T) {
 	}
 	proxy = ""
 	direct = ""
+	proxyIPs = ""
 	if err := refresh(); err != nil {
 		t.Fatal(err)
 	}
 	empty, _ := config.LoadProxyDomainBaseline(ProxyStateDir())
-	if len(empty.Proxied) != 0 || len(empty.Direct) != 0 {
+	if len(empty.Proxied) != 0 || len(empty.Direct) != 0 || len(empty.ProxyIPs) != 0 {
 		t.Fatal("empty authoritative baseline did not revoke entries")
 	}
 }
