@@ -14,6 +14,7 @@ type Metrics struct {
 	Hostname    string             `json:"hostname,omitempty"`
 	System      SystemMetrics      `json:"system"`
 	VPN         []VPNDriverMetrics `json:"vpn,omitempty"`
+	Proxy       *ProxyMetrics      `json:"proxy,omitempty"`
 	Notes       []string           `json:"notes,omitempty"`
 }
 
@@ -59,6 +60,7 @@ func cmdMetrics(args []string) int {
 	m := &Metrics{CollectedAt: time.Now().UTC()}
 	collectSystemMetrics(m)
 	collectVPNMetrics(m)
+	collectProxyMetrics(m)
 
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)

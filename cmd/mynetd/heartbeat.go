@@ -40,6 +40,12 @@ type metricsSnapshot struct {
 		RxBytes   uint64   `json:"rx_bytes"`
 		TxBytes   uint64   `json:"tx_bytes"`
 	} `json:"vpn"`
+	Proxy *struct {
+		Configured  bool   `json:"configured"`
+		Enabled     bool   `json:"enabled"`
+		Role        string `json:"role"`
+		IngressOpen bool   `json:"ingress_open"`
+	} `json:"proxy"`
 }
 
 // ── 后端的心跳请求体 ──────────────────────────────────────────
@@ -90,8 +96,10 @@ type nodeSelf struct {
 	TotalPeers     int    `json:"total_peers"`
 	UptimeSeconds  int64  `json:"uptime_seconds"`
 	LastActiveAt   int64  `json:"last_active_at"`
-	RxBytes        uint64 `json:"rx_bytes"`
-	TxBytes        uint64 `json:"tx_bytes"`
+	RxBytes          uint64 `json:"rx_bytes"`
+	TxBytes          uint64 `json:"tx_bytes"`
+	ProxyIngressOpen *bool  `json:"proxy_ingress_open,omitempty"`
+	ProxyRole        string `json:"proxy_role,omitempty"`
 }
 
 // heartbeatBodies 组装心跳，返回**两份** JSON：发送体与签名体。
@@ -165,7 +173,7 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		})
 	}
 
-	p.NodeMonitor = &nodeMonitor{NodeSelf: nodeSelf{
+	ns := nodeSelf{
 		IsRunning:      len(snap.VPN) > 0,
 		ConnectedPeers: onlinePeers(snap),
 		TotalPeers:     totalPeers(snap),
@@ -175,7 +183,13 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		LastActiveAt: p.Timestamp,
 		RxBytes:      totalRx(snap),
 		TxBytes:      totalTx(snap),
-	}}
+	}
+	if snap.Proxy != nil {
+		open := snap.Proxy.IngressOpen
+		ns.ProxyIngressOpen = &open
+		ns.ProxyRole = snap.Proxy.Role
+	}
+	p.NodeMonitor = &nodeMonitor{NodeSelf: ns}
 
 	sendBody, err = encodeHeartbeat(p)
 	if err != nil {

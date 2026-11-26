@@ -303,11 +303,34 @@ func loadPluginProxyConfig() *domain.PluginProxyConfig {
 	return pp
 }
 
+// mergeCloudExitPermission 把云端 bundle.network.proxy（出口许可）与本地
+// plugins/proxy.json 意图合并为 gnb proxy.conf 投影输入：
+//   - 云端未授权出口（perm==nil 或 !perm.Enabled）：完全尊重本地配置
+//   - 云端已授权出口且本地无 proxy.json：合成为 role=server（投影 ingress_open on）
+//   - 云端已授权出口且本地仅 role=client：升级为 role=both（保留客户端出口同时开放 ingress）
+//   - 本地已是 server/both：原样返回（已含 ingress_open on）
+//
+// 这样存量出口节点升级到带 P2 的 gnb 后，只要云端有出口许可就不会被静默写成 ingress_open off。
+func mergeCloudExitPermission(pp *domain.PluginProxyConfig, perm *domain.ProxyPermission) *domain.PluginProxyConfig {
+	if perm == nil || !perm.Enabled {
+		return pp
+	}
+	if pp == nil {
+		return &domain.PluginProxyConfig{Role: "server"}
+	}
+	if pp.Role == "" || pp.Role == "client" {
+		cp := *pp
+		cp.Role = "both"
+		return &cp
+	}
+	return pp
+}
+
 // enrichIntentWithProxy 若 proxy 插件启用 **且 gnb 支持**，把出口写进 GnbIntent
 // （只动 direct-forwarding；proxy 开关归独立 proxy.conf）。
 // 不支持时不动 intent，只把警告留给 writeProxyProjection。
-func enrichIntentWithProxy(g *domain.GnbIntent) *domain.PluginProxyConfig {
-	pp := loadPluginProxyConfig()
+func enrichIntentWithProxy(g *domain.GnbIntent, cloudPerm *domain.ProxyPermission) *domain.PluginProxyConfig {
+	pp := mergeCloudExitPermission(loadPluginProxyConfig(), cloudPerm)
 	if pp == nil {
 		return nil
 	}

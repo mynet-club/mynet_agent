@@ -144,7 +144,7 @@ func applyOnline(store *config.Store, src string, mode *domain.ModeFile, dry boo
 	}
 	env.Gnb.Options.Ifname = dev
 
-	if err := writeGnbProjection(env.Gnb, dry); err != nil {
+	if err := writeGnbProjectionWithCloudProxy(env.Gnb, env.Network.Proxy, dry); err != nil {
 		return err
 	}
 	return ApplyPlugins(dry)
@@ -243,12 +243,16 @@ func LocalToGnbIntent(li *domain.LocalIntent, privHex, pubHex, algorithm string)
 }
 
 func writeGnbProjection(gi *domain.GnbIntent, dry bool) error {
+	return writeGnbProjectionWithCloudProxy(gi, nil, dry)
+}
+
+func writeGnbProjectionWithCloudProxy(gi *domain.GnbIntent, cloudPerm *domain.ProxyPermission, dry bool) error {
 	nodeID := gi.Identity.NodeID
 	if nodeID == "" {
 		return fmt.Errorf("intent 缺 node id")
 	}
-	// proxy 插件启用时：写出口对端 + 打开 proxy on，并准备写 proxy.conf
-	pp := enrichIntentWithProxy(gi)
+	// proxy 插件启用或云端授予出口许可时：写出口对端 + 打开 proxy on，并准备写 proxy.conf
+	pp := enrichIntentWithProxy(gi, cloudPerm)
 	// D4-E：节点唯一存放位 conf/<form>/<nodeId>/（密钥与驱动 conf 同居）
 	form, _ := utils.ActiveNodeInfo()
 	confDir, err := utils.NodeRuntimeDir(form, nodeID)
