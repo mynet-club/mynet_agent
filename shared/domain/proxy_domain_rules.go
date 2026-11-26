@@ -10,6 +10,10 @@ package domain
 //   - PC：不装 dnsmasq，只指平台 DNS / 公共 DNS（可选轻劫持）
 
 import (
+	"encoding/binary"
+	"fmt"
+	"net"
+	"sort"
 	"strings"
 )
 
@@ -54,7 +58,9 @@ type ProxyDomainRules struct {
 	CustomDomains []string `json:"custom_domains,omitempty"`
 	// CustomDirect 用户本机追加的直连域名。优先级最高。
 	CustomDirect []string `json:"custom_direct,omitempty"`
-	// CustomIPs 用户本机追加的代理 IP（PC 形态 /32 钉扎用，不经 DNS 解析）。
+	// ProxyIPs 云端基线预设的代理 IPv4 前缀（ctl 下发 proxy-ips.txt，不经 DNS、不受 TTL 过期影响）。
+	ProxyIPs []string `json:"proxy_ips,omitempty"`
+	// CustomIPs 用户本机追加的代理 IPv4 地址或 CIDR（PC 形态显式钉扎，不经 DNS、不受 TTL 过期影响）。
 	// 与 CustomDomains 同级：本机叠加、不回写云端。仅 PC pin 消费；网关 nft 集合不读它。
 	CustomIPs []string `json:"custom_ips,omitempty"`
 	// UpstreamProxied fast|clean|balanced。空 = fast。
@@ -279,6 +285,7 @@ func MergeDomainRules(earlier, later *ProxyDomainRules) *ProxyDomainRules {
 	out.Proxied = unionStrings(later.Proxied, earlier.Proxied)
 	out.Direct = unionStrings(later.Direct, earlier.Direct)
 	out.UpstreamClean = unionStrings(later.UpstreamClean, earlier.UpstreamClean)
+	out.ProxyIPs = unionStrings(later.ProxyIPs, earlier.ProxyIPs)
 	out.CustomIPs = unionStrings(later.CustomIPs, earlier.CustomIPs)
 	if len(out.UpstreamDirect) == 0 {
 		out.UpstreamDirect = append([]string{}, earlier.UpstreamDirect...)
@@ -293,10 +300,220 @@ func cloneDomainRules(r *ProxyDomainRules) *ProxyDomainRules {
 	c := *r
 	c.Proxied = append([]string{}, r.Proxied...)
 	c.Direct = append([]string{}, r.Direct...)
+	c.CustomDomains = append([]string{}, r.CustomDomains...)
+	c.CustomDirect = append([]string{}, r.CustomDirect...)
 	c.UpstreamClean = append([]string{}, r.UpstreamClean...)
 	c.UpstreamDirect = append([]string{}, r.UpstreamDirect...)
+	c.ProxyIPs = append([]string{}, r.ProxyIPs...)
 	c.CustomIPs = append([]string{}, r.CustomIPs...)
 	return &c
+}
+
+// ── IPv4 CIDR 规范化、校验与包含收敛（SSOT）─────────────────────
+
+// MinProxyIPv4PrefixLen 显式钉扎允许的最宽 IPv4 前缀（拒绝 /0../7 滥用）。
+const MinProxyIPv4PrefixLen = 8
+
+// ParseIPv4CIDR 校验并规范化单 IPv4 或 IPv4 CIDR：
+//   - 单 IPv4 → a.b.c.d/32
+//   - IPv4 CIDR → 抹除主机位后的网络前缀，要求前缀宽度在 [8, 32]
+//   - 拒绝空串、域名、IPv6、越界前缀及保留/特殊地址段（0/8、127/8、169.254/16、224/4、240/4）
+func ParseIPv4CIDR(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("IP/CIDR 不能为空")
+	}
+	var ipnet *net.IPNet
+	if strings.Contains(s, "/") {
+		ip, n, err := net.ParseCIDR(s)
+		if err != nil {
+			return "", fmt.Errorf("无效的 IPv4 CIDR %q: %w", raw, err)
+		}
+		if ip.To4() == nil || len(n.IP) != net.IPv4len {
+			return "", fmt.Errorf("暂不支持 IPv6 %q，仅支持 IPv4 地址或 CIDR", raw)
+		}
+		ones, bits := n.Mask.Size()
+		if bits != 32 || ones < MinProxyIPv4PrefixLen || ones > 32 {
+			return "", fmt.Errorf("IPv4 CIDR %q 前缀宽度须在 /%d 到 /32 之间（拒绝过宽网段）", raw, MinProxyIPv4PrefixLen)
+		}
+		ipnet = n
+	} else {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			return "", fmt.Errorf("无效的 IPv4 地址 %q（仅支持 IPv4 地址或 CIDR）", raw)
+		}
+		v4 := ip.To4()
+		if v4 == nil {
+			return "", fmt.Errorf("暂不支持 IPv6 %q，仅支持 IPv4 地址或 CIDR", raw)
+		}
+		ipnet = &net.IPNet{IP: v4, Mask: net.CIDRMask(32, 32)}
+	}
+	if reason := checkReservedIPv4Prefix(ipnet); reason != "" {
+		return "", fmt.Errorf("拒绝保留地址段 %q（%s）", ipnet.String(), reason)
+	}
+	return ipnet.String(), nil
+}
+
+func checkReservedIPv4Prefix(n *net.IPNet) string {
+	v4 := n.IP.To4()
+	if v4 == nil {
+		return "非 IPv4"
+	}
+	switch {
+	case v4[0] == 0:
+		return "0.0.0.0/8 未指定网段"
+	case v4[0] == 127:
+		return "127.0.0.0/8 回环网段"
+	case v4[0] == 169 && v4[1] == 254:
+		return "169.254.0.0/16 链路本地网段"
+	case v4[0] >= 224 && v4[0] <= 239:
+		return "224.0.0.0/4 组播网段"
+	case v4[0] >= 240:
+		return "240.0.0.0/4 保留/广播网段"
+	}
+	return ""
+}
+
+type ipv4Prefix struct {
+	net  uint32
+	mask uint32
+	ones int
+	text string
+}
+
+func parseIPv4PrefixStruct(cidr string) (ipv4Prefix, bool) {
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil || n == nil {
+		return ipv4Prefix{}, false
+	}
+	v4 := n.IP.To4()
+	if v4 == nil {
+		return ipv4Prefix{}, false
+	}
+	ones, bits := n.Mask.Size()
+	if bits != 32 {
+		return ipv4Prefix{}, false
+	}
+	var mask uint32
+	if ones > 0 {
+		mask = ^uint32(0) << uint(32-ones)
+	}
+	netU32 := binary.BigEndian.Uint32(v4) & mask
+	return ipv4Prefix{net: netU32, mask: mask, ones: ones, text: n.String()}, true
+}
+
+func (p ipv4Prefix) contains(other ipv4Prefix) bool {
+	return p.ones <= other.ones && (other.net&p.mask) == p.net
+}
+
+// NormalizeIPv4CIDRs 严格校验、规范化、去重并收敛包含关系（若 A 包含 B，只保留 A）。
+// 返回保留集合与被跳过（重复或已被更宽前缀包含）的条目。
+func NormalizeIPv4CIDRs(in []string) (kept []string, skipped []string, err error) {
+	var parsed []ipv4Prefix
+	for _, raw := range in {
+		canon, perr := ParseIPv4CIDR(raw)
+		if perr != nil {
+			return nil, nil, perr
+		}
+		if p, ok := parseIPv4PrefixStruct(canon); ok {
+			parsed = append(parsed, p)
+		}
+	}
+	kept, skipped = collapseIPv4Prefixes(parsed)
+	return kept, skipped, nil
+}
+
+// NormalizeIPv4CIDRsBestEffort 宽容版规范化与包含收敛：忽略非法历史条目，用于运行期兜底。
+func NormalizeIPv4CIDRsBestEffort(in []string) []string {
+	var parsed []ipv4Prefix
+	for _, raw := range in {
+		canon, err := ParseIPv4CIDR(raw)
+		if err != nil {
+			continue
+		}
+		if p, ok := parseIPv4PrefixStruct(canon); ok {
+			parsed = append(parsed, p)
+		}
+	}
+	kept, _ := collapseIPv4Prefixes(parsed)
+	return kept
+}
+
+func collapseIPv4Prefixes(parsed []ipv4Prefix) (kept []string, skipped []string) {
+	if len(parsed) == 0 {
+		return nil, nil
+	}
+	// 按前缀宽度升序（更宽的先保留），同宽度按网络地址升序。
+	sort.Slice(parsed, func(i, j int) bool {
+		if parsed[i].ones != parsed[j].ones {
+			return parsed[i].ones < parsed[j].ones
+		}
+		return parsed[i].net < parsed[j].net
+	})
+	var winners []ipv4Prefix
+	for _, cand := range parsed {
+		covered := false
+		for _, w := range winners {
+			if w.contains(cand) {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			skipped = append(skipped, cand.text)
+			continue
+		}
+		winners = append(winners, cand)
+	}
+	// 输出按网络地址升序，便于 CLI 与日志阅读。
+	sort.Slice(winners, func(i, j int) bool {
+		if winners[i].net != winners[j].net {
+			return winners[i].net < winners[j].net
+		}
+		return winners[i].ones < winners[j].ones
+	})
+	kept = make([]string, 0, len(winners))
+	for _, w := range winners {
+		kept = append(kept, w.text)
+	}
+	return kept, skipped
+}
+
+// IPv4PrefixContainsAny 判断裸 IPv4 或 CIDR 是否完全落在任一给定前缀内。
+func IPv4PrefixContainsAny(prefixes []string, candidate string) bool {
+	if len(prefixes) == 0 {
+		return false
+	}
+	canon, err := ParseIPv4CIDR(candidate)
+	if err != nil {
+		return false
+	}
+	cand, ok := parseIPv4PrefixStruct(canon)
+	if !ok {
+		return false
+	}
+	for _, raw := range prefixes {
+		p, ok := parseIPv4PrefixStruct(raw)
+		if !ok {
+			continue
+		}
+		if p.contains(cand) {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveProxyIPs 合并云端预设基线（ProxyIPs）与本机自定义（CustomIPs），
+// 返回规范化、去重且包含收敛后的最终 IPv4 前缀集合。
+func (r *ProxyDomainRules) EffectiveProxyIPs() []string {
+	if r == nil {
+		return nil
+	}
+	all := make([]string, 0, len(r.ProxyIPs)+len(r.CustomIPs))
+	all = append(all, r.ProxyIPs...)
+	all = append(all, r.CustomIPs...)
+	return NormalizeIPv4CIDRsBestEffort(all)
 }
 
 func unionStrings(first []string, second []string) []string {

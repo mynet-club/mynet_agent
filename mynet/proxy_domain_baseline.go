@@ -82,7 +82,15 @@ func refreshProxyDomainBaseline(ctx context.Context, client *http.Client, base s
 	if err != nil {
 		return err
 	}
-	version := fmt.Sprintf("%x", sha256.Sum256([]byte("pc-lists-v2\n"+strings.Join(proxied, "\n")+"\n--\n"+strings.Join(direct, "\n"))))
+	proxyIPs, err := fetchOptionalProxyIPList(ctx, client, base)
+	if err != nil {
+		return err
+	}
+	hashInput := "pc-lists-v2\n" + strings.Join(proxied, "\n") + "\n--\n" + strings.Join(direct, "\n")
+	if len(proxyIPs) > 0 {
+		hashInput += "\n--ips--\n" + strings.Join(proxyIPs, "\n")
+	}
+	version := fmt.Sprintf("%x", sha256.Sum256([]byte(hashInput)))
 
 	current, err := config.LoadProxyDomainBaseline(ProxyStateDir())
 	if err != nil {
@@ -91,7 +99,7 @@ func refreshProxyDomainBaseline(ctx context.Context, client *http.Client, base s
 	if current != nil && current.Version == version {
 		return nil
 	}
-	return config.SaveProxyDomainBaseline(ProxyStateDir(), &config.ProxyDomainBaseline{Proxied: proxied, Direct: direct, Version: version})
+	return config.SaveProxyDomainBaseline(ProxyStateDir(), &config.ProxyDomainBaseline{Proxied: proxied, Direct: direct, ProxyIPs: proxyIPs, Version: version})
 }
 
 func (s *dnsHookServer) updateBaseline(ctx context.Context) error {
@@ -186,7 +194,7 @@ func cmdProxyDNSHookDomains(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		out := map[string]any{"proxied": []string{}, "direct": []string{}, "version": ""}
+		out := map[string]any{"proxied": []string{}, "direct": []string{}, "proxy_ips": []string{}, "version": ""}
 		if base != nil {
 			if base.Proxied == nil {
 				base.Proxied = []string{}
@@ -194,8 +202,12 @@ func cmdProxyDNSHookDomains(args []string) int {
 			if base.Direct == nil {
 				base.Direct = []string{}
 			}
+			if base.ProxyIPs == nil {
+				base.ProxyIPs = []string{}
+			}
 			out["proxied"] = base.Proxied
 			out["direct"] = base.Direct
+			out["proxy_ips"] = base.ProxyIPs
 			out["version"] = base.Version
 		}
 		return printJSON(out)
@@ -215,7 +227,7 @@ func cmdProxyDNSHookDomains(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		out := map[string]any{"proxied": []string{}, "direct": []string{}, "version": "", "refreshed": true}
+		out := map[string]any{"proxied": []string{}, "direct": []string{}, "proxy_ips": []string{}, "version": "", "refreshed": true}
 		if base != nil {
 			if base.Proxied == nil {
 				base.Proxied = []string{}
@@ -223,8 +235,12 @@ func cmdProxyDNSHookDomains(args []string) int {
 			if base.Direct == nil {
 				base.Direct = []string{}
 			}
+			if base.ProxyIPs == nil {
+				base.ProxyIPs = []string{}
+			}
 			out["proxied"] = base.Proxied
 			out["direct"] = base.Direct
+			out["proxy_ips"] = base.ProxyIPs
 			out["version"] = base.Version
 		}
 		out["clean_dns"] = loadCleanDNSList()

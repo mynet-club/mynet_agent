@@ -11,8 +11,10 @@ import (
 type ProxyDomainBaseline struct {
 	Proxied []string `json:"proxied"`
 	// Direct 兼容旧快照；PC 白名单加速不再下载或采用基础直连表。
-	Direct  []string `json:"direct,omitempty"`
-	Version string   `json:"version"`
+	Direct []string `json:"direct,omitempty"`
+	// ProxyIPs 云端预设的代理 IPv4 前缀清单（proxy-ips.txt，如 Google 段）。
+	ProxyIPs []string `json:"proxy_ips,omitempty"`
+	Version  string   `json:"version"`
 }
 
 func ProxyDomainBaselinePath(base string) string {
@@ -56,4 +58,5 @@ func applyProxyBaseline(st *domain.ProxyIntentState, b *ProxyDomainBaseline) {
 	}
 	st.Local.Policy.DomainRules.Proxied = append([]string{}, b.Proxied...)
 	st.Local.Policy.DomainRules.Direct = append([]string{}, b.Direct...)
+	st.Local.Policy.DomainRules.ProxyIPs = append([]string{}, b.ProxyIPs...)
 }

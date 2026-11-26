@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
+	"github.com/mynet-club/mynet_agent/shared/domain"
 )
 
 type pcProxySession struct {
@@ -21,15 +23,22 @@ type pcProxySession struct {
 	Domains map[string]map[string]time.Time `json:"domains"`
 	Routes  map[string]string               `json:"routes"` // prefix → tunnel interface
 	// IPs 保留读面兼容；值是租约截止时间，不是 first-seen。
-	IPs       map[string]time.Time `json:"ips"`
-	LastError string               `json:"last_error,omitempty"`
-	route     func(action, prefix, tun string) error
-	inspect   func() (pcRouteView, error)
-	save      func() error
+	IPs              map[string]time.Time `json:"ips"`
+	LastError        string               `json:"last_error,omitempty"`
+	explicitPrefixes []string             // 当前活跃的显式静态前缀（预设 ∪ custom_ips），不受 TTL 与共享降级影响
+	route            func(action, prefix, tun string) error
+	inspect          func() (pcRouteView, error)
+	localNets        func() []*net.IPNet
+	save             func() error
 }
 
 func newPCProxySession() *pcProxySession {
-	s := &pcProxySession{Domains: map[string]map[string]time.Time{}, Routes: map[string]string{}, IPs: map[string]time.Time{}}
+	s := &pcProxySession{
+		Domains:   map[string]map[string]time.Time{},
+		Routes:    map[string]string{},
+		IPs:       map[string]time.Time{},
+		localNets: localConnectedNets,
+	}
 	s.route = func(action, prefix, tun string) error {
 		snap, err := shared.ReadSnapshot(shared.DefaultSnapshotPath())
 		if err != nil {
@@ -121,8 +130,10 @@ func (s *pcProxySession) load(tun string) error {
 	return nil
 }
 
-func (s *pcProxySession) activeLocked(rules *dnsHookRules, now time.Time) map[string]time.Time {
-	active := map[string]time.Time{}
+// activeLocked 计算当前活跃集合：动态 DNS 租约（带 TTL）与显式静态前缀（预设 ∪ custom_ips）。
+// 显式前缀永不因 TTL 过期，也不被 net.ParseIP 丢弃。
+func (s *pcProxySession) activeLocked(rules *dnsHookRules, now time.Time) (dynamic map[string]time.Time, explicit []string) {
+	dynamic = map[string]time.Time{}
 	for name, ips := range s.Domains {
 		if !rules.shouldPin(name) {
 			delete(s.Domains, name)
@@ -133,25 +144,32 @@ func (s *pcProxySession) activeLocked(rules *dnsHookRules, now time.Time) map[st
 				delete(ips, ip)
 				continue
 			}
-			if active[ip].Before(until) {
-				active[ip] = until
+			if dynamic[ip].Before(until) {
+				dynamic[ip] = until
 			}
 		}
 		if len(ips) == 0 {
 			delete(s.Domains, name)
 		}
 	}
-	for _, ip := range rules.customIPs {
-		if v4 := net.ParseIP(ip).To4(); v4 != nil {
-			active[v4.String()] = time.Time{} // 显式 IP 随意图启停，不伪造每次变动的 DNS 到期时间
+	explicit = rules.explicitPrefixes()
+	return dynamic, explicit
+}
+
+func countActiveEntries(dynamic map[string]time.Time, explicit []string) int {
+	count := len(explicit)
+	for ip := range dynamic {
+		if !domain.IPv4PrefixContainsAny(explicit, ip) {
+			count++
 		}
 	}
-	return active
+	return count
 }
 
 // markSharedIfPinned —— 普通（非白名单）域名解析到「已被钉进隧道」的 IP 时，
 // 说明这是共享 CDN：同一个 IP 既服务白名单域名，也服务普通应用。
 // /32 路由按 IP 生效，无法区分应用，只能让该 IP 回直连，否则普通应用一起被劫持。
+// 显式钉扎的 IP/CIDR（预设或 custom_ips）优先级最高，不受共享 CDN 降级影响。
 func (s *pcProxySession) markSharedIfPinned(ips []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,6 +177,9 @@ func (s *pcProxySession) markSharedIfPinned(ips []string) {
 	for _, ip := range ips {
 		if isCleanDNSIP(ip) {
 			continue // 干净 DNS 永久钉扎，不因共享解钉
+		}
+		if domain.IPv4PrefixContainsAny(s.explicitPrefixes, ip) {
+			continue // 显式 IP/CIDR 优先级最高，不因共享 CDN 降级
 		}
 		if _, ok := s.IPs[ip]; !ok {
 			continue
@@ -193,13 +214,11 @@ func (s *pcProxySession) observe(name string, ips []string, until, now time.Time
 	if !rules.shouldPin(name) {
 		return nil
 	}
-	active := s.activeLocked(rules, now)
-	// 直连 IP 豁免：共享 CDN 上，白名单域名与普通应用可能解析到同一 IP
-	// （实测 api.deepseek.com 与 MiMo 共用 123.125.246.121）。这类 IP 一旦钉进
-	// 隧道，普通应用就被一起劫持。豁免表命中的 IP 不装路由。
-	for ip := range active {
-		if directIPExempted(ip) {
-			delete(active, ip)
+	dynamic, explicit := s.activeLocked(rules, now)
+	// 直连 IP 豁免仅作用于动态 DNS pin，不降级显式 IP/CIDR。
+	for ip := range dynamic {
+		if directIPExempted(ip) && !domain.IPv4PrefixContainsAny(explicit, ip) {
+			delete(dynamic, ip)
 		}
 	}
 	if len(s.Domains) >= pcPinMaxIPs && s.Domains[name] == nil {
@@ -215,12 +234,12 @@ func (s *pcProxySession) observe(name string, ips []string, until, now time.Time
 			continue
 		}
 		ip = v4.String()
-		active[ip] = until
+		dynamic[ip] = until
 		if next[ip].Before(until) {
 			next[ip] = until
 		}
 	}
-	if len(active) > pcPinMaxIPs {
+	if countActiveEntries(dynamic, explicit) > pcPinMaxIPs {
 		return fmt.Errorf("active IP limit %d reached", pcPinMaxIPs)
 	}
 	if len(next) > 0 {
@@ -245,25 +264,28 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 			err = saveErr
 		}
 	}()
-	active := s.activeLocked(rules, now)
-	// 直连 IP 豁免：共享 CDN 上，白名单域名与普通应用可能解析到同一 IP
-	// （实测 api.deepseek.com 与 MiMo 共用 123.125.246.121）。这类 IP 一旦钉进
-	// 隧道，普通应用就被一起劫持。豁免表命中的 IP 不装路由。
-	for ip := range active {
-		if directIPExempted(ip) {
-			delete(active, ip)
+	dynamic, explicit := s.activeLocked(rules, now)
+	// 直连 IP 豁免仅作用于动态 DNS pin，不影响显式 IP/CIDR 前缀。
+	for ip := range dynamic {
+		if directIPExempted(ip) && !domain.IPv4PrefixContainsAny(explicit, ip) {
+			delete(dynamic, ip)
 		}
 	}
-	if len(active) > pcPinMaxIPs {
+	if countActiveEntries(dynamic, explicit) > pcPinMaxIPs {
 		return fmt.Errorf("active IP limit %d reached", pcPinMaxIPs)
 	}
-	s.IPs = active
-	var ips []string
-	for ip := range active {
-		ips = append(ips, ip)
+	s.explicitPrefixes = explicit
+	// 读面兼容：IPs 记录活跃动态 IP 与显式前缀（显式项时间置零）。
+	combined := make(map[string]time.Time, len(dynamic)+len(explicit))
+	for ip, exp := range dynamic {
+		combined[ip] = exp
 	}
+	for _, prefix := range explicit {
+		combined[prefix] = time.Time{}
+	}
+	s.IPs = combined
 	// 无待装/待撤路由时无需读取系统表（正常关闭、未访问任何域名）。
-	if len(active) == 0 && len(s.Routes) == 0 {
+	if len(combined) == 0 && len(s.Routes) == 0 {
 		return nil
 	}
 	view, err := s.inspect()
@@ -272,10 +294,37 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 	}
 	want := map[string]bool{}
 	if tun != "" {
-		for _, prefix := range MergeIPsToCIDR(ips) {
+		var locals []*net.IPNet
+		if s.localNets != nil {
+			locals = s.localNets()
+		}
+		// 1) 显式静态前缀分轨：/32 单 IP 并入 MergeIPsToCIDR 保持相邻紧凑合并；
+		//    /<N>（N<32）网段直接作为前缀进 want，跳过与本机直连网段重叠的条目。
+		var singleIPs []string
+		var widePrefixes []string
+		for _, prefix := range explicit {
+			if overlapsAny(parseDestNet(prefix), locals) {
+				hookLogf("skip explicit prefix %s: overlaps local connected subnet", prefix)
+				continue
+			}
+			if strings.HasSuffix(prefix, "/32") {
+				singleIPs = append(singleIPs, strings.TrimSuffix(prefix, "/32"))
+			} else {
+				widePrefixes = append(widePrefixes, prefix)
+				want[prefix] = true
+			}
+		}
+		// 2) 动态 DNS IP：若已被更宽的显式静态前缀覆盖，无需再装重复 /32。
+		for ip := range dynamic {
+			if domain.IPv4PrefixContainsAny(widePrefixes, ip) {
+				continue
+			}
+			singleIPs = append(singleIPs, ip)
+		}
+		for _, prefix := range MergeIPsToCIDR(singleIPs) {
 			want[prefix] = true
 		}
-		// 干净 DNS（1.1.1.1/8.8.8.8…）**永久钉入**：查询它们必须走隧道，
+		// 3) 干净 DNS（1.1.1.1/8.8.8.8…）**永久钉入**：查询它们必须走隧道，
 		// 否则 GFW 投毒；不参与租约过期，也不被共享 IP 解钉。
 		for _, c := range loadCleanDNSList() {
 			if ip := net.ParseIP(c); ip != nil {
@@ -287,17 +336,90 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 	if err := s.save(); err != nil {
 		return err
 	}
-	// 删除只针对所有权日志里的前缀，不清系统表，也不删除他人接管的路由。
-	var old []string
-	for prefix := range s.Routes {
-		old = append(old, prefix)
-	}
-	sort.Strings(old)
-	for _, prefix := range old {
-		prevTun := s.Routes[prefix]
+	// 预计算待增与待删集合；先做冲突校验，避免半装或误删上一代路由。
+	var toDel []string
+	toDelSet := map[string]bool{}
+	for prefix, prevTun := range s.Routes {
 		if want[prefix] && prevTun == tun {
 			continue
 		}
+		toDel = append(toDel, prefix)
+		toDelSet[prefix] = true
+	}
+	sort.Strings(toDel)
+	// remainingView 排除即将删除的自管旧路由，避免缩容（如 /31 → /32）时被待删旧路由误判为已被覆盖。
+	remainingView := make(pcRouteView, len(view))
+	for p, dev := range view {
+		if toDelSet[p] && s.Routes[p] == dev {
+			continue
+		}
+		remainingView[p] = dev
+	}
+	var toAdd []string
+	for prefix := range want {
+		if s.Routes[prefix] == tun && view[prefix] == tun {
+			continue
+		}
+		if remainingView.covers(prefix, tun) {
+			continue
+		}
+		if dev, exists := view[prefix]; exists && dev != tun {
+			if s.Routes[prefix] != dev {
+				return fmt.Errorf("route %s belongs to %s", prefix, dev)
+			}
+		}
+		toAdd = append(toAdd, prefix)
+	}
+	sort.Strings(toAdd)
+	// 先撤换口/旧接口冲突的同名路由（不同接口不能共存同一前缀），
+	// 再新增目标前缀；若新增中途失败，回滚本轮已新增项并保留其余旧路由。
+	var samePrefixRebind []string
+	var remainingDel []string
+	for _, prefix := range toDel {
+		if want[prefix] {
+			samePrefixRebind = append(samePrefixRebind, prefix)
+		} else {
+			remainingDel = append(remainingDel, prefix)
+		}
+	}
+	for _, prefix := range samePrefixRebind {
+		prevTun := s.Routes[prefix]
+		if view[prefix] == prevTun {
+			if err := s.route("del", prefix, prevTun); err != nil {
+				return fmt.Errorf("release %s: %w", prefix, err)
+			}
+			delete(view, prefix)
+		}
+		delete(s.Routes, prefix)
+	}
+	var added []string
+	for _, prefix := range toAdd {
+		if remainingView.covers(prefix, tun) {
+			continue
+		}
+		s.Routes[prefix] = tun
+		// 写前记所有权，进程突然退出后仍可精确清理。
+		if err := s.save(); err != nil {
+			return err
+		}
+		if err := s.route("add", prefix, tun); err != nil {
+			// 回滚本轮之前已成功新增的前缀，保留上一代路由（不允许半装）。
+			for i := len(added) - 1; i >= 0; i-- {
+				p := added[i]
+				_ = s.route("del", p, tun)
+				delete(s.Routes, p)
+				delete(view, p)
+				delete(remainingView, p)
+			}
+			return fmt.Errorf("pin %s: %w", prefix, err)
+		}
+		view[prefix] = tun
+		remainingView[prefix] = tun
+		added = append(added, prefix)
+	}
+	// 所有新增成功后再清理废弃旧前缀。
+	for _, prefix := range remainingDel {
+		prevTun := s.Routes[prefix]
 		if view[prefix] == prevTun {
 			if err := s.route("del", prefix, prevTun); err != nil {
 				return fmt.Errorf("release %s: %w", prefix, err)
@@ -307,29 +429,6 @@ func (s *pcProxySession) syncLocked(rules *dnsHookRules, tun string, now time.Ti
 		if view[prefix] == prevTun {
 			delete(view, prefix)
 		}
-	}
-	var prefixes []string
-	for prefix := range want {
-		prefixes = append(prefixes, prefix)
-	}
-	sort.Strings(prefixes)
-	for _, prefix := range prefixes {
-		// 内核已走隧道（可能被更宽的外部路由覆盖）就不接管其所有权。
-		if view.covers(prefix, tun) {
-			continue
-		}
-		if dev, exists := view[prefix]; exists && dev != tun {
-			return fmt.Errorf("route %s belongs to %s", prefix, dev)
-		}
-		s.Routes[prefix] = tun
-		// 写前记所有权，进程突然退出后仍可精确清理。
-		if err := s.save(); err != nil {
-			return err
-		}
-		if err := s.route("add", prefix, tun); err != nil {
-			return fmt.Errorf("pin %s: %w", prefix, err)
-		}
-		view[prefix] = tun
 	}
 	if err := s.save(); err != nil {
 		return err

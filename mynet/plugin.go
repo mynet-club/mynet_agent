@@ -476,10 +476,12 @@ func pluginDomains(args []string) int {
 	}
 	_, _ = loadPluginAt(base, domain.PluginNameProxy) // 确保插件壳存在；失败则下面用空规则
 
-	// 读 intent 上的 DomainRules（基础清单）+ 插件自定义
+	// 读 intent 上的 DomainRules（基础清单 + 本机自定义）；加速未启用时也读本地已存规则，避免覆盖已有条目。
 	rules := &domain.ProxyDomainRules{}
 	if p := EffectiveProxyPolicy(); p != nil && p.DomainRules != nil {
 		rules = p.DomainRules
+	} else if st, err := LoadProxyState(); err == nil && st != nil && st.Local != nil && st.Local.Policy.DomainRules != nil {
+		rules = st.Local.Policy.DomainRules
 	}
 
 	saveCustoms := func(customP, customD, customIPs []string) int {
@@ -499,10 +501,12 @@ func pluginDomains(args []string) int {
 		fmt.Printf("  直连白名单  : %d 条\n", len(rules.Direct))
 		fmt.Printf("  自定义代理  : %d 条\n", len(rules.CustomDomains))
 		fmt.Printf("  自定义直连  : %d 条\n", len(rules.CustomDirect))
+		fmt.Printf("  预设 IP 前缀: %d 条\n", len(rules.ProxyIPs))
 		fmt.Printf("  自定义 IP   : %d 条\n", len(rules.CustomIPs))
 		fmt.Println("  —— 合并结果 ——")
 		effP := rules.EffectiveProxied()
 		effD := rules.EffectiveDirect()
+		effIPs := rules.EffectiveProxyIPs()
 		fmt.Printf("  最终代理: %d 条\n", len(effP))
 		for i, d := range effP {
 			if i >= 20 {
@@ -519,11 +523,12 @@ func pluginDomains(args []string) int {
 			}
 			fmt.Printf("    %s\n", d)
 		}
-		if len(rules.CustomIPs) > 0 {
-			fmt.Println("  —— IP 钉扎白名单（不经 DNS，直接 /32）——")
-			for i, ip := range rules.CustomIPs {
-				if i >= 10 {
-					fmt.Printf("    … 共 %d 条\n", len(rules.CustomIPs))
+		if len(effIPs) > 0 {
+			fmt.Printf("  —— IP/CIDR 静态钉扎（预设 %d + 自定义 %d → 合并生效 %d 条 /N 前缀，不受 DNS TTL 影响）——\n",
+				len(rules.ProxyIPs), len(rules.CustomIPs), len(effIPs))
+			for i, ip := range effIPs {
+				if i >= 20 {
+					fmt.Printf("    … 共 %d 条\n", len(effIPs))
 					break
 				}
 				fmt.Printf("    %s\n", ip)
@@ -555,27 +560,65 @@ func pluginDomains(args []string) int {
 
 	case "ip":
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip>")
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip|cidr>")
 			return 2
 		}
-		ci := append([]string{}, rules.CustomIPs...)
+		norm, err := domain.ParseIPv4CIDR(args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		existing := domain.NormalizeIPv4CIDRsBestEffort(rules.CustomIPs)
 		switch args[1] {
 		case "add":
-			ci = append(ci, args[2])
-		case "rm":
-			var keep []string
-			for _, ip := range ci {
-				if ip != args[2] {
-					keep = append(keep, ip)
+			kept, skipped, err := domain.NormalizeIPv4CIDRs(append(existing, norm))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			if len(kept) > pcPinMaxIPs {
+				fmt.Fprintf(os.Stderr, "自定义 IP/CIDR 条目数超过上限 %d，未写入\n", pcPinMaxIPs)
+				return 1
+			}
+			rc := saveCustoms(rules.CustomDomains, rules.CustomDirect, kept)
+			if rc == 0 {
+				alreadyCovered := false
+				for _, sk := range skipped {
+					if sk == norm {
+						alreadyCovered = true
+						break
+					}
+				}
+				if alreadyCovered {
+					fmt.Printf("ℹ %s 已存在或已被更宽前缀覆盖（已跳过）\n", norm)
+				} else {
+					fmt.Printf("✓ 已添加 %s\n", norm)
 				}
 			}
-			ci = keep
+			return rc
+		case "rm":
+			var keep []string
+			removed := false
+			for _, ip := range existing {
+				if ip == norm {
+					removed = true
+					continue
+				}
+				keep = append(keep, ip)
+			}
+			rc := saveCustoms(rules.CustomDomains, rules.CustomDirect, keep)
+			if rc == 0 {
+				if removed {
+					fmt.Printf("✓ 已删除 %s\n", norm)
+				} else {
+					fmt.Printf("ℹ 未找到 %s（当前保留 %d 条）\n", norm, len(keep))
+				}
+			}
+			return rc
 		default:
-			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip>")
+			fmt.Fprintln(os.Stderr, "用法: mynet plugin domains ip add|rm <ip|cidr>")
 			return 2
 		}
-		// IP 列表不走 normalizeDomainName（那是域名语义）；去重按字面。
-		return saveCustoms(rules.CustomDomains, rules.CustomDirect, uniqIPs(ci))
 
 	case "direct":
 		if len(args) < 3 {

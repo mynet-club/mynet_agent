@@ -249,6 +249,7 @@ type dnsHookRules struct {
 	// 不塞 8.8.8.8——那也会绕隧道，不如直接问 peer。
 	foreign        []string
 	direct         map[string]bool
+	presetIPs      []string
 	customIPs      []string
 	signature      string
 	block          *dnsAdBlock
@@ -396,6 +397,7 @@ func newHookRulesFromPolicy() *dnsHookRules {
 		// 云端 direct-domains.txt 与本机 CustomDirect 合并为「直连」，
 		// 均可排除加速白名单；冲突时直连压加速，拦截压一切（shouldPin 顺序）。
 		dr = &pcRules
+		r.presetIPs = append([]string{}, dr.ProxyIPs...)
 		r.customIPs = append([]string{}, dr.CustomIPs...)
 		for _, d := range dr.EffectiveDirect() {
 			r.direct[normalizeDomainName(d)] = true
@@ -407,6 +409,20 @@ func newHookRulesFromPolicy() *dnsHookRules {
 	r.foreign, r.upstreamError = hookForeignUpstreams(p, dr)
 	r.domestic = defaultDomesticUpstreams(dr)
 	return r
+}
+
+// explicitPrefixes 合并云端预设（presetIPs）与本机自定义（customIPs），
+// 返回规范化且包含收敛后的 IPv4 CIDR 列表（含单 IP 规范化为 /32）。
+func (r *dnsHookRules) explicitPrefixes() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	all := make([]string, 0, len(r.presetIPs)+len(r.customIPs))
+	all = append(all, r.presetIPs...)
+	all = append(all, r.customIPs...)
+	r.mu.RUnlock()
+	return domain.NormalizeIPv4CIDRsBestEffort(all)
 }
 
 func (r *dnsHookRules) shouldPin(qname string) bool {
@@ -911,7 +927,7 @@ func (s *dnsHookServer) refresh(fresh *dnsHookRules, now time.Time) error {
 	}
 	fresh.mu.RLock()
 	copyRules := &dnsHookRules{
-		proxied: fresh.proxied, direct: fresh.direct, customIPs: fresh.customIPs,
+		proxied: fresh.proxied, direct: fresh.direct, presetIPs: fresh.presetIPs, customIPs: fresh.customIPs,
 		foreign: fresh.foreign, domestic: fresh.domestic, signature: fresh.signature,
 	}
 	fresh.mu.RUnlock()
