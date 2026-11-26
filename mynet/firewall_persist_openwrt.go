@@ -29,13 +29,46 @@ import (
 // （fw4 reload/restart 后会调用 include 脚本重放规则）。
 func currentFirewallBackend() FirewallBackend { return FirewallBackendFw4 }
 
+// openwrtFirewallProfile 探测本机 OpenWrt 实际使用的防火墙栈。
+//
+//   - fw4/nft  ：`nft` CLI 可用（正常 OpenWrt 23.05+ 默认）
+//   - fw3/iptables：无 nft，但有 fw3 或 iptables（本仓历史已支持，2026-10-12 重构后
+//     只剩 fw4 分支而丢失；见 .184 2026-11-26 事故）
+//
+// 两者共用同一份 include 路径与 UCI 登记；差别只在 include 的方言与 .nft 产物。
+func openwrtFirewallProfile() (string, error) {
+	if _, err := exec.LookPath("nft"); err == nil {
+		return "fw4", nil
+	}
+	if _, err := os.Stat("/sbin/fw3"); err == nil {
+		return "fw3", nil
+	}
+	if _, err := exec.LookPath("iptables-restore"); err == nil {
+		return "fw3", nil
+	}
+	if _, err := exec.LookPath("iptables"); err == nil {
+		return "fw3", nil
+	}
+	return "", fmt.Errorf("无可用防火墙加载器：nft / fw3 / iptables 均不存在")
+}
+
 // WriteFirewallInclude 写 include 脚本（0755）并保证 UCI include 段指向它。幂等。
 // tunDev 可为空（bundle 未就绪）：脚本只出骨架，等 sync 按实际接口名重写。
 func WriteFirewallInclude(home, tunDev string) error {
 	if err := ensureProxyExitReplay(home, tunDev); err != nil {
 		return err
 	}
-	body, err := FirewallIncludeScript(tunDev)
+	profile, err := openwrtFirewallProfile()
+	if err != nil {
+		return err
+	}
+
+	var body string
+	if profile == "fw4" {
+		body, err = FirewallIncludeScript(tunDev)
+	} else {
+		body, err = firewallIncludeScriptIPTables(tunDev, firewallResolvedWAN())
+	}
 	if err != nil {
 		return err
 	}
@@ -46,10 +79,29 @@ func WriteFirewallInclude(home, tunDev string) error {
 	if err := writeFirewallArtifact(path, []byte(body), 0o755); err != nil {
 		return fmt.Errorf("写 include: %w", err)
 	}
-	// nft 产物是 include 末尾 `for f in *.nft` 的输入 —— OpenWrt 也必须写，
-	// 否则 fw4 reload 时只有 include 里的网关规则，proxy 集合/规则全丢。
-	if err := WriteFirewallNftArtifact(home, tunDev); err != nil {
-		return fmt.Errorf("写 nft 产物: %w", err)
+	if profile == "fw4" {
+		// nft 产物是 include 末尾 `for f in *.nft` 的输入 —— OpenWrt 也必须写，
+		// 否则 fw4 reload 时只有 include 里的网关规则，proxy 集合/规则全丢。
+		if err := WriteFirewallNftArtifact(home, tunDev); err != nil {
+			return fmt.Errorf("写 nft 产物: %w", err)
+		}
+	} else {
+		// fw3 不消费 nft 产物：清掉可能的历史残留，避免两代产物互相误导。
+		if err := os.Remove(FirewallNftPath(home)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("清 nft 产物: %w", err)
+		}
+	}
+	return registerOpenWrtInclude(path, profile)
+}
+
+// registerOpenWrtInclude 登记 UCI include 段（fw3 与 fw4 同一机制：fw3 reload
+// 也会执行 type=script 的 include）。fw4_compatible 只在 fw4 下声明。
+func registerOpenWrtInclude(path, profile string) error {
+	fw4Compat := ""
+	if profile == "fw4" {
+		fw4Compat = `uci set firewall.mynet_include.fw4_compatible=1; `
+	} else {
+		fw4Compat = `uci -q delete firewall.mynet_include.fw4_compatible || true; `
 	}
 	// UCI 登记：命名段 `config include 'mynet_include'`（type script）。
 	// 段名即标识 —— fw4 的 include 段**不认 name option**（写 name 会报
@@ -62,7 +114,7 @@ func WriteFirewallInclude(home, tunDev string) error {
 		`uci -q get firewall.mynet_include >/dev/null || uci set firewall.mynet_include=include; ` +
 		`uci set firewall.mynet_include.enabled=1; ` +
 		`uci set firewall.mynet_include.type=script; ` +
-		`uci set firewall.mynet_include.fw4_compatible=1; ` +
+		fw4Compat +
 		`uci set firewall.mynet_include.path=` + path + `; uci commit firewall`
 	if out, err := exec.Command("sh", "-c", step).CombinedOutput(); err != nil {
 		return fmt.Errorf("uci include 登记: %w (%s)", err, strings.TrimSpace(string(out)))
