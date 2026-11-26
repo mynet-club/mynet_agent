@@ -91,11 +91,11 @@ type nodeMonitor struct {
 // 发一半会 422，而 422 的报文只提第一个缺失字段（"and 2 more errors"），
 // 很容易补一个漏两个。wanip / addresses / peers_status 是 nullable，可省。
 type nodeSelf struct {
-	IsRunning      bool   `json:"is_running"`
-	ConnectedPeers int    `json:"connected_peers"`
-	TotalPeers     int    `json:"total_peers"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	LastActiveAt   int64  `json:"last_active_at"`
+	IsRunning        bool   `json:"is_running"`
+	ConnectedPeers   int    `json:"connected_peers"`
+	TotalPeers       int    `json:"total_peers"`
+	UptimeSeconds    int64  `json:"uptime_seconds"`
+	LastActiveAt     int64  `json:"last_active_at"`
 	RxBytes          uint64 `json:"rx_bytes"`
 	TxBytes          uint64 `json:"tx_bytes"`
 	ProxyIngressOpen *bool  `json:"proxy_ingress_open,omitempty"`
