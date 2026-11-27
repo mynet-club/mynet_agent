@@ -166,41 +166,41 @@ func countActiveEntries(dynamic map[string]time.Time, explicit []string) int {
 	return count
 }
 
-// markSharedIfPinned —— 普通（非白名单）域名解析到「已被钉进隧道」的 IP 时，
-// 说明这是共享 CDN：同一个 IP 既服务白名单域名，也服务普通应用。
-// /32 路由按 IP 生效，无法区分应用，只能让该 IP 回直连，否则普通应用一起被劫持。
-// 显式钉扎的 IP/CIDR（预设或 custom_ips）优先级最高，不受共享 CDN 降级影响。
-func (s *pcProxySession) markSharedIfPinned(ips []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var added []string
-	for _, ip := range ips {
-		if isCleanDNSIP(ip) {
-			continue // 干净 DNS 永久钉扎，不因共享解钉
+// domainLastUsed 返回域名下所有 IP 中最晚的租约截止时间（用于 LRU 淘汰排序）。
+func domainLastUsed(ips map[string]time.Time) time.Time {
+	var latest time.Time
+	for _, exp := range ips {
+		if exp.After(latest) {
+			latest = exp
 		}
-		if domain.IPv4PrefixContainsAny(s.explicitPrefixes, ip) {
-			continue // 显式 IP/CIDR 优先级最高，不因共享 CDN 降级
-		}
-		if _, ok := s.IPs[ip]; !ok {
-			continue
-		}
-		if directIPExempted(ip) {
-			continue
-		}
-		added = append(added, ip)
 	}
-	if len(added) == 0 {
-		return
-	}
-	list := loadHookDirectIPs()
-	list = append(list, added...)
-	if err := saveHookDirectIPs(list); err == nil {
-		hookLogf("shared IP -> direct: %v", added)
-	}
+	return latest
 }
 
-// observe 不因缓存命中延长租约；until 必须来自 DNS 应答的剩余 TTL。
-// 容量满时显式失败，不能驱逐仍被 OS 缓存使用的地址后让它意外直连。
+// evictOldestDomain 淘汰最久未使用的动态域名（排除 keepName），并重算 activeLocked。
+func (s *pcProxySession) evictOldestDomain(keepName string, rules *dnsHookRules, now time.Time) (dynamic map[string]time.Time, explicit []string, evicted bool) {
+	oldestName := ""
+	var oldestTime time.Time
+	for name, ips := range s.Domains {
+		if name == keepName {
+			continue
+		}
+		last := domainLastUsed(ips)
+		if oldestName == "" || last.Before(oldestTime) {
+			oldestName = name
+			oldestTime = last
+		}
+	}
+	if oldestName == "" {
+		dynamic, explicit = s.activeLocked(rules, now)
+		return dynamic, explicit, false
+	}
+	delete(s.Domains, oldestName)
+	dynamic, explicit = s.activeLocked(rules, now)
+	return dynamic, explicit, true
+}
+
+// observe 写入或刷新域名的路由钉扎租约；满容量时按 LRU 淘汰最久未使用的动态域名。
 func (s *pcProxySession) observe(name string, ips []string, until, now time.Time, rules *dnsHookRules, tun string) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,16 +214,6 @@ func (s *pcProxySession) observe(name string, ips []string, until, now time.Time
 	if !rules.shouldPin(name) {
 		return nil
 	}
-	dynamic, explicit := s.activeLocked(rules, now)
-	// 直连 IP 豁免仅作用于动态 DNS pin，不降级显式 IP/CIDR。
-	for ip := range dynamic {
-		if directIPExempted(ip) && !domain.IPv4PrefixContainsAny(explicit, ip) {
-			delete(dynamic, ip)
-		}
-	}
-	if len(s.Domains) >= pcPinMaxIPs && s.Domains[name] == nil {
-		return fmt.Errorf("active domain limit %d reached", pcPinMaxIPs)
-	}
 	next := map[string]time.Time{}
 	for ip, exp := range s.Domains[name] {
 		next[ip] = exp
@@ -234,16 +224,29 @@ func (s *pcProxySession) observe(name string, ips []string, until, now time.Time
 			continue
 		}
 		ip = v4.String()
-		dynamic[ip] = until
 		if next[ip].Before(until) {
 			next[ip] = until
 		}
 	}
-	if countActiveEntries(dynamic, explicit) > pcPinMaxIPs {
-		return fmt.Errorf("active IP limit %d reached", pcPinMaxIPs)
-	}
 	if len(next) > 0 {
 		s.Domains[name] = next
+	}
+	dynamic, explicit := s.activeLocked(rules, now)
+	for {
+		// 直连 IP 豁免仅作用于动态 DNS pin，不降级显式 IP/CIDR。
+		for ip := range dynamic {
+			if directIPExempted(ip) && !domain.IPv4PrefixContainsAny(explicit, ip) {
+				delete(dynamic, ip)
+			}
+		}
+		if len(s.Domains) <= pcPinMaxIPs && countActiveEntries(dynamic, explicit) <= pcPinMaxIPs {
+			break
+		}
+		var evicted bool
+		dynamic, explicit, evicted = s.evictOldestDomain(name, rules, now)
+		if !evicted {
+			return fmt.Errorf("active IP limit %d reached", pcPinMaxIPs)
+		}
 	}
 	return s.syncLocked(rules, tun, now)
 }

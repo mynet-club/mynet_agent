@@ -21,12 +21,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mynet-club/mynet_agent/shared"
 )
 
-// pcPinMaxIPs 是活跃 IP 与域名的容量上限。满时明确报错，已有有效租约不被驱逐。
+// pcPinMaxIPs 是活跃 IP 与域名的容量上限；满时按 LRU 淘汰最久未使用的动态域名。
 const pcPinMaxIPs = 512
+
+// pcPinLeaseTTL 是动态域名路由钉扎的租约时长（脱离短 DNS TTL，避免 CDN 域名频繁掉出路由表）。
+const pcPinLeaseTTL = 7 * 24 * time.Hour
 
 // isPCProxyForm 是否 PC 形态（有主表、无策略表）。
 func isPCProxyForm(snap *shared.SystemSnapshot) bool {

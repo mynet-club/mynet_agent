@@ -1124,14 +1124,11 @@ func (s *dnsHookServer) answer(query []byte) []byte {
 	if s.rules.block.blockedAlias(answer) {
 		return dnsBlockedAnswer(query)
 	}
-	// 返回给系统的 TTL 同样受上限约束，避免 OS 缓存比路由租约更长。
+	// 返回给系统的 TTL 仍受上限约束，以便域名换 IP 时系统能及时重查；
+	// 路由钉扎本身脱离短 DNS TTL，改用长期租约（pcPinLeaseTTL）。
 	ttl := limitDNSResponseTTL(answer, uint32(dnsCacheMaxTTL/time.Second))
 	ips := extractDNSAnswerAIDs(answer)
 	if !s.rules.shouldPin(qname) {
-		// 普通域名解析到已被钉的 IP → 共享 CDN，改直连（避免劫持普通应用）
-		if len(ips) > 0 {
-			s.pins.markSharedIfPinned(ips)
-		}
 		return answer
 	}
 	if s.rules.shouldPin(qname) {
@@ -1140,16 +1137,15 @@ func (s *dnsHookServer) answer(query []byte) []byte {
 			if tun == "" {
 				return dnsFailure(query)
 			}
-			// TTL=0 的回答不缓存；用一秒短租约保证本次连接有机会使用路由。
-			leaseTTL := ttl
-			if leaseTTL <= 0 {
-				leaseTTL = time.Second
-			}
 			now := time.Now()
 			if !cached {
-				expires = now.Add(leaseTTL)
+				cacheTTL := ttl
+				if cacheTTL <= 0 {
+					cacheTTL = time.Second
+				}
+				expires = now.Add(cacheTTL)
 			}
-			if err := s.pins.observe(qname, ips, expires, now, s.rules, tun); err != nil {
+			if err := s.pins.observe(qname, ips, now.Add(pcPinLeaseTTL), now, s.rules, tun); err != nil {
 				hookLogf("query %s: %v", qname, err)
 				return dnsFailure(query)
 			}

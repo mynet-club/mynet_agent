@@ -222,26 +222,23 @@ func TestPCSessionInstallFailureRetriesAndRemainsOwned(t *testing.T) {
 	}
 }
 
-func TestPCSessionBoundsActiveSetWithoutEvictingLiveIPs(t *testing.T) {
+func TestPCSessionEvictsLRUDomainsAtCapacity(t *testing.T) {
 	h := newSessionHarness(t)
 	now := time.Now()
-	r := sessionRules("a.test", "b.test")
+	r := sessionRules("a.test", "b.test", "c.test")
 	var ips []string
 	for i := 0; i < pcPinMaxIPs; i++ {
 		ips = append(ips, fmt.Sprintf("198.18.%d.%d", i/256, i%256))
 	}
 	mustObserve(t, h, r, "a.test", now, ips...)
-	before := len(h.ops)
-	if err := h.s.observe("b.test", []string{"192.0.2.9"}, now.Add(time.Minute), now, r, "utun4"); err == nil {
-		t.Fatal("over-capacity accepted")
+	// 满容后插入新域名应按 LRU 淘汰最老的 a.test，而不是报错失败
+	mustObserve(t, h, r, "b.test", now.Add(time.Second), "192.0.2.9")
+	if _, ok := h.s.Domains["a.test"]; ok {
+		t.Fatal("oldest domain a.test should be evicted at capacity")
 	}
-	if len(h.s.Domains) != 1 || len(h.ops) != before {
-		t.Fatal("capacity failure evicted active routes")
+	if _, ok := h.s.Domains["b.test"]; !ok || h.fib["192.0.2.9/32"] != "utun4" {
+		t.Fatal("new domain b.test should be pinned after LRU eviction")
 	}
-	if err := h.s.sync(r, "utun4", now.Add(61*time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	mustObserve(t, h, r, "b.test", now.Add(62*time.Second), "192.0.2.9")
 }
 
 func TestPCSessionMigratesLegacyPinsWithoutPermanentLeases(t *testing.T) {
@@ -350,11 +347,6 @@ func TestCleanDNSPermanentlyPinned(t *testing.T) {
 	}
 	if h.fib["192.0.2.4/32"] != "utun4" {
 		t.Fatal("custom IP missing")
-	}
-	// 共享 IP 解钉不得触碰干净 DNS
-	h.s.markSharedIfPinned([]string{"1.1.1.1", "8.8.8.8", "192.0.2.4"})
-	if isCleanDNSIP("1.1.1.1") != true {
-		t.Fatal("clean DNS must stay pinned")
 	}
 	// 清空列表后 sync 会撤掉永久钉扎
 	if err := saveCleanDNSList(nil); err != nil {

@@ -68,15 +68,6 @@ func TestPCSessionExplicitCIDRSurvivesDNSTTLExpiryAndSharedCDN(t *testing.T) {
 		t.Fatalf("uncovered dynamic IP missing: %v", h.fib)
 	}
 
-	// 普通域名命中显式前缀内 IP 与动态 IP：前者不降级，后者正常写入直连豁免
-	h.s.markSharedIfPinned([]string{"142.250.4.188", "198.51.100.7"})
-	if directIPExempted("142.250.4.188") {
-		t.Fatal("explicit CIDR IP must not be downgraded by markSharedIfPinned")
-	}
-	if !directIPExempted("198.51.100.7") {
-		t.Fatal("dynamic non-explicit IP should still be marked shared -> direct")
-	}
-
 	// 超过 DNS TTL 后再次同步：动态 IP 过期撤销，但 142.250.0.0/15 仍稳固在隧道口
 	if err := h.s.sync(r, "utun4", now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
