@@ -64,10 +64,10 @@ const (
 // （realignGnbUnitAfterSetup 只管 systemd 单元），坑会一直留着。
 // TestLaunchdSpecsDoNotEmbedGnbConfPath 锁这条：要内嵌，先给 plist 归位。
 func launchdMynetdSpec(home, gateways, binDir string) (argv []string, env map[string]string) {
+	_ = gateways // 初始网关落 $MYNET_HOME/conf/gateways.json，不注入 plist 环境变量以免锁死 WebUI 修改
 	env = map[string]string{
-		"MYNET_HOME":     home,
-		"MYNET_GATEWAYS": gateways,
-		"MYNET_BIN":      filepath.Join(binDir, "mynet"),
+		"MYNET_HOME": home,
+		"MYNET_BIN":  filepath.Join(binDir, "mynet"),
 		// route/ifconfig 在 /sbin，launchd 的默认 PATH 不含它 ——
 		// 与 apply/node-status 踩过的是同一个坑
 		"PATH": "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -314,16 +314,14 @@ func platformUninstall(home string, keepBin, dry bool) int {
 // 无内嵌单元：launchd plist 由 writeLaunchdPlist 现场生成（systemd/procd 模板不参与）。
 func installDarwin(prefix, home, gateways, gnbBin string, enable, dry bool) int {
 	binDir := filepath.Join(prefix, "bin")
-	envPath := filepath.Join(prefix, "etc", "mynetd.env") // 仅作文档，launchd 用 EnvironmentVariables
 
 	printInstallActionsHeader("服务安装", dry)
-	fmt.Printf("  写 %s/%s.plist\n", launchdPlistDir, LabelMynetd)
+	fmt.Printf("  写 %s/%s.plist  (MYNET_HOME=%s, MYNET_BIN=%s/mynet)\n",
+		launchdPlistDir, LabelMynetd, home, binDir)
 	fmt.Println("  （gnb 不进 launchd：darwin 的 gnb 无 --systemd，由 mynetd 拉起）")
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s/{mynet,mynetd}\n", binDir)
 	fmt.Printf("  置备 gnb 四件套到标准位 %s/bin（源: 旧 home 树/包内位 → /usr/local/bin → --gnb-bin 同目录）\n", prefix)
-	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s/mynet)\n",
-		envPath, home, gateways, binDir)
-	fmt.Printf("  建 %s/{conf,var}\n", home)
+	fmt.Printf("  建 %s/{conf,var}，写 %s/conf/gateways.json  (%s)\n", home, home, gateways)
 	if enable {
 		fmt.Println("  launchctl bootstrap system（com.mynet.mynetd；gnb 由 mynetd 拉起）")
 		fmt.Printf("  写 %s/%s.plist 并 bootstrap 到控制台用户 gui 域（托盘；mynet_tray 不在位则跳过）\n",
@@ -363,13 +361,18 @@ func installDarwin(prefix, home, gateways, gnbBin string, enable, dry bool) int 
 	_, _ = launchctl("bootout", "system/"+LabelMynetd)
 	_, _ = launchctl("bootout", "system/"+LabelGNB)
 
-	// 2) MYNET_HOME 目录
+	// 2) MYNET_HOME 目录 + 初始网关落 conf/gateways.json（不写进 plist 环境变量）
 	for _, sub := range []string{"conf", "var"} {
 		if err := os.MkdirAll(filepath.Join(home, sub), 0o700); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 	}
+	if err := writeGatewaysFile(home, gateways); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("installed", filepath.Join(home, "conf", "gateways.json"))
 
 	runInstallDetector(binDir, home)
 	provisionProxyIfStamped(home)

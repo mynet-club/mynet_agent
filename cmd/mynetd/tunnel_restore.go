@@ -64,3 +64,7 @@ func restoreTunnelIfNeeded(runningFn func(driver string) bool, startFn func(driv
 	}
 	_ = startFn(drv)
 }
+
+func currentWantRunning() bool {
+	return tunnelstate.Load().WantRunning
+}

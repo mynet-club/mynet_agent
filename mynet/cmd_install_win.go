@@ -35,14 +35,14 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 
 	printInstallActionsHeader("Windows 服务安装", dry)
 	fmt.Printf("  检查二进制已在位（安装包负责）: %s\\{mynet.exe,mynetd.exe}\n", binDir)
-	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_GATEWAYS=%s, MYNET_BIN=%s)\n",
-		envPath, home, gateways, mynetExe)
-	fmt.Printf("  建 %s\\{conf,var}\n", home)
+	fmt.Printf("  写 %s  (MYNET_HOME=%s, MYNET_BIN=%s)\n",
+		envPath, home, mynetExe)
+	fmt.Printf("  建 %s\\{conf,var}，写 %s\\conf\\gateways.json  (%s)\n", home, home, gateways)
 	if enable {
 		fmt.Println("  注册 Windows 服务 mynetd（SCM，start= auto）")
 		fmt.Println("  （gnb 不单独立服务：由 mynetd auto_restore_tunnel 拉起）")
 		fmt.Println(`  托盘自启: reg add HKLM …\Run\MyNetTray（mynet_tray.exe 在位才注册）`)
-		fmt.Println("  装完自动打开 WebUI: http://127.0.0.1:8096/ui/（等端口就绪，失败只提示）")
+		fmt.Printf("  装完自动打开 WebUI: http://%s/gui/（等端口就绪，失败只提示）\n", DefaultLocalAPI)
 	}
 	if dry {
 		fmt.Println("\n--dry-run：以上都没有执行")
@@ -74,7 +74,13 @@ func installWindows(prefix, home, gateways, gnbBin string, enable, dry bool) int
 		}
 	}
 
-	// 3) 环境文件（Windows 服务/计划任务读它）
+	// 3) 网关配置面（conf/gateways.json）+ 运行时定位 env 文件（不含 MYNET_GATEWAYS）
+	if err := writeGatewaysFile(home, gateways); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("installed", filepath.Join(home, "conf", "gateways.json"))
+
 	if err := writeEnvFile(envPath, home, gateways, binDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -161,7 +167,7 @@ func openWebUIBestEffort() {
 		}
 		time.Sleep(2 * time.Second)
 	}
-	url := "http://" + DefaultLocalAPI + "/ui/"
+	url := "http://" + DefaultLocalAPI + "/gui/"
 	if !ready {
 		fmt.Println("⚠ API 端口未就绪，未自动打开浏览器 —— 手动访问", url)
 		return

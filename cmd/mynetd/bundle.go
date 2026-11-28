@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/mynet-club/mynet_agent/shared"
 	"github.com/mynet-club/mynet_agent/shared/domain"
@@ -27,6 +28,7 @@ import (
 // file or directory」；gateway 推来的 bundle_changed 事件也只是去跑那个注定
 // 失败的 refresh（V1-10①）。现在改成**先拉后刷**。
 type bundleStore struct {
+	mu       sync.Mutex
 	path     string // var/bundle.json —— 执行器读的就是这个
 	etagPath string // var/bundle.etag —— 条件请求用，避免每次全量下发
 }
@@ -60,6 +62,9 @@ func (s *bundleStore) ETag() string {
 //
 // 304 不是失败。把它当失败会让「配置没变」这件事在日志里看起来像故障。
 func (s *bundleStore) Sync(ctx context.Context, fetch bundleFetcher) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	code, etag, body, err := fetch(ctx, s.ETag())
 	if err != nil {
 		return "", err
@@ -149,15 +154,34 @@ func validateEnvelope(raw []byte) error {
 	return nil
 }
 
-// atomicWrite 临时文件 + rename。与 shared.WriteSnapshot 同一套做法：
-// 读者（mynet refresh-*）任何时刻看到的都是完整文件，不会读到半截 JSON。
+// atomicWrite 随机临时文件 + rename，避免并发写同一 .tmp 文件产生 rename 竞态。
 func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }

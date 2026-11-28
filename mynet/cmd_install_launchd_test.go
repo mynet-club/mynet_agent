@@ -135,5 +135,9 @@ func TestLaunchdSpecsDoNotEmbedGnbConfPath(t *testing.T) {
 		if !strings.Contains(string(b), "<key>MYNET_HOME</key>") {
 			t.Errorf("%s: plist 缺 MYNET_HOME（conf 由运行时按它算）:\n%s", tc.name, b)
 		}
+		// 业务网关归 conf/gateways.json，不得写入 plist 环境变量锁死 WebUI 修改
+		if strings.Contains(string(b), "<key>MYNET_GATEWAYS</key>") {
+			t.Errorf("%s: plist 不得注入 MYNET_GATEWAYS:\n%s", tc.name, b)
+		}
 	}
 }

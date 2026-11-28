@@ -84,6 +84,8 @@ type Server struct {
 	UTCPairIntent func(peerID uint64, on bool) (UTCLocalStatus, error)
 	// UTCPairResult 云端写回结果（pending/rejected），由 GUI 在云端调用后回写本地。
 	UTCPairResult func(peerID uint64, result, reason string) error
+	// GatewayStatus 返回与网关 WS 长连接的实时状态（组合根注入）。
+	GatewayStatus func() map[string]any
 }
 
 func NewServer(cfg Config) *Server {
@@ -383,12 +385,21 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	data := map[string]any{
+		"daemon": "mynetd",
+		"listen": s.Addr(),
+		"role":   "transport-only",
+	}
+	if s.GatewayStatus != nil {
+		data["gateway"] = s.GatewayStatus()
+	} else {
+		data["gateway"] = map[string]any{
+			"connected": false,
+			"gateway":   firstGateway(),
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"success": true,
-		"data": map[string]any{
-			"daemon": "mynetd",
-			"listen": s.Addr(),
-			"role":   "transport-only",
-		},
+		"data":    data,
 	})
 }

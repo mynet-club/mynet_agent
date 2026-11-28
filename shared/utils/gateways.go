@@ -25,14 +25,18 @@ import (
 
 // ExplicitGateways 只认**显式配置**（env → gateways.json → agent.json 显式值），
 // 不吃 LoadAgentCfg 的代码默认 —— relay/wizard 这类要「没配就 502 指因」的调用方用它。
+//
+// 优先级（坚守 12-Factor 通用原则）：$MYNET_GATEWAYS 仅用于开发者/容器启动时临时覆盖，
+// 安装器、LaunchDaemon/systemd/Windows 服务与 tray 一律不注入默认 MYNET_GATEWAYS，
+// 初始网关与用户修改统一落在 conf/gateways.json。
 // ⚠️ 各调用方必须走本函数或 ResolveGateways，禁止各自 os.Getenv ——
 // relay 曾只读 env+agent.json 漏掉 gateways.json，登录中继 502（2026-10-12 .178 实测）。
 func ExplicitGateways() (list []string, source string, ok bool) {
-	// 1. 环境变量（调试/一次性覆盖）
+	// 1. 环境变量（调试/容器临时覆盖，高优先级）
 	if v := os.Getenv("MYNET_GATEWAYS"); v != "" {
 		return splitGateways(v), "env", true
 	}
-	// 2. conf/gateways.json（配置面）
+	// 2. conf/gateways.json（安装与 WebUI 配置面唯一真相）
 	if g := gatewaysFromJSON(GatewaysFile()); len(g) > 0 {
 		return g, "gateways.json", true
 	}

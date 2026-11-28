@@ -185,6 +185,34 @@ func runAgent(ctx context.Context) {
 		})
 	}
 
+	var (
+		gwCliMu sync.RWMutex
+		gwCli   *transport.Client
+	)
+	api.GatewayStatus = func() map[string]any {
+		gwCliMu.RLock()
+		cli := gwCli
+		gwCliMu.RUnlock()
+		if cli != nil {
+			st := cli.Status()
+			return map[string]any{
+				"connected":         st.Connected,
+				"gateway":           st.Gateway,
+				"last_connected_at": st.LastConnectedAt,
+				"last_error":        st.LastError,
+			}
+		}
+		gwURL := ""
+		if gl, _, err := utils.ResolveGateways(); err == nil && len(gl) > 0 {
+			gwURL = gl[0]
+		}
+		return map[string]any{
+			"connected":  false,
+			"gateway":    gwURL,
+			"last_error": "节点身份或网关通道尚未就绪",
+		}
+	}
+
 	if err := api.Start(); err != nil {
 		logger.Error("localapi 启动失败", "err", err)
 		os.Exit(1)
@@ -265,10 +293,10 @@ func runAgent(ctx context.Context) {
 	// ⚠️ 这里只**创建**不启动 —— 启动放在下面节点面客户端装配完之后，
 	// 否则 `--once`（专门用来调试上报的模式）会在 reporter 还没绑上时就跑完，
 	// 表现为「采了但没上报」，而这恰恰是最难查的一种静默失败。
-	hb := &heartbeatLoop{ops: execStd}
+	egressCache := &egressIPCache{}
+	hb := &heartbeatLoop{ops: execStd, egressIP: egressCache}
 
-	// 启动拉取 bundle 的完成信号，给 `-once` 用（理由见下面 -once 分支）。
-	// 声明在函数级：拉取在 MYNET_GATEWAYS 块内，而 -once 分支在块外。
+	// 启动拉取 bundle 的完成信号，给 `-once` 与启动隧道恢复协调顺序用。
 	var bundlePullDone chan struct{}
 
 	// WS → gateway（C-3 只带 X-Node-Id）。
@@ -315,9 +343,28 @@ func runAgent(ctx context.Context) {
 						}
 						return resp.Commands, nil
 					}
-					// V4-2：心跳走**同一条**节点面通路（签名 + gateway /v1/relay）。
-					// relay 白名单含 /api/v1/node（节点面业务），不需要给 gateway 加新面。
-					hb.setReporter(id.nodeID, c.reportHeartbeat)
+					// V4-2：心跳走节点面通路（签名 + gateway /v1/relay），并回填后端观测到的出网 IP。
+					hb.setReporter(id.nodeID, func(ctx context.Context, sendBody, signBody []byte) error {
+						obsIP, err := c.reportHeartbeatWithObserved(ctx, sendBody, signBody)
+						if err != nil {
+							return err
+						}
+						if changed, prev := egressCache.Update(obsIP); changed {
+							logger.Info("观测到节点出网 IP 变化", "node_id", id.nodeID, "old_ip", prev, "new_ip", obsIP)
+						}
+						return nil
+					})
+					// 开机设备信息上报走节点面 PATCH /api/v1/node/deviceinfo（DH+HMAC，无需用户 JWT）。
+					hb.setDeviceInfoReporter(func(ctx context.Context, payload map[string]any) error {
+						obsIP, err := c.reportDeviceInfo(ctx, payload)
+						if err != nil {
+							return err
+						}
+						if obsIP != "" {
+							_, _ = egressCache.Update(obsIP)
+						}
+						return nil
+					})
 					// T8：WebUI 改 proxy 后回写云端权威（同一签名通路）
 					api.ProxyWriteback = func(policy domain.ProxyPolicy, revision int64) (int64, error) {
 						raw, err := json.Marshal(policy)
@@ -353,10 +400,13 @@ func runAgent(ctx context.Context) {
 			}
 
 			dispatcher := newEventDispatcher(nodeID, execStd, pull, report)
-			// bundle_changed 的 service.reload 必须与 connect/config 写面互斥：
-			// connect 的 pull 自己会触发 bundle_changed，两边并行抢驱动锁会被
-			// exec 60s 超时 SIGKILL，且可能杀在 gnb Stop 之后（隧道停在「已断开」）。
+			// bundle_changed / command_queued 与 connect/config 写面互斥。
 			dispatcher.setConfigExclusive(api.TryRunExclusive)
+			dispatcher.setDriverRunning(func() bool {
+				_, _, err := execStd([]string{"service", "status"})
+				return err == nil
+			})
+			dispatcher.setWantRunning(currentWantRunning)
 			dispatcher.onLifecycleDone = hb.invalidateMetrics
 
 			// E-4：Lua 经 /api/v1/command-result 回报的结果，必须接到 report
@@ -423,6 +473,9 @@ func runAgent(ctx context.Context) {
 				logger.Error("transport 启动失败", "err", err)
 				return false
 			}
+			gwCliMu.Lock()
+			gwCli = cli
+			gwCliMu.Unlock()
 			cli.SetDialer(transport.WebSocketDialer)
 			go func() { _ = cli.Run(ctx) }()
 			return true
@@ -470,7 +523,17 @@ func runAgent(ctx context.Context) {
 	// 随 mynetd 恢复隧道：按启停意图（shared/tunnelstate）+ agent.json 开关。
 	// 判活（已在跑）问执行器 `mynet service status` 退出码，mynetd 不做 pid/kill -0（B2）。
 	go func() {
-		time.Sleep(2 * time.Second) // 等 localapi / bundle 就绪
+		// 先等启动 bundle 拉取完成（上限 10s），避免与启动 runBundleLifecycle 撞车。
+		if bundlePullDone != nil {
+			select {
+			case <-bundlePullDone:
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+		} else {
+			time.Sleep(2 * time.Second)
+		}
 		// 启动恢复也是**写节点状态**（拉起 gnb|wg），必须与 HTTP 写面互斥：
 		// 否则它与 LuCI/面板的 config 写并发时会同抢驱动 → 双 gnb 一类问题（O7 并发护序）。
 		// 尽力而为：拿不到锁（用户正在写）就跳过，以用户操作为准。
@@ -559,9 +622,12 @@ type heartbeatLoop struct {
 	// 保证 system.json 可用），而节点面客户端要等 MYNET_GATEWAYS 与密钥都就绪
 	// 才有。用 mutex 保护 —— 绑的时候 goroutine 可能已经在跑，
 	// 裸字段就是数据竞争（go test -race 会直接报）。
-	mu       sync.Mutex
-	nodeID   string
-	reporter func(ctx context.Context, sendBody, signBody []byte) error
+	mu                 sync.Mutex
+	nodeID             string
+	reporter           func(ctx context.Context, sendBody, signBody []byte) error
+	deviceInfoReporter func(ctx context.Context, payload map[string]any) error
+	deviceInfoSent     bool
+	egressIP           *egressIPCache
 
 	// metricsCached / metricsReady：启动采集结果。ready 后 beat 不再碰 ops。
 	metricsCached string
@@ -574,6 +640,13 @@ func (h *heartbeatLoop) setReporter(nodeID string, f func(context.Context, []byt
 	defer h.mu.Unlock()
 	h.nodeID = nodeID
 	h.reporter = f
+}
+
+// setDeviceInfoReporter 绑上节点面开机 deviceinfo 上报通道（DH+HMAC，无需用户 JWT）。
+func (h *heartbeatLoop) setDeviceInfoReporter(f func(context.Context, map[string]any) error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.deviceInfoReporter = f
 }
 
 func (h *heartbeatLoop) getReporter() (string, func(context.Context, []byte, []byte) error) {
@@ -609,6 +682,7 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 	// 首采失败则本拍放弃、下一拍重试 —— 「启动时拿到必要信息」为止，之后冻结。
 	h.mu.Lock()
 	ready, cached := h.metricsReady, h.metricsCached
+	devReporter, devSent := h.deviceInfoReporter, h.deviceInfoSent
 	h.mu.Unlock()
 
 	var stdout string
@@ -622,30 +696,48 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		// 本机态也保证 system.json 可用 —— 缺了就地跑 detector，
 		// 否则 apply --auto 读不到 system.json、路由装不全（启动漏 apply 的根因之一）。
 		// 同样只在启动时做，后续拍不碰 mynet。
-		if _, err := shared.ReadSnapshot(shared.DefaultSnapshotPath()); err != nil {
+		snap, snapErr := shared.ReadSnapshot(shared.DefaultSnapshotPath())
+		if snapErr != nil {
 			if _, _, dErr := h.ops([]string{"detector"}); dErr != nil {
 				logger.Warn("system.json 缺失且 detector 失败", "err", dErr)
 			} else {
 				logger.Info("system.json 缺失，已自动跑 detector")
+				snap, _ = shared.ReadSnapshot(shared.DefaultSnapshotPath())
 			}
 		}
 		h.mu.Lock()
 		h.metricsCached = stdout
 		h.metricsReady = true
 		h.mu.Unlock()
-		// 设备信息也是启动采一次（硬件不变）—— GUI 设备页的数据源。
-		// 失败不阻断心跳（后端未部署/未登录都可能），只记日志。
-		if _, stderr, err := h.ops([]string{"deviceinfo", "report"}); err != nil {
-			logger.Warn("deviceinfo 上报失败（GUI 设备页将为空）", "err", err, "stderr", strings.TrimSpace(stderr))
+		// 设备信息仅开机上报一次：走节点面 PATCH /api/v1/node/deviceinfo（DH+HMAC，不依赖用户 JWT）。
+		if !devSent && devReporter != nil {
+			payload := buildStartupDeviceInfo(snap)
+			if err := devReporter(ctx, payload); err != nil {
+				logger.Warn("开机节点面 deviceinfo 上报失败（不影响心跳）", "err", err)
+			} else {
+				h.mu.Lock()
+				h.deviceInfoSent = true
+				h.mu.Unlock()
+				logger.Info("开机设备信息已通过节点面安全通道上报")
+			}
 		}
 		logger.Info("heartbeat 首次采集完成，后续拍只发存活心跳（不再调 mynet）")
 	} else {
 		stdout = cached
+		// 若启动首拍时节点面身份尚未就绪，待绑定后补报一次开机设备信息（仅一次）。
+		if !devSent && devReporter != nil {
+			snap, _ := shared.ReadSnapshot(shared.DefaultSnapshotPath())
+			payload := buildStartupDeviceInfo(snap)
+			if err := devReporter(ctx, payload); err == nil {
+				h.mu.Lock()
+				h.deviceInfoSent = true
+				h.mu.Unlock()
+				logger.Info("开机设备信息已补报完成")
+			}
+		}
 	}
 
-	// 上报（V4-2）。此前这里是 `_ = out` —— 采完就丢，于是「心跳」这个词在
-	// mynetd 里只对应 WS 上一个 `{"t":"ping"}`，后端的 monitor/heartbeat
-	// 从来没收到过真指标。
+	// 上报（V4-2）。
 	nodeID, report := h.getReporter()
 	if report == nil {
 		return // 纯本机模式（未配 MYNET_GATEWAYS，或节点面密钥未就绪）
@@ -654,22 +746,46 @@ func (h *heartbeatLoop) beat(ctx context.Context) {
 		logger.Warn("heartbeat metrics 无输出，跳过本次上报", "node_id", nodeID)
 		return
 	}
-	// heartbeatBodies 每次打新 timestamp / last_active_at —— 这就是「活着」信号；
-	// 必填字段与 vpn_interfaces 来自启动快照（后端契约要求，缺了会被判离线）。
-	sendBody, signBody, err := heartbeatBodies(nodeID, stdout)
+	// heartbeatBodiesWithWAN 每次打新 timestamp / last_active_at，并携带非阻塞缓存的出网 IP。
+	wanIP := h.egressIP.Get()
+	sendBody, signBody, err := heartbeatBodiesWithWAN(nodeID, stdout, wanIP)
 	if err != nil {
 		logger.Error("heartbeat 组装失败", "node_id", nodeID, "err", err)
 		return
 	}
 	if err := report(ctx, sendBody, signBody); err != nil {
-		// 上报失败**不该**让循环退出（下一拍再试），但必须说出来 ——
-		// 静默失败会让「节点显示在线却没有数据」这种状态查很久。
 		logger.Error("heartbeat 上报失败", "node_id", nodeID, "err", err)
 		return
 	}
-	// 成功走 Debug：30s 一次，Info 会把日志刷满，而「没消息」本身就是好消息。
-	// 排查时 MYNET_LOG_LEVEL=debug 就能看到每一拍。
-	logger.Debug("heartbeat 已上报", "node_id", nodeID, "bytes", len(sendBody), "live", ready)
+	logger.Debug("heartbeat 已上报", "node_id", nodeID, "bytes", len(sendBody), "live", ready, "wan_ip", wanIP)
+}
+
+// buildStartupDeviceInfo 从 system.json 与本机真实网卡汇总开机 deviceinfo 载荷。
+func buildStartupDeviceInfo(snap *shared.SystemSnapshot) map[string]any {
+	p := map[string]any{
+		"collected_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if snap != nil {
+		if snap.Distribution != "" {
+			p["os_name"] = snap.Distribution
+		} else if snap.OS != "" {
+			p["os_name"] = snap.OS
+		}
+		if snap.Kernel != "" {
+			p["kernel_version"] = snap.Kernel
+		}
+		if snap.Architecture != "" {
+			p["system_arch"] = snap.Architecture
+			p["cpu_arch"] = snap.Architecture
+		}
+		if n := len(snap.Interfaces); n > 0 {
+			p["nic_count"] = n
+		}
+	}
+	if ips := collectLocalNonLoopbackIPs(); len(ips) > 0 {
+		p["local_ips"] = ips
+	}
+	return p
 }
 
 // execMynetStd 适配 commands.Executor 签名

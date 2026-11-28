@@ -142,10 +142,13 @@ func TestWriteEnvFileIs0600AndCarriesAllThreeVars(t *testing.T) {
 	}
 	b, _ := os.ReadFile(p)
 	body := string(b)
-	for _, want := range []string{"MYNET_HOME=" + home, "MYNET_GATEWAYS=" + gw, "MYNET_BIN=" + binDir + "/mynet"} {
+	for _, want := range []string{"MYNET_HOME=" + home, "MYNET_BIN=" + binDir + "/mynet"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("env 缺 %q:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "MYNET_GATEWAYS=") {
+		t.Errorf("env 不得包含 MYNET_GATEWAYS（网关应落 conf/gateways.json）:\n%s", body)
 	}
 }
 

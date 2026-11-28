@@ -98,6 +98,8 @@ type nodeSelf struct {
 	LastActiveAt     int64  `json:"last_active_at"`
 	RxBytes          uint64 `json:"rx_bytes"`
 	TxBytes          uint64 `json:"tx_bytes"`
+	WanIP            string `json:"wanip,omitempty"`
+	WanIPv4          string `json:"wan_ipv4,omitempty"`
 	ProxyIngressOpen *bool  `json:"proxy_ingress_open,omitempty"`
 	ProxyRole        string `json:"proxy_role,omitempty"`
 }
@@ -111,6 +113,11 @@ type nodeSelf struct {
 //
 // metricsJSON 是 `mynet metrics --json` 的 stdout 原文。
 func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err error) {
+	return heartbeatBodiesWithWAN(nodeID, metricsJSON, "")
+}
+
+// heartbeatBodiesWithWAN 与 heartbeatBodies 相同，但可选附加非阻塞缓存的出网 IP。
+func heartbeatBodiesWithWAN(nodeID, metricsJSON, wanIP string) (sendBody, signBody []byte, err error) {
 	id, convErr := strconv.ParseInt(strings.TrimSpace(nodeID), 10, 64)
 	if convErr != nil || id <= 0 {
 		return nil, nil, fmt.Errorf("node_id 非法（后端要求 integer 且 ≥1）: %q", nodeID)
@@ -183,6 +190,12 @@ func heartbeatBodies(nodeID, metricsJSON string) (sendBody, signBody []byte, err
 		LastActiveAt: p.Timestamp,
 		RxBytes:      totalRx(snap),
 		TxBytes:      totalTx(snap),
+	}
+	if w := strings.TrimSpace(wanIP); w != "" {
+		ns.WanIP = w
+		if !strings.Contains(w, ":") {
+			ns.WanIPv4 = w
+		}
 	}
 	if snap.Proxy != nil {
 		open := snap.Proxy.IngressOpen

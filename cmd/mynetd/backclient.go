@@ -129,16 +129,49 @@ func (c *backClient) doSignedFull(
 // sendBody 是完整请求体，signBody 是去掉 node_monitor 的那份 —— 两者的区别
 // 见 doSigned 的注释。这里不自己拼 JSON，组装在 heartbeat.go。
 func (c *backClient) reportHeartbeat(ctx context.Context, sendBody, signBody []byte) error {
+	_, err := c.reportHeartbeatWithObserved(ctx, sendBody, signBody)
+	return err
+}
+
+// reportHeartbeatWithObserved 上报心跳并提取后端观测到的真实出网 IP（observed_ip）。
+func (c *backClient) reportHeartbeatWithObserved(ctx context.Context, sendBody, signBody []byte) (string, error) {
 	code, raw, err := c.doSigned(ctx, http.MethodPost, "/api/v1/node/heartbeat", sendBody, signBody)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// 201 也接受：后端现在返 200，但「创建一条心跳记录」语义上是 201，
 	// 哪天改了不该让节点侧集体报错。
 	if code != http.StatusOK && code != http.StatusCreated {
-		return fmt.Errorf("心跳上报返回 %d: %s", code, truncateBytes(raw, 300))
+		return "", fmt.Errorf("心跳上报返回 %d: %s", code, truncateBytes(raw, 300))
 	}
-	return nil
+	var resp struct {
+		ObservedIP string `json:"observed_ip"`
+	}
+	_ = json.Unmarshal(raw, &resp)
+	return strings.TrimSpace(resp.ObservedIP), nil
+}
+
+// reportDeviceInfo 节点面开机上报设备信息（PATCH /api/v1/node/deviceinfo，DH+HMAC 签名，
+// 不依赖用户 JWT）。返回后端观测到的真实出网 IP。
+func (c *backClient) reportDeviceInfo(ctx context.Context, payload map[string]any) (string, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	code, body, err := c.do(ctx, http.MethodPatch, "/api/v1/node/deviceinfo", raw)
+	if err != nil {
+		return "", err
+	}
+	if code < 200 || code >= 300 {
+		return "", fmt.Errorf("上报 deviceinfo HTTP %d: %s", code, truncateBytes(body, 200))
+	}
+	var resp struct {
+		Data struct {
+			PublicIP string `json:"public_ip"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(body, &resp)
+	return strings.TrimSpace(resp.Data.PublicIP), nil
 }
 
 // pendingCommand 是后端 `GET /api/v1/monitor/commands` 返回的单条命令。

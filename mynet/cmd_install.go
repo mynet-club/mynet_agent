@@ -261,14 +261,15 @@ func clearDownloadMarks(paths []string) []string {
 }
 
 // writeEnvFile 写 mynetd.env（0600 —— 它指向的 MYNET_HOME 里含节点私钥）。
-// 各平台的落盘路径不同（systemd: /etc/mynet/mynetd.env；windows: $home\mynetd.env）。
+// 仅写入运行时定位变量（MYNET_HOME / MYNET_BIN）；业务网关统一落 conf/gateways.json，
+// 避免安装期默认值以环境变量形态锁死 WebUI 修改。
 func writeEnvFile(path, home, gateways, binDir string) error {
+	_ = gateways
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	body := "# 由 mynet install 生成。改配置请改这里，不要改单元\n" +
+	body := "# 由 mynet install 生成。仅含运行时定位变量；网关配置请修改 conf/gateways.json\n" +
 		"MYNET_HOME=" + home + "\n" +
-		"MYNET_GATEWAYS=" + gateways + "\n" +
 		"MYNET_BIN=" + filepath.Join(binDir, "mynet") + "\n"
 
 	return os.WriteFile(path, []byte(body), 0o600)
@@ -440,7 +441,7 @@ func printInstallNextSteps(binDir string, darwin bool) {
 	fmt.Println("  4) mynet apply --active --auto && mynet service start gnb")
 	fmt.Println("  （detector 已在 install 时跑过；system.json 就绪）")
 	if darwin {
-		fmt.Println("  图形化路径：菜单栏托盘 → 打开控制台；未自动弹出时浏览器访问 http://127.0.0.1:8096/ui/")
+		fmt.Printf("  图形化路径：菜单栏托盘 → 打开控制台；未自动弹出时浏览器访问 http://%s/gui/\n", DefaultLocalAPI)
 	}
 }
 

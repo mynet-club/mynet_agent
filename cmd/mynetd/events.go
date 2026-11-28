@@ -9,11 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/mynet-club/mynet_agent/mynetd/commands"
@@ -84,13 +82,39 @@ type eventDispatcher struct {
 	// onLifecycleDone 在 bundle 落地链（可能重载驱动/改隧道）结束后回调，
 	// 用于通知 heartbeatLoop 失效一次启动快照以刷新 vpn_interfaces 运行态。
 	onLifecycleDone func()
+
+	// isDriverRunning 经组合根注入的执行器判活（mynet service status），
+	// 遵守 B2 边界且兼容 macOS launchd 与 OpenWrt procd / WireGuard。
+	isDriverRunning func() bool
+
+	// wantRunning 读取用户启停意图（tunnelstate.Load().WantRunning）。
+	// 用户主动断开时 bundle_changed 只落配置投影，不强行拉起隧道。
+	wantRunning func() bool
+
+	// deferredReloadArmed 防止遇锁延迟补跑重复定时。
+	deferredReloadArmed atomic.Bool
 }
 
-const maxPendingResults = 32
+const (
+	maxPendingResults    = 32
+	deferredReloadDelay  = 3 * time.Second
+	commandLockRetries   = 5
+	commandLockRetryWait = 2 * time.Second
+)
 
 // setConfigExclusive 注入与 HTTP 写面共享的互斥（main.go 装配 api.TryRunExclusive）。
 func (d *eventDispatcher) setConfigExclusive(fn func(func() error) bool) {
 	d.tryConfigExclusive = fn
+}
+
+// setDriverRunning 注入执行器侧的驱动存活探测（遵守 B2）。
+func (d *eventDispatcher) setDriverRunning(fn func() bool) {
+	d.isDriverRunning = fn
+}
+
+// setWantRunning 注入用户启停意图读取。
+func (d *eventDispatcher) setWantRunning(fn func() bool) {
+	d.wantRunning = fn
 }
 
 // bundleStatusUpdated 是 bundleStore.Sync 在拿到新版时返回的标记
@@ -168,8 +192,6 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 		return
 	}
 	d.runExclusive(name, func() {
-		// bundle_changed 先拉后刷（见 pullBundle）。route_changed 不需要 ——
-		// 它刷的是拓扑/路由，就地可完成，不依赖后端下发的配置包。
 		if name == "bundle_changed" {
 			if _, ok := d.pullBundle(name); !ok {
 				return
@@ -187,21 +209,6 @@ func (d *eventDispatcher) Handle(name string, data map[string]string) {
 }
 
 // runBundleLifecycle bundle 变更后的完整落地链。
-//
-// ⚠️ 此前 bundle_changed 只跑 refresh-config —— 也就是**只写配置文件**：
-// 不重启驱动（gnb 的 HotReload 是 false，见 driver/gnb.go 的 Capabilities，
-// 配置改了必须重启才生效），也不装内核路由。于是平台改了下发内容，
-// 节点侧「收到了、写盘了、但完全没生效」，而这正是最难发现的一类故障
-// （Phase 6 的 CPI-62 就是这个形态：隧道建好了、路由没装，ping 全丢）。
-//
-// 顺序**不能调换**：
-//  1. refresh-config —— 写出驱动原生配置（node.conf/route.conf/address.conf/密钥）
-//  2. service reload —— 重载驱动（Stop+Start），让它吃下新配置。
-//     不能用 start：已在跑时会短路，而 gnb 的 HotReload 是 false。
-//  3. apply --auto   —— 装内核路由。必须排在 2 之后：`ip route … dev gnb_tun`
-//     要求接口已存在，否则直接失败
-//
-// 每步都单独报结果，不因为前一步成功就假定后面也成功。
 func (d *eventDispatcher) runBundleLifecycle() {
 	// refresh-config 始终跑：写驱动投影是本地幂等写盘，与用户写面无互斥必要。
 	req := commands.Request{Op: commands.OpNodeRefresh}
@@ -211,6 +218,12 @@ func (d *eventDispatcher) runBundleLifecycle() {
 	} else {
 		d.logf("event: bundle_changed → 刷新驱动配置（node.refresh）失败: %s%s",
 			res.Error, stderrSuffix(res.Stderr))
+	}
+
+	// 尊重用户主动断开意图：want_running=false 时只落盘配置投影，不强行拉起隧道。
+	if d.wantRunning != nil && !d.wantRunning() {
+		d.logf("event: bundle_changed → 用户当前处于断开态（want_running=false），已更新配置投影，跳过 reload")
+		return
 	}
 
 	// 指纹：与「上次成功 reload 时」比。refresh-config 已写完新投影，
@@ -228,21 +241,12 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		label string
 		op    string
 	}{
-		// ⚠️ 必须 reload（Stop+Start），不能是 start：
-		// Start() 在驱动已在跑时会短路（先查 IsProcessAlive），而 gnb 的
-		// HotReload 是 false（见 driver/gnb.go 的 Capabilities）→
-		// **配置改了但完全没生效**。实测撞到：p6-B 的 route.conf 里已有新对端，
-		// 而 gnb_ctl 的对端列表里根本没有它 —— gnb 进程 etimes 显示是
-		// 17 分钟前起的，配置 1 分钟前才改。症状是「关系建好了、配置写了、
-		// 而隧道不通」，而日志里三步都是「成功」。
 		{"重载驱动", commands.OpServiceReload},
 		{"装内核路由", commands.OpRouteUpdate},
 	}
 	run := func() error {
 		for _, s := range steps {
 			req := commands.Request{Op: s.op}
-			// service reload 不带 name：执行器会从 bundle 的 driver 字段取，
-			// 守护进程不该硬编码驱动类型
 			res := commands.Run(d.exec, req, d.nodeID)
 			if res.OK {
 				d.logf("event: bundle_changed → %s（%s）成功", s.label, s.op)
@@ -260,14 +264,25 @@ func (d *eventDispatcher) runBundleLifecycle() {
 		return nil
 	}
 	// 与 connect/config 写面互斥：拿不到锁说明用户正在启停/改配置，
-	// 事件侧**让路**（用户操作自己会 apply+start），绝不并行抢驱动锁。
+	// 事件侧先让路并安排一次短延迟补跑（合并去抖），防止配置永久滞后。
 	if d.tryConfigExclusive != nil {
 		if !d.tryConfigExclusive(run) {
-			d.logf("event: bundle_changed → 有配置操作进行中，跳过 reload/route（以用户操作为准）")
+			d.logf("event: bundle_changed → 有配置操作进行中，%s 后延迟补跑 reload/route", deferredReloadDelay)
+			d.scheduleDeferredReload()
 		}
 		return
 	}
 	_ = run()
+}
+
+func (d *eventDispatcher) scheduleDeferredReload() {
+	if !d.deferredReloadArmed.CompareAndSwap(false, true) {
+		return
+	}
+	time.AfterFunc(deferredReloadDelay, func() {
+		d.deferredReloadArmed.Store(false)
+		d.runExclusive("bundle_changed", d.runBundleLifecycle)
+	})
 }
 
 // runLifecycleStep 单步执行（跳过 reload 时刷路由用）。
@@ -292,7 +307,6 @@ func driverConfFingerprint() string {
 	for _, n := range names {
 		b, err := os.ReadFile(filepath.Join(dir, n))
 		if err != nil {
-			// 文件缺失也参与指纹（有↔无是真实变更）
 			h.Write([]byte(n + "!\n"))
 			continue
 		}
@@ -321,27 +335,13 @@ func recordReloadFingerprint(fp string) {
 	_ = os.WriteFile(lastReloadFingerprintFile(), []byte(fp+"\n"), 0o644)
 }
 
-// driverLikelyRunning 粗判驱动进程是否在跑（只看 pid 文件，不 fork）。
-// 用于「配置未变」时决定要不要保住当前隧道；拿不准时返回 false（走 reload，保守）。
+// driverLikelyRunning 判活委派给执行器注入回调（mynet service status），
+// 严格遵守 B2 边界并同时兼容 macOS launchd、OpenWrt procd 与 WireGuard。
 func (d *eventDispatcher) driverLikelyRunning() bool {
-	dir, err := utils.ActiveNodeRuntimeDir()
-	if err != nil {
-		return false
+	if d.isDriverRunning != nil {
+		return d.isDriverRunning()
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "gnb.pid"))
-	if err != nil {
-		return false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		return false
-	}
-	// signal 0：进程存在性探测，不发信号
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return p.Signal(syscall.Signal(0)) == nil
+	return false
 }
 
 // runCommandPull 收到 command_queued 后回后端拉命令、执行、回报结果。
@@ -404,11 +404,64 @@ func (d *eventDispatcher) executeOne(ctx context.Context, cmd pendingCommand) {
 
 	req := commands.Request{ID: id, Op: op, Args: stringifyParams(cmd.Params)}
 	d.logf("command: 执行 %s → op=%s (id=%s)", cmd.Command, op, id)
-	res := commands.Run(d.exec, req, d.nodeID)
+
+	var res commands.Result
+	if isExclusiveCommandOp(op) && d.tryConfigExclusive != nil {
+		var acquired bool
+		for attempt := 0; attempt < commandLockRetries; attempt++ {
+			acquired = d.tryConfigExclusive(func() error {
+				res = commands.Run(d.exec, req, d.nodeID)
+				return nil
+			})
+			if acquired {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				res = commands.Result{ID: id, OK: false, Error: "等待配置写锁超时: " + ctx.Err().Error()}
+				d.reportResult(ctx, res)
+				return
+			case <-time.After(commandLockRetryWait):
+			}
+		}
+		if !acquired {
+			res = commands.Result{ID: id, OK: false, Error: "本机配置写操作进行中，命令等待互斥锁超时"}
+			d.logf("command: %s 等待配置互斥锁超时 (id=%s)", cmd.Command, id)
+			d.reportResult(ctx, res)
+			return
+		}
+	} else {
+		res = commands.Run(d.exec, req, d.nodeID)
+	}
+
 	if !res.OK {
 		d.logf("command: %s 执行失败: %s%s", cmd.Command, res.Error, stderrSuffix(res.Stderr))
+	} else if isLifecycleCommandOp(op) && d.onLifecycleDone != nil {
+		d.onLifecycleDone()
 	}
 	d.reportResult(ctx, res)
+}
+
+func isExclusiveCommandOp(op string) bool {
+	switch op {
+	case commands.OpServiceStart, commands.OpServiceStop, commands.OpServiceReload,
+		commands.OpRouteUpdate, commands.OpNodeRefresh, commands.OpNodeUpdate,
+		commands.OpRouteRefresh, commands.OpRefreshRoutesGnb, commands.OpRefreshRoutesWG,
+		commands.OpRefreshAddressGnb, commands.OpRefreshAddressWG,
+		commands.OpPluginProxyStart, commands.OpPluginProxyStop, commands.OpPluginProxyRestart:
+		return true
+	default:
+		return false
+	}
+}
+
+func isLifecycleCommandOp(op string) bool {
+	switch op {
+	case commands.OpServiceStart, commands.OpServiceStop, commands.OpServiceReload, commands.OpRouteUpdate:
+		return true
+	default:
+		return false
+	}
 }
 
 func (d *eventDispatcher) reportResult(ctx context.Context, res commands.Result) {

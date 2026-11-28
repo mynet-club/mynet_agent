@@ -63,15 +63,25 @@ type Handlers struct {
 	OnResult func(ctx context.Context, res commands.Result) ([]byte, error)
 }
 
+// GatewayStatus 网关长连接状态快照，供 localapi /api/v1/status 透出。
+type GatewayStatus struct {
+	Connected       bool   `json:"connected"`
+	Gateway         string `json:"gateway,omitempty"`
+	LastConnectedAt string `json:"last_connected_at,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
+}
+
 // Client 到网关的长连接客户端。零密码学（C-3）。
 type Client struct {
 	cfg      Config
 	handlers Handlers
 	logf     func(string, ...any)
 
-	mu     sync.Mutex
-	stop   bool
-	dialer Dialer
+	mu              sync.Mutex
+	stop            bool
+	dialer          Dialer
+	lastConnectedAt time.Time
+	lastErr         string
 	// send 由 Dialer 在连接建立时注入、断开时清空。
 	// 有了它，事件驱动的主动上报（如收到 command_queued 后拉取并执行命令、
 	// 再回传结果）才可能——否则只有「被动应答下行帧」一条路。
@@ -95,7 +105,31 @@ func (c *Client) Send(frame []byte) error {
 func (c *Client) setSender(f func([]byte) error) {
 	c.mu.Lock()
 	c.send = f
+	if f != nil {
+		c.lastConnectedAt = time.Now().UTC()
+		c.lastErr = ""
+	}
 	c.mu.Unlock()
+}
+
+// Status 返回网关长连接实时状态。
+func (c *Client) Status() GatewayStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gw := ""
+	if len(c.cfg.Gateways) > 0 {
+		gw = c.cfg.Gateways[0]
+	}
+	lastAt := ""
+	if !c.lastConnectedAt.IsZero() {
+		lastAt = c.lastConnectedAt.Format(time.RFC3339)
+	}
+	return GatewayStatus{
+		Connected:       c.send != nil,
+		Gateway:         gw,
+		LastConnectedAt: lastAt,
+		LastError:       c.lastErr,
+	}
 }
 
 // fireOnConnect 由 Dialer 在连接建立后调用：跑一次「连上就该做的事」。
@@ -186,6 +220,11 @@ func (c *Client) Run(ctx context.Context) error {
 		err := c.dialOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if err != nil {
+			c.mu.Lock()
+			c.lastErr = err.Error()
+			c.mu.Unlock()
 		}
 		if time.Since(dialStart) >= 30*time.Second {
 			backoff = c.cfg.BackoffBase
