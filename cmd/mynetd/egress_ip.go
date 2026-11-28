@@ -9,9 +9,9 @@ import (
 // egressIPCache 非阻塞保存节点观测到的出网 IP（由心跳/deviceinfo 响应回填或异步探测更新）。
 //
 // 设计原则：
-// - 心跳路径零阻塞：beat() 只做 RLock 读字符串，绝不做同步外网探测；
-// - 出网 IP 变化时自动带入下一拍心跳的 node_monitor.node_self.wan_ipv4/wanip，
-//   由后端记录变更日志并更新 node_device_infos.public_ip。
+//   - 心跳路径零阻塞：beat() 只做 RLock 读字符串，绝不做同步外网探测；
+//   - 出网 IP 变化时自动带入下一拍心跳的 node_monitor.node_self.wan_ipv4/wanip，
+//     由后端记录变更日志并更新 node_device_infos.public_ip。
 type egressIPCache struct {
 	mu sync.RWMutex
 	ip string
