@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -47,9 +48,13 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 	if embedded, err := fs.Sub(webUIFS(), "gui"); err == nil {
 		if _, err := fs.Stat(embedded, "index.html"); err == nil {
 			r2 := r.Clone(r.Context())
-			r2.URL.Path = p
-			name := strings.TrimPrefix(filepath.Clean(p), "/")
-			if st, err := fs.Stat(embedded, name); err != nil || st.IsDir() {
+			clean := path.Clean("/" + p)
+			r2.URL.Path = clean
+			// io/fs.FS 严格要求正斜杠路径；Windows 下 filepath.Clean 会产生反斜杠导致静态资源全部回退成 index.html。
+			name := strings.TrimPrefix(clean, "/")
+			if name == "" {
+				r2.URL.Path = "/index.html"
+			} else if st, err := fs.Stat(embedded, name); err != nil || st.IsDir() {
 				r2.URL.Path = "/index.html"
 			}
 			if r2.URL.Path == "/index.html" {
@@ -84,8 +89,8 @@ func (s *Server) handleGUI(w http.ResponseWriter, r *http.Request) {
 	// ⚠️ 必须把 URL.Path 改写成剥掉 /gui 之后的路径再交给 FileServer ——
 	// 直接 fs.ServeHTTP(w, r) 会去找 <root>/gui/assets/…，而产物在
 	// <root>/assets/…。症状是 index.html 200、JS/CSS 全 404（实测）。
-	clean := filepath.Clean(p)
-	if clean == "/" || !fileExists(filepath.Join(root, clean)) {
+	clean := path.Clean("/" + p)
+	if clean == "/" || !fileExists(filepath.Join(root, filepath.FromSlash(clean))) {
 		http.ServeFile(w, r, filepath.Join(root, "index.html"))
 		return
 	}
