@@ -60,6 +60,12 @@ func main() {
 		return
 	}
 
+	// Windows 服务（SCM）：必须在检查 MYNET_HOME 与起 localapi 之前接管，
+	// 否则服务拉起时系统环境未注入 MYNET_HOME，会在 loadServiceEnv() 执行前直接 exit(1) 导致 SCM 7009 超时。
+	if tryRunAsWindowsService() {
+		return
+	}
+
 	// 不带 home 直接报错：**不再按 exe 目录猜**。OpenWrt 下可执行在 /usr/sbin，
 	// 按 exe 推 home 会得到 /usr/sbin → var/bundle.json、logs、mode.json 全落到错的树里
 	// （且是静默的）。服务由 init/launchd/sc 的 env 提供 MYNET_HOME。
@@ -68,11 +74,6 @@ func main() {
 			"✗ 未设 MYNET_HOME：服务应由 init/launchd/sc 的 env 提供（export MYNET_HOME=/etc/mynet）。"+
 				"（不再按 exe 目录猜 home）")
 		os.Exit(1)
-	}
-
-	// Windows 服务（SCM）：必须在起 localapi 之前接管，否则 svc.Run 里再起会端口冲突
-	if tryRunAsWindowsService() {
-		return
 	}
 
 	// root 要求是**分模式**的，此前这条提示是模式盲的（对谁都说「无需 root」），
